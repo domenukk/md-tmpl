@@ -1,0 +1,133 @@
+//! Blockquote prefix stripping for template statement tags.
+//!
+//! Markdown blockquote `>` prefixes on `{% ... %}` lines are
+//! transparently stripped before compilation so the template engine
+//! sees plain tags.
+
+use crate::{
+    consts::{
+        BLOCKQUOTE_COMPACT_OPEN, BLOCKQUOTE_PREFIX, BLOCKQUOTE_PREFIX_SPACED,
+        BLOCKQUOTE_SPACED_OPEN, STMT_END, STMT_START,
+    },
+    error::TemplateError,
+};
+
+/// Reject standalone `{% ... %}` lines that lack the `> ` blockquote prefix.
+///
+/// A line is considered "standalone" when its entire trimmed content is a
+/// single `{% ... %}` tag. Inline uses like `text {% if x %}more{% /if %}`
+/// are NOT affected — only lines that are *exclusively* a statement tag.
+///
+/// # Errors
+///
+/// Returns [`TemplateError::Syntax`] with a helpful message pointing to
+/// the offending line.
+pub(super) fn validate_blockquote_prefix(input: &str) -> Result<(), TemplateError> {
+    let mut in_raw = false;
+    for (line_num, line) in input.split('\n').enumerate() {
+        let trimmed = line.trim();
+
+        // Check if we enter or exit a raw block.
+        // Needs to check stripped version because the raw tags themselves
+        // must use blockquote prefix.
+        let stripped = strip_blockquote_line(trimmed).trim();
+        if stripped == "{% raw %}" {
+            in_raw = true;
+            continue;
+        } else if stripped == "{% /raw %}" {
+            in_raw = false;
+            continue;
+        }
+
+        if in_raw {
+            continue;
+        }
+
+        // Only flag lines that are exclusively a statement tag.
+        if trimmed.starts_with(STMT_START)
+            && trimmed.ends_with(STMT_END)
+            && is_standalone_tag(trimmed)
+        {
+            return Err(TemplateError::syntax(format!(
+                "line {}: standalone statement tag must use blockquote prefix \
+                 (`> {trimmed}` instead of `{trimmed}`)",
+                line_num + 1,
+            )));
+        }
+    }
+    Ok(())
+}
+/// Strip markdown blockquote `>` prefix from lines containing `{%` tags.
+///
+/// Allows authors to write `>{% if x %}` which renders as a visually-distinct
+/// blockquote in markdown preview. The `>` prefix is transparently removed
+/// before compilation so the template engine sees plain `{% if x %}`.
+///
+/// Supports both `>{%` (compact) and `> {%` (spaced). Lines without `{%`
+/// are left untouched, preserving actual markdown blockquotes.
+///
+/// This function is idempotent — calling it on already-processed text is safe.
+pub(super) fn strip_blockquote_tags(input: &str) -> std::borrow::Cow<'_, str> {
+    // Fast path: no blockquote tags present.
+    if !input.contains(BLOCKQUOTE_COMPACT_OPEN) && !input.contains(BLOCKQUOTE_SPACED_OPEN) {
+        return std::borrow::Cow::Borrowed(input);
+    }
+
+    let lines: Vec<&str> = input.split('\n').collect();
+    let mut result = String::with_capacity(input.len());
+    let mut skip_next_newline = false;
+    for (i, &line) in lines.iter().enumerate() {
+        let stripped = strip_blockquote_line(line);
+        let was_stripped = !std::ptr::eq(stripped, line);
+        if i > 0 && !skip_next_newline {
+            result.push('\n');
+        }
+        skip_next_newline = false;
+        result.push_str(stripped);
+        // When a blockquote-stripped line is a standalone tag (only `{% … %}`),
+        // consume the trailing newline so it doesn't leak into the block body.
+        if was_stripped && is_standalone_tag(stripped) {
+            skip_next_newline = true;
+        }
+    }
+    std::borrow::Cow::Owned(result)
+}
+
+/// Returns `true` when the line is a standalone template tag — the entire
+/// line (after trimming) is a single `{% ... %}` with no other content.
+///
+/// Lines like `{% if x %}yes{% /if %}` are NOT standalone because they
+/// contain content between/around the tags.
+pub(super) fn is_standalone_tag(line: &str) -> bool {
+    let trimmed = line.trim();
+    // Must start with `{%` and end with `%}`.
+    if !trimmed.starts_with(STMT_START) || !trimmed.ends_with(STMT_END) {
+        return false;
+    }
+    // Find the FIRST `%}` — if it's the last one (at the end), the line
+    // is a single tag. If there's content after the first `%}`, it's not.
+    let after_open = &trimmed[STMT_START.len()..]; // skip `{%`
+    let Some(close_pos) = after_open.find(STMT_END) else {
+        return false;
+    };
+    // The close should be at the end of the trimmed line.
+    close_pos + STMT_END.len() == after_open.len()
+}
+
+/// Strip a leading `>` or `> ` from a single line if the remainder starts
+/// with `{%` (optionally after whitespace).
+fn strip_blockquote_line(line: &str) -> &str {
+    // Try `> {% ...` (with space after >).
+    if let Some(rest) = line.strip_prefix(BLOCKQUOTE_PREFIX_SPACED)
+        && rest.trim_start().starts_with(STMT_START)
+    {
+        return rest;
+    }
+    // Try `>{% ...` (no space).
+    if let Some(rest) = line.strip_prefix(BLOCKQUOTE_PREFIX)
+        && rest.trim_start().starts_with(STMT_START)
+    {
+        return rest;
+    }
+    line
+}

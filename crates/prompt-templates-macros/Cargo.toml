@@ -1,0 +1,30 @@
+[package]
+name = "prompt-templates-macros"
+version = "0.1.2"
+edition = "2024"
+rust-version = "1.85"
+description = "Proc macros for compile-time template validation and pre-parsing"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/domenukk/prompt-templates"
+readme = "README.md"
+keywords = ["template", "proc-macro", "prompt", "llm", "compile-time"]
+categories = ["development-tools::procedural-macro-helpers"]
+
+[lib]
+proc-macro = true
+
+[features]
+default = []
+serde = []
+
+[dependencies]
+prompt-templates = { version = "0.1.2", path = "../prompt-templates" }
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true

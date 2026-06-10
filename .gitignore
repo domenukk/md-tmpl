@@ -1,0 +1,10 @@
+/target
+Cargo.lock
+
+# Python
+__pycache__
+*.so
+*.pyd
+.venv/
+.pytest_cache/
+*.egg-info/

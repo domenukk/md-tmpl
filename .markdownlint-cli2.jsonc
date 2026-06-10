@@ -1,0 +1,13 @@
+{
+  "globs": ["**/*.md"],
+  "ignores": ["target/**", ".venv/**", "**/node_modules/**"],
+
+  "config": {
+    // Line length: disabled — README prose, tables, and code examples
+    // regularly exceed 80 chars and that's fine for rendered markdown.
+    "MD013": false,
+
+    // Template files (.tmpl.md) start with YAML frontmatter, not headings.
+    "MD041": false
+  }
+}

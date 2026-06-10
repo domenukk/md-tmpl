@@ -1,0 +1,37 @@
+[package]
+name = "prompt-templates"
+version = "0.1.2"
+edition = "2024"
+rust-version = "1.85"
+description = "Lightweight template engine for .tmpl.md prompt files with typed frontmatter"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/domenukk/prompt-templates"
+readme = "README.md"
+keywords = ["template", "prompt", "markdown", "llm", "agent"]
+categories = ["template-engine", "text-processing"]
+
+[features]
+default = []
+serde = ["dep:serde"]
+
+[dependencies]
+thiserror = "1"
+tracing = "0.1"
+const-str = "0.5"
+serde = { version = "1", features = ["derive"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+serde = { version = "1", features = ["derive"] }
+prompt-templates-macros = { version = "0.1.2", path = "../prompt-templates-macros", features = [
+  "serde",
+] }
+criterion = { version = "0.5", features = ["html_reports"] }
+serde_yaml = "0.9.34"
+
+[[bench]]
+name = "template_bench"
+harness = false
+
+[lints]
+workspace = true

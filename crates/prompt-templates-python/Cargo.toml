@@ -1,0 +1,24 @@
+[package]
+name = "prompt-templates-python"
+version = "0.1.2"
+edition = "2024"
+rust-version = "1.85"
+description = "Python bindings for the prompt-templates engine via PyO3"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/domenukk/prompt-templates"
+readme = "README.md"
+keywords = ["template", "python", "pyo3", "llm", "prompt"]
+categories = ["api-bindings"]
+publish = false
+
+[lib]
+name = "_prompt_templates"
+crate-type = ["cdylib"]
+
+[dependencies]
+prompt-templates = { path = "../prompt-templates", features = ["serde"] }
+pyo3 = { version = "0.24", features = ["extension-module"] }
+serde = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true
