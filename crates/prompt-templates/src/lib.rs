@@ -8,7 +8,11 @@ pub mod spec {}
 mod cache;
 #[doc(hidden)]
 pub mod compiled;
-mod consts;
+/// Template grammar constants, syntax characters, and utility functions.
+///
+/// Contains the canonical definitions of expression delimiters, tag markers,
+/// type names, and other tokens used by the template engine.
+pub mod consts;
 mod context;
 mod error;
 mod filter;
@@ -28,11 +32,18 @@ mod inline_template_tests;
 pub use cache::TemplateCache;
 pub use context::Context;
 pub use error::{SyntaxError, TemplateError};
-pub use frontmatter::{Frontmatter, parse_frontmatter, strip_frontmatter};
+#[doc(hidden)]
+pub use frontmatter::parse_frontmatter_with_base_dir;
+pub use frontmatter::{
+    Frontmatter, Import, ImportedNamespace, extract_template_stem, parse_frontmatter,
+    resolve_imports, strip_frontmatter,
+};
 #[cfg(feature = "serde")]
 pub use serde_support::{DeError, SerError, from_value, to_value};
 pub use template::{Template, load_template};
-pub use types::{TypeCheckError, VarDecl, VarType, VariantDecl};
+pub use types::{
+    BUILTIN_TYPE_NAMES, TypeCheckError, VarDecl, VarType, VariantDecl, to_pascal_case,
+};
 pub use value::{Value, ValueTypeError};
 
 /// Construct a [`Context`] with JSON-like syntax.

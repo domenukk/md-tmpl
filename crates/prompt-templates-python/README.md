@@ -57,6 +57,8 @@ instead of letting it propagate silently.
 | Feature                      | Why it matters                                                                   |
 | ---------------------------- | -------------------------------------------------------------------------------- |
 | **Strongly typed**           | Every parameter declares a type (`str`, `int`, `list<…>`, `dict<…>`, `enum<…>`). |
+| **Type aliases**             | `types:` block defines reusable named types; PascalCase Python classes.          |
+| **Cross-template imports**   | `imports:` pulls types from other templates via dotted paths.                    |
 | **Typed lists**              | `list<title = str, score = int>` — iterate with `{% for %}`, fields validated.   |
 | **Enum dispatch**            | `match`/`case` on typed variants with exhaustiveness checking + field narrowing. |
 | **Includes as links**        | `{% include [name](path.tmpl.md) with … %}` — clickable, type-checked.           |
@@ -87,6 +89,29 @@ params:
 Hello {{ name }}!
 """)
 print(tmpl.render(name="world"))  # → "Hello world!"
+```
+
+## Runtime Loading — `load_template` and `load_types`
+
+For runtime loading from `.tmpl.md` files, use `load_template` and
+`load_types`:
+
+```python
+from prompt_templates import load_template, load_types
+
+tmpl = load_template("prompts/greeting.tmpl.md")
+types = load_types("prompts/greeting.tmpl.md")
+
+# types.Outcome, types.Priority, etc. are available as attributes
+output = tmpl.render(name="world")
+```
+
+`load_types` returns a namespace with generated Python classes for all
+type aliases and compound param types. Use `pick=` to load only specific
+types:
+
+```python
+types = load_types("prompts/review.tmpl.md", pick=["Status"])
 ```
 
 ## Typed Lists with `{% for %}`
@@ -167,6 +192,58 @@ callable constructors:
 review.Status.Approved           # unit variant — no parentheses
 review.Status.NeedsChanges(reason="fix tests")  # struct variant
 ```
+
+### PascalCase Naming
+
+Generated Python classes use `PascalCase` for all type names:
+
+- Param `bugs` → class `Bugs`
+- Param `vuln_type` → class `VulnType`
+- Param `code_review` → class `CodeReview`
+
+Type aliases from the `types:` block use their declared name directly
+as the Python class name (they should already be `PascalCase`).
+
+## Type Aliases
+
+Templates with a `types:` block generate corresponding Python types.
+Type aliases are available as attributes on the template object:
+
+```python
+from prompt_templates import template
+
+# Given a template with:
+#   types:
+#     - Priority = enum<High, Medium, Low>
+#   params:
+#     - tasks = list<title = str, priority = Priority>
+
+tmpl = template("prompts/task_list.tmpl.md")
+
+output = tmpl.render(
+    tasks=[
+        {"title": "Fix bug", "priority": tmpl.Priority.High},
+        {"title": "Add tests", "priority": tmpl.Priority.Medium},
+    ],
+)
+```
+
+## Cross-Template Imports
+
+Templates can import types from other templates via the `imports:` block.
+Imported types are resolved automatically when loading the template:
+
+```markdown
+---
+imports:
+  - "[shared_types](shared_types.tmpl.md)"
+params:
+  - priority = shared_types.Priority
+---
+```
+
+The import stem must match the filename without `.tmpl.md`.
+See [SPEC.md](../../SPEC.md) for full details.
 
 ## Import Hook
 

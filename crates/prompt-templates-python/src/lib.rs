@@ -2,8 +2,8 @@
 //!
 //! This crate exposes the core Rust template engine to Python, providing:
 //!
-//! - [`PyTemplate`]: Load, validate, and render `.tmpl.md` templates.
-//! - [`PyTemplateCache`]: Content-hashed caching layer.
+//! - `PyTemplate`: Load, validate, and render `.tmpl.md` templates.
+//! - `PyTemplateCache`: Content-hashed caching layer.
 //! - Dynamic type generation: Python classes for enums and models are
 //!   generated from frontmatter declarations at template load time.
 //! - Value conversion: Python dicts, lists, strings, ints, floats, bools,

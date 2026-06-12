@@ -67,6 +67,10 @@ struct CacheEntry {
     declarations: Arc<[VarDecl]>,
     /// Inline template definitions.
     inline_templates: Arc<HashMap<String, CompiledInlineTemplate>>,
+    /// Local constants.
+    consts: Arc<HashMap<String, crate::value::Value>>,
+    /// Imported constants.
+    imported_consts: Arc<HashMap<String, crate::value::Value>>,
     /// Full parsed frontmatter.
     frontmatter: Frontmatter,
 }
@@ -306,6 +310,8 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
                     base_dir,
                     entry.inline_templates.clone(),
                     entry.source_hash,
+                    entry.consts.clone(),
+                    entry.imported_consts.clone(),
                 );
                 let fm = if need_frontmatter {
                     Some(entry.frontmatter.clone())
@@ -337,6 +343,8 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
                     base_dir,
                     entry.inline_templates.clone(),
                     source_hash,
+                    entry.consts.clone(),
+                    entry.imported_consts.clone(),
                 );
                 let fm = if need_frontmatter {
                     Some(entry.frontmatter.clone())
@@ -350,7 +358,15 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
         // Cache miss — compile.
         let (fm, body) = frontmatter::parse_frontmatter(&source)?;
         let body_str = body.to_string();
-        let (segments, inline_templates) = compiled::compile(&body_str)?;
+        let (segments, inline_templates) = compiled::compile(&body_str, &fm.type_aliases)?;
+
+        let consts: std::collections::HashMap<String, crate::value::Value> = fm
+            .consts
+            .iter()
+            .filter_map(|d| d.default_value.clone().map(|v| (d.name.clone(), v)))
+            .collect();
+        let consts = Arc::new(consts);
+        let imported_consts = Arc::new(fm.imported_consts.clone());
 
         let entry = CacheEntry {
             source_hash,
@@ -359,6 +375,8 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
             segments: Arc::from(segments),
             declarations: Arc::from(fm.declarations.clone()),
             inline_templates: Arc::new(inline_templates),
+            consts: consts.clone(),
+            imported_consts: imported_consts.clone(),
             frontmatter: fm.clone(),
         };
 
@@ -377,6 +395,8 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
             base_dir,
             entry.inline_templates,
             source_hash,
+            entry.consts,
+            entry.imported_consts,
         );
         Ok((tmpl, Some(fm)))
     }
@@ -425,7 +445,7 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
 
         // Cache miss — compile.
         let (fm, body) = frontmatter::parse_frontmatter(&source)?;
-        let (segments, _inline_templates) = compiled::compile(body)?;
+        let (segments, _inline_templates) = compiled::compile(body, &fm.type_aliases)?;
         let base_dir = include_path
             .parent()
             .unwrap_or_else(|| Path::new("."))

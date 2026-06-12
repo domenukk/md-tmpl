@@ -35,7 +35,7 @@ Score: {{ score | fixed(2) }}
 ## Items
 
 > {% for item in items %}
-- {{ item.label }}: {{ item.value | default(\"n/a\") }}
+- {{ item.label }}: {{ item.value }}
 > {% /for %}
 > {% if show_footer %}
 ---

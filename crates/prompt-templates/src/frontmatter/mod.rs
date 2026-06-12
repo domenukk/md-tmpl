@@ -17,16 +17,47 @@
 //! ---
 //! ```
 
+mod imports;
+mod params;
+mod type_aliases;
+mod validation;
+
+use std::{collections::HashMap, path::PathBuf};
+
+pub use imports::*;
+pub(crate) use params::*;
+pub(crate) use type_aliases::*;
+pub(crate) use validation::*;
+
 use crate::{
     consts::{
-        FM_ALLOW_UNUSED_PREFIX, FM_DELIMITER, FM_DELIMITER_NEWLINE, FM_DESC_PREFIX, FM_NAME_PREFIX,
-        FM_PARAMS_PREFIX, TYPE_BOOL, TYPE_DICT, TYPE_DICT_PREFIX, TYPE_ENUM, TYPE_ENUM_PREFIX,
-        TYPE_FLOAT, TYPE_INT, TYPE_LIST, TYPE_LIST_PREFIX, TYPE_STR,
+        FM_ALLOW_UNUSED_PREFIX, FM_CONSTS_PREFIX, FM_DELIMITER, FM_DELIMITER_NEWLINE,
+        FM_DESC_PREFIX, FM_IMPORTS_PREFIX, FM_NAME_PREFIX, FM_PARAMS_PREFIX, FM_TYPES_PREFIX,
     },
     error::TemplateError,
-    types::{VarDecl, VarType, VariantDecl},
-    value::Value,
+    frontmatter::params::parse_declarations,
+    types::{VarDecl, VarType},
 };
+
+/// A template import declaration: `[stem](path.tmpl.md)`.
+#[derive(Debug, Clone)]
+pub struct Import {
+    /// Short alias used as namespace prefix, e.g. `other`.
+    pub stem: String,
+    /// Relative path to the imported template file.
+    pub path: PathBuf,
+}
+
+/// Resolved namespace from an imported template.
+#[derive(Debug, Clone, Default)]
+pub struct ImportedNamespace {
+    /// Type aliases exported by the imported template.
+    pub type_aliases: HashMap<String, VarType>,
+    /// Parameter types (for cross-template type references).
+    pub param_types: HashMap<String, VarType>,
+    /// Constants exported by the imported template.
+    pub consts: HashMap<String, crate::value::Value>,
+}
 
 /// Parsed YAML frontmatter from a `.tmpl.md` file.
 #[derive(Debug, Clone, Default)]
@@ -46,6 +77,16 @@ pub struct Frontmatter {
     /// Set via `allow_unused: true` in frontmatter. Useful for
     /// dynamically-loaded templates where params may be conditionally used.
     pub allow_unused: bool,
+    /// Type aliases defined via `types:` in frontmatter.
+    ///
+    /// Maps alias names (e.g. `Priority`) to their resolved [`VarType`].
+    pub type_aliases: HashMap<String, VarType>,
+    /// Import declarations defined via `imports:` in frontmatter.
+    pub imports: Vec<Import>,
+    /// Constants defined via `consts:` in frontmatter.
+    pub consts: Vec<VarDecl>,
+    /// Resolved constants from imports, keyed by `stem.NAME`.
+    pub imported_consts: HashMap<String, crate::value::Value>,
 }
 
 /// Strip YAML frontmatter delimited by `---` and return only the body text.
@@ -65,7 +106,7 @@ pub fn strip_frontmatter(source: &str) -> Result<&str, TemplateError> {
 /// # Errors
 ///
 /// Returns [`TemplateError::Syntax`] if the frontmatter block is
-/// missing, unclosed, or does not declare a `params` block.
+/// missing, unclosed, or contains invalid declarations.
 pub fn parse_frontmatter(source: &str) -> Result<(Frontmatter, &str), TemplateError> {
     let trimmed = source.trim_start();
     if !trimmed.starts_with(FM_DELIMITER) {
@@ -101,340 +142,253 @@ pub fn parse_frontmatter(source: &str) -> Result<(Frontmatter, &str), TemplateEr
     // are handled correctly.
     let logical_lines = join_continuation_lines(yaml_block);
 
+    // --- Pass 1: Collect types:, imports:, and simple keys ---
+    let mut params_raw: Option<String> = None;
+    let mut consts_raw: Option<String> = None;
+
     for line in &logical_lines {
         let line = line.trim();
         if let Some(rest) = line.strip_prefix(FM_NAME_PREFIX) {
             fm.name = rest.trim().to_string();
         } else if let Some(rest) = line.strip_prefix(FM_DESC_PREFIX) {
             fm.description = rest.trim().to_string();
+        } else if let Some(rest) = line.strip_prefix(FM_TYPES_PREFIX) {
+            fm.type_aliases = parse_types_value(rest)?;
+        } else if let Some(rest) = line.strip_prefix(FM_IMPORTS_PREFIX) {
+            fm.imports = parse_imports_value(rest)?;
         } else if let Some(rest) = line.strip_prefix(FM_PARAMS_PREFIX) {
-            let decls = parse_params_value(rest)?;
-            fm.params = decls.iter().map(|d| d.name.clone()).collect();
-            fm.declarations = decls;
-            fm.has_params = true;
+            params_raw = Some(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix(FM_CONSTS_PREFIX) {
+            consts_raw = Some(rest.to_string());
         } else if let Some(rest) = line.strip_prefix(FM_ALLOW_UNUSED_PREFIX) {
-            fm.allow_unused = rest.trim() == "true";
+            fm.allow_unused = rest.trim() == crate::consts::LIT_TRUE;
         }
     }
 
-    if !fm.has_params {
-        return Err(TemplateError::syntax(
-            crate::consts::ERR_MISSING_PARAMS.to_string(),
-        ));
+    // --- Pass 2: Parse params/consts with type aliases available ---
+    let resolved_imports = HashMap::new();
+    if let Some(raw) = params_raw {
+        let decls = parse_declarations(&raw, &fm.type_aliases, &resolved_imports, false)?;
+        fm.params = decls.iter().map(|d| d.name.clone()).collect();
+        fm.declarations = decls;
+        fm.has_params = true;
     }
+    if let Some(raw) = consts_raw {
+        fm.consts = parse_declarations(&raw, &fm.type_aliases, &resolved_imports, true)?;
+    }
+
+    validate_collision_rules(&fm)?;
+    add_implicit_param_types(&mut fm);
 
     Ok((fm, body))
 }
 
-/// Join YAML continuation lines: any line starting with whitespace is appended
-/// to the preceding logical line.
-fn join_continuation_lines(block: &str) -> Vec<String> {
-    let mut logical: Vec<String> = Vec::new();
-    for raw in block.lines() {
-        if raw.starts_with(' ') || raw.starts_with('\t') {
-            // Continuation of previous logical line.
-            if let Some(prev) = logical.last_mut() {
-                prev.push(' ');
-                prev.push_str(raw.trim());
-            } else {
-                logical.push(raw.to_string());
-            }
-        } else {
-            logical.push(raw.to_string());
-        }
-    }
-    logical
-}
-
-/// Parse the value part after `params:`.
+/// Parse YAML frontmatter with cross-template import resolution.
 ///
-/// Supports both inline and block list formats:
-/// - Inline: `[name = str, count = int]`
-/// - Block (joined): `- name = str, - count = int` (after continuation joining)
-fn parse_params_value(rest: &str) -> Result<Vec<VarDecl>, TemplateError> {
-    let rest = rest.trim();
-    if rest.is_empty() {
-        // `params:` with no value and no continuation lines → empty params.
-        return Ok(vec![]);
+/// Like [`parse_frontmatter`], but additionally resolves `imports:` entries
+/// by reading referenced template files from disk relative to `base_dir`.
+/// This allows params to reference imported types (e.g. `types.Severity`).
+///
+/// # Errors
+///
+/// Returns [`TemplateError::Syntax`] if the frontmatter block is invalid,
+/// an imported file cannot be read, or imported types cannot be resolved.
+pub fn parse_frontmatter_with_base_dir<'a>(
+    source: &'a str,
+    base_dir: &std::path::Path,
+) -> Result<(Frontmatter, &'a str), TemplateError> {
+    let trimmed = source.trim_start();
+    if !trimmed.starts_with(FM_DELIMITER) {
+        return Err(TemplateError::syntax(
+            crate::consts::ERR_MISSING_FM.to_string(),
+        ));
     }
 
-    // Strip only the outermost `[` and `]` (inline YAML flow sequence).
-    let inner = rest
-        .strip_prefix('[')
-        .and_then(|s| s.strip_suffix(']'))
-        .unwrap_or(rest);
+    // Find the closing `---`.
+    let after_first = trimmed[FM_DELIMITER.len()..].trim_start_matches(['\r', '\n']);
+    let Some(end) = after_first.find(FM_DELIMITER_NEWLINE) else {
+        return Err(TemplateError::syntax(
+            crate::consts::ERR_UNCLOSED_FM.to_string(),
+        ));
+    };
 
-    // Handle block list format: entries are `- name = type` joined by spaces
-    // (after continuation line joining, the `- ` markers are preserved).
-    let entries = if inner.contains("- ") {
-        // Split on ` - ` to separate entries, then strip leading `- ` from
-        // the first entry if present.
-        let mut result = Vec::new();
-        for part in inner.split(" - ") {
-            let part = part.trim().strip_prefix('-').unwrap_or(part).trim();
-            if !part.is_empty() {
-                result.push(part.to_string());
-            }
-        }
-        result
+    let yaml_block = &after_first[..end];
+    let after_close = end + FM_DELIMITER_NEWLINE.len();
+    let body_start = if after_first[after_close..].starts_with('\n') {
+        after_close + 1
+    } else if after_first[after_close..].starts_with("\r\n") {
+        after_close + 2
     } else {
-        // Inline format: split on commas at bracket-depth 0.
-        split_at_depth_zero(inner)
-            .into_iter()
-            .map(ToString::to_string)
-            .collect()
+        after_close
     };
+    let body = &after_first[body_start..];
 
-    let mut decls = Vec::new();
-    for entry in &entries {
-        let trimmed = entry.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
+    let mut fm = Frontmatter::default();
+    let logical_lines = join_continuation_lines(yaml_block);
 
-        // Find `=` at depth 0 to split name from type+default.
-        let Some(eq_pos) = find_char_at_depth_zero(trimmed, '=') else {
-            return Err(TemplateError::syntax(format!(
-                "param '{trimmed}' is missing a type annotation (expected 'name = type')"
-            )));
-        };
+    // --- Pass 1: Collect types:, imports:, and simple keys ---
+    let mut params_raw: Option<String> = None;
+    let mut consts_raw: Option<String> = None;
 
-        let name = trimmed[..eq_pos].trim().to_string();
-        let type_and_default = trimmed[eq_pos + 1..].trim();
-
-        // Find `:=` at depth 0 to split type from default value.
-        let (type_str, default_value) =
-            if let Some(assign_pos) = find_assign_default_at_depth_zero(type_and_default) {
-                let type_part = type_and_default[..assign_pos].trim();
-                let default_part = type_and_default[assign_pos + 2..].trim();
-                let default = parse_default_value(default_part);
-                (type_part, default)
-            } else {
-                (type_and_default, None)
-            };
-
-        let var_type = parse_type_annotation(type_str)
-            .map_err(|e| TemplateError::syntax(format!("param '{name}': {e}")))?;
-
-        // Validate that the default value matches the declared type.
-        if let Some(ref default) = default_value
-            && !var_type.matches(default)
-        {
-            return Err(TemplateError::syntax(format!(
-                "param '{name}': default value has type '{}' but declared type is '{var_type}'",
-                default.type_name()
-            )));
-        }
-
-        decls.push(VarDecl {
-            name,
-            var_type,
-            default_value,
-        });
-    }
-
-    Ok(decls)
-}
-
-/// Split a string on commas at bracket-depth 0.
-fn split_at_depth_zero(input: &str) -> Vec<&str> {
-    let mut entries = Vec::new();
-    let mut depth: u32 = 0;
-    let mut start = 0;
-    for (i, ch) in input.char_indices() {
-        match ch {
-            '<' | '[' | '(' => depth += 1,
-            '>' | ']' | ')' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => {
-                entries.push(&input[start..i]);
-                start = i + 1;
-            }
-            _ => {}
+    for line in &logical_lines {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix(FM_NAME_PREFIX) {
+            fm.name = rest.trim().to_string();
+        } else if let Some(rest) = line.strip_prefix(FM_DESC_PREFIX) {
+            fm.description = rest.trim().to_string();
+        } else if let Some(rest) = line.strip_prefix(FM_TYPES_PREFIX) {
+            fm.type_aliases = parse_types_value(rest)?;
+        } else if let Some(rest) = line.strip_prefix(FM_IMPORTS_PREFIX) {
+            fm.imports = parse_imports_value(rest)?;
+        } else if let Some(rest) = line.strip_prefix(FM_PARAMS_PREFIX) {
+            params_raw = Some(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix(FM_CONSTS_PREFIX) {
+            consts_raw = Some(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix(FM_ALLOW_UNUSED_PREFIX) {
+            fm.allow_unused = rest.trim() == crate::consts::LIT_TRUE;
         }
     }
-    entries.push(&input[start..]);
-    entries
-}
 
-/// Find the first occurrence of `target` at bracket-depth 0.
-fn find_char_at_depth_zero(input: &str, target: char) -> Option<usize> {
-    let mut depth: u32 = 0;
-    for (i, ch) in input.char_indices() {
-        match ch {
-            '<' | '[' | '(' => depth += 1,
-            '>' | ']' | ')' => depth = depth.saturating_sub(1),
-            c if c == target && depth == 0 => return Some(i),
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Find the position of `:=` at bracket-depth zero.
-fn find_assign_default_at_depth_zero(input: &str) -> Option<usize> {
-    let mut depth: u32 = 0;
-    let bytes = input.as_bytes();
-    for (i, &b) in bytes.iter().enumerate() {
-        match b {
-            b'<' | b'[' | b'(' => depth += 1,
-            b'>' | b']' | b')' => depth = depth.saturating_sub(1),
-            b':' if depth == 0 && bytes.get(i + 1) == Some(&b'=') => return Some(i),
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Parse a type annotation string into a [`VarType`].
-///
-/// Supported forms:
-/// - `str` → [`VarType::Str`]
-/// - `bool` → [`VarType::Bool`]
-/// - `int` → [`VarType::Int`]
-/// - `float` → [`VarType::Float`]
-/// - `list<name = str, count = int>` → [`VarType::List`] with field declarations
-/// - `dict<key = str>` → [`VarType::Dict`] with field declarations
-/// - `enum<A, B(field = type)>` → [`VarType::Enum`] with variant declarations
-fn parse_type_annotation(s: &str) -> Result<VarType, String> {
-    let s = s.trim();
-
-    if s == TYPE_STR {
-        Ok(VarType::Str)
-    } else if s == TYPE_BOOL {
-        Ok(VarType::Bool)
-    } else if s == TYPE_INT {
-        Ok(VarType::Int)
-    } else if s == TYPE_FLOAT {
-        Ok(VarType::Float)
-    } else if s.starts_with(TYPE_LIST_PREFIX) {
-        parse_compound_type_list(s)
-    } else if s.starts_with(TYPE_DICT_PREFIX) {
-        parse_compound_type_dict(s)
-    } else if s.starts_with(TYPE_ENUM_PREFIX) {
-        parse_enum_type(s)
+    let resolved_imports = if fm.imports.is_empty() {
+        HashMap::new()
     } else {
-        Err(format!("unknown type '{s}'"))
-    }
-}
-
-/// Parse an enum type like `enum<Confirmed(evidence = list<text = str>), Inconclusive>`.
-fn parse_enum_type(s: &str) -> Result<VarType, String> {
-    let rest = s.strip_prefix(TYPE_ENUM).unwrap_or("").trim();
-    let Some(inner) = rest.strip_prefix('<').and_then(|r| r.strip_suffix('>')) else {
-        return Err(format!("malformed enum type: '{s}'"));
+        let mut visited = std::collections::HashSet::new();
+        resolve_imports(&fm.imports, base_dir, &mut visited)?
     };
-    let entries = split_at_depth_zero(inner);
-    let mut variants = Vec::new();
-    for entry in entries {
-        let entry = entry.trim();
-        if entry.is_empty() {
-            continue;
+
+    for (stem, ns) in &resolved_imports {
+        for (name, val) in &ns.consts {
+            fm.imported_consts
+                .insert(format!("{stem}.{name}"), val.clone());
         }
-        if let (Some(open_idx), Some(close_idx)) = (entry.find('('), entry.rfind(')')) {
-            let name = entry[..open_idx].trim().to_string();
-            let fields_str = &entry[open_idx + 1..close_idx];
-            let fields = parse_field_declarations(fields_str)?;
-            variants.push(VariantDecl { name, fields });
-            continue;
-        }
-        variants.push(VariantDecl {
-            name: entry.to_string(),
-            fields: vec![],
-        });
     }
-    Ok(VarType::Enum(variants))
-}
 
-/// Parse a compound type like `list<name = str, count = int>`.
-fn parse_compound_type_list(s: &str) -> Result<VarType, String> {
-    let rest = s.strip_prefix(TYPE_LIST).unwrap_or("").trim();
-    let Some(inner) = rest.strip_prefix('<').and_then(|r| r.strip_suffix('>')) else {
-        return Err(format!("malformed list type: '{s}'"));
-    };
-    let fields = parse_field_declarations(inner)?;
-    Ok(VarType::List(fields))
-}
-
-/// Parse a compound type like `dict<key = str, value = int>`.
-fn parse_compound_type_dict(s: &str) -> Result<VarType, String> {
-    let rest = s.strip_prefix(TYPE_DICT).unwrap_or("").trim();
-    let Some(inner) = rest.strip_prefix('<').and_then(|r| r.strip_suffix('>')) else {
-        return Err(format!("malformed dict type: '{s}'"));
-    };
-    let fields = parse_field_declarations(inner)?;
-    Ok(VarType::Dict(fields))
-}
-
-/// Parse field declarations like `name = str, count = int` into [`VarDecl`]s.
-fn parse_field_declarations(inner: &str) -> Result<Vec<VarDecl>, String> {
-    let entries = split_at_depth_zero(inner);
-    let mut decls = Vec::new();
-    for f in &entries {
-        let f = f.trim();
-        if f.is_empty() {
-            continue;
-        }
-        let Some(eq_pos) = find_char_at_depth_zero(f, '=') else {
-            return Err(format!(
-                "field '{f}' is missing a type annotation (expected 'name = type')"
-            ));
-        };
-        let name = f[..eq_pos].trim().to_string();
-        let type_str = f[eq_pos + 1..].trim();
-        let var_type = parse_type_annotation(type_str)?;
-        decls.push(VarDecl {
-            name,
-            var_type,
-            default_value: None,
-        });
+    if let Some(raw) = params_raw {
+        let decls = parse_declarations(&raw, &fm.type_aliases, &resolved_imports, false)?;
+        fm.params = decls.iter().map(|d| d.name.clone()).collect();
+        fm.declarations = decls;
+        fm.has_params = true;
     }
-    Ok(decls)
+    if let Some(raw) = consts_raw {
+        fm.consts = parse_declarations(&raw, &fm.type_aliases, &resolved_imports, true)?;
+    }
+
+    validate_collision_rules(&fm)?;
+    add_implicit_param_types(&mut fm);
+
+    Ok((fm, body))
 }
 
-/// Parse a scalar default value string into a [`Value`].
+/// Parse YAML frontmatter with access to a parent template's type aliases.
 ///
-/// Supports:
-/// - Quoted strings: `"hello"` or `'hello'`
-/// - Integers: `42`, `-1`
-/// - Floats: `3.15`, `-0.5`
-/// - Booleans: `true`, `false`
-fn parse_default_value(s: &str) -> Option<Value> {
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
+/// Used for inline template definitions (`{% tmpl %}` blocks) that can
+/// reference type aliases from the enclosing template. The inline's own
+/// `types:` block shadows the parent's (resolution order: own → parent).
+///
+/// This is the same as [`parse_frontmatter`] except params can reference
+/// parent type aliases for type resolution.
+pub fn parse_frontmatter_with_parent_scope<'a>(
+    source: &'a str,
+    parent_type_aliases: &HashMap<String, VarType>,
+) -> Result<(Frontmatter, &'a str), TemplateError> {
+    let trimmed = source.trim_start();
+    if !trimmed.starts_with(FM_DELIMITER) {
+        // Inline templates may omit frontmatter entirely — treat the whole
+        // source as body with no params. The parent's type aliases are still
+        // available for any future extensions.
+        return Ok((Frontmatter::default(), source));
     }
 
-    // Quoted string
-    if (s.starts_with('"') && s.ends_with('"')) || (s.starts_with('\'') && s.ends_with('\'')) {
-        let inner = &s[1..s.len() - 1];
-        return Some(Value::Str(inner.to_string()));
+    let after_first = trimmed[FM_DELIMITER.len()..].trim_start_matches(['\r', '\n']);
+    let Some(end) = after_first.find(FM_DELIMITER_NEWLINE) else {
+        return Err(TemplateError::syntax(
+            crate::consts::ERR_UNCLOSED_FM.to_string(),
+        ));
+    };
+
+    let yaml_block = &after_first[..end];
+    let after_close = end + FM_DELIMITER_NEWLINE.len();
+    let body_start = if after_first[after_close..].starts_with('\n') {
+        after_close + 1
+    } else if after_first[after_close..].starts_with("\r\n") {
+        after_close + 2
+    } else {
+        after_close
+    };
+    let body = &after_first[body_start..];
+
+    let mut fm = Frontmatter::default();
+    let logical_lines = join_continuation_lines(yaml_block);
+
+    // --- Pass 1: Collect own types:, imports:, and simple keys ---
+    let mut params_raw: Option<String> = None;
+    let mut consts_raw: Option<String> = None;
+
+    for line in &logical_lines {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix(FM_NAME_PREFIX) {
+            fm.name = rest.trim().to_string();
+        } else if let Some(rest) = line.strip_prefix(FM_DESC_PREFIX) {
+            fm.description = rest.trim().to_string();
+        } else if let Some(rest) = line.strip_prefix(FM_TYPES_PREFIX) {
+            fm.type_aliases = parse_types_value(rest)?;
+        } else if let Some(rest) = line.strip_prefix(FM_IMPORTS_PREFIX) {
+            fm.imports = parse_imports_value(rest)?;
+        } else if let Some(rest) = line.strip_prefix(FM_PARAMS_PREFIX) {
+            params_raw = Some(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix(FM_CONSTS_PREFIX) {
+            consts_raw = Some(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix(FM_ALLOW_UNUSED_PREFIX) {
+            fm.allow_unused = rest.trim() == crate::consts::LIT_TRUE;
+        }
     }
 
-    // Boolean
-    if s == "true" {
-        return Some(Value::Bool(true));
+    // --- Pass 2: Parse params with merged type aliases (own → parent) ---
+    if let Some(raw) = params_raw {
+        // Build merged alias map: parent first, then own (own shadows parent).
+        let mut merged_aliases = parent_type_aliases.clone();
+        for (k, v) in &fm.type_aliases {
+            merged_aliases.insert(k.clone(), v.clone());
+        }
+        let resolved_imports = HashMap::new();
+        let decls = parse_declarations(&raw, &merged_aliases, &resolved_imports, false)?;
+        fm.params = decls.iter().map(|d| d.name.clone()).collect();
+        fm.declarations = decls;
+        fm.has_params = true;
     }
-    if s == "false" {
-        return Some(Value::Bool(false));
+    if let Some(raw) = consts_raw {
+        let mut merged_aliases = parent_type_aliases.clone();
+        for (k, v) in &fm.type_aliases {
+            merged_aliases.insert(k.clone(), v.clone());
+        }
+        let resolved_imports = HashMap::new();
+        fm.consts = parse_declarations(&raw, &merged_aliases, &resolved_imports, true)?;
     }
 
-    // Integer
-    if let Ok(n) = s.parse::<i64>() {
-        return Some(Value::Int(n));
-    }
+    validate_collision_rules(&fm)?;
+    add_implicit_param_types(&mut fm);
 
-    // Float
-    if let Ok(n) = s.parse::<f64>() {
-        return Some(Value::Float(n));
-    }
-
-    // Unquoted string fallback
-    Some(Value::Str(s.to_string()))
+    Ok((fm, body))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::value::Value;
+
+    /// Wrapper for `parse_type_annotation` without aliases — for baseline tests.
+    fn parse_type_annotation(s: &str) -> Result<VarType, String> {
+        let empty_aliases = HashMap::new();
+        let empty_imports = HashMap::new();
+        super::parse_type_annotation(s, &empty_aliases, &empty_imports)
+    }
+
+    /// Wrapper for `parse_declarations` without aliases — for baseline tests.
+    fn parse_params_value(rest: &str) -> Result<Vec<VarDecl>, TemplateError> {
+        let empty_aliases = HashMap::new();
+        let empty_imports = HashMap::new();
+        super::parse_declarations(rest, &empty_aliases, &empty_imports, false)
+    }
 
     #[test]
     fn parse_empty_source() {
@@ -563,6 +517,19 @@ mod tests {
         let (fm, _) = parse_frontmatter(source).unwrap();
         assert!(fm.declarations.is_empty());
         assert!(fm.params.is_empty());
+    }
+
+    #[test]
+    fn types_only_template_no_params_block() {
+        let source =
+            "---\nname: types\ntypes:\n  - Priority = enum<High, Medium, Low>\n---\n{# no body #}";
+        let (fm, body) = parse_frontmatter(source).unwrap();
+        assert_eq!(fm.name, "types");
+        assert!(fm.declarations.is_empty());
+        assert!(fm.params.is_empty());
+        assert!(!fm.has_params);
+        assert!(fm.type_aliases.contains_key("Priority"));
+        assert_eq!(body, "{# no body #}");
     }
 
     #[test]
@@ -790,7 +757,7 @@ mod tests {
         let source = "---\nparams: [name = str := 42]\n---\nbody";
         let err = parse_frontmatter(source).unwrap_err();
         assert!(
-            err.to_string().contains("default value has type"),
+            err.to_string().contains("value has type"),
             "expected type mismatch error, got: {err}"
         );
     }
@@ -800,7 +767,7 @@ mod tests {
         let source = "---\nparams: [count = int := \"hello\"]\n---\nbody";
         let err = parse_frontmatter(source).unwrap_err();
         assert!(
-            err.to_string().contains("default value has type"),
+            err.to_string().contains("value has type"),
             "expected type mismatch error, got: {err}"
         );
     }
@@ -810,7 +777,7 @@ mod tests {
         let source = "---\nparams: [score = float := true]\n---\nbody";
         let err = parse_frontmatter(source).unwrap_err();
         assert!(
-            err.to_string().contains("default value has type"),
+            err.to_string().contains("value has type"),
             "expected type mismatch error, got: {err}"
         );
     }
@@ -820,7 +787,7 @@ mod tests {
         let source = "---\nparams: [active = bool := 3.15]\n---\nbody";
         let err = parse_frontmatter(source).unwrap_err();
         assert!(
-            err.to_string().contains("default value has type"),
+            err.to_string().contains("value has type"),
             "expected type mismatch error, got: {err}"
         );
     }
@@ -860,6 +827,68 @@ mod tests {
     fn reject_negative_int_for_str() {
         let source = "---\nparams: [label = str := -99]\n---\nbody";
         let err = parse_frontmatter(source).unwrap_err();
-        assert!(err.to_string().contains("default value has type"));
+        assert!(err.to_string().contains("value has type"));
+    }
+
+    // -- Type library (allow_unused) tests --
+
+    #[test]
+    fn allow_unused_suppresses_unused_type_alias() {
+        let source = "\
+---
+types:
+  - Severity = enum<Low, Medium, High>
+params:
+  - x = str
+allow_unused: true
+---
+type library";
+        let (fm, _) = parse_frontmatter(source).unwrap();
+        assert!(fm.allow_unused);
+        assert!(fm.type_aliases.contains_key("Severity"));
+    }
+
+    #[test]
+    fn reject_unused_type_alias_without_allow_unused() {
+        let source = "\
+---
+types:
+  - Severity = enum<Low, Medium, High>
+params:
+  - x = str
+---
+{{ x }}";
+        let err = parse_frontmatter(source).unwrap_err();
+        assert!(
+            err.to_string().contains("unused type alias"),
+            "expected unused type alias error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn type_library_with_exported_types_and_params() {
+        let source = "\
+---
+name: types
+types:
+  - Labelled = enum<Known(label = str), Unknown>
+  - Severity = enum<Informational, Low, Medium, High, Critical>
+params:
+  - bugs = list<title = str, vuln_type = Labelled, component = Labelled>
+  - post_types = list<tag = str>
+allow_unused: true
+---
+{# type library #}";
+        let (fm, _) = parse_frontmatter(source).unwrap();
+        assert_eq!(fm.declarations.len(), 2);
+        // Labelled is used by bugs param, so it remains in type_aliases.
+        assert!(fm.type_aliases.contains_key("Labelled"));
+        // Severity is NOT used by any param, but allow_unused suppresses the error.
+        // It remains in the explicit type_aliases map.
+        assert!(
+            fm.type_aliases.contains_key("Severity"),
+            "Severity should remain in type_aliases with allow_unused: {:?}",
+            fm.type_aliases.keys().collect::<Vec<_>>()
+        );
     }
 }

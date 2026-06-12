@@ -65,7 +65,7 @@ impl Context {
     /// mismatches are caught at [`render()`](crate::Template::render) time,
     /// not here. For compile-time type safety, prefer one of:
     ///
-    /// - `template_params_struct!` (from `prompt-templates-macros`)
+    /// - `include_types!` (from `prompt-templates-macros`)
     ///   — generates a strongly-typed parameter struct from your template.
     /// - [`Template::render_serde`](crate::Template::render_serde) (feature `serde`)
     ///   — renders directly from any `Serialize` struct.

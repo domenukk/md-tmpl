@@ -15,7 +15,10 @@
 //! 5. **Scalar field access**: `x.field` on `str`/`int`/`bool`/`float` is an error.
 //! 6. **Undeclared variables**: any reference to an undeclared variable is an error.
 
-use std::{borrow::Cow, collections::HashMap};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+};
 
 use super::{CompiledInclude, Condition, Segment};
 use crate::types::{VarDecl, VarType, VariantDecl};
@@ -32,9 +35,24 @@ use crate::types::{VarDecl, VarType, VariantDecl};
 /// allocation-light on the happy path.
 #[must_use]
 pub fn validate_field_accesses(segments: &[Segment], declarations: &[VarDecl]) -> Vec<String> {
+    validate_field_accesses_with_opaque(segments, declarations, &HashSet::new())
+}
+
+/// Like [`validate_field_accesses`], but also accepts a set of "opaque roots" —
+/// names that are valid variables but whose internal structure is not
+/// statically typed (e.g. import stems for imported constants).
+/// Paths rooted at opaque names skip field-level validation.
+#[must_use]
+pub fn validate_field_accesses_with_opaque(
+    segments: &[Segment],
+    declarations: &[VarDecl],
+    opaque_roots: &HashSet<&str>,
+) -> Vec<String> {
     let mut type_env = TypeEnv::from_declarations(declarations);
+    type_env.opaque_roots.clone_from(opaque_roots);
     let mut errors = Vec::new();
-    walk_segments(segments, &mut type_env, &mut errors);
+    let mut visited = HashSet::new();
+    walk_segments(segments, &mut type_env, &mut errors, &mut visited);
     errors
 }
 
@@ -54,6 +72,9 @@ struct TypeEnv<'a> {
     /// Overrides applied inside match arms (narrowed enum types).
     /// Key is the root variable name, value is the narrowed `VarType`.
     narrowed: HashMap<String, VarType>,
+    /// Names that are valid roots but opaque to field-level type checking
+    /// (e.g. import stems for imported constants like `artist.NOTEBOOK_FILENAME`).
+    opaque_roots: HashSet<&'a str>,
 }
 
 impl<'a> TypeEnv<'a> {
@@ -65,6 +86,7 @@ impl<'a> TypeEnv<'a> {
         Self {
             vars,
             narrowed: HashMap::new(),
+            opaque_roots: HashSet::new(),
         }
     }
 
@@ -73,6 +95,11 @@ impl<'a> TypeEnv<'a> {
         self.narrowed
             .get(name)
             .or_else(|| self.vars.get(name).copied())
+    }
+
+    /// Check if a name is a known opaque root (valid but not typed).
+    fn is_opaque(&self, name: &str) -> bool {
+        self.opaque_roots.contains(name)
     }
 
     /// Insert a narrowed type override. Returns the previous value, if any.
@@ -90,13 +117,23 @@ impl<'a> TypeEnv<'a> {
 // Segment walker
 // ---------------------------------------------------------------------------
 
-fn walk_segments(segments: &[Segment], env: &mut TypeEnv<'_>, errors: &mut Vec<String>) {
+fn walk_segments(
+    segments: &[Segment],
+    env: &mut TypeEnv<'_>,
+    errors: &mut Vec<String>,
+    visited: &mut HashSet<String>,
+) {
     for seg in segments {
-        walk_segment(seg, env, errors);
+        walk_segment(seg, env, errors, visited);
     }
 }
 
-fn walk_segment(seg: &Segment, env: &mut TypeEnv<'_>, errors: &mut Vec<String>) {
+fn walk_segment(
+    seg: &Segment,
+    env: &mut TypeEnv<'_>,
+    errors: &mut Vec<String>,
+    visited: &mut HashSet<String>,
+) {
     match seg {
         Segment::Static(_) | Segment::Raw(_) | Segment::Comment(_) => {}
 
@@ -117,7 +154,7 @@ fn walk_segment(seg: &Segment, env: &mut TypeEnv<'_>, errors: &mut Vec<String>) 
                     // Register the loop binding with element type.
                     let elem_ty = VarType::Dict(fields.clone());
                     let prev = env.narrow(binding, elem_ty);
-                    walk_segments(body, env, errors);
+                    walk_segments(body, env, errors, visited);
                     match prev {
                         Some(t) => {
                             env.narrow(binding, t);
@@ -134,7 +171,7 @@ fn walk_segment(seg: &Segment, env: &mut TypeEnv<'_>, errors: &mut Vec<String>) 
                 }
                 None => {
                     // Path validation already reported the error.
-                    walk_segments(body, env, errors);
+                    walk_segments(body, env, errors, visited);
                 }
             }
         }
@@ -145,17 +182,17 @@ fn walk_segment(seg: &Segment, env: &mut TypeEnv<'_>, errors: &mut Vec<String>) 
         } => {
             for (condition, branch_body) in branches {
                 validate_condition(condition, env, errors);
-                walk_segments(branch_body, env, errors);
+                walk_segments(branch_body, env, errors, visited);
             }
-            walk_segments(else_body, env, errors);
+            walk_segments(else_body, env, errors, visited);
         }
 
         Segment::Match { expr, arms } => {
-            validate_match(expr, arms, env, errors);
+            validate_match(expr, arms, env, errors, visited);
         }
 
         Segment::Include(inc) => {
-            validate_include(inc, env, errors);
+            validate_include(inc, env, errors, visited);
         }
     }
 }
@@ -169,6 +206,7 @@ fn validate_match(
     arms: &[(Vec<Cow<'static, str>>, Vec<Segment>)],
     env: &mut TypeEnv<'_>,
     errors: &mut Vec<String>,
+    visited: &mut HashSet<String>,
 ) {
     // A match without any case is always wrong.
     if arms.is_empty() {
@@ -187,7 +225,7 @@ fn validate_match(
             // `bug.vt.label` resolves correctly inside the arm body.
             // We narrow by the root variable name and replace its type with
             // one where the matched field is narrowed.
-            validate_match_arms_with_narrowing(expr, declared, arms, env, errors);
+            validate_match_arms_with_narrowing(expr, declared, arms, env, errors, visited);
         }
         Some(other_type) => {
             // Match on a non-enum type is a compile error.
@@ -197,12 +235,14 @@ fn validate_match(
             ));
             // Still walk arm bodies for other errors.
             for (_, arm_body) in arms {
-                walk_segments(arm_body, env, errors);
+                walk_segments(arm_body, env, errors, visited);
             }
         }
         None => {
             let root = extract_root(expr);
-            errors.push(format!("match on '{expr}': undeclared variable '{root}'"));
+            if !env.is_opaque(root) {
+                errors.push(format!("match on '{expr}': undeclared variable '{root}'"));
+            }
         }
     }
 }
@@ -217,10 +257,43 @@ fn validate_match_arms_with_narrowing(
     arms: &[(Vec<Cow<'static, str>>, Vec<Segment>)],
     env: &mut TypeEnv<'_>,
     errors: &mut Vec<String>,
+    visited: &mut HashSet<String>,
 ) {
     let mut covered_variants: Vec<&str> = Vec::new();
+    let mut has_default = false;
 
     for (case_variants, arm_body) in arms {
+        let is_default_arm = case_variants.iter().any(|v| v.as_ref() == "_");
+
+        if is_default_arm {
+            has_default = true;
+
+            // Narrow to the remaining (uncovered) variants for the default body.
+            let remaining_variants: Vec<VariantDecl> = declared
+                .iter()
+                .filter(|v| !covered_variants.contains(&v.name.as_str()))
+                .cloned()
+                .collect();
+
+            if remaining_variants.is_empty() {
+                // All variants already covered — default is dead code but not an error.
+                walk_segments(arm_body, env, errors, visited);
+            } else {
+                let narrowed_type = VarType::Enum(remaining_variants);
+                let prev = env.narrow(expr, narrowed_type);
+                walk_segments(arm_body, env, errors, visited);
+                match prev {
+                    Some(t) => {
+                        env.narrow(expr, t);
+                    }
+                    None => {
+                        env.unnarrow(expr);
+                    }
+                }
+            }
+            continue;
+        }
+
         // 1) Check that all case variant names exist in the enum.
         for case_name in case_variants {
             if declared.iter().any(|v| v.name == case_name.as_ref()) {
@@ -245,11 +318,11 @@ fn validate_match_arms_with_narrowing(
 
         if narrowed_variants.is_empty() {
             // All case names were invalid — still walk for other errors.
-            walk_segments(arm_body, env, errors);
+            walk_segments(arm_body, env, errors, visited);
         } else {
             let narrowed_type = VarType::Enum(narrowed_variants);
             let prev = env.narrow(expr, narrowed_type);
-            walk_segments(arm_body, env, errors);
+            walk_segments(arm_body, env, errors, visited);
             match prev {
                 Some(t) => {
                     env.narrow(expr, t);
@@ -263,7 +336,8 @@ fn validate_match_arms_with_narrowing(
 
     // 3) Exhaustiveness: all declared variants must be covered.
     //    Single-arm inline guards ({% match x case Y %}) are exempt.
-    if arms.len() > 1 {
+    //    A {% default %} arm satisfies exhaustiveness.
+    if arms.len() > 1 && !has_default {
         let missing: Vec<&str> = declared
             .iter()
             .filter(|v| !covered_variants.contains(&v.name.as_str()))
@@ -285,11 +359,11 @@ fn validate_match_arms_with_narrowing(
 /// Validate a dotted path like `outcome.evidence` against the type env.
 fn validate_path(path: &str, env: &TypeEnv<'_>, errors: &mut Vec<String>) {
     // Skip function calls like `idx(item)`, `len(list)`, `str(x)`.
-    if path.contains('(') {
+    if path.contains(crate::consts::PAREN_OPEN) {
         return;
     }
     // Skip string literals.
-    if path.starts_with('\'') || path.starts_with('"') {
+    if crate::consts::strip_string_literal(path).is_some() {
         return;
     }
     // Skip numeric literals.
@@ -297,12 +371,16 @@ fn validate_path(path: &str, env: &TypeEnv<'_>, errors: &mut Vec<String>) {
         return;
     }
 
-    let mut parts = path.split('.');
+    let mut parts = path.split(crate::consts::PATH_SEP);
     let Some(root) = parts.next() else {
         return;
     };
 
     let Some(root_type) = env.lookup(root) else {
+        // Import stems and const names are opaque — valid but not typed.
+        if env.is_opaque(root) {
+            return;
+        }
         errors.push(format!("'{root}': undeclared variable"));
         return;
     };
@@ -312,7 +390,7 @@ fn validate_path(path: &str, env: &TypeEnv<'_>, errors: &mut Vec<String>) {
     let mut traversed = root.to_string();
 
     for field in parts {
-        traversed.push('.');
+        traversed.push(crate::consts::PATH_SEP);
         traversed.push_str(field);
 
         // Check narrowed overrides first (e.g. "bug.vt" narrowed by match).
@@ -387,10 +465,12 @@ fn resolve_field<'a>(ty: &'a VarType, field: &str) -> FieldResult<'a> {
             }
         }
 
-        // Scalars have no fields — always an error.
-        VarType::Str | VarType::Int | VarType::Float | VarType::Bool => FieldResult::NotAvailable {
-            reason: format!("cannot access field '{field}' on {ty}"),
-        },
+        // Scalars and templates have no fields — always an error.
+        VarType::Str | VarType::Int | VarType::Float | VarType::Bool | VarType::Tmpl(_) => {
+            FieldResult::NotAvailable {
+                reason: format!("cannot access field '{field}' on {ty}"),
+            }
+        }
     }
 }
 
@@ -459,6 +539,25 @@ fn validate_condition(condition: &Condition, env: &TypeEnv<'_>, errors: &mut Vec
     match condition {
         Condition::Truthy(path) => validate_path(path, env, errors),
         Condition::Comparison { left, right, .. } => {
+            // Check if either side is an enum — comparisons on enums are
+            // not supported. Enums require {% match %} because == can't
+            // destructure struct variants.
+            let left_is_enum =
+                resolve_path_type(left, env).is_some_and(|ty| matches!(ty, VarType::Enum(_)));
+            let right_is_enum =
+                resolve_path_type(right, env).is_some_and(|ty| matches!(ty, VarType::Enum(_)));
+
+            if left_is_enum || right_is_enum {
+                let enum_side = if left_is_enum { left } else { right };
+                errors.push(format!(
+                    "cannot compare enum '{enum_side}' with '==' — \
+                     use {{% match {enum_side} %}} instead"
+                ));
+                return; // Skip path validation — the other side may be a
+                // bare variant name that would produce a confusing
+                // "undeclared variable" error.
+            }
+
             validate_path(left, env, errors);
             validate_path(right, env, errors);
         }
@@ -469,12 +568,178 @@ fn validate_condition(condition: &Condition, env: &TypeEnv<'_>, errors: &mut Vec
 // Include validation
 // ---------------------------------------------------------------------------
 
-fn validate_include(inc: &CompiledInclude, env: &TypeEnv<'_>, errors: &mut Vec<String>) {
+/// Validate an include directive with full cross-boundary type checking:
+///
+/// 1. Check that `with` / `for` expressions are valid in the parent scope.
+/// 2. If the included template's compiled body is available (`inline_compiled`):
+///    a. **Contract**: all declared params must be provided.
+///    b. **Type matching**: `with` value types must match the included template's
+///    declared types.
+///    c. **Body walk**: recursively validate the included body — with cycle
+///    detection to handle recursive templates.
+fn validate_include(
+    inc: &CompiledInclude,
+    env: &TypeEnv<'_>,
+    errors: &mut Vec<String>,
+    visited: &mut HashSet<String>,
+) {
+    // 1. Check that `with` expressions are valid in parent scope.
     for (_, val_expr) in &inc.with_vars {
         validate_path(val_expr, env, errors);
     }
     if let Some((_, list_expr)) = &inc.for_each {
         validate_path(list_expr, env, errors);
+    }
+
+    // 2. Cross-boundary checks when the included template is available.
+    let Some(compiled) = &inc.inline_compiled else {
+        return;
+    };
+
+    // 2a. Contract: all declared params must be provided.
+    validate_include_contract(inc, &compiled.declarations, errors);
+
+    // 2b. Type matching: check that provided types match expected types.
+    validate_include_type_match(inc, &compiled.declarations, env, errors);
+
+    // 2c. Walk the included body — but only if not a cycle.
+    // Use Arc pointer as identity: same file/content = same Arc = deduped,
+    // different files with the same name = different Arcs = both walked.
+    let identity_key = format!(
+        "{}@{:p}",
+        inc.path,
+        std::sync::Arc::as_ptr(&compiled.segments)
+    );
+    if visited.insert(identity_key.clone()) {
+        // First visit: build child TypeEnv from included template's declarations.
+        let mut child_env = TypeEnv::from_declarations(&compiled.declarations);
+        // Propagate opaque roots — included templates may also reference
+        // imported constants (e.g. `artist.NOTEBOOK_FILENAME`) from their own imports.
+        child_env.opaque_roots.clone_from(&env.opaque_roots);
+        walk_segments(&compiled.segments, &mut child_env, errors, visited);
+        visited.remove(&identity_key);
+    }
+    // Cycle: boundary checks (2a, 2b) were done — body already validated on
+    // first encounter, so we skip recursing to avoid infinite loops.
+}
+
+/// Find which declared parameters are NOT provided by the include directive.
+///
+/// Shared between compile-time (`type_check.rs`) and runtime (`include.rs`)
+/// contract checking. Returns references to missing declarations.
+pub(crate) fn find_missing_include_params<I>(
+    declarations: &[VarDecl],
+    provided_keys: I,
+) -> Vec<&VarDecl>
+where
+    I: Iterator<Item: AsRef<str>>,
+{
+    // For typical 1–5 params, linear scan beats HashSet overhead.
+    let provided: Vec<String> = provided_keys.map(|k| k.as_ref().to_string()).collect();
+    declarations
+        .iter()
+        .filter(|d| d.default_value.is_none() && !provided.iter().any(|p| p == &d.name))
+        .collect()
+}
+
+/// Check that all declared parameters in the included template are provided
+/// via `with` or `for`. Pushes formatted errors into the error list.
+fn validate_include_contract(
+    inc: &CompiledInclude,
+    included_declarations: &[VarDecl],
+    errors: &mut Vec<String>,
+) {
+    let provided = inc
+        .with_vars
+        .iter()
+        .map(|(k, _)| k.as_ref().to_string())
+        .chain(inc.for_each.iter().map(|(b, _)| b.as_ref().to_string()));
+
+    let missing = find_missing_include_params(included_declarations, provided);
+    if !missing.is_empty() {
+        // Single-pass: collect descriptions and fix hints together.
+        let (descs, hints): (Vec<_>, Vec<_>) = missing
+            .iter()
+            .map(|d| {
+                (
+                    format!("{}: {}", d.name, d.var_type),
+                    format!("{}={}", d.name, d.name),
+                )
+            })
+            .unzip();
+        errors.push(format!(
+            "include '{}': missing required param(s): {}. \
+             Use 'with {}' to pass them",
+            inc.path,
+            descs.join(", "),
+            hints.join(", "),
+        ));
+    }
+}
+
+/// Type-check that provided `with` variables have compatible types with
+/// the included template's declarations.
+fn validate_include_type_match(
+    inc: &CompiledInclude,
+    included_declarations: &[VarDecl],
+    parent_env: &TypeEnv<'_>,
+    errors: &mut Vec<String>,
+) {
+    for (key, val_expr) in &inc.with_vars {
+        let Some(included_decl) = included_declarations
+            .iter()
+            .find(|d| d.name == key.as_ref())
+        else {
+            continue; // Extra vars are OK (not declared in included template).
+        };
+
+        // Skip literals — they don't have a type in the parent env.
+        let val = val_expr.trim();
+        if crate::consts::strip_string_literal(val).is_some()
+            || val.starts_with(crate::consts::ANGLE_OPEN)
+            || val.bytes().next().is_some_and(|b| b.is_ascii_digit())
+        {
+            continue;
+        }
+
+        // Resolve the type of the expression in the parent env.
+        if let Some(parent_type) = resolve_path_type(val, parent_env) {
+            if !types_compatible(parent_type, &included_decl.var_type) {
+                errors.push(format!(
+                    "include '{}': type mismatch for '{}': \
+                     parent provides '{}' but included template expects '{}'",
+                    inc.path, key, parent_type, included_decl.var_type,
+                ));
+            }
+        }
+        // If unresolvable, validate_path already reported the error.
+    }
+}
+
+/// Check if two types are compatible for include parameter passing.
+///
+/// Types are compatible if they are structurally equal. Untyped containers
+/// (empty `list<>` or `dict<>`) are compatible with any same-kind type.
+fn types_compatible(provided: &VarType, expected: &VarType) -> bool {
+    match (provided, expected) {
+        // Exact scalar match.
+        (VarType::Str, VarType::Str)
+        | (VarType::Int, VarType::Int)
+        | (VarType::Float, VarType::Float)
+        | (VarType::Bool, VarType::Bool) => true,
+
+        // Untyped containers are compatible with any same-kind type.
+        (VarType::List(a), VarType::List(b)) | (VarType::Dict(a), VarType::Dict(b)) => {
+            a.is_empty() || b.is_empty() || a == b
+        }
+
+        // Enum types: compare variant names and field types.
+        (VarType::Enum(a), VarType::Enum(b)) => a == b,
+
+        // Template types: compare signatures.
+        (VarType::Tmpl(a), VarType::Tmpl(b)) => a == b,
+
+        _ => false,
     }
 }
 
@@ -486,7 +751,7 @@ fn validate_include(inc: &CompiledInclude, env: &TypeEnv<'_>, errors: &mut Vec<S
 ///
 /// `"outcome.evidence"` → `"outcome"`, `"x"` → `"x"`.
 fn extract_root(path: &str) -> &str {
-    path.split('.').next().unwrap_or(path)
+    path.split(crate::consts::PATH_SEP).next().unwrap_or(path)
 }
 
 /// Resolve a dotted path to its declared type.
@@ -497,7 +762,7 @@ fn extract_root(path: &str) -> &str {
 /// Also checks narrowed overrides at each level, so `bug.vt` can be
 /// narrowed inside a match arm and `bug.vt.label` resolves correctly.
 fn resolve_path_type<'a>(path: &str, env: &'a TypeEnv<'_>) -> Option<&'a VarType> {
-    let mut parts = path.split('.');
+    let mut parts = path.split(crate::consts::PATH_SEP);
     let root = parts.next()?;
     let mut current = env.lookup(root)?;
     let mut traversed = root.to_string();
@@ -505,7 +770,7 @@ fn resolve_path_type<'a>(path: &str, env: &'a TypeEnv<'_>) -> Option<&'a VarType
     for field in parts {
         // Before resolving the field, check if the full path so far + field
         // has a narrowed override (e.g. "bug.vt" narrowed inside a match).
-        traversed.push('.');
+        traversed.push(crate::consts::PATH_SEP);
         traversed.push_str(field);
         if let Some(narrowed) = env.narrowed.get(&traversed) {
             current = narrowed;
@@ -521,610 +786,6 @@ fn resolve_path_type<'a>(path: &str, env: &'a TypeEnv<'_>) -> Option<&'a VarType
     Some(current)
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::types::{VarDecl, VarType, VariantDecl};
-
-    /// Helper: build declarations from a shorthand.
-    fn enum_decl(name: &str, variants: Vec<VariantDecl>) -> VarDecl {
-        VarDecl {
-            name: name.to_string(),
-            var_type: VarType::Enum(variants),
-            default_value: None,
-        }
-    }
-
-    fn variant(name: &str, fields: Vec<(&str, VarType)>) -> VariantDecl {
-        VariantDecl {
-            name: name.to_string(),
-            fields: fields
-                .into_iter()
-                .map(|(n, t)| VarDecl {
-                    name: n.to_string(),
-                    var_type: t,
-                    default_value: None,
-                })
-                .collect(),
-        }
-    }
-
-    fn unit_variant(name: &str) -> VariantDecl {
-        variant(name, vec![])
-    }
-
-    fn compile_and_check(template: &str, decls: &[VarDecl]) -> Vec<String> {
-        let (_fm, body) = crate::parse_frontmatter(template).expect("parse");
-        let (segments, _) = crate::compiled::compile(body).expect("compile");
-        validate_field_accesses(&segments, decls)
-    }
-
-    // -- Variant name validation -----------------------------------------
-
-    #[test]
-    fn match_valid_variant_names() {
-        let decls = vec![enum_decl(
-            "outcome",
-            vec![unit_variant("Confirmed"), unit_variant("NotConfirmed")],
-        )];
-        let tmpl = "---\nname: t\nparams:\n  - outcome = enum<Confirmed, NotConfirmed>\n---\n\
-                     > {% match outcome %}{% case Confirmed %}yes{% case NotConfirmed %}no{% /match %}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
-    }
-
-    #[test]
-    fn match_unknown_variant_name() {
-        let decls = vec![enum_decl(
-            "outcome",
-            vec![unit_variant("Confirmed"), unit_variant("NotConfirmed")],
-        )];
-        let tmpl = "---\nname: t\nparams:\n  - outcome = enum<Confirmed, NotConfirmed>\n---\n\
-                     > {% match outcome %}{% case Confrimed %}yes{% /match %}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert_eq!(errors.len(), 1, "expected 1 error, got: {errors:?}");
-        assert!(
-            errors[0].contains("unknown variant 'Confrimed'"),
-            "got: {}",
-            errors[0]
-        );
-        assert!(
-            errors[0].contains("Confirmed, NotConfirmed"),
-            "should list valid variants: {}",
-            errors[0]
-        );
-    }
-
-    // -- Field access outside match (must be on ALL variants) ------------
-
-    #[test]
-    fn field_on_all_variants_ok() {
-        let decls = vec![enum_decl(
-            "outcome",
-            vec![
-                variant("Confirmed", vec![("reason", VarType::Str)]),
-                variant("Rejected", vec![("reason", VarType::Str)]),
-            ],
-        )];
-        let tmpl = "---\nname: t\nparams:\n  - outcome = enum<Confirmed(reason = str), Rejected(reason = str)>\n---\n\
-                     {{ outcome.reason }}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert!(errors.is_empty(), "unexpected: {errors:?}");
-    }
-
-    #[test]
-    fn field_not_on_all_variants_error() {
-        let decls = vec![enum_decl(
-            "outcome",
-            vec![
-                variant("Confirmed", vec![("evidence", VarType::Str)]),
-                unit_variant("NotConfirmed"),
-            ],
-        )];
-        let tmpl = "---\nname: t\nparams:\n  - outcome = enum<Confirmed(evidence = str), NotConfirmed>\n---\n\
-                     {{ outcome.evidence }}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert_eq!(errors.len(), 1, "expected 1 error, got: {errors:?}");
-        assert!(
-            errors[0].contains("not available on variant") && errors[0].contains("NotConfirmed"),
-            "got: {}",
-            errors[0]
-        );
-    }
-
-    #[test]
-    fn tag_field_is_error() {
-        let decls = vec![enum_decl(
-            "outcome",
-            vec![
-                variant("Confirmed", vec![("evidence", VarType::Str)]),
-                unit_variant("NotConfirmed"),
-            ],
-        )];
-        let tmpl = "---\nname: t\nparams:\n  - outcome = enum<Confirmed(evidence = str), NotConfirmed>\n---\n\
-                     {{ outcome.tag }}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert_eq!(errors.len(), 1, ".tag should be an error: {errors:?}");
-        assert!(
-            errors[0].contains("tag") && errors[0].contains("does not exist"),
-            "got: {}",
-            errors[0]
-        );
-    }
-
-    // -- Field access inside match arm (narrowed) ------------------------
-
-    #[test]
-    fn field_in_matching_arm_ok() {
-        let decls = vec![enum_decl(
-            "outcome",
-            vec![
-                variant("Confirmed", vec![("evidence", VarType::Str)]),
-                unit_variant("NotConfirmed"),
-            ],
-        )];
-        let tmpl = "---\nname: t\nparams:\n  - outcome = enum<Confirmed(evidence = str), NotConfirmed>\n---\n\
-                     > {% match outcome %}{% case Confirmed %}{{ outcome.evidence }}{% case NotConfirmed %}none{% /match %}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert!(errors.is_empty(), "narrowed access should work: {errors:?}");
-    }
-
-    #[test]
-    fn field_in_wrong_arm_error() {
-        let decls = vec![enum_decl(
-            "outcome",
-            vec![
-                variant("Confirmed", vec![("evidence", VarType::Str)]),
-                unit_variant("NotConfirmed"),
-            ],
-        )];
-        let tmpl = "---\nname: t\nparams:\n  - outcome = enum<Confirmed(evidence = str), NotConfirmed>\n---\n\
-                     > {% match outcome %}{% case NotConfirmed %}{{ outcome.evidence }}{% /match %}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert_eq!(errors.len(), 1, "expected error: {errors:?}");
-        assert!(
-            errors[0].contains("evidence") && errors[0].contains("NotConfirmed"),
-            "got: {}",
-            errors[0]
-        );
-    }
-
-    // -- Multi-variant case: intersection of fields ----------------------
-
-    #[test]
-    fn multi_variant_shared_field_ok() {
-        let decls = vec![enum_decl(
-            "outcome",
-            vec![
-                variant(
-                    "Confirmed",
-                    vec![("reason", VarType::Str), ("evidence", VarType::Str)],
-                ),
-                variant("ConfirmedWithCaveats", vec![("reason", VarType::Str)]),
-                unit_variant("Rejected"),
-            ],
-        )];
-        let tmpl = "---\nname: t\nparams:\n  - outcome = enum<Confirmed(reason = str, evidence = str), ConfirmedWithCaveats(reason = str), Rejected>\n---\n\
-                     > {% match outcome %}{% case Confirmed | ConfirmedWithCaveats %}{{ outcome.reason }}{% /match %}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert!(
-            errors.is_empty(),
-            "shared field 'reason' should work: {errors:?}"
-        );
-    }
-
-    #[test]
-    fn multi_variant_non_shared_field_error() {
-        let decls = vec![enum_decl(
-            "outcome",
-            vec![
-                variant(
-                    "Confirmed",
-                    vec![("reason", VarType::Str), ("evidence", VarType::Str)],
-                ),
-                variant("ConfirmedWithCaveats", vec![("reason", VarType::Str)]),
-                unit_variant("Rejected"),
-            ],
-        )];
-        let tmpl = "---\nname: t\nparams:\n  - outcome = enum<Confirmed(reason = str, evidence = str), ConfirmedWithCaveats(reason = str), Rejected>\n---\n\
-                     > {% match outcome %}{% case Confirmed | ConfirmedWithCaveats %}{{ outcome.evidence }}{% /match %}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert_eq!(errors.len(), 1, "expected error: {errors:?}");
-        assert!(
-            errors[0].contains("evidence") && errors[0].contains("ConfirmedWithCaveats"),
-            "got: {}",
-            errors[0]
-        );
-    }
-
-    // -- Inline match case -----------------------------------------------
-
-    #[test]
-    fn inline_match_case_field_ok() {
-        let decls = vec![enum_decl(
-            "vt",
-            vec![
-                variant("Known", vec![("label", VarType::Str)]),
-                unit_variant("Unknown"),
-            ],
-        )];
-        let tmpl = "---\nname: t\nparams:\n  - vt = enum<Known(label = str), Unknown>\n---\n\
-                     > {% match vt case Known %}{{ vt.label }}{% /match %}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert!(errors.is_empty(), "inline narrowing: {errors:?}");
-    }
-
-    // -- Nested match ----------------------------------------------------
-
-    #[test]
-    fn nested_match_narrows_independently() {
-        let decls = vec![
-            enum_decl(
-                "a",
-                vec![
-                    variant("X", vec![("x_val", VarType::Str)]),
-                    unit_variant("Y"),
-                ],
-            ),
-            enum_decl(
-                "b",
-                vec![
-                    variant("P", vec![("p_val", VarType::Str)]),
-                    unit_variant("Q"),
-                ],
-            ),
-        ];
-        let tmpl = "---\nname: t\nparams:\n  - a = enum<X(x_val = str), Y>\n  - b = enum<P(p_val = str), Q>\n---\n\
-                     > {% match a %}{% case X %}\
-                     > {% match b %}{% case P %}{{ a.x_val }} {{ b.p_val }}{% /match %}\
-                     {% /match %}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert!(errors.is_empty(), "nested narrowing: {errors:?}");
-    }
-
-    // -- Match on non-enum rejects at compile time ----------------------
-
-    #[test]
-    fn match_on_str_is_compile_error() {
-        let decls = vec![VarDecl {
-            name: "status".to_string(),
-            var_type: VarType::Str,
-            default_value: None,
-        }];
-        let tmpl = "---\nname: t\nparams:\n  - status = str\n---\n\
-                     > {% match status %}{% case Active %}active{% /match %}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert_eq!(errors.len(), 1, "expected error: {errors:?}");
-        assert!(
-            errors[0].contains("expected enum") && errors[0].contains("str"),
-            "got: {}",
-            errors[0]
-        );
-    }
-
-    #[test]
-    fn match_on_int_is_compile_error() {
-        let decls = vec![VarDecl {
-            name: "count".to_string(),
-            var_type: VarType::Int,
-            default_value: None,
-        }];
-        let tmpl = "---\nname: t\nparams:\n  - count = int\n---\n\
-                     > {% match count %}{% case One %}one{% /match %}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert_eq!(errors.len(), 1, "expected error: {errors:?}");
-        assert!(
-            errors[0].contains("expected enum") && errors[0].contains("int"),
-            "got: {}",
-            errors[0]
-        );
-    }
-
-    #[test]
-    fn match_on_bool_is_compile_error() {
-        let decls = vec![VarDecl {
-            name: "flag".to_string(),
-            var_type: VarType::Bool,
-            default_value: None,
-        }];
-        let tmpl = "---\nname: t\nparams:\n  - flag = bool\n---\n\
-                     > {% match flag %}{% case True %}yes{% /match %}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert_eq!(errors.len(), 1, "expected error: {errors:?}");
-        assert!(
-            errors[0].contains("expected enum") && errors[0].contains("bool"),
-            "got: {}",
-            errors[0]
-        );
-    }
-
-    // -- Condition paths inside if inside match --------------------------
-
-    #[test]
-    fn condition_inside_match_arm_validated() {
-        let decls = vec![enum_decl(
-            "outcome",
-            vec![
-                variant("Confirmed", vec![("evidence", VarType::Str)]),
-                unit_variant("NotConfirmed"),
-            ],
-        )];
-        let tmpl = "---\nname: t\nparams:\n  - outcome = enum<Confirmed(evidence = str), NotConfirmed>\n---\n\
-                     > {% match outcome %}{% case Confirmed %}{% if outcome.evidence %}yes{% /if %}{% /match %}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert!(errors.is_empty(), "condition in arm: {errors:?}");
-    }
-
-    // -- Field doesn't exist on any variant ------------------------------
-
-    #[test]
-    fn field_nonexistent_on_all_variants() {
-        let decls = vec![enum_decl(
-            "outcome",
-            vec![
-                variant("A", vec![("x", VarType::Str)]),
-                variant("B", vec![("y", VarType::Str)]),
-            ],
-        )];
-        let tmpl = "---\nname: t\nparams:\n  - outcome = enum<A(x = str), B(y = str)>\n---\n\
-                     > {% match outcome %}{% case A %}{{ outcome.z }}{% /match %}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert_eq!(errors.len(), 1);
-        assert!(
-            errors[0].contains("'z'") && errors[0].contains("does not exist"),
-            "got: {}",
-            errors[0]
-        );
-    }
-
-    // -- Loop binding type tracking --------------------------------------
-
-    #[test]
-    fn for_loop_binding_typed_from_list() {
-        let decls = vec![VarDecl {
-            name: "bugs".to_string(),
-            var_type: VarType::List(vec![
-                VarDecl {
-                    name: "title".to_string(),
-                    var_type: VarType::Str,
-                    default_value: None,
-                },
-                VarDecl {
-                    name: "vt".to_string(),
-                    var_type: VarType::Enum(vec![
-                        variant("Known", vec![("label", VarType::Str)]),
-                        unit_variant("Unknown"),
-                    ]),
-                    default_value: None,
-                },
-            ]),
-            default_value: None,
-        }];
-        let tmpl = "---\nname: t\nparams:\n  - bugs = list<title = str, vt = enum<Known(label = str), Unknown>>\n---\n\
-                     > {% for bug in bugs %}{% match bug.vt case Known %}{{ bug.vt.label }}{% /match %}{% /for %}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert!(
-            errors.is_empty(),
-            "loop binding should be typed: {errors:?}"
-        );
-    }
-
-    #[test]
-    fn for_loop_binding_field_access_validated() {
-        let decls = vec![VarDecl {
-            name: "bugs".to_string(),
-            var_type: VarType::List(vec![
-                VarDecl {
-                    name: "title".to_string(),
-                    var_type: VarType::Str,
-                    default_value: None,
-                },
-                VarDecl {
-                    name: "vt".to_string(),
-                    var_type: VarType::Enum(vec![
-                        variant("Known", vec![("label", VarType::Str)]),
-                        unit_variant("Unknown"),
-                    ]),
-                    default_value: None,
-                },
-            ]),
-            default_value: None,
-        }];
-        // Access .label outside match — should fail since Unknown has no label.
-        let tmpl = "---\nname: t\nparams:\n  - bugs = list<title = str, vt = enum<Known(label = str), Unknown>>\n---\n\
-                     > {% for bug in bugs %}{{ bug.vt.label }}{% /for %}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert_eq!(errors.len(), 1, "expected error: {errors:?}");
-        assert!(
-            errors[0].contains("label") && errors[0].contains("Unknown"),
-            "got: {}",
-            errors[0]
-        );
-    }
-
-    #[test]
-    fn undeclared_variable_in_match_is_error() {
-        let decls = vec![];
-        let tmpl = "---\nname: t\nparams:\n---\n\
-                     > {% match ghost %}{% case X %}x{% /match %}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert!(
-            errors.iter().any(|e| e.contains("undeclared")),
-            "expected undeclared error: {errors:?}"
-        );
-    }
-
-    #[test]
-    fn undeclared_variable_in_expr_is_error() {
-        let decls = vec![];
-        let tmpl = "---\nname: t\nparams:\n---\n{{ ghost.field }}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert!(
-            errors.iter().any(|e| e.contains("undeclared")),
-            "expected undeclared error: {errors:?}"
-        );
-    }
-
-    // -- Exhaustiveness --------------------------------------------------
-
-    #[test]
-    fn multi_arm_match_exhaustive_ok() {
-        let decls = vec![enum_decl(
-            "outcome",
-            vec![
-                variant("Confirmed", vec![("evidence", VarType::Str)]),
-                unit_variant("NotConfirmed"),
-            ],
-        )];
-        let tmpl = "---\nname: t\nparams:\n  - outcome = enum<Confirmed(evidence = str), NotConfirmed>\n---\n\
-                     > {% match outcome %}{% case Confirmed %}yes{% case NotConfirmed %}no{% /match %}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert!(errors.is_empty(), "exhaustive match: {errors:?}");
-    }
-
-    #[test]
-    fn multi_arm_match_non_exhaustive_error() {
-        let decls = vec![enum_decl(
-            "outcome",
-            vec![
-                variant("A", vec![("x", VarType::Str)]),
-                unit_variant("B"),
-                unit_variant("C"),
-            ],
-        )];
-        let tmpl = "---\nname: t\nparams:\n  - outcome = enum<A(x = str), B, C>\n---\n\
-                     > {% match outcome %}{% case A %}a{% case B %}b{% /match %}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert_eq!(errors.len(), 1, "expected exhaustiveness error: {errors:?}");
-        assert!(
-            errors[0].contains("non-exhaustive") && errors[0].contains('C'),
-            "got: {}",
-            errors[0]
-        );
-    }
-
-    #[test]
-    fn single_arm_inline_not_exhaustive_ok() {
-        let decls = vec![enum_decl(
-            "outcome",
-            vec![unit_variant("A"), unit_variant("B")],
-        )];
-        // Single inline arm — intentionally non-exhaustive guard.
-        let tmpl = "---\nname: t\nparams:\n  - outcome = enum<A, B>\n---\n\
-                     > {% match outcome case A %}a{% /match %}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert!(errors.is_empty(), "inline guard: {errors:?}");
-    }
-
-    #[test]
-    fn match_with_no_arms_is_error() {
-        // Construct directly since the parser might not produce this.
-        let decls = vec![enum_decl("x", vec![unit_variant("A"), unit_variant("B")])];
-        let segments = vec![Segment::Match {
-            expr: "x".into(),
-            arms: vec![],
-        }];
-        let errors = validate_field_accesses(&segments, &decls);
-        assert_eq!(errors.len(), 1, "expected error: {errors:?}");
-        assert!(errors[0].contains("no case arms"), "got: {}", errors[0]);
-    }
-
-    // -- For-loop on non-list --------------------------------------------
-
-    #[test]
-    fn for_loop_on_str_is_error() {
-        let decls = vec![VarDecl {
-            name: "name".to_string(),
-            var_type: VarType::Str,
-            default_value: None,
-        }];
-        let tmpl = "---\nname: t\nparams:\n  - name = str\n---\n\
-                     > {% for c in name %}{{ c }}{% /for %}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.contains("expected list") && e.contains("str")),
-            "expected for-loop type error: {errors:?}"
-        );
-    }
-
-    // -- Scalar field access ---------------------------------------------
-
-    #[test]
-    fn field_on_str_is_error() {
-        let decls = vec![VarDecl {
-            name: "name".to_string(),
-            var_type: VarType::Str,
-            default_value: None,
-        }];
-        let tmpl = "---\nname: t\nparams:\n  - name = str\n---\n{{ name.length }}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert_eq!(errors.len(), 1, "expected error: {errors:?}");
-        assert!(
-            errors[0].contains("cannot access field") && errors[0].contains("str"),
-            "got: {}",
-            errors[0]
-        );
-    }
-
-    #[test]
-    fn field_on_int_is_error() {
-        let decls = vec![VarDecl {
-            name: "count".to_string(),
-            var_type: VarType::Int,
-            default_value: None,
-        }];
-        let tmpl = "---\nname: t\nparams:\n  - count = int\n---\n{{ count.abs }}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert_eq!(errors.len(), 1, "expected error: {errors:?}");
-        assert!(
-            errors[0].contains("cannot access field") && errors[0].contains("int"),
-            "got: {}",
-            errors[0]
-        );
-    }
-
-    // -- Dict field validation -------------------------------------------
-
-    #[test]
-    fn dict_unknown_field_is_error() {
-        let decls = vec![VarDecl {
-            name: "config".to_string(),
-            var_type: VarType::Dict(vec![VarDecl {
-                name: "host".to_string(),
-                var_type: VarType::Str,
-                default_value: None,
-            }]),
-            default_value: None,
-        }];
-        let tmpl = "---\nname: t\nparams:\n  - config = dict<host = str>\n---\n{{ config.port }}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert_eq!(errors.len(), 1, "expected error: {errors:?}");
-        assert!(
-            errors[0].contains("port") && errors[0].contains("does not exist"),
-            "got: {}",
-            errors[0]
-        );
-    }
-
-    #[test]
-    fn dict_known_field_ok() {
-        let decls = vec![VarDecl {
-            name: "config".to_string(),
-            var_type: VarType::Dict(vec![VarDecl {
-                name: "host".to_string(),
-                var_type: VarType::Str,
-                default_value: None,
-            }]),
-            default_value: None,
-        }];
-        let tmpl = "---\nname: t\nparams:\n  - config = dict<host = str>\n---\n{{ config.host }}";
-        let errors = compile_and_check(tmpl, &decls);
-        assert!(errors.is_empty(), "declared field: {errors:?}");
-    }
-}
+#[path = "type_check_tests.rs"]
+mod type_check_tests;

@@ -1,5 +1,8 @@
 /target
 Cargo.lock
+ORIGINAL_REQUEST.md
+PROJECT.md
+.agents
 
 # Python
 __pycache__

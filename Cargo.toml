@@ -6,9 +6,13 @@ members = [
 ]
 resolver = "3"
 
+[workspace.dependencies]
+typed-builder = "0.20"
+
 [workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }
 all = { level = "deny", priority = -1 }
+implicit_hasher = "allow"
 
 [workspace.lints.rust]
 warnings = "deny"

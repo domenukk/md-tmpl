@@ -117,7 +117,7 @@ fn render_value_into(val: &Value, output: &mut String) -> Result<(), TemplateErr
         Value::Bool(b) => write!(output, "{b}").unwrap(),
         Value::Int(i) => write!(output, "{i}").unwrap(),
         Value::Float(f) => write!(output, "{f}").unwrap(),
-        Value::List(_) | Value::Dict(_) => {
+        Value::List(_) | Value::Dict(_) | Value::Tmpl(_) => {
             return Err(TemplateError::syntax(format!(
                 "cannot display value of type '{}'",
                 val.type_name()
@@ -195,7 +195,10 @@ fn render_for_loop(
     base_dir: Option<&Path>,
     output: &mut String,
 ) -> Result<(), TemplateError> {
-    let list_value = parser::eval_expr(list_expr.trim(), scope)?;
+    // For-loop list expressions are always simple dotted paths (no filters,
+    // no function calls), so skip the full eval_expr machinery and resolve
+    // the path directly.
+    let list_value = scope.resolve_path(list_expr)?.clone();
     let Value::List(items) = list_value else {
         return Err(TemplateError::syntax(format!(
             "'{list_expr}' is not a list"
@@ -280,7 +283,10 @@ fn render_match(
     };
 
     for (variants, body) in arms {
-        if variants.iter().any(|v| active_variant == v.as_ref()) {
+        if variants
+            .iter()
+            .any(|v| v.as_ref() == "_" || active_variant == v.as_ref())
+        {
             return render_segments_into(body, scope, base_dir, output);
         }
     }

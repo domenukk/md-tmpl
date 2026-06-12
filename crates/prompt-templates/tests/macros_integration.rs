@@ -1,7 +1,7 @@
 //! Integration tests for the prompt-templates-macros crate.
 //!
 //! Exercises `include_template!`, `validate_template!`, and
-//! `template_params_struct!` — the compile-time proc macros that were
+//! `include_types!` — the compile-time proc macros that were
 //! previously only shown as documentation examples.
 
 // ── include_template! ──────────────────────────────────────────────
@@ -74,18 +74,18 @@ fn validate_template_compiles_valid_template() {
     prompt_templates_macros::validate_template!("prompts/greeting.tmpl.md");
 }
 
-// ── template_params_struct! ────────────────────────────────────────
+// ── include_types! ────────────────────────────────────────────────────
 
-prompt_templates_macros::template_params_struct!("prompts/greeting.tmpl.md" => GreetingParams);
+prompt_templates_macros::include_types!("prompts/greeting.tmpl.md");
 
 #[test]
 fn params_struct_renders_template() {
     let tmpl = prompt_templates_macros::include_template!("prompts/greeting.tmpl.md");
 
-    let params = GreetingParams {
+    let params = greeting::Params {
         name: "Alice".into(),
         count: 42,
-        items: vec![GreetingParamsItemsItem {
+        items: vec![greeting::ParamsItemsItem {
             label: "hello".into(),
         }],
     };
@@ -99,7 +99,7 @@ fn params_struct_renders_template() {
 #[test]
 fn params_struct_validate_template_succeeds_for_matching() {
     let tmpl = prompt_templates_macros::include_template!("prompts/greeting.tmpl.md");
-    GreetingParams::validate_template(tmpl).unwrap();
+    greeting::Params::validate_template(tmpl).unwrap();
 }
 
 #[test]
@@ -110,7 +110,7 @@ fn params_struct_validate_template_fails_for_mismatched() {
     )
     .unwrap();
 
-    let result = GreetingParams::validate_template(&tmpl);
+    let result = greeting::Params::validate_template(&tmpl);
     assert!(result.is_err(), "should fail with mismatched params");
 }
 
@@ -122,9 +122,9 @@ fn params_struct_hot_reload_with_disk_template() {
         prompt_templates::Template::from_file(std::path::Path::new("prompts/greeting.tmpl.md"))
             .unwrap();
 
-    GreetingParams::validate_template(&tmpl).unwrap();
+    greeting::Params::validate_template(&tmpl).unwrap();
 
-    let params = GreetingParams {
+    let params = greeting::Params {
         name: "Bob".into(),
         count: 1,
         items: vec![],
@@ -137,12 +137,12 @@ fn params_struct_hot_reload_with_disk_template() {
 
 #[test]
 fn params_struct_to_context_produces_valid_context() {
-    let params = GreetingParams {
+    let params = greeting::Params {
         name: "Test".into(),
         count: 99,
         items: vec![
-            GreetingParamsItemsItem { label: "a".into() },
-            GreetingParamsItemsItem { label: "b".into() },
+            greeting::ParamsItemsItem { label: "a".into() },
+            greeting::ParamsItemsItem { label: "b".into() },
         ],
     };
 
@@ -153,4 +153,111 @@ fn params_struct_to_context_produces_valid_context() {
     assert!(output.contains("99"), "got: {output}");
     assert!(output.contains('a'), "got: {output}");
     assert!(output.contains('b'), "got: {output}");
+}
+
+// ── include_types! with types: block ─────────────────────────────────
+
+prompt_templates_macros::include_types!("prompts/type_library.tmpl.md");
+
+#[test]
+fn type_alias_enum_variants_exist() {
+    // Unit-variant enum: all variants should exist and be constructable.
+    let _ = type_library::Priority::Low;
+    let _ = type_library::Priority::Medium;
+    let _ = type_library::Priority::High;
+    let _ = type_library::Priority::Critical;
+
+    let _ = type_library::Status::Open;
+    let _ = type_library::Status::InProgress;
+    let _ = type_library::Status::Resolved;
+    let _ = type_library::Status::Closed;
+}
+
+#[test]
+fn type_alias_enum_display() {
+    assert_eq!(type_library::Priority::Low.to_string(), "Low");
+    assert_eq!(type_library::Priority::Critical.to_string(), "Critical");
+    assert_eq!(type_library::Status::InProgress.to_string(), "InProgress");
+    assert_eq!(type_library::Status::Closed.to_string(), "Closed");
+}
+
+#[test]
+fn type_alias_enum_from_str() {
+    use std::str::FromStr;
+    assert_eq!(
+        type_library::Priority::from_str("low").unwrap(),
+        type_library::Priority::Low
+    );
+    assert_eq!(
+        type_library::Priority::from_str("CRITICAL").unwrap(),
+        type_library::Priority::Critical
+    );
+    assert_eq!(
+        type_library::Status::from_str("inprogress").unwrap(),
+        type_library::Status::InProgress
+    );
+    assert!(type_library::Priority::from_str("unknown").is_err());
+}
+
+#[test]
+fn type_alias_enum_variant_names() {
+    assert_eq!(
+        type_library::Priority::VARIANT_NAMES,
+        ["Low", "Medium", "High", "Critical"]
+    );
+    assert_eq!(
+        type_library::Status::VARIANT_NAMES,
+        ["Open", "InProgress", "Resolved", "Closed"]
+    );
+}
+
+#[test]
+fn type_alias_enum_all() {
+    assert_eq!(type_library::Priority::ALL.len(), 4);
+    assert_eq!(type_library::Priority::ALL[0], type_library::Priority::Low);
+    assert_eq!(
+        type_library::Priority::ALL[3],
+        type_library::Priority::Critical
+    );
+}
+
+#[test]
+fn type_alias_enum_copy_hash_eq() {
+    use std::collections::HashSet;
+    // Unit-variant enums should be Copy + Hash.
+    let p = type_library::Priority::High;
+    let p2 = p; // Copy
+    assert_eq!(p, p2);
+
+    let mut set = HashSet::new();
+    set.insert(type_library::Priority::Low);
+    set.insert(type_library::Priority::High);
+    assert!(set.contains(&type_library::Priority::Low));
+}
+
+#[test]
+fn type_alias_enum_display_roundtrip() {
+    // Verify Display → FromStr roundtrip works.
+    use std::str::FromStr;
+    for p in &type_library::Priority::ALL {
+        let s = p.to_string();
+        let parsed = type_library::Priority::from_str(&s).unwrap();
+        assert_eq!(*p, parsed, "roundtrip failed for {s}");
+    }
+}
+
+#[test]
+fn type_alias_constants_accessible() {
+    assert_eq!(type_library::APP_NAME, "TestApp");
+    assert_eq!(type_library::MAX_RETRIES, 3);
+}
+
+#[test]
+fn type_alias_data_enum_exists() {
+    // Data-variant enum (Outcome has Confirmed(evidence=str)).
+    let confirmed = type_library::Outcome::Confirmed {
+        evidence: "proof".into(),
+    };
+    let rejected = type_library::Outcome::Rejected;
+    assert_ne!(confirmed, rejected);
 }

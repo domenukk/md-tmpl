@@ -17,6 +17,8 @@ pub enum Value {
     List(Vec<Value>),
     /// A string-keyed map of values.
     Dict(HashMap<String, Value>),
+    /// A pre-compiled template.
+    Tmpl(std::sync::Arc<crate::template::Template>),
 }
 
 impl PartialEq for Value {
@@ -28,6 +30,7 @@ impl PartialEq for Value {
             (Self::Float(a), Self::Float(b)) => a.to_bits() == b.to_bits(),
             (Self::List(a), Self::List(b)) => a == b,
             (Self::Dict(a), Self::Dict(b)) => a == b,
+            (Self::Tmpl(a), Self::Tmpl(b)) => std::sync::Arc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -44,6 +47,7 @@ impl fmt::Display for Value {
             Self::Float(v) => write!(f, "{v}"),
             Self::List(items) => write!(f, "[<list of {}>]", items.len()),
             Self::Dict(map) => write!(f, "{{<dict of {}>}}", map.len()),
+            Self::Tmpl(_) => write!(f, "<template>"),
         }
     }
 }
@@ -59,6 +63,7 @@ impl Value {
             Self::Float(f) => *f != 0.0,
             Self::List(v) => !v.is_empty(),
             Self::Dict(m) => !m.is_empty(),
+            Self::Tmpl(_) => true,
         }
     }
 
@@ -66,20 +71,30 @@ impl Value {
     #[must_use]
     pub fn type_name(&self) -> &'static str {
         match self {
-            Self::Str(_) => "str",
-            Self::Bool(_) => "bool",
-            Self::Int(_) => "int",
-            Self::Float(_) => "float",
-            Self::List(_) => "list",
-            Self::Dict(_) => "dict",
+            Self::Str(_) => crate::consts::TYPE_STR,
+            Self::Bool(_) => crate::consts::TYPE_BOOL,
+            Self::Int(_) => crate::consts::TYPE_INT,
+            Self::Float(_) => crate::consts::TYPE_FLOAT,
+            Self::List(_) => crate::consts::TYPE_LIST,
+            Self::Dict(_) => crate::consts::TYPE_DICT,
+            Self::Tmpl(_) => crate::consts::TYPE_TMPL,
         }
     }
 
     /// Access a field on a Dict value.
+    ///
+    /// The internal enum tag key ([`ENUM_TAG_KEY`](crate::consts::ENUM_TAG_KEY))
+    /// is hidden — use `str(value)` to extract the variant name instead.
     #[must_use]
     pub fn get_field(&self, key: &str) -> Option<&Value> {
         match self {
-            Self::Dict(m) => m.get(key),
+            Self::Dict(m) => {
+                // Hide the internal enum tag key from template-level access.
+                if key == crate::consts::ENUM_TAG_KEY {
+                    return None;
+                }
+                m.get(key)
+            }
             _ => None,
         }
     }
@@ -170,6 +185,15 @@ impl Value {
     pub fn as_dict(&self) -> Option<&HashMap<String, Value>> {
         match self {
             Self::Dict(m) => Some(m),
+            _ => None,
+        }
+    }
+
+    /// Returns a reference to the inner template if this is a `Tmpl` variant.
+    #[must_use]
+    pub fn as_tmpl(&self) -> Option<&std::sync::Arc<crate::template::Template>> {
+        match self {
+            Self::Tmpl(t) => Some(t),
             _ => None,
         }
     }
@@ -401,7 +425,7 @@ impl TryFrom<Value> for String {
         match v {
             Value::Str(s) => Ok(s),
             other => Err(ValueTypeError {
-                expected: "str",
+                expected: crate::consts::TYPE_STR,
                 actual: other.type_name(),
             }),
         }
@@ -414,7 +438,7 @@ impl TryFrom<Value> for i64 {
         match v {
             Value::Int(i) => Ok(i),
             other => Err(ValueTypeError {
-                expected: "int",
+                expected: crate::consts::TYPE_INT,
                 actual: other.type_name(),
             }),
         }
@@ -427,7 +451,7 @@ impl TryFrom<Value> for f64 {
         match v {
             Value::Float(f) => Ok(f),
             other => Err(ValueTypeError {
-                expected: "float",
+                expected: crate::consts::TYPE_FLOAT,
                 actual: other.type_name(),
             }),
         }
@@ -440,7 +464,7 @@ impl TryFrom<Value> for bool {
         match v {
             Value::Bool(b) => Ok(b),
             other => Err(ValueTypeError {
-                expected: "bool",
+                expected: crate::consts::TYPE_BOOL,
                 actual: other.type_name(),
             }),
         }
@@ -453,7 +477,7 @@ impl TryFrom<Value> for Vec<Value> {
         match v {
             Value::List(l) => Ok(l),
             other => Err(ValueTypeError {
-                expected: "list",
+                expected: crate::consts::TYPE_LIST,
                 actual: other.type_name(),
             }),
         }
@@ -466,7 +490,7 @@ impl<S: std::hash::BuildHasher + Default> TryFrom<Value> for HashMap<String, Val
         match v {
             Value::Dict(m) => Ok(m.into_iter().collect()),
             other => Err(ValueTypeError {
-                expected: "dict",
+                expected: crate::consts::TYPE_DICT,
                 actual: other.type_name(),
             }),
         }

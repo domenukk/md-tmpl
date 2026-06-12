@@ -82,7 +82,10 @@ check: lint test doc
 
 # ── Publish ───────────────────────────────────────────────────────────
 
-# Publish Rust crates to crates.io (root first, then macros)
+# Publish everything (lint + test first, then Rust crates, then Python)
+publish: lint test publish-rust publish-python
+
+# Publish Rust crates to crates.io (prompt-templates first, then macros)
 publish-rust:
     cargo publish -p prompt-templates
     @echo "Waiting for crates.io index..."

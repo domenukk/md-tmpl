@@ -11,14 +11,14 @@ pub(crate) const FN_IDX: &str = "idx";
 /// Name of the length function: `len(expr)`.
 pub(crate) const FN_LEN: &str = "len";
 
-/// Name of the explicit string conversion function: `str(expr)`.
-pub(crate) const FN_STR: &str = "str";
+/// Name of the explicit kind/variant-name function: `kind(expr)`.
+pub(crate) const FN_KIND: &str = "kind";
 
 /// All built-in function names.
 ///
 /// Used by static analysis to avoid treating function names as variable
 /// references (e.g. `idx` in `idx(bug)` is not a variable).
-pub(crate) const BUILTIN_FUNCTIONS: &[&str] = &[FN_IDX, FN_LEN, FN_STR];
+pub(crate) const BUILTIN_FUNCTIONS: &[&str] = &[FN_IDX, FN_LEN, FN_KIND];
 
 // -- Filter names -------------------------------------------------------------
 
@@ -30,22 +30,42 @@ pub(crate) const FILTER_LOWER: &str = "lower";
 pub(crate) const FILTER_TRIM: &str = "trim";
 /// Name of the `fixed` filter.
 pub(crate) const FILTER_FIXED: &str = "fixed";
-/// Name of the `default` filter.
-pub(crate) const FILTER_DEFAULT: &str = "default";
-/// Name of the `length` filter.
-pub(crate) const FILTER_LENGTH: &str = "length";
 /// Name of the `join` filter.
 pub(crate) const FILTER_JOIN: &str = "join";
 /// Name of the `limit` filter.
 pub(crate) const FILTER_LIMIT: &str = "limit";
-/// Name of the `gt` filter.
-pub(crate) const FILTER_GT: &str = "gt";
+/// Name of the `add` filter.
+pub(crate) const FILTER_ADD: &str = "add";
+/// Name of the `sub` filter.
+pub(crate) const FILTER_SUB: &str = "sub";
 
 // -- Enum tag key -------------------------------------------------------------
 
 /// Dict key used for internally-tagged enum variants:
-/// `{"tag": "VariantName", ...}`.
-pub(crate) const ENUM_TAG_KEY: &str = "tag";
+/// `{"__kind__": "VariantName", ...}`.
+///
+/// Uses a dunder prefix to avoid collisions with user-defined field names.
+pub const ENUM_TAG_KEY: &str = "__kind__";
+
+/// Pseudo-field suffix for legacy `.length` access.
+pub(crate) const PSEUDO_FIELD_LENGTH: &str = ".length";
+
+// -- Expression syntax chars --------------------------------------------------
+
+/// Opening parenthesis for function calls: `idx(bug)`, `len(items)`.
+pub const PAREN_OPEN: char = '(';
+/// Closing parenthesis for function calls.
+pub const PAREN_CLOSE: char = ')';
+/// Dot separator for dotted path expressions: `item.label`.
+pub const PATH_SEP: char = '.';
+/// Pipe separator for filter chains: `{{ name | upper }}`.
+pub const PIPE: char = '|';
+/// Opening angle bracket for embed literals: `<file.txt>`.
+pub const ANGLE_OPEN: char = '<';
+/// Double-quote character for string literal delimiters.
+pub const QUOTE_DOUBLE: char = '"';
+/// Single-quote character for string literal delimiters.
+pub const QUOTE_SINGLE: char = '\'';
 
 // -- Template tag delimiters -------------------------------------------------
 
@@ -100,6 +120,8 @@ pub(crate) const TAG_TMPL_PREFIX: &str = "tmpl ";
 pub(crate) const TAG_MATCH_PREFIX: &str = "match ";
 /// Case arm tag prefix: `case `.
 pub(crate) const TAG_CASE_PREFIX: &str = "case ";
+/// Default (catch-all) arm in match blocks: `default`.
+pub(crate) const KW_DEFAULT: &str = "default";
 
 // -- Closing block tags -------------------------------------------------------
 
@@ -149,6 +171,12 @@ pub(crate) const FM_DESC_PREFIX: &str = "description:";
 pub(crate) const FM_PARAMS_PREFIX: &str = "params:";
 /// Frontmatter key to allow unused declared parameters: `allow_unused:`.
 pub(crate) const FM_ALLOW_UNUSED_PREFIX: &str = "allow_unused:";
+/// Frontmatter key for local type aliases: `types:`.
+pub(crate) const FM_TYPES_PREFIX: &str = "types:";
+/// Frontmatter key for cross-template imports: `imports:`.
+pub(crate) const FM_IMPORTS_PREFIX: &str = "imports:";
+/// Frontmatter key for global constants: `consts:`.
+pub(crate) const FM_CONSTS_PREFIX: &str = "consts:";
 
 // -- Type annotations ---------------------------------------------------------
 
@@ -166,6 +194,8 @@ pub(crate) const TYPE_LIST: &str = "list";
 pub(crate) const TYPE_DICT: &str = "dict";
 /// Type name for enums: `enum`.
 pub(crate) const TYPE_ENUM: &str = "enum";
+/// Type name for templates: `tmpl`.
+pub(crate) const TYPE_TMPL: &str = "tmpl";
 
 /// Type prefix for lists with angle brackets: `list<`.
 pub(crate) const TYPE_LIST_PREFIX: &str = "list<";
@@ -173,6 +203,8 @@ pub(crate) const TYPE_LIST_PREFIX: &str = "list<";
 pub(crate) const TYPE_DICT_PREFIX: &str = "dict<";
 /// Type prefix for enums with angle brackets: `enum<`.
 pub(crate) const TYPE_ENUM_PREFIX: &str = "enum<";
+/// Type prefix for templates with angle brackets: `tmpl<`.
+pub(crate) const TYPE_TMPL_PREFIX: &str = "tmpl<";
 
 // -- Literals -----------------------------------------------------------------
 
@@ -181,6 +213,21 @@ pub(crate) const LIT_TRUE: &str = "true";
 /// Boolean false literal: `false`.
 pub(crate) const LIT_FALSE: &str = "false";
 
+/// Try to strip balanced quotes from a string literal token.
+///
+/// Returns `Some(inner)` if `token` is a valid quoted string literal
+/// (`"..."` or `'...'`), otherwise `None`.
+#[must_use]
+pub fn strip_string_literal(token: &str) -> Option<&str> {
+    if token.len() >= 2
+        && ((token.starts_with(QUOTE_DOUBLE) && token.ends_with(QUOTE_DOUBLE))
+            || (token.starts_with(QUOTE_SINGLE) && token.ends_with(QUOTE_SINGLE)))
+    {
+        return Some(&token[1..token.len() - 1]);
+    }
+    None
+}
+
 // -- Error messages -----------------------------------------------------------
 
 /// Error when frontmatter block is missing.
@@ -188,7 +235,40 @@ pub(crate) const ERR_MISSING_FM: &str =
     "missing mandatory YAML frontmatter block (starts with ---)";
 /// Error when frontmatter block is unclosed.
 pub(crate) const ERR_UNCLOSED_FM: &str = "unclosed YAML frontmatter block";
-/// Error when `params:` block is missing in frontmatter.
-pub(crate) const ERR_MISSING_PARAMS: &str = "missing mandatory `params:` block in frontmatter";
 /// Prefix for undeclared variable references error.
 pub(crate) const ERR_UNDECLARED_PREFIX: &str = "undeclared variable(s) referenced in body: ";
+
+/// Error when a param is named after a reserved keyword.
+pub(crate) const ERR_RESERVED_KEYWORD: &str = "reserved keyword used as name";
+/// Error when two params have the same name.
+pub(crate) const ERR_DUPLICATE_PARAM: &str = "duplicate parameter name";
+/// Error when a `types:` entry has a duplicate name.
+pub(crate) const ERR_DUPLICATE_TYPE_ALIAS: &str = "duplicate type alias";
+/// Error when a `types:` entry shadows a built-in type name.
+pub(crate) const ERR_BUILTIN_SHADOW: &str = "type alias shadows built-in type name";
+/// Error when a type alias and param name collide in `PascalCase`.
+pub(crate) const ERR_TYPE_PARAM_CONFLICT: &str =
+    "type alias name conflicts with parameter name (PascalCase collision)";
+/// Error for circular import chains.
+pub(crate) const ERR_CIRCULAR_IMPORT: &str = "circular import detected";
+/// Error when a type alias name shadows an import alias (stem).
+pub(crate) const ERR_TYPE_SHADOWS_IMPORT: &str = "type alias shadows import alias";
+/// Error when a param's `PascalCase` name shadows an import alias.
+pub(crate) const ERR_PARAM_SHADOWS_IMPORT: &str =
+    "parameter name (PascalCase) shadows import alias";
+/// Error when a `types:` entry is declared but never referenced.
+pub(crate) const ERR_UNUSED_TYPE_ALIAS: &str = "unused type alias";
+/// Error when a constant name is duplicated.
+pub(crate) const ERR_DUPLICATE_CONST: &str = "duplicate constant name";
+/// Error when a param and a const share the same name.
+pub(crate) const ERR_PARAM_CONST_CONFLICT: &str = "parameter name conflicts with constant name";
+/// Error when a for-loop binding shadows a declared name.
+pub(crate) const ERR_FOR_BINDING_SHADOWS: &str = "for loop binding shadows";
+/// Error when a `{% %}` tag starts a line without a blockquote `>` prefix.
+pub(crate) const ERR_BARE_STMT_TAG: &str =
+    "statement tag at line start must be blockquote-prefixed with '> '";
+
+/// Built-in type names and keywords that cannot be used as user-defined names.
+pub(crate) const RESERVED_NAMES: &[&str] = &[
+    TYPE_LIST, TYPE_DICT, TYPE_ENUM, TYPE_TMPL, "params", TYPE_STR, TYPE_INT, TYPE_FLOAT, TYPE_BOOL,
+];

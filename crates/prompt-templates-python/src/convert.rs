@@ -9,7 +9,8 @@ use pyo3::{
 };
 
 /// Tag key used for internally-tagged enum variants in dicts.
-const ENUM_TAG_KEY: &str = "tag";
+/// Must match [`prompt_templates::consts::ENUM_TAG_KEY`].
+const ENUM_TAG_KEY: &str = prompt_templates::consts::ENUM_TAG_KEY;
 
 /// Convert a Python object into a template [`Value`].
 ///
@@ -192,5 +193,8 @@ pub(crate) fn value_to_py(py: Python<'_>, value: &Value) -> PyResult<PyObject> {
             }
             Ok(dict.into_any().unbind())
         }
+        Value::Tmpl(_) => Err(pyo3::exceptions::PyTypeError::new_err(
+            "cannot convert template value to Python object",
+        )),
     }
 }

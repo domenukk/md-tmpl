@@ -21,6 +21,8 @@ pub enum VarType {
     Dict(Vec<VarDecl>),
     /// `enum<Option1, Option2, ...>` — expects one of these variants.
     Enum(Vec<VariantDecl>),
+    /// `tmpl<field = type, ...>` — expects a template with matching params.
+    Tmpl(Vec<VarDecl>),
 }
 
 /// Write a comma-separated `name = type` field list.
@@ -29,7 +31,11 @@ fn fmt_fields(fields: &[VarDecl], f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if i > 0 {
             write!(f, ", ")?;
         }
-        write!(f, "{} = {}", decl.name, decl.var_type)?;
+        if decl.name.is_empty() {
+            write!(f, "{}", decl.var_type)?;
+        } else {
+            write!(f, "{} = {}", decl.name, decl.var_type)?;
+        }
     }
     Ok(())
 }
@@ -37,22 +43,22 @@ fn fmt_fields(fields: &[VarDecl], f: &mut fmt::Formatter<'_>) -> fmt::Result {
 impl fmt::Display for VarType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Str => f.write_str("str"),
-            Self::Bool => f.write_str("bool"),
-            Self::Int => f.write_str("int"),
-            Self::Float => f.write_str("float"),
+            Self::Str => f.write_str(crate::consts::TYPE_STR),
+            Self::Bool => f.write_str(crate::consts::TYPE_BOOL),
+            Self::Int => f.write_str(crate::consts::TYPE_INT),
+            Self::Float => f.write_str(crate::consts::TYPE_FLOAT),
             Self::List(fields) => {
-                write!(f, "list<")?;
+                f.write_str(crate::consts::TYPE_LIST_PREFIX)?;
                 fmt_fields(fields, f)?;
                 write!(f, ">")
             }
             Self::Dict(fields) => {
-                write!(f, "dict<")?;
+                f.write_str(crate::consts::TYPE_DICT_PREFIX)?;
                 fmt_fields(fields, f)?;
                 write!(f, ">")
             }
             Self::Enum(variants) => {
-                write!(f, "enum<")?;
+                f.write_str(crate::consts::TYPE_ENUM_PREFIX)?;
                 for (i, var) in variants.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
@@ -64,6 +70,11 @@ impl fmt::Display for VarType {
                         write!(f, ")")?;
                     }
                 }
+                write!(f, ">")
+            }
+            Self::Tmpl(fields) => {
+                f.write_str(crate::consts::TYPE_TMPL_PREFIX)?;
+                fmt_fields(fields, f)?;
                 write!(f, ">")
             }
         }
@@ -80,7 +91,7 @@ impl VarType {
     /// - `Dict(fields)` matches `Value::Dict`; required keys must be present
     ///   with matching value types (recursive).
     /// - `Enum(variants)` matches unit variants as `Value::Str`, struct
-    ///   variants as `Value::Dict` with `tag` + typed fields.
+    ///   variants as `Value::Dict` with `__kind__` + typed fields.
     #[must_use]
     pub fn matches(&self, value: &Value) -> bool {
         self.check(value).is_ok()
@@ -103,47 +114,59 @@ impl VarType {
                 if matches!(value, Value::Str(_)) {
                     Ok(())
                 } else {
-                    Err(TypeCheckError::new(path, "str", value))
+                    Err(TypeCheckError::new(path, crate::consts::TYPE_STR, value))
                 }
             }
             Self::Bool => {
                 if matches!(value, Value::Bool(_)) {
                     Ok(())
                 } else {
-                    Err(TypeCheckError::new(path, "bool", value))
+                    Err(TypeCheckError::new(path, crate::consts::TYPE_BOOL, value))
                 }
             }
             Self::Int => {
                 if matches!(value, Value::Int(_)) {
                     Ok(())
                 } else {
-                    Err(TypeCheckError::new(path, "int", value))
+                    Err(TypeCheckError::new(path, crate::consts::TYPE_INT, value))
                 }
             }
             Self::Float => {
                 if matches!(value, Value::Float(_)) {
                     Ok(())
                 } else {
-                    Err(TypeCheckError::new(path, "float", value))
+                    Err(TypeCheckError::new(path, crate::consts::TYPE_FLOAT, value))
                 }
             }
             Self::List(fields) => Self::check_list(fields, value, path),
             Self::Dict(fields) => Self::check_dict(fields, value, path),
             Self::Enum(variants) => Self::check_enum(variants, value, path),
+            Self::Tmpl(params) => Self::check_tmpl(params, value, path),
         }
     }
 
     /// Validate a `List` type: each item must be a dict with all required fields.
     fn check_list(fields: &[VarDecl], value: &Value, path: String) -> Result<(), TypeCheckError> {
         let Value::List(items) = value else {
-            return Err(TypeCheckError::new(path, "list", value));
+            return Err(TypeCheckError::new(path, crate::consts::TYPE_LIST, value));
         };
         if fields.is_empty() {
             return Ok(());
         }
         for (i, item) in items.iter().enumerate() {
+            if fields.len() == 1 && fields[0].name.is_empty() {
+                // Scalar list: each item must match the first field's type.
+                fields[0]
+                    .var_type
+                    .check_inner(item, format!("{path}[{i}]"))?;
+                continue;
+            }
             let Value::Dict(map) = item else {
-                return Err(TypeCheckError::new(format!("{path}[{i}]"), "dict", item));
+                return Err(TypeCheckError::new(
+                    format!("{path}[{i}]"),
+                    crate::consts::TYPE_DICT,
+                    item,
+                ));
             };
             for decl in fields {
                 let field_path = if path.is_empty() {
@@ -170,7 +193,7 @@ impl VarType {
     /// Validate a `Dict` type: all required keys must be present with matching types.
     fn check_dict(fields: &[VarDecl], value: &Value, path: String) -> Result<(), TypeCheckError> {
         let Value::Dict(map) = value else {
-            return Err(TypeCheckError::new(path, "dict", value));
+            return Err(TypeCheckError::new(path, crate::consts::TYPE_DICT, value));
         };
         for decl in fields {
             let field_path = if path.is_empty() {
@@ -194,7 +217,7 @@ impl VarType {
     }
 
     /// Validate an `Enum` type: unit variants match strings, struct variants
-    /// match dicts with a `tag` field and typed fields.
+    /// match dicts with an `ENUM_TAG_KEY` field and typed fields.
     fn check_enum(
         variants: &[VariantDecl],
         value: &Value,
@@ -220,7 +243,7 @@ impl VarType {
                 let Some(Value::Str(tag)) = map.get(tag_key) else {
                     return Err(TypeCheckError {
                         path,
-                        expected: "enum dict with 'tag' field".into(),
+                        expected: format!("enum dict with '{tag_key}' field"),
                         actual: value.type_name().into(),
                         actual_value: value.to_string(),
                     });
@@ -229,7 +252,7 @@ impl VarType {
                     let variant_names: Vec<&str> =
                         variants.iter().map(|v| v.name.as_str()).collect();
                     return Err(TypeCheckError {
-                        path: format!("{path}.tag"),
+                        path: format!("{path}.{tag_key}"),
                         expected: format!("one of [{}]", variant_names.join(", ")),
                         actual: format!("'{tag}'"),
                         actual_value: tag.clone(),
@@ -261,6 +284,70 @@ impl VarType {
                 value,
             )),
         }
+    }
+
+    /// Validate a `Tmpl` type: the value must be a template whose parameters
+    /// match the expected signature.
+    fn check_tmpl(expected: &[VarDecl], value: &Value, path: String) -> Result<(), TypeCheckError> {
+        let Value::Tmpl(tmpl) = value else {
+            return Err(TypeCheckError::new(path, crate::consts::TYPE_TMPL, value));
+        };
+
+        // Check if the template's parameters match the expected signature.
+        // Rule: The template must accept ALL parameters defined in the signature
+        // with matching types. It may have additional parameters IF they have
+        // default values.
+        let actual_decls = tmpl.declarations();
+
+        for exp in expected {
+            let found = actual_decls.iter().find(|d| d.name == exp.name);
+            match found {
+                Some(act) => {
+                    if act.var_type != exp.var_type {
+                        return Err(TypeCheckError {
+                            path: if path.is_empty() {
+                                exp.name.clone()
+                            } else {
+                                format!("{path}.{}", exp.name)
+                            },
+                            expected: exp.var_type.to_string(),
+                            actual: act.var_type.to_string(),
+                            actual_value: String::new(),
+                        });
+                    }
+                }
+                None => {
+                    return Err(TypeCheckError {
+                        path: if path.is_empty() {
+                            exp.name.clone()
+                        } else {
+                            format!("{path}.{}", exp.name)
+                        },
+                        expected: exp.var_type.to_string(),
+                        actual: "missing".into(),
+                        actual_value: String::new(),
+                    });
+                }
+            }
+        }
+
+        // Also check if the template has any REQUIRED parameters not in the signature.
+        for act in actual_decls {
+            if act.default_value.is_none() && !expected.iter().any(|e| e.name == act.name) {
+                return Err(TypeCheckError {
+                    path: if path.is_empty() {
+                        act.name.clone()
+                    } else {
+                        format!("{path}.{}", act.name)
+                    },
+                    expected: "in signature".into(),
+                    actual: "missing".into(),
+                    actual_value: String::new(),
+                });
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -338,7 +425,7 @@ pub struct VarDecl {
     pub name: String,
     /// Expected type.
     pub var_type: VarType,
-    /// Optional default value for this parameter.
+    /// Optional default value for this parameter (or mandatory value for a constant).
     pub default_value: Option<crate::value::Value>,
 }
 
@@ -351,6 +438,55 @@ impl VarDecl {
 }
 
 // ---------------------------------------------------------------------------
+// Built-in type names
+// ---------------------------------------------------------------------------
+
+/// Names of all built-in types. Used for shadowing checks in validation.
+pub const BUILTIN_TYPE_NAMES: &[&str] = &[
+    crate::consts::TYPE_STR,
+    crate::consts::TYPE_BOOL,
+    crate::consts::TYPE_INT,
+    crate::consts::TYPE_FLOAT,
+    crate::consts::TYPE_LIST,
+    crate::consts::TYPE_DICT,
+    crate::consts::TYPE_ENUM,
+    crate::consts::TYPE_TMPL,
+];
+
+// ---------------------------------------------------------------------------
+// PascalCase conversion
+// ---------------------------------------------------------------------------
+
+/// Convert a `snake_case`, `kebab-case`, or other string to `PascalCase`.
+///
+/// Splits on `_` and `-`, capitalises the first character of each segment,
+/// and preserves the remaining characters.
+///
+/// # Examples
+///
+/// ```
+/// use prompt_templates::to_pascal_case;
+/// assert_eq!(to_pascal_case("code_review"), "CodeReview");
+/// assert_eq!(to_pascal_case("bug-report"), "BugReport");
+/// ```
+#[must_use]
+pub fn to_pascal_case(s: &str) -> String {
+    s.split(['_', '-'])
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => {
+                    let upper: String = first.to_uppercase().collect();
+                    format!("{upper}{}", chars.as_str())
+                }
+                None => String::new(),
+            }
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -359,6 +495,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+    use crate::consts::ENUM_TAG_KEY;
 
     // -- Display --
 
@@ -618,21 +755,21 @@ mod tests {
 
         // Internally tagged dict matching struct variant
         let valid_dict = Value::Dict(HashMap::from([
-            ("tag".into(), Value::Str("Confirmed".into())),
+            (ENUM_TAG_KEY.into(), Value::Str("Confirmed".into())),
             ("evidence".into(), Value::Str("some evidence".into())),
         ]));
         assert!(var_type.matches(&valid_dict));
 
         // Missing required field
         let missing_field = Value::Dict(HashMap::from([(
-            "tag".into(),
+            ENUM_TAG_KEY.into(),
             Value::Str("Confirmed".into()),
         )]));
         assert!(!var_type.matches(&missing_field));
 
         // Invalid variant name
         let invalid_variant = Value::Dict(HashMap::from([(
-            "tag".into(),
+            ENUM_TAG_KEY.into(),
             Value::Str("Unknown".into()),
         )]));
         assert!(!var_type.matches(&invalid_variant));
@@ -651,7 +788,7 @@ mod tests {
 
         // Field present but wrong type (Int instead of Str).
         let wrong = Value::Dict(HashMap::from([
-            ("tag".into(), Value::Str("Confirmed".into())),
+            (ENUM_TAG_KEY.into(), Value::Str("Confirmed".into())),
             ("evidence".into(), Value::Int(42)),
         ]));
         assert!(
@@ -729,11 +866,11 @@ mod tests {
             fields: vec![],
         }]);
         let value = Value::Dict(HashMap::from([(
-            "tag".into(),
+            ENUM_TAG_KEY.into(),
             Value::Str("Unknown".into()),
         )]));
         let err = var_type.check(&value).unwrap_err();
-        assert_eq!(err.path, ".tag");
+        assert_eq!(err.path, format!(".{ENUM_TAG_KEY}"));
     }
 
     #[test]
@@ -759,5 +896,55 @@ mod tests {
             actual_value: "42".into(),
         };
         assert_eq!(err.to_string(), "expected str, got int (42)");
+    }
+
+    // -- to_pascal_case tests -------------------------------------------------
+
+    #[test]
+    fn pascal_case_snake_case() {
+        assert_eq!(super::to_pascal_case("code_review"), "CodeReview");
+        assert_eq!(super::to_pascal_case("simple_greeting"), "SimpleGreeting");
+    }
+
+    #[test]
+    fn pascal_case_kebab_case() {
+        assert_eq!(super::to_pascal_case("bug-report"), "BugReport");
+    }
+
+    #[test]
+    fn pascal_case_single_word() {
+        assert_eq!(super::to_pascal_case("single"), "Single");
+    }
+
+    #[test]
+    fn pascal_case_empty() {
+        assert_eq!(super::to_pascal_case(""), "");
+    }
+
+    #[test]
+    fn pascal_case_mixed() {
+        assert_eq!(
+            super::to_pascal_case("already_PascalCase"),
+            "AlreadyPascalCase"
+        );
+    }
+
+    #[test]
+    fn pascal_case_leading_trailing_separators() {
+        assert_eq!(super::to_pascal_case("_leading"), "Leading");
+        assert_eq!(super::to_pascal_case("trailing_"), "Trailing");
+        assert_eq!(super::to_pascal_case("__double__"), "Double");
+    }
+
+    // -- BUILTIN_TYPE_NAMES tests ---------------------------------------------
+
+    #[test]
+    fn builtin_type_names_contains_all_expected() {
+        for name in &["str", "bool", "int", "float", "list", "dict", "enum"] {
+            assert!(
+                super::BUILTIN_TYPE_NAMES.contains(name),
+                "BUILTIN_TYPE_NAMES should contain '{name}'"
+            );
+        }
     }
 }

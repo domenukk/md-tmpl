@@ -7,56 +7,65 @@
 use crate::{
     consts::{
         BLOCKQUOTE_COMPACT_OPEN, BLOCKQUOTE_PREFIX, BLOCKQUOTE_PREFIX_SPACED,
-        BLOCKQUOTE_SPACED_OPEN, STMT_END, STMT_START,
+        BLOCKQUOTE_SPACED_OPEN, ERR_BARE_STMT_TAG, STMT_END, STMT_START,
     },
     error::TemplateError,
 };
 
-/// Reject standalone `{% ... %}` lines that lack the `> ` blockquote prefix.
+/// Validate that every line starting with `{% ` has a blockquote `>` prefix.
 ///
-/// A line is considered "standalone" when its entire trimmed content is a
-/// single `{% ... %}` tag. Inline uses like `text {% if x %}more{% /if %}`
-/// are NOT affected — only lines that are *exclusively* a statement tag.
+/// This check runs on the raw body **before** blockquote stripping. Lines
+/// inside `{% raw %}` blocks are exempted since their content is literal.
 ///
-/// # Errors
-///
-/// Returns [`TemplateError::Syntax`] with a helpful message pointing to
-/// the offending line.
+/// Only lines whose first non-whitespace characters are `{%` are checked —
+/// `{{ }}` expressions and mid-line `{% %}` tags are always allowed without
+/// a `>` prefix.
 pub(super) fn validate_blockquote_prefix(input: &str) -> Result<(), TemplateError> {
     let mut in_raw = false;
-    for (line_num, line) in input.split('\n').enumerate() {
-        let trimmed = line.trim();
-
-        // Check if we enter or exit a raw block.
-        // Needs to check stripped version because the raw tags themselves
-        // must use blockquote prefix.
-        let stripped = strip_blockquote_line(trimmed).trim();
-        if stripped == "{% raw %}" {
-            in_raw = true;
-            continue;
-        } else if stripped == "{% /raw %}" {
-            in_raw = false;
-            continue;
-        }
+    for line in input.lines() {
+        let trimmed = line.trim_start();
 
         if in_raw {
+            // Inside raw block — look for close tag (with or without `>`)
+            // to resume checking. Raw blocks don't nest.
+            if trimmed.contains("{%") && (trimmed.contains("/raw") || trimmed.contains("- /raw")) {
+                in_raw = false;
+            }
             continue;
         }
 
-        // Only flag lines that are exclusively a statement tag.
-        if trimmed.starts_with(STMT_START)
-            && trimmed.ends_with(STMT_END)
-            && is_standalone_tag(trimmed)
+        // Detect raw block open: `> {% raw %}` or `> {% raw=X %}`
+        if trimmed.starts_with('>')
+            && trimmed.contains("{%")
+            && (trimmed.contains(" raw ") || trimmed.contains(" raw=") || trimmed.contains(" raw%"))
         {
+            in_raw = true;
+            continue;
+        }
+
+        // Main check: line starts with `{%` (or `{%-`) without `>` prefix.
+        if trimmed.starts_with(STMT_START) {
+            // Truncate for a clean error message.
+            let snippet = if trimmed.len() > 60 {
+                // Find a safe truncation point at a char boundary.
+                let end = trimmed
+                    .char_indices()
+                    .map(|(i, _)| i)
+                    .take_while(|&i| i <= 57)
+                    .last()
+                    .unwrap_or(0);
+                format!("{}…", &trimmed[..end])
+            } else {
+                trimmed.to_string()
+            };
             return Err(TemplateError::syntax(format!(
-                "line {}: standalone statement tag must use blockquote prefix \
-                 (`> {trimmed}` instead of `{trimmed}`)",
-                line_num + 1,
+                "{ERR_BARE_STMT_TAG}: write '> {snippet}' instead of '{snippet}'"
             )));
         }
     }
     Ok(())
 }
+
 /// Strip markdown blockquote `>` prefix from lines containing `{%` tags.
 ///
 /// Allows authors to write `>{% if x %}` which renders as a visually-distinct

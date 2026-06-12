@@ -310,6 +310,7 @@ params:
 
     let tmpl = Template::from_source(source).expect("README hero example should parse");
 
+    let tag_key = prompt_templates::consts::ENUM_TAG_KEY;
     let mut ctx = Context::new();
     ctx.set("agent_name", "SecurityBot");
     ctx.set(
@@ -320,18 +321,18 @@ params:
                 (
                     "severity",
                     Value::dict([
-                        ("tag", Value::from("Critical")),
+                        (tag_key, Value::from("Critical")),
                         ("reason", Value::from("RCE in parser")),
                     ]),
                 ),
             ]),
             Value::dict([
                 ("title", Value::from("Missing CSRF token")),
-                ("severity", Value::dict([("tag", Value::from("High"))])),
+                ("severity", Value::dict([(tag_key, Value::from("High"))])),
             ]),
             Value::dict([
                 ("title", Value::from("Verbose logging")),
-                ("severity", Value::dict([("tag", Value::from("Low"))])),
+                ("severity", Value::dict([(tag_key, Value::from("Low"))])),
             ]),
         ],
     );

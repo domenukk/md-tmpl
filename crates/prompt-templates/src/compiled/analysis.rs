@@ -67,6 +67,14 @@ fn collect_refs_inner(
                 collect_refs_inner(else_body, vars, loop_bindings);
             }
             Segment::Include(inc) => {
+                // Track the include path itself if it's a variable (higher-order template).
+                // We assume it's a variable if it doesn't look like a file path.
+                if !inc.path.ends_with(".tmpl.md") && !inc.path.ends_with(".md") {
+                    if let Some(root) = extract_root_variable(inc.path.as_ref(), loop_bindings) {
+                        vars.insert(root);
+                    }
+                }
+
                 for (_, val_expr) in &inc.with_vars {
                     if let Some(root) = extract_root_variable(val_expr.as_ref(), loop_bindings) {
                         vars.insert(root);
@@ -106,13 +114,17 @@ fn extract_root_variable(expr: &str, loop_bindings: &HashSet<String>) -> Option<
     }
 
     // Handle function calls: func(arg)
-    if let Some(open) = expr.find('(')
-        && expr.ends_with(')')
+    if let Some(open) = expr.find(crate::consts::PAREN_OPEN)
+        && expr.ends_with(crate::consts::PAREN_CLOSE)
     {
         let func_name = expr[..open].trim();
         if BUILTIN_FUNCTIONS.contains(&func_name) {
             let arg = expr[open + 1..expr.len() - 1].trim();
-            let root = arg.split('.').next().unwrap_or(arg).trim();
+            let root = arg
+                .split(crate::consts::PATH_SEP)
+                .next()
+                .unwrap_or(arg)
+                .trim();
             if !root.is_empty() && !loop_bindings.contains(root) && !is_literal(root) {
                 return Some(root.to_string());
             }
@@ -121,12 +133,22 @@ fn extract_root_variable(expr: &str, loop_bindings: &HashSet<String>) -> Option<
     }
 
     // Handle pipe expressions: take the part before the first `|`.
-    let base = expr.split('|').next().unwrap_or(expr).trim();
+    let base = expr
+        .split(crate::consts::PIPE)
+        .next()
+        .unwrap_or(expr)
+        .trim();
 
     // Strip `.length` suffix if present (it's a pseudo-field, not a real one).
-    let base = base.strip_suffix(".length").unwrap_or(base);
+    let base = base
+        .strip_suffix(crate::consts::PSEUDO_FIELD_LENGTH)
+        .unwrap_or(base);
 
-    let root = base.split('.').next().unwrap_or(base).trim();
+    let root = base
+        .split(crate::consts::PATH_SEP)
+        .next()
+        .unwrap_or(base)
+        .trim();
 
     if root.is_empty() || is_literal(root) || loop_bindings.contains(root) {
         return None;
@@ -137,8 +159,7 @@ fn extract_root_variable(expr: &str, loop_bindings: &HashSet<String>) -> Option<
 
 /// Returns `true` if the token looks like a literal (string, number, bool).
 fn is_literal(token: &str) -> bool {
-    token.starts_with('"')
-        || token.starts_with('\'')
+    crate::consts::strip_string_literal(token).is_some()
         || token == LIT_TRUE
         || token == LIT_FALSE
         || token.parse::<i64>().is_ok()

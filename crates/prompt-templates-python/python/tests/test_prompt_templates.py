@@ -355,7 +355,7 @@ class TestEnumDispatch:
         tmpl = Template.from_file(str(enum_template_path))
         output = tmpl.render(
             outcome={
-                "tag": "Confirmed",
+                "__kind__": "Confirmed",
                 "evidence": "found it",
             }
         )
@@ -878,3 +878,143 @@ class TestEdgeCases:
         tmpl = Template.from_source("---\nparams: [name = str]\n---\n{{ name }}")
         with pytest.raises(ValueError, match="declarations changed"):
             tmpl.validate_declarations_against([("different", "int")])
+
+
+# ---------------------------------------------------------------------------
+# load_template
+# ---------------------------------------------------------------------------
+
+
+class TestLoadTemplate:
+    """Tests for the load_template() convenience function."""
+
+    def test_load_and_render(self, simple_template_path: Path) -> None:
+        from prompt_templates import load_template
+
+        tmpl = load_template(str(simple_template_path))
+        assert tmpl.render(name="world") == "Hello world!"
+
+    def test_load_template_missing_raises(self) -> None:
+        from prompt_templates import load_template
+
+        with pytest.raises(ValueError, match="failed to load"):
+            load_template("/nonexistent/path.tmpl.md")
+
+    def test_load_template_returns_template(self, simple_template_path: Path) -> None:
+        from prompt_templates import load_template
+
+        tmpl = load_template(str(simple_template_path))
+        assert isinstance(tmpl, Template)
+
+    def test_load_template_with_load_types(self, enum_template_path: Path) -> None:
+        """load_template and load_types work together."""
+        from prompt_templates import load_template
+
+        tmpl = load_template(str(enum_template_path))
+        types = load_types(str(enum_template_path))
+        assert hasattr(types, "Outcome")
+        output = tmpl.render(outcome=types.Outcome.Rejected)
+        assert "NO" in output
+
+
+# ---------------------------------------------------------------------------
+# kind() function
+# ---------------------------------------------------------------------------
+
+
+class TestKindFunction:
+    """Tests for the kind() built-in function."""
+
+    def test_kind_extracts_variant_name(self) -> None:
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            params:
+              - outcome = enum<Confirmed(evidence = str), Rejected>
+            ---
+            {{ kind(outcome) }}"""))
+        output = tmpl.render(outcome={"__kind__": "Confirmed", "evidence": "proof"})
+        assert output.strip() == "Confirmed"
+
+    def test_kind_with_generated_variant(self, enum_template_path: Path) -> None:
+        """kind() works with generated variant objects."""
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            params:
+              - outcome = enum<Confirmed(evidence = str), Rejected>
+            ---
+            {{ kind(outcome) }}"""))
+        t = template(str(enum_template_path))
+        output = tmpl.render(outcome=t.Outcome.Confirmed(evidence="proof"))
+        assert output.strip() == "Confirmed"
+
+    def test_kind_rejects_non_enum(self) -> None:
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            params:
+              - count = int
+            ---
+            {{ kind(count) }}"""))
+        with pytest.raises(ValueError, match="enum"):
+            tmpl.render(count=42)
+
+
+# ---------------------------------------------------------------------------
+# __kind__ collision protection
+# ---------------------------------------------------------------------------
+
+
+class TestKindCollisionProtection:
+    """The internal __kind__ key must not be accessible from templates."""
+
+    def test_kind_key_not_accessible(self) -> None:
+        """{{ outcome.__kind__ }} must error, not expose internal."""
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            params:
+              - outcome = dict<>
+            ---
+            {{ outcome.__kind__ }}"""))
+        with pytest.raises(ValueError):
+            tmpl.render(outcome={"__kind__": "Confirmed", "evidence": "x"})
+
+    def test_user_field_named_tag(self) -> None:
+        """A user field named 'tag' should work normally (no collision)."""
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            params:
+              - entry = dict<>
+            ---
+            {{ entry.tag }}"""))
+        output = tmpl.render(entry={"__kind__": "Week", "tag": "Monday"})
+        assert output.strip() == "Monday"
+
+
+# ---------------------------------------------------------------------------
+# Arithmetic filters (add, sub)
+# ---------------------------------------------------------------------------
+
+
+class TestArithmeticFilters:
+    """Tests for the add() and sub() filters."""
+
+    def test_add_filter(self) -> None:
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            params:
+              - items = list<label = str>
+            ---
+            > {% for item in items %}
+            {{ idx(item) | add(1) }}. {{ item.label }}
+            > {% /for %}"""))
+        output = tmpl.render(
+            items=[
+                {"label": "first"},
+                {"label": "second"},
+            ]
+        )
+        assert "1. first" in output
+        assert "2. second" in output
+
+    def test_sub_filter(self) -> None:
+        tmpl = Template.from_source("---\nparams: [n = int]\n---\n{{ n | sub(1) }}")
+        assert tmpl.render(n=10) == "9"

@@ -41,6 +41,8 @@ a hard error.
 | `dict<field = type, …>`     | Generated struct          | `- config = dict<timeout = int>`             |
 | `enum<Variant1, Variant2>`  | Generated enum            | `- status = enum<Active, Paused>`            |
 | `enum<V(field = type), V2>` | Enum with struct variants | `- outcome = enum<Ok(msg = str), Err>`       |
+| `AliasName`                 | Resolved alias type       | `- category = Labelled`                      |
+| `stem.TypeName`             | Imported type             | `- prio = other_tmpl.Priority`               |
 
 ### Default values
 
@@ -52,6 +54,40 @@ params:
   - count = int := 42
   - verbose = bool := false
 ```
+
+### Type aliases
+
+Define reusable named types with `types:` to avoid repeating complex
+type expressions:
+
+```yaml
+types:
+  - Labelled = enum<Known(label = str), Unknown>
+  - Priority = enum<High, Medium, Low>
+params:
+  - bugs = list<title = str, vuln_type = Labelled, priority = Priority>
+```
+
+Type aliases are resolved in order: built-in types → local `types:`
+entries → imported types (dotted path).
+
+### Cross-template imports
+
+Import types from other templates using markdown link syntax:
+
+```yaml
+imports:
+  - "[shared_types](shared_types.tmpl.md)"
+params:
+  - priority = shared_types.Priority
+```
+
+The link text (stem) **must** match the filename without `.tmpl.md`.
+For example, `"[my_types](my_types.tmpl.md)"` is valid, but
+`"[alias](my_types.tmpl.md)"` is an error because `alias` ≠ `my_types`.
+
+Both explicit `types:` entries and implicit compound param types from
+the imported template are accessible via `stem.Name`.
 
 ## Variable Substitution
 
@@ -66,12 +102,12 @@ Use `{{ expr }}` for output:
 
 ### Available filters
 
-`upper`, `lower`, `trim`, `fixed(N)`, `length`, `default("val")`,
-`join("sep")`, `limit(N)`, `gt(N)`.
+`upper`, `lower`, `trim`, `fixed(N)`,
+`join("sep")`, `limit(N)`, `gt(N)`, `add(N)`, `sub(N)`.
 
 ### Built-in functions
 
-`idx(binding)` (0-based loop index), `len(expr)`, `str(expr)`.
+`idx(binding)` (0-based loop index), `len(expr)`, `kind(expr)` (enum variant name).
 
 ## Control Flow
 
@@ -149,21 +185,27 @@ For repeated blocks within a single file, define reusable fragments
 inline without separate files:
 
 ```markdown
-## {% tmpl bug_row %}
+> {% tmpl bug_row %}
 
-## params:
+---
 
-## - title = str
+params:
 
-## - severity = str
+- title = str
+- severity = str
+
+---
 
 - **{{ title }}** ({{ severity }})
-  {% /tmpl %}
+  > {% /tmpl %}
 
 > {% for bug in bugs %}
 > {% include bug_row with title=bug.title, severity=bug.severity %}
 > {% /for %}
 ```
+
+Inline templates use standard `---` delimited frontmatter and support
+all frontmatter features including `types:` and `imports:` blocks.
 
 ## Whitespace Control
 
@@ -211,16 +253,16 @@ let output = tmpl.render(&ctx! { name: "world" }).unwrap();
 ### Compile-time (typed structs)
 
 ```rust
-use prompt_templates_macros::{include_template, template_params_struct};
+use prompt_templates_macros::{include_template, include_types};
 
-// Generates a typed struct from the template's frontmatter
-template_params_struct!("prompts/greeting.tmpl.md" => GreetingParams);
+// Generates a module with typed structs from the template's frontmatter
+include_types!("prompts/greeting.tmpl.md");
 
 let tmpl = include_template!("prompts/greeting.tmpl.md");
-let output = GreetingParams {
+let output = greeting::Params {
     name: "Alice".into(),
     count: 42,
-    items: vec![GreetingParamsItemsItem { label: "hello".into() }],
+    items: vec![greeting::ParamsItemsItem { label: "hello".into() }],
 }.render(&tmpl).unwrap();
 ```
 
@@ -230,14 +272,20 @@ let output = GreetingParams {
 let tmpl = prompt_templates::Template::from_file(
     std::path::Path::new("prompts/greeting.tmpl.md")
 ).unwrap();
-GreetingParams::validate_template(&tmpl).unwrap();
+greeting::Params::validate_template(&tmpl).unwrap();
+```
+
+The module name is derived from the template file stem (e.g.,
+`greeting` from `greeting.tmpl.md`):
+
+```rust
+include_types!("prompts/greeting.tmpl.md");
+// Generates: mod greeting { pub struct Params { ... } }
 ```
 
 ## Common Mistakes to Avoid
 
-1. **Missing `>` prefix on `{% %}` lines.** Lines that start with a
-   `{% %}` directive MUST have the `>` blockquote prefix. Content lines (text, `{{ }}`) do
-   not need it — only `{% %}` directives do.
+1. **Missing `>` prefix on `{% %}` lines.** Statement tags (`{% %}`) that start a line **must** have the `> ` blockquote prefix — bare `{% %}` at line start is a compile error. Content lines (text, `{{ }}`) do not need it. Mid-line `{% %}` tags also do not need it.
 
 2. **Forgetting to type parameters.** Every param needs `= type`.
    `- name` alone is a hard error; write `- name = str`.

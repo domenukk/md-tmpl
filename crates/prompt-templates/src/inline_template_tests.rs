@@ -175,3 +175,28 @@ fn comment_in_template_strips_cleanly() {
     let output = tmpl.render(&ctx! { x: "!" }).unwrap();
     assert_eq!(output, "beforeafter !");
 }
+
+/// Regression: inline template names ({% tmpl NAME %}) must not trigger
+/// "undeclared variable" errors when they're referenced via {% include NAME %}.
+/// Bug: `collect_referenced_params` saw "greeting" in `{% include greeting %}`
+/// and flagged it as undeclared because inline template names weren't in
+/// the declared set.
+#[test]
+fn inline_template_name_not_flagged_as_undeclared() {
+    let src = concat!(
+        "---\n",
+        "params: [name = str]\n",
+        "---\n",
+        "> {% tmpl greeting %}\n",
+        "---\n",
+        "params: [name = str]\n",
+        "---\n",
+        "Hello {{ name }}!\n",
+        "> {% /tmpl %}\n",
+        "> {% include greeting with name=name %}",
+    );
+    // This should NOT fail with "undeclared variable: greeting".
+    let tmpl = Template::from_source(src).unwrap();
+    let output = tmpl.render(&ctx! { name: "world" }).unwrap();
+    assert_eq!(output, "Hello world!\n");
+}

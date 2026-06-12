@@ -10,6 +10,14 @@ use super::{
 };
 use crate::{context::Context, value::Value};
 
+/// Wrapper for `compile` without parent type aliases (for tests that don't need them).
+fn compile(
+    input: &str,
+) -> Result<(Vec<Segment>, HashMap<String, CompiledInlineTemplate>), TemplateError> {
+    let empty = HashMap::new();
+    super::compile(input, &empty)
+}
+
 // -- collect_referenced_params ------------------------------------------
 
 /// Compile a template body and return the set of referenced parameter names.
@@ -58,14 +66,14 @@ fn refs_multiple_expressions() {
 
 #[test]
 fn refs_for_loop_iterable_not_binding() {
-    let r = refs("{% for item in items %}{{ item }}{% /for %}");
+    let r = refs("> {% for item in items %}{{ item }}{% /for %}");
     assert!(r.contains("items"), "iterable should be referenced");
     assert!(!r.contains("item"), "loop binding should be excluded");
 }
 
 #[test]
 fn refs_nested_for_loop_scopes() {
-    let r = refs("{% for row in rows %}{% for col in row.cols %}{{ col }}{% /for %}{% /for %}");
+    let r = refs("> {% for row in rows %}{% for col in row.cols %}{{ col }}{% /for %}{% /for %}");
     assert!(r.contains("rows"));
     // `row` is a loop binding, not a context var. `row.cols` has root `row`
     // which is a binding, so it shouldn't appear.
@@ -78,7 +86,7 @@ fn refs_var_after_for_loop_not_shadowed() {
     // `x` is used as a loop binding inside the loop, but also referenced
     // after. The post-loop `{{ x }}` should find `x` as a context variable
     // since the binding scope ended.
-    let r = refs("{% for x in items %}{{ x }}{% /for %}{{ x }}");
+    let r = refs("> {% for x in items %}{{ x }}{% /for %}{{ x }}");
     assert!(r.contains("items"));
     assert!(r.contains("x"), "x should be found after loop scope ends");
 }
@@ -87,26 +95,26 @@ fn refs_var_after_for_loop_not_shadowed() {
 
 #[test]
 fn refs_simple_condition() {
-    assert!(refs("{% if show %}yes{% /if %}").contains("show"));
+    assert!(refs("> {% if show %}yes{% /if %}").contains("show"));
 }
 
 #[test]
 fn refs_condition_comparison_left() {
-    let r = refs("{% if count > 0 %}yes{% /if %}");
+    let r = refs("> {% if count > 0 %}yes{% /if %}");
     assert!(r.contains("count"));
     assert!(!r.contains("0"), "literal should not be a var");
 }
 
 #[test]
 fn refs_condition_comparison_both_sides() {
-    let r = refs("{% if left == right %}match{% /if %}");
+    let r = refs("> {% if left == right %}match{% /if %}");
     assert!(r.contains("left"));
     assert!(r.contains("right"));
 }
 
 #[test]
 fn refs_condition_else_branch() {
-    let r = refs("{% if flag %}{{ a }}{% else %}{{ b }}{% /if %}");
+    let r = refs("> {% if flag %}{{ a }}{% else %}{{ b }}{% /if %}");
     assert!(r.contains("flag"));
     assert!(r.contains("a"));
     assert!(r.contains("b"));
@@ -123,7 +131,7 @@ fn refs_len_function_extracts_arg() {
 
 #[test]
 fn refs_idx_function_with_loop_binding() {
-    let r = refs("{% for item in items %}{{ idx(item) }}{% /for %}");
+    let r = refs("> {% for item in items %}{{ idx(item) }}{% /for %}");
     assert!(r.contains("items"));
     assert!(
         !r.contains("item"),
@@ -142,20 +150,20 @@ fn refs_len_function_with_dotted_arg() {
 
 #[test]
 fn refs_string_literal_excluded() {
-    let r = refs("{% if x == 'hello' %}yes{% /if %}");
+    let r = refs("> {% if x == 'hello' %}yes{% /if %}");
     assert!(r.contains("x"));
     // 'hello' is a string literal.
 }
 
 #[test]
 fn refs_bool_literal_excluded() {
-    let r = refs("{% if x == true %}yes{% /if %}");
+    let r = refs("> {% if x == true %}yes{% /if %}");
     assert!(r.contains("x"));
 }
 
 #[test]
 fn refs_float_literal_excluded() {
-    let r = refs("{% if x > 3.14 %}yes{% /if %}");
+    let r = refs("> {% if x > 3.14 %}yes{% /if %}");
     assert!(r.contains("x"));
 }
 
@@ -169,7 +177,7 @@ fn refs_empty_template() {
 #[test]
 fn refs_raw_block_not_analyzed() {
     assert!(
-        refs("{% raw %}{{ not_a_var }}{% /raw %}").is_empty(),
+        refs("> {% raw %}{{ not_a_var }}{% /raw %}").is_empty(),
         "raw blocks should not contribute variables",
     );
 }
@@ -195,7 +203,7 @@ fn elif_first_branch_matches() {
     let mut ctx = Context::new();
     ctx.set("val", "A");
     let result = compiled_render(
-        "{% if val == 'A' %}first{% elif val == 'B' %}second{% else %}other{% /if %}",
+        "> {% if val == 'A' %}first{% elif val == 'B' %}second{% else %}other{% /if %}",
         &ctx,
     )
     .unwrap();
@@ -207,7 +215,7 @@ fn elif_middle_branch_matches() {
     let mut ctx = Context::new();
     ctx.set("val", "B");
     let result = compiled_render(
-        "{% if val == 'A' %}first{% elif val == 'B' %}second{% elif val == 'C' %}third{% /if %}",
+        "> {% if val == 'A' %}first{% elif val == 'B' %}second{% elif val == 'C' %}third{% /if %}",
         &ctx,
     )
     .unwrap();
@@ -219,7 +227,7 @@ fn elif_falls_through_to_else() {
     let mut ctx = Context::new();
     ctx.set("val", "Z");
     let result = compiled_render(
-        "{% if val == 'A' %}first{% elif val == 'B' %}second{% else %}fallback{% /if %}",
+        "> {% if val == 'A' %}first{% elif val == 'B' %}second{% else %}fallback{% /if %}",
         &ctx,
     )
     .unwrap();
@@ -231,7 +239,7 @@ fn elif_all_false_no_else_renders_nothing() {
     let mut ctx = Context::new();
     ctx.set("val", "Z");
     let result = compiled_render(
-        "{% if val == 'A' %}first{% elif val == 'B' %}second{% /if %}",
+        "> {% if val == 'A' %}first{% elif val == 'B' %}second{% /if %}",
         &ctx,
     )
     .unwrap();
@@ -245,7 +253,7 @@ fn elif_chain_with_nested_if() {
     ctx.set("val", "B");
     ctx.set("nested", Value::Bool(true));
     let result = compiled_render(
-        "{% if val == 'A' %}a{% elif val == 'B' %}{% if nested %}inner{% /if %}{% /if %}",
+        "> {% if val == 'A' %}a{% elif val == 'B' %}{% if nested %}inner{% /if %}{% /if %}",
         &ctx,
     )
     .unwrap();
@@ -254,7 +262,7 @@ fn elif_chain_with_nested_if() {
 
 #[test]
 fn elif_refs_all_branches() {
-    let r = refs("{% if a == 'x' %}{{ b }}{% elif c == 'y' %}{{ d }}{% else %}{{ e }}{% /if %}");
+    let r = refs("> {% if a == 'x' %}{{ b }}{% elif c == 'y' %}{{ d }}{% else %}{{ e }}{% /if %}");
     assert!(r.contains("a"));
     assert!(r.contains("b"));
     assert!(r.contains("c"));
@@ -281,7 +289,7 @@ fn trim_before_strips_preceding_whitespace() {
     // back to the previous newline (keeping the newline).
     let mut ctx = Context::new();
     ctx.set("show", Value::Bool(true));
-    let result = compiled_render("hello\n   {%- if show %}yes{%- /if %}", &ctx).unwrap();
+    let result = compiled_render("hello\n> {%- if show %}yes{%- /if %}", &ctx).unwrap();
     assert_eq!(result, "hello\nyes");
 }
 
@@ -349,7 +357,7 @@ fn trim_before_at_start_of_input() {
     // `{%-` at the very beginning with no preceding text should not panic.
     let mut ctx = Context::new();
     ctx.set("show", Value::Bool(true));
-    let result = compiled_render("{%- if show %}yes{% /if %}", &ctx).unwrap();
+    let result = compiled_render("> {%- if show %}yes{% /if %}", &ctx).unwrap();
     assert_eq!(result, "yes");
 }
 
@@ -358,7 +366,7 @@ fn trim_after_at_end_of_input() {
     // `-%}` at the very end with no following text should not panic.
     let mut ctx = Context::new();
     ctx.set("show", Value::Bool(true));
-    let result = compiled_render("{% if show %}yes{% /if -%}", &ctx).unwrap();
+    let result = compiled_render("> {% if show %}yes{% /if -%}", &ctx).unwrap();
     assert_eq!(result, "yes");
 }
 
@@ -443,16 +451,199 @@ fn condition_in_template_with_len_function() {
 
     // len() in conditions — tested via compiled_render (full pipeline)
     assert_eq!(
-        compiled_render("{% if len(items) == 2 %}yes{% /if %}", &ctx).unwrap(),
+        compiled_render("> {% if len(items) == 2 %}yes{% /if %}", &ctx).unwrap(),
         "yes"
     );
     assert_eq!(
-        compiled_render("{% if len(items) > 0 %}yes{% /if %}", &ctx).unwrap(),
+        compiled_render("> {% if len(items) > 0 %}yes{% /if %}", &ctx).unwrap(),
         "yes"
     );
     assert_eq!(
-        compiled_render("{% if len(items) == 0 %}yes{% /if %}", &ctx).unwrap(),
+        compiled_render("> {% if len(items) == 0 %}yes{% /if %}", &ctx).unwrap(),
         ""
+    );
+}
+
+// -- blockquote prefix enforcement tests (validate_blockquote_prefix) ----
+// Rule: `{% %}` at line start → MUST have `> ` prefix (compile error otherwise).
+// `{{ }}` at line start → no prefix needed.
+// `{% %}` mid-line → no prefix needed.
+// Content text between `> {% %}` tags → no prefix needed.
+
+#[test]
+fn bare_if_at_line_start_rejected() {
+    let err = compile("{% if show %}yes{% /if %}")
+        .expect_err("bare {% if %} at line start must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("blockquote") || msg.contains("> "),
+        "should mention blockquote prefix: {msg}"
+    );
+}
+
+#[test]
+fn bare_for_at_line_start_rejected() {
+    let err = compile("{% for x in items %}{{ x }}{% /for %}")
+        .expect_err("bare {% for %} at line start must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("blockquote") || msg.contains("> "),
+        "should mention blockquote prefix: {msg}"
+    );
+}
+
+#[test]
+fn bare_raw_at_line_start_rejected() {
+    let err = compile("{% raw %}literal{% /raw %}")
+        .expect_err("bare {% raw %} at line start must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("blockquote") || msg.contains("> "),
+        "should mention blockquote prefix: {msg}"
+    );
+}
+
+#[test]
+fn bare_match_at_line_start_rejected() {
+    let err = compile("{% match x %}{% case A %}a{% /match %}")
+        .expect_err("bare {% match %} at line start must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("blockquote") || msg.contains("> "),
+        "should mention blockquote prefix: {msg}"
+    );
+}
+
+#[test]
+fn bare_stmt_on_second_line_rejected() {
+    // First line is content (OK), second line is bare {% %} (rejected).
+    let err = compile("hello\n{% if show %}yes{% /if %}")
+        .expect_err("bare {% %} on any line must be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("blockquote") || msg.contains("> "),
+        "should mention blockquote prefix: {msg}"
+    );
+}
+
+#[test]
+fn expression_at_line_start_accepted() {
+    // {{ }} at line start does NOT need > prefix.
+    let mut ctx = Context::new();
+    ctx.set("name", "world");
+    let result = compiled_render("{{ name }}", &ctx).unwrap();
+    assert_eq!(result, "world");
+}
+
+#[test]
+fn expression_on_own_line_no_prefix_needed() {
+    // Multiple lines with {{ }} at line start — all OK without >.
+    let mut ctx = Context::new();
+    ctx.set("a", "one");
+    ctx.set("b", "two");
+    let result = compiled_render("{{ a }}\n{{ b }}", &ctx).unwrap();
+    assert_eq!(result, "one\ntwo");
+}
+
+#[test]
+fn midline_stmt_no_prefix_needed() {
+    // {% %} in the middle of a line (after text) does NOT need >.
+    let mut ctx = Context::new();
+    ctx.set("show", Value::Bool(true));
+    let result = compiled_render("text{% if show %} yes{% /if %}", &ctx).unwrap();
+    assert_eq!(result, "text yes");
+}
+
+#[test]
+fn content_between_blockquoted_tags_no_prefix_needed() {
+    // Content lines between > {% %} tags do NOT need > prefix.
+    let mut ctx = Context::new();
+    ctx.set("show", Value::Bool(true));
+    let result = compiled_render("> {% if show %}\nplain content\n> {% /if %}", &ctx).unwrap();
+    assert!(
+        result.contains("plain content"),
+        "content without > should render: {result:?}"
+    );
+}
+
+#[test]
+fn mixed_content_and_expressions_between_tags() {
+    // Content and {{ }} between > {% %} tags — no > needed on content lines.
+    let mut ctx = Context::new();
+    ctx.set("name", "Alice");
+    ctx.set("show", Value::Bool(true));
+    let result = compiled_render(
+        "> {% if show %}\nHello {{ name }}!\nGoodbye.\n> {% /if %}",
+        &ctx,
+    )
+    .unwrap();
+    assert!(result.contains("Hello Alice!"), "got: {result:?}");
+    assert!(result.contains("Goodbye."), "got: {result:?}");
+}
+
+#[test]
+fn multiline_for_body_no_prefix_on_content() {
+    // For-loop body: content and {{ }} lines don't need >.
+    let mut ctx = Context::new();
+    ctx.set(
+        "items",
+        Value::List(vec![
+            Value::Dict(HashMap::from([
+                ("name".into(), Value::Str("a".into())),
+                ("score".into(), Value::Int(10)),
+            ])),
+            Value::Dict(HashMap::from([
+                ("name".into(), Value::Str("b".into())),
+                ("score".into(), Value::Int(20)),
+            ])),
+        ]),
+    );
+    let result = compiled_render(
+        "> {% for item in items %}\n- {{ item.name }}: {{ item.score }}\n> {% /for %}",
+        &ctx,
+    )
+    .unwrap();
+    assert!(result.contains("- a: 10"), "got: {result:?}");
+    assert!(result.contains("- b: 20"), "got: {result:?}");
+}
+
+#[test]
+fn nested_blocks_content_no_prefix() {
+    // Nested > {% if %} inside > {% for %} — content lines still no prefix.
+    let mut ctx = Context::new();
+    ctx.set("show", Value::Bool(true));
+    ctx.set(
+        "items",
+        Value::List(vec![Value::Str("x".into()), Value::Str("y".into())]),
+    );
+    let result = compiled_render(
+        "> {% for item in items %}\n> {% if show %}\n{{ item }}\n> {% /if %}\n> {% /for %}",
+        &ctx,
+    )
+    .unwrap();
+    assert!(result.contains("x"), "got: {result:?}");
+    assert!(result.contains("y"), "got: {result:?}");
+}
+
+#[test]
+fn blockquote_on_content_line_preserved_in_output() {
+    // A `> ` on a content line (not a {% %} line) is NOT stripped —
+    // it's a real markdown blockquote and appears in the output.
+    let ctx = Context::new();
+    let result = compiled_render("> This is a quote.", &ctx).unwrap();
+    assert_eq!(result, "> This is a quote.");
+}
+
+#[test]
+fn indented_bare_stmt_rejected() {
+    // Even with leading whitespace, a line whose first non-space char is `{%`
+    // must be rejected.
+    let err =
+        compile("   {% if x %}y{% /if %}").expect_err("indented bare {% %} should be rejected");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("blockquote") || msg.contains("> "),
+        "should mention blockquote prefix: {msg}"
     );
 }
 
@@ -669,4 +860,79 @@ fn markdown_link_include_for_each() {
     );
     let result = tmpl.render(&ctx).unwrap();
     assert_eq!(result, "- one- two");
+}
+
+// -- self-recursive include tests -----------------------------------------
+
+#[test]
+fn self_recursive_include_renders_tree() {
+    let dir = tempfile::tempdir().unwrap();
+    // A template that includes itself for each child.
+    std::fs::write(
+        dir.path().join("node.tmpl.md"),
+        "---\nname: node\nparams:\n  - label = str\n  - children = list<>\n---\n\
+         {{ label }}\n\
+         > {% for child in children %}\
+         > {% include [node](node.tmpl.md) with label=child.label, children=child.children %}\
+         > {% /for %}",
+    )
+    .unwrap();
+
+    let tmpl = crate::Template::from_file(&dir.path().join("node.tmpl.md")).unwrap();
+    let mut ctx = Context::new();
+    ctx.set("label", "root");
+    ctx.set(
+        "children",
+        Value::List(vec![
+            Value::Dict(HashMap::from([
+                ("label".into(), Value::Str("child_a".into())),
+                ("children".into(), Value::List(vec![])),
+            ])),
+            Value::Dict(HashMap::from([
+                ("label".into(), Value::Str("child_b".into())),
+                (
+                    "children".into(),
+                    Value::List(vec![Value::Dict(HashMap::from([
+                        ("label".into(), Value::Str("grandchild".into())),
+                        ("children".into(), Value::List(vec![])),
+                    ]))]),
+                ),
+            ])),
+        ]),
+    );
+    let result = tmpl.render(&ctx).unwrap();
+    assert!(result.contains("root"), "should contain root: {result}");
+    assert!(
+        result.contains("child_a"),
+        "should contain child_a: {result}"
+    );
+    assert!(
+        result.contains("child_b"),
+        "should contain child_b: {result}"
+    );
+    assert!(
+        result.contains("grandchild"),
+        "should contain grandchild: {result}"
+    );
+}
+
+#[test]
+fn self_recursive_include_terminates_on_empty_children() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("leaf.tmpl.md"),
+        "---\nname: leaf\nparams:\n  - label = str\n  - children = list<>\n---\n\
+         {{ label }}\n\
+         > {% for child in children %}\
+         > {% include [leaf](leaf.tmpl.md) with label=child.label, children=child.children %}\
+         > {% /for %}",
+    )
+    .unwrap();
+
+    let tmpl = crate::Template::from_file(&dir.path().join("leaf.tmpl.md")).unwrap();
+    let mut ctx = Context::new();
+    ctx.set("label", "solo");
+    ctx.set("children", Value::List(vec![]));
+    let result = tmpl.render(&ctx).unwrap();
+    assert_eq!(result.trim(), "solo");
 }

@@ -424,16 +424,18 @@ fn find_elif_tag(haystack: &str) -> Option<(usize, usize, &str)> {
 /// This is needed because filter arguments may contain pipes:
 /// `name | default("a | b")` should split into `("name ", " default(\"a | b\")")`.
 pub(crate) fn split_pipe_aware(expr: &str) -> (&str, &str) {
+    use crate::consts::{PAREN_CLOSE, PAREN_OPEN, PIPE, QUOTE_DOUBLE, QUOTE_SINGLE};
+
     let mut depth: u32 = 0;
     let mut in_quote: Option<char> = None;
 
     for (i, ch) in expr.char_indices() {
         match ch {
-            '"' | '\'' if in_quote == Some(ch) => in_quote = None,
-            '"' | '\'' if in_quote.is_none() => in_quote = Some(ch),
-            '(' if in_quote.is_none() => depth += 1,
-            ')' if in_quote.is_none() && depth > 0 => depth -= 1,
-            '|' if in_quote.is_none() && depth == 0 => {
+            QUOTE_DOUBLE | QUOTE_SINGLE if in_quote == Some(ch) => in_quote = None,
+            QUOTE_DOUBLE | QUOTE_SINGLE if in_quote.is_none() => in_quote = Some(ch),
+            PAREN_OPEN if in_quote.is_none() => depth += 1,
+            PAREN_CLOSE if in_quote.is_none() && depth > 0 => depth -= 1,
+            PIPE if in_quote.is_none() && depth == 0 => {
                 return (&expr[..i], &expr[i + 1..]);
             }
             _ => {}
@@ -445,6 +447,8 @@ pub(crate) fn split_pipe_aware(expr: &str) -> (&str, &str) {
 /// Split a filter chain string at top-level `|` delimiters, skipping pipes
 /// inside quotes and parentheses.
 pub(crate) fn split_filters_aware(chain: &str) -> Vec<&str> {
+    use crate::consts::{PAREN_CLOSE, PAREN_OPEN, PIPE, QUOTE_DOUBLE, QUOTE_SINGLE};
+
     let mut result = Vec::new();
     let mut start = 0;
     let mut depth: u32 = 0;
@@ -452,11 +456,11 @@ pub(crate) fn split_filters_aware(chain: &str) -> Vec<&str> {
 
     for (i, ch) in chain.char_indices() {
         match ch {
-            '"' | '\'' if in_quote == Some(ch) => in_quote = None,
-            '"' | '\'' if in_quote.is_none() => in_quote = Some(ch),
-            '(' if in_quote.is_none() => depth += 1,
-            ')' if in_quote.is_none() && depth > 0 => depth -= 1,
-            '|' if in_quote.is_none() && depth == 0 => {
+            QUOTE_DOUBLE | QUOTE_SINGLE if in_quote == Some(ch) => in_quote = None,
+            QUOTE_DOUBLE | QUOTE_SINGLE if in_quote.is_none() => in_quote = Some(ch),
+            PAREN_OPEN if in_quote.is_none() => depth += 1,
+            PAREN_CLOSE if in_quote.is_none() && depth > 0 => depth -= 1,
+            PIPE if in_quote.is_none() && depth == 0 => {
                 result.push(&chain[start..i]);
                 start = i + 1;
             }
@@ -598,8 +602,8 @@ fn parse_quoted_path(input: &str) -> Result<(&str, &str), TemplateError> {
         )));
     }
 
-    // Bare identifier — used for inline template names ({% include name %}).
-    // Identifiers are alphanumeric + underscore, terminated by whitespace or end.
+    // Bare identifier or dotted path — used for inline templates or variable templates.
+    // We stop at the first whitespace.
     if first.is_alphanumeric() || first == '_' {
         let end = input
             .find(|c: char| c.is_whitespace())

@@ -8,20 +8,20 @@ pub(crate) mod analysis;
 mod blockquote;
 mod inline;
 pub(crate) mod render;
-mod type_check;
+pub(crate) mod type_check;
 
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
 
 // Re-export submodule items used by the rest of the crate.
 pub use analysis::collect_referenced_params;
 pub(crate) use render::{register_loop_meta, render_segments, render_segments_into};
-pub use type_check::validate_field_accesses;
+pub use type_check::{validate_field_accesses, validate_field_accesses_with_opaque};
 
 use crate::{
     consts::{
-        CLOSE_FOR, CLOSE_IF, CLOSE_MATCH, CLOSE_RAW, KW_ELSE, KW_RAW, KW_RAW_ASSIGN, LEGACY_ENDFOR,
-        LEGACY_ENDIF, LEGACY_ENDRAW, STMT_END, STMT_START, TAG_CASE_PREFIX, TAG_ELIF_PREFIX,
-        TAG_FOR_PREFIX, TAG_IF_PREFIX, TAG_INCLUDE_PREFIX, TAG_MATCH_PREFIX,
+        CLOSE_FOR, CLOSE_IF, CLOSE_MATCH, CLOSE_RAW, KW_DEFAULT, KW_ELSE, KW_RAW, KW_RAW_ASSIGN,
+        LEGACY_ENDFOR, LEGACY_ENDIF, LEGACY_ENDRAW, STMT_END, STMT_START, TAG_CASE_PREFIX,
+        TAG_ELIF_PREFIX, TAG_FOR_PREFIX, TAG_IF_PREFIX, TAG_INCLUDE_PREFIX, TAG_MATCH_PREFIX,
     },
     error::TemplateError,
     parser,
@@ -110,41 +110,63 @@ pub enum Condition {
 /// Comparison operators for condition expressions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComparisonOp {
+    /// `==`
     Eq,
+    /// `!=`
     Ne,
+    /// `<=`
     Le,
+    /// `>=`
     Ge,
+    /// `<`
     Lt,
+    /// `>`
     Gt,
 }
 
 /// A pre-parsed filter with typed kind and optional argument.
 #[derive(Debug, Clone)]
 pub struct ParsedFilter {
+    /// The resolved filter kind.
     pub kind: FilterKind,
+    /// Optional argument string (e.g. the separator for `join`).
     pub args: Option<Cow<'static, str>>,
 }
 
 /// Strongly-typed filter names, resolved at compile time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterKind {
+    /// `| upper` — uppercase.
     Upper,
+    /// `| lower` — lowercase.
     Lower,
+    /// `| trim` — strip whitespace.
     Trim,
+    /// `| fixed(n)` — fixed-width format.
     Fixed,
-    Default,
-    Length,
+    /// `| join(sep)` — join list items.
     Join,
+    /// `| limit(n)` — truncate to *n* items.
     Limit,
-    Gt,
+    /// `| add(n)` — add a number.
+    Add,
+    /// `| sub(n)` — subtract a number.
+    Sub,
 }
+
+/// A `(key, expression)` pair used in `{% include ... with key=expr %}` overrides.
+pub type WithVarPair = (Cow<'static, str>, Cow<'static, str>);
 
 /// A pre-parsed include directive.
 #[derive(Debug, Clone)]
 pub struct CompiledInclude {
+    /// Path to the included template file.
     pub path: Cow<'static, str>,
-    pub with_vars: Vec<(Cow<'static, str>, Cow<'static, str>)>,
-    pub for_each: Option<(Cow<'static, str>, Cow<'static, str>)>,
+    /// `with key=expr` variable overrides.
+    pub with_vars: Vec<WithVarPair>,
+    /// Optional `for var in list` iteration.
+    pub for_each: Option<WithVarPair>,
+    /// Pre-compiled inline template body (for `{% tmpl %}` blocks).
     pub inline_compiled: Option<CompiledInlineTemplate>,
 }
 
@@ -154,6 +176,9 @@ pub struct CompiledInclude {
 
 /// Compile a template body into a list of pre-parsed segments.
 ///
+/// `parent_type_aliases` are passed to inline template extraction so that
+/// `{% tmpl %}` blocks can reference the enclosing template's type aliases.
+///
 /// Recursively compiles for-loop and if-block bodies so the entire
 /// template tree is pre-parsed.
 ///
@@ -162,12 +187,15 @@ pub struct CompiledInclude {
 /// Returns [`TemplateError::Syntax`] on malformed tags or blocks.
 pub fn compile(
     input: &str,
+    parent_type_aliases: &HashMap<String, crate::types::VarType>,
 ) -> Result<(Vec<Segment>, HashMap<String, CompiledInlineTemplate>), TemplateError> {
+    // Validate: statement tags at line start must have `>` blockquote prefix.
     blockquote::validate_blockquote_prefix(input)?;
-    // Preprocess: strip blockquote `>` prefix from statement-tag lines.
+    // Preprocess: strip blockquote `>` prefix from statement-tag lines if present.
     let processed = blockquote::strip_blockquote_tags(input);
     // Extract inline template definitions before compiling the body.
-    let (cleaned, inline_templates) = inline::extract_inline_templates(&processed)?;
+    let (cleaned, inline_templates) =
+        inline::extract_inline_templates(&processed, parent_type_aliases)?;
     let segments = compile_body(&cleaned).map_err(|e| enrich_error(e, &cleaned))?;
     Ok((segments, inline_templates))
 }
@@ -387,16 +415,24 @@ fn trim_leading_whitespace_through_newline(text: &str) -> &str {
 fn extract_comment_variable_refs(content: &str) -> Vec<Cow<'static, str>> {
     let mut refs = Vec::new();
     let mut search = content;
-    while let Some(start) = search.find("{{") {
-        let rest = &search[start + 2..];
-        if let Some(end) = rest.find("}}") {
+    while let Some(start) = search.find(crate::consts::EXPR_START) {
+        let rest = &search[start + crate::consts::EXPR_START.len()..];
+        if let Some(end) = rest.find(crate::consts::EXPR_END) {
             let inner = rest[..end].trim();
             // Extract just the root variable name (before any `.` or `|`).
-            let root = inner.split(['.', '|', '(']).next().unwrap_or("").trim();
-            if !root.is_empty() && !root.starts_with('\'') && !root.starts_with('"') {
+            let root = inner
+                .split([
+                    crate::consts::PATH_SEP,
+                    crate::consts::PIPE,
+                    crate::consts::PAREN_OPEN,
+                ])
+                .next()
+                .unwrap_or("")
+                .trim();
+            if !root.is_empty() && crate::consts::strip_string_literal(root).is_none() {
                 refs.push(Cow::Owned(root.to_string()));
             }
-            search = &rest[end + 2..];
+            search = &rest[end + crate::consts::EXPR_END.len()..];
         } else {
             break;
         }
@@ -406,12 +442,12 @@ fn extract_comment_variable_refs(content: &str) -> Vec<Cow<'static, str>> {
 
 /// Compile an expression tag into a `Segment::Expr`.
 fn compile_expr(expr: &str) -> Result<Segment, TemplateError> {
-    let parts: Vec<&str> = expr.splitn(2, '|').collect();
+    let parts: Vec<&str> = expr.splitn(2, crate::consts::PIPE).collect();
     let path = Cow::Owned(parts[0].trim().to_string());
     let mut filters = Vec::new();
 
     if parts.len() > 1 {
-        for filter_str in parts[1].split('|') {
+        for filter_str in parts[1].split(crate::consts::PIPE) {
             let filter_str = filter_str.trim();
             if filter_str.is_empty() {
                 continue;
@@ -431,19 +467,18 @@ fn compile_expr(expr: &str) -> Result<Segment, TemplateError> {
 /// Resolve a filter name to a strongly-typed [`FilterKind`].
 pub(crate) fn parse_filter_kind(name: &str) -> Result<FilterKind, TemplateError> {
     use crate::consts::{
-        FILTER_DEFAULT, FILTER_FIXED, FILTER_GT, FILTER_JOIN, FILTER_LENGTH, FILTER_LIMIT,
-        FILTER_LOWER, FILTER_TRIM, FILTER_UPPER,
+        FILTER_ADD, FILTER_FIXED, FILTER_JOIN, FILTER_LIMIT, FILTER_LOWER, FILTER_SUB, FILTER_TRIM,
+        FILTER_UPPER,
     };
     match name {
         FILTER_UPPER => Ok(FilterKind::Upper),
         FILTER_LOWER => Ok(FilterKind::Lower),
         FILTER_TRIM => Ok(FilterKind::Trim),
         FILTER_FIXED => Ok(FilterKind::Fixed),
-        FILTER_DEFAULT => Ok(FilterKind::Default),
-        FILTER_LENGTH => Ok(FilterKind::Length),
         FILTER_JOIN => Ok(FilterKind::Join),
         FILTER_LIMIT => Ok(FilterKind::Limit),
-        FILTER_GT => Ok(FilterKind::Gt),
+        FILTER_ADD => Ok(FilterKind::Add),
+        FILTER_SUB => Ok(FilterKind::Sub),
         _ => Err(TemplateError::UnknownFilter(name.to_string())),
     }
 }
@@ -484,6 +519,7 @@ fn compile_statement<'a>(
         || stmt == CLOSE_RAW
         || stmt == CLOSE_MATCH
         || stmt.starts_with(TAG_CASE_PREFIX)
+        || stmt == KW_DEFAULT
     {
         Err(TemplateError::syntax(format!(
             "unexpected '{{% {stmt} %}}' without matching opening tag"
@@ -607,7 +643,7 @@ fn compile_match<'a>(
                 expr: Cow::Owned(expr.to_string()),
                 arms: vec![(
                     variant
-                        .split('|')
+                        .split(crate::consts::PIPE)
                         .map(|v| Cow::Owned(v.trim().to_string()))
                         .collect(),
                     body,
@@ -641,6 +677,7 @@ fn compile_match<'a>(
 fn split_match_arms(body: &str) -> Result<MatchArms, TemplateError> {
     let mut arms = Vec::new();
     let mut remaining = body;
+    let mut has_default = false;
 
     // Skip whitespace before the first {% case %}.
     remaining = remaining.trim_start();
@@ -651,7 +688,7 @@ fn split_match_arms(body: &str) -> Result<MatchArms, TemplateError> {
     }
 
     loop {
-        // Find the next {% case Variant %} tag.
+        // Find the next {% case Variant %} or {% default %} tag.
         let scan = parser::scan_next_tag(remaining)?;
         match scan {
             parser::ScanResult::Literal(_) => break,
@@ -669,6 +706,13 @@ fn split_match_arms(body: &str) -> Result<MatchArms, TemplateError> {
                 }
 
                 if let Some(variant) = stmt.strip_prefix(TAG_CASE_PREFIX) {
+                    // {% case %} after {% default %} is not allowed.
+                    if has_default {
+                        return Err(TemplateError::syntax(
+                            "match: {% case %} after {% default %} is not allowed".to_string(),
+                        ));
+                    }
+
                     let variant = variant.trim();
                     if variant.is_empty() {
                         return Err(TemplateError::syntax(
@@ -676,15 +720,33 @@ fn split_match_arms(body: &str) -> Result<MatchArms, TemplateError> {
                         ));
                     }
 
-                    // Scan forward to find the next {% case %} or end of body.
+                    // Scan forward to find the next {% case %}, {% default %}, or end.
                     let arm_body = scan_to_next_case_or_end(after)?;
                     let arm_segments =
                         compile_body(arm_body).map_err(|e| enrich_error(e, arm_body))?;
                     let variants = variant
-                        .split('|')
+                        .split(crate::consts::PIPE)
                         .map(|v| Cow::Owned(v.trim().to_string()))
                         .collect();
                     arms.push((variants, arm_segments));
+
+                    remaining = &after[arm_body.len()..];
+                    if remaining.is_empty() {
+                        break;
+                    }
+                } else if stmt == KW_DEFAULT {
+                    if has_default {
+                        return Err(TemplateError::syntax(
+                            "match: only one {% default %} arm is allowed".to_string(),
+                        ));
+                    }
+                    has_default = true;
+
+                    // Scan forward to find the next {% case %}, {% default %}, or end.
+                    let arm_body = scan_to_next_case_or_end(after)?;
+                    let arm_segments =
+                        compile_body(arm_body).map_err(|e| enrich_error(e, arm_body))?;
+                    arms.push((vec![Cow::Borrowed("_")], arm_segments));
 
                     remaining = &after[arm_body.len()..];
                     if remaining.is_empty() {
@@ -735,8 +797,8 @@ fn scan_to_next_case_or_end(input: &str) -> Result<&str, TemplateError> {
                         return Ok(&input[..tag_pos]);
                     }
                     depth -= 1;
-                } else if stmt.starts_with(TAG_CASE_PREFIX) && depth == 0 {
-                    // Next case at our level — return everything before.
+                } else if (stmt.starts_with(TAG_CASE_PREFIX) || stmt == KW_DEFAULT) && depth == 0 {
+                    // Next case/default at our level — return everything before.
                     return Ok(&input[..tag_pos]);
                 }
 

@@ -370,7 +370,7 @@ impl de::Error for DeError {
 ///
 /// This is the inverse of [`to_value`]. Enums are supported:
 /// - `Value::Str("Variant")` deserializes as a unit variant.
-/// - `Value::Dict({"tag": "Variant", ...})` deserializes as a struct variant.
+/// - `Value::Dict({"__kind__": "Variant", ...})` deserializes as a struct variant.
 ///
 /// # Errors
 ///
@@ -418,6 +418,9 @@ impl<'de> de::Deserializer<'de> for ValueDeserializer<'de> {
             Value::Bool(b) => visitor.visit_bool(*b),
             Value::List(v) => visitor.visit_seq(SeqDeserializer::new(v)),
             Value::Dict(m) => visitor.visit_map(MapDeserializer::new(m)),
+            Value::Tmpl(_) => Err(DeError(
+                "cannot deserialize a Tmpl value — templates are not data".into(),
+            )),
         }
     }
 
@@ -488,7 +491,7 @@ impl<'de> de::Deserializer<'de> for ValueDeserializer<'de> {
         match self.0 {
             // Unit variant: Value::Str("Variant")
             Value::Str(s) => visitor.visit_enum(EnumDeserializer::Unit(s)),
-            // Struct variant: Value::Dict({"tag": "Variant", ...fields})
+            // Struct variant: Value::Dict({"__kind__": "Variant", ...fields})
             Value::Dict(m) => {
                 let tag_key = crate::consts::ENUM_TAG_KEY;
                 let tag = match m.get(tag_key) {
@@ -702,7 +705,7 @@ impl<'de> de::VariantAccess<'de> for VariantDeserializer<'de> {
     ) -> Result<V::Value, DeError> {
         match self {
             Self::Struct(fields) => {
-                // Use a filtering iterator that skips the "tag" key
+                // Use a filtering iterator that skips the ENUM_TAG_KEY key
                 visitor.visit_map(FilteredMapDeserializer::new(fields))
             }
             Self::Unit => Err(DeError("expected struct variant, got unit".into())),
@@ -710,7 +713,7 @@ impl<'de> de::VariantAccess<'de> for VariantDeserializer<'de> {
     }
 }
 
-// -- Filtered map deserializer (skips "tag" key for struct variants) --
+// -- Filtered map deserializer (skips ENUM_TAG_KEY for struct variants) --
 
 struct FilteredMapDeserializer<'de> {
     iter: std::collections::hash_map::Iter<'de, String, Value>,
@@ -875,7 +878,10 @@ mod tests {
             Value::Dict(m) => m,
             other => panic!("expected Dict, got {}", other.type_name()),
         };
-        assert_eq!(dict.get("tag"), Some(&Value::Str("Critical".into())));
+        assert_eq!(
+            dict.get(crate::consts::ENUM_TAG_KEY),
+            Some(&Value::Str("Critical".into()))
+        );
         assert_eq!(dict.get("reason"), Some(&Value::Str("RCE".into())));
 
         // Unit variant → plain string (unchanged)
@@ -943,7 +949,7 @@ mod tests {
             High,
         }
         let val = Value::dict([
-            ("tag", Value::Str("Critical".into())),
+            (crate::consts::ENUM_TAG_KEY, Value::Str("Critical".into())),
             ("reason", Value::Str("RCE".into())),
         ]);
         let sev: Severity = from_value(&val).unwrap();
@@ -1021,13 +1027,16 @@ mod tests {
         enum Status {
             Active,
         }
-        // Dict without "tag" key
+        // Dict without ENUM_TAG_KEY key
         let val = Value::dict([("name", Value::Str("oops".into()))]);
         let result = from_value::<Status>(&val);
         assert!(result.is_err());
         assert!(
-            result.unwrap_err().to_string().contains("tag"),
-            "error should mention missing tag"
+            result
+                .unwrap_err()
+                .to_string()
+                .contains(crate::consts::ENUM_TAG_KEY),
+            "error should mention missing tag key"
         );
     }
 
@@ -1059,7 +1068,7 @@ mod tests {
         }
 
         let original = Value::dict([
-            ("tag", Value::Str("Critical".into())),
+            (crate::consts::ENUM_TAG_KEY, Value::Str("Critical".into())),
             ("reason", Value::Str("RCE".into())),
         ]);
         let sev: Severity = from_value(&original).unwrap();

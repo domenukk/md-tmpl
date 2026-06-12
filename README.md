@@ -59,17 +59,19 @@ loud — which is especially valuable when an LLM agent is writing or
 editing your prompts, because the compiler catches drift immediately
 instead of letting it propagate silently.
 
-| Feature                      | Why it matters                                                                     |
-| ---------------------------- | ---------------------------------------------------------------------------------- |
-| **Strongly typed**           | Every parameter declares a type (`str`, `int`, `list<…>`, `dict<…>`, `enum<…>`).   |
-| **Typed lists**              | `list<title = str, score = int>` — iterate with `{% for %}`, fields are validated. |
-| **Enum dispatch**            | `match`/`case` on typed variants with exhaustiveness checking and field narrowing. |
-| **Includes as links**        | `{% include [name](path.tmpl.md) with … %}` — clickable, type-checked parameters.  |
-| **Inline templates**         | `{% tmpl name %}` — reusable fragments without separate files.                     |
-| **Compile-time safety**      | Proc macros validate syntax, types, and variable references at `cargo build`.      |
-| **Zero-overhead rendering**  | `include_template!` pre-parses at compile time; `TemplateCache` deduplicates I/O.  |
-| **Readable as raw markdown** | `> {% %}` blockquote prefix keeps control flow visually separated from prose.      |
-| **Hot-reload safe**          | Reload templates at runtime; struct validation catches contract drift.             |
+| Feature                      | Why it matters                                                                              |
+| ---------------------------- | ------------------------------------------------------------------------------------------- |
+| **Strongly typed**           | Every parameter declares a type (`str`, `int`, `list<…>`, `dict<…>`, `enum<…>`, `tmpl<…>`). |
+| **Type aliases**             | `types:` block defines reusable named types; avoid repeating complex declarations.          |
+| **Cross-template imports**   | `imports:` pulls types from other templates via dotted paths (`stem.TypeName`).             |
+| **Typed lists**              | `list<title = str, score = int>` — iterate with `{% for %}`, fields are validated.          |
+| **Enum dispatch**            | `match`/`case` on typed variants with exhaustiveness checking and field narrowing.          |
+| **Includes as links**        | `{% include [name](path.tmpl.md) with … %}` — clickable, type-checked parameters.           |
+| **Inline templates**         | `{% tmpl name %}` — reusable fragments without separate files.                              |
+| **Compile-time safety**      | Proc macros validate syntax, types, and variable references at `cargo build`.               |
+| **Zero-overhead rendering**  | `include_template!` pre-parses at compile time; `TemplateCache` deduplicates I/O.           |
+| **Readable as raw markdown** | `> {% %}` blockquote prefix keeps control flow visually separated from prose.               |
+| **Hot-reload safe**          | Reload templates at runtime; struct validation catches contract drift.                      |
 
 ## Installation
 
@@ -96,13 +98,13 @@ Hello {{ name }}!
 Generate a typed Rust struct and pre-validate the template at compile time:
 
 ```rust
-use prompt_templates_macros::{include_template, template_params_struct};
+use prompt_templates_macros::{include_template, include_types};
 
-// Generates: struct GreetingParams { pub name: String }
-template_params_struct!("prompts/simple_greeting.tmpl.md" => GreetingParams);
+// Generates: mod simple_greeting { pub struct Params { pub name: String } }
+include_types!("prompts/simple_greeting.tmpl.md");
 
 let tmpl = include_template!("prompts/simple_greeting.tmpl.md");
-let output = GreetingParams { name: "world".into() }.render(&tmpl).unwrap();
+let output = simple_greeting::Params { name: "world".into() }.render(&tmpl).unwrap();
 
 assert_eq!(output, "\nHello world!\n");
 ```
@@ -194,21 +196,90 @@ to the file:
 Define reusable fragments inline without separate files using `{% tmpl %}`:
 
 ```markdown
-## {% tmpl task_row %}
+> {% tmpl task_row %}
 
-## params:
+---
 
-## - title = str
+params:
 
-## - priority = str
+- title = str
+- priority = str
+
+---
 
 - **{{ title }}** ({{ priority }})
-  {% /tmpl %}
+  > {% /tmpl %}
 
 > {% for task in tasks %}
 > {% include task_row with title=task.title, priority=task.priority %}
 > {% /for %}
 ```
+
+## Type Aliases
+
+Define reusable named types with the `types:` block to avoid repeating
+complex type declarations:
+
+<!-- prettier-ignore -->
+```markdown
+---
+types:
+  - Labelled = enum<Known(label = str), Unknown>
+params:
+  - bugs = list<title = str, vuln_type = Labelled>
+  - components = list<name = str, category = Labelled>
+---
+
+> {% for bug in bugs %}
+- **{{ bug.title }}**
+  > {% match bug.vuln_type %}
+  > {% case Known %}
+  Known: {{ bug.vuln_type.label }}
+  > {% case Unknown %}
+  Unknown vulnerability.
+  > {% /match %}
+> {% /for %}
+```
+
+The `Labelled` type alias is defined once and used across both `bugs`
+and `components` params. See [SPEC.md](SPEC.md) for full details.
+
+## Cross-Template Imports
+
+Import types from other templates with the `imports:` block:
+
+```markdown
+---
+imports:
+  - "[shared_types](shared_types.tmpl.md)"
+params:
+  - items = shared_types.items
+  - priority = shared_types.Priority
+---
+```
+
+The import stem must match the filename without `.tmpl.md`. Types are
+referenced via dotted path: `stem.TypeName`. See [SPEC.md](SPEC.md).
+
+## Constants
+
+Declare file-scoped constants with `consts:` — available everywhere in
+the template body without explicit passing:
+
+```markdown
+---
+consts:
+  - NOTEBOOK_FILENAME = str := "thought_process.md"
+  - MAX_RETRIES = int := 3
+params:
+  - name = str
+---
+
+{{ name }}'s notebook: {{ NOTEBOOK_FILENAME }} (max {{ MAX_RETRIES }} retries)
+```
+
+Constants are inherited by inline `{% tmpl %}` blocks and accessible
+from importing templates via `stem.CONST_NAME`. See [SPEC.md](SPEC.md).
 
 ## The `ctx!` Macro
 
@@ -255,25 +326,48 @@ ctx.set("name", "world");
 let output = tmpl.render(&ctx).unwrap();
 ```
 
-### `template_params_struct!` — generated typed structs
+### `validate_template!` — compile-time-only validation
+
+Runs the same checks as `include_template!` but produces no runtime value.
+Useful for static assertions in tests or build scripts:
+
+```rust
+// Fails to compile if the template has errors.
+prompt_templates_macros::validate_template!("prompts/simple_greeting.tmpl.md");
+```
+
+### `template_params_struct!` — custom-named struct
+
+Like `include_types!`, but emits the struct directly into the calling
+scope with a caller-chosen name (no wrapping module):
+
+```rust
+prompt_templates_macros::template_params_struct!(
+    "prompts/greeting.tmpl.md" => Greeting
+);
+
+let params = Greeting { name: "Alice".into(), count: 42, items: vec![] };
+```
+
+### `include_types!` — generated typed structs
 
 Generates a Rust struct from the template's frontmatter. Fields, enums,
 and nested structs are all derived from the `.tmpl.md` file:
 
 ```rust
-prompt_templates_macros::template_params_struct!(
-    "prompts/greeting.tmpl.md" => GreetingParams
+prompt_templates_macros::include_types!(
+    "prompts/greeting.tmpl.md"
 );
 
 // Generates:
-//   struct GreetingParams { pub name: String, pub count: i64, pub items: Vec<…> }
-//   impl GreetingParams { fn render(&self, tmpl: &Template) -> Result<String, …> }
+//   mod greeting { pub struct Params { pub name: String, pub count: i64, pub items: Vec<…> } }
+//   impl greeting::Params { fn render(&self, tmpl: &Template) -> Result<String, …> }
 
 let tmpl = prompt_templates_macros::include_template!("prompts/greeting.tmpl.md");
-let output = GreetingParams {
+let output = greeting::Params {
     name: "Alice".into(),
     count: 42,
-    items: vec![GreetingParamsItemsItem { label: "hello".into() }],
+    items: vec![greeting::ParamsItemsItem { label: "hello".into() }],
 }.render(&tmpl).unwrap();
 ```
 
@@ -283,17 +377,32 @@ Load templates from disk at runtime, but validate they haven't diverged
 from the compiled struct:
 
 ```rust
-# prompt_templates_macros::template_params_struct!("prompts/greeting.tmpl.md" => GreetingParams);
+# prompt_templates_macros::include_types!("prompts/greeting.tmpl.md");
 let tmpl = prompt_templates::Template::from_file(
     std::path::Path::new("prompts/greeting.tmpl.md")
 ).unwrap();
-GreetingParams::validate_template(&tmpl).unwrap();
+greeting::Params::validate_template(&tmpl).unwrap();
 
-let output = GreetingParams {
+let output = greeting::Params {
     name: "Bob".into(),
     count: 1,
     items: vec![],
 }.render(&tmpl).unwrap();
+```
+
+### Runtime loading — `load_template`
+
+Load templates by name from a directory at runtime:
+
+```rust,no_run
+use prompt_templates::load_template;
+
+let tmpl = load_template(std::path::Path::new("prompts"), "greeting").unwrap();
+// Looks for prompts/greeting.tmpl.md
+
+let mut ctx = prompt_templates::Context::new();
+ctx.set("name", "world");
+let output = tmpl.render(&ctx).unwrap();
 ```
 
 ## Caching
@@ -317,6 +426,166 @@ ctx.set("name", "world");
 let output = tmpl.render_cached(&ctx, &cache).unwrap();
 assert_eq!(output, "Hello world!");
 ```
+
+## `TypedBuilder` Integration
+
+Enable the optional `typed-builder` feature to derive
+[`TypedBuilder`](https://docs.rs/typed-builder) on every generated
+parameter struct. This gives you a compile-time-checked builder pattern
+instead of manual field construction.
+
+### Enable the feature
+
+```bash
+cargo add prompt-templates --features typed-builder
+cargo add prompt-templates-macros --features typed-builder
+```
+
+Or in `Cargo.toml`:
+
+```toml
+[dependencies]
+prompt-templates = { version = "0.1", features = ["typed-builder"] }
+prompt-templates-macros = { version = "0.1", features = ["typed-builder"] }
+```
+
+### Before & after
+
+**Without `typed-builder`** — every field must be set manually:
+
+```rust
+# prompt_templates_macros::include_types!("prompts/greeting.tmpl.md");
+let params = greeting::Params {
+    name: "Alice".into(),
+    count: 42,
+    items: vec![],  // must always specify, even when empty
+};
+```
+
+**With `typed-builder`** — use the builder pattern with ergonomic
+setters:
+
+```rust
+# prompt_templates_macros::include_types!("prompts/greeting.tmpl.md");
+let params = greeting::Params::builder()
+    .name("Alice")       // setter(into): accepts &str or String
+    .count(42)
+    .build();            // `items` defaults to vec![]
+```
+
+### Field-level behaviour
+
+| Field type                     | Builder behaviour                                                     |
+| ------------------------------ | --------------------------------------------------------------------- |
+| `String`                       | `setter(into)` — accepts `&str`, `String`, or anything `Into<String>` |
+| `Vec<…>`                       | `default` — omit the field to get an empty `Vec`                      |
+| Scalars (`i64`, `f64`, `bool`) | Required — must be set explicitly                                     |
+
+### Sub-struct builders
+
+Generated sub-structs (for `list<…>` items and `dict<…>` fields) also
+derive `TypedBuilder`:
+
+```rust
+# prompt_templates_macros::include_types!("prompts/greeting.tmpl.md");
+let item = greeting::ParamsItemsItem::builder()
+    .label("write docs")
+    .build();
+
+let params = greeting::Params::builder()
+    .name("Alice")
+    .count(1)
+    .items(vec![item])
+    .build();
+```
+
+## `dict!` Macro
+
+Construct a `Value::Dict` with JSON-like syntax — useful alongside
+`ctx!` for programmatic value construction:
+
+```rust
+use prompt_templates::{Value, dict};
+
+let item = dict! { label: "alpha", score: 42_i64 };
+assert_eq!(item.get_field("label").unwrap().to_string(), "alpha");
+```
+
+## Extra Parameters and Default Contexts
+
+### `render_allowing_extra()`
+
+Like `render()`, but extra context keys that aren't declared in
+frontmatter are silently ignored instead of producing an error. Useful
+when forwarding a shared context to multiple templates:
+
+```rust
+use prompt_templates::{ctx, Template};
+
+let tmpl = Template::from_source("---\nparams:\n  - name = str\n---\nHello {{ name }}!").unwrap();
+let ctx = ctx! { name: "world", extra_key: "ignored" };
+assert_eq!(tmpl.render_allowing_extra(&ctx).unwrap(), "Hello world!");
+```
+
+### `defaults_context()`
+
+Returns a `Context` pre-filled with all default values — set only the
+params you need:
+
+```rust
+use prompt_templates::Template;
+
+let tmpl = Template::from_source(
+    "---\nparams:\n  - name = str\n  - count = int := 5\n---\n{{ name }} ({{ count }})",
+)
+.unwrap();
+let mut ctx = tmpl.defaults_context();
+ctx.set("name", "Alice"); // count already has default 5
+assert_eq!(tmpl.render(&ctx).unwrap(), "Alice (5)");
+```
+
+## `serde` Integration
+
+Enable the optional `serde` feature to render directly from any
+`Serialize` struct — no manual `Context` construction needed:
+
+```bash
+cargo add prompt-templates --features serde
+```
+
+```rust
+use prompt_templates::Template;
+use serde::Serialize;
+
+#[derive(Serialize)]
+struct Data { name: String, count: i64 }
+
+let tmpl = Template::from_source(
+    "---\nparams: [name = str, count = int]\n---\n{{ name }} has {{ count }} items",
+).unwrap();
+let output = tmpl.render_serde(&Data { name: "Alice".into(), count: 3 }).unwrap();
+assert_eq!(output, "Alice has 3 items");
+```
+
+## Python Bindings
+
+The `prompt-templates-python` package provides full Python bindings via
+PyO3. Install with `pip install prompt-templates` (or `maturin develop`
+for development):
+
+```python
+from prompt_templates import Template
+
+tmpl = Template.from_source("---\nparams:\n  - name = str\n---\nHello {{ name }}!")
+output = tmpl.render(name="world")
+assert output == "Hello world!"
+```
+
+Features include dynamic type generation from frontmatter, a PEP 302
+import hook for `.tmpl.md` files, `@variant` / `Variants` helpers for
+enum construction, and `TemplateCache` for content-hashed caching. See
+the [Python README](crates/prompt-templates-python/README.md) for full
+documentation.
 
 ## Full Reference
 

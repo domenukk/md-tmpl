@@ -19,6 +19,10 @@ use crate::{
 /// Extract `{% tmpl NAME %}...{% /tmpl %}` inline template definitions from
 /// the input, removing them from the body.
 ///
+/// `parent_type_aliases` are the type aliases from the enclosing template's
+/// frontmatter. Inline templates inherit these aliases (their own `types:`
+/// block shadows the parent's).
+///
 /// Returns `(cleaned_body, inline_templates)` where `inline_templates` maps
 /// each template name to a pre-compiled [`CompiledInlineTemplate`] (frontmatter
 /// parsed and segments compiled once).
@@ -29,6 +33,7 @@ use crate::{
 /// compilation failures in inline template bodies.
 pub fn extract_inline_templates(
     input: &str,
+    parent_type_aliases: &std::collections::HashMap<String, crate::types::VarType>,
 ) -> Result<(String, HashMap<String, CompiledInlineTemplate>), TemplateError> {
     let mut templates: HashMap<String, CompiledInlineTemplate> = HashMap::new();
     let mut cleaned = String::with_capacity(input.len());
@@ -80,8 +85,9 @@ pub fn extract_inline_templates(
                 )));
             }
 
-            // Parse frontmatter and compile the body at extraction time.
-            let (fm, tmpl_body) = frontmatter::parse_frontmatter(body)?;
+            // Parse frontmatter with parent scope for type alias inheritance.
+            let (fm, tmpl_body) =
+                frontmatter::parse_frontmatter_with_parent_scope(body, parent_type_aliases)?;
             let segments = compile_body(tmpl_body)?;
 
             templates.insert(

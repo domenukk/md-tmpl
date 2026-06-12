@@ -20,11 +20,10 @@ pub(crate) fn apply_filter_typed(
         FilterKind::Lower => apply_lower(value),
         FilterKind::Trim => apply_trim(value),
         FilterKind::Fixed => apply_fixed(value, args),
-        FilterKind::Default => apply_default(value, args),
-        FilterKind::Length => apply_length(value),
         FilterKind::Join => apply_join(value, args),
         FilterKind::Limit => apply_limit(value, args),
-        FilterKind::Gt => apply_gt(value, args),
+        FilterKind::Add => apply_add(value, args),
+        FilterKind::Sub => apply_sub(value, args),
     }
 }
 
@@ -44,19 +43,18 @@ pub fn apply_filter(
     args: Option<&str>,
 ) -> Result<Value, TemplateError> {
     use crate::consts::{
-        FILTER_DEFAULT, FILTER_FIXED, FILTER_GT, FILTER_JOIN, FILTER_LENGTH, FILTER_LIMIT,
-        FILTER_LOWER, FILTER_TRIM, FILTER_UPPER,
+        FILTER_ADD, FILTER_FIXED, FILTER_JOIN, FILTER_LIMIT, FILTER_LOWER, FILTER_SUB, FILTER_TRIM,
+        FILTER_UPPER,
     };
     match filter_name {
         FILTER_UPPER => apply_upper(value),
         FILTER_LOWER => apply_lower(value),
         FILTER_TRIM => apply_trim(value),
         FILTER_FIXED => apply_fixed(value, args),
-        FILTER_DEFAULT => apply_default(value, args),
-        FILTER_LENGTH => apply_length(value),
         FILTER_JOIN => apply_join(value, args),
         FILTER_LIMIT => apply_limit(value, args),
-        FILTER_GT => apply_gt(value, args),
+        FILTER_ADD => apply_add(value, args),
+        FILTER_SUB => apply_sub(value, args),
         _ => Err(TemplateError::UnknownFilter(filter_name.to_string())),
     }
 }
@@ -65,10 +63,10 @@ pub fn apply_filter(
 #[must_use]
 pub(crate) fn parse_filter(filter: &str) -> (&str, Option<&str>) {
     let filter = filter.trim();
-    if let Some(paren_start) = filter.find('(') {
+    if let Some(paren_start) = filter.find(crate::consts::PAREN_OPEN) {
         let name = filter[..paren_start].trim();
         let args = filter[paren_start + 1..]
-            .strip_suffix(')')
+            .strip_suffix(crate::consts::PAREN_CLOSE)
             .unwrap_or("")
             .trim();
         let args = if args.is_empty() { None } else { Some(args) };
@@ -128,42 +126,7 @@ fn apply_fixed(value: &Value, args: Option<&str>) -> Result<Value, TemplateError
 
 /// Strip surrounding single or double quotes from a filter argument.
 fn strip_quotes(s: &str) -> &str {
-    s.trim_matches('"').trim_matches('\'')
-}
-
-/// Return the value if truthy, otherwise fall back to the provided default.
-///
-/// # Errors
-///
-/// Returns an error if no fallback argument is provided.
-fn apply_default(value: &Value, args: Option<&str>) -> Result<Value, TemplateError> {
-    let fallback =
-        args.ok_or_else(|| TemplateError::syntax("'default' requires a fallback argument"))?;
-    let fallback = strip_quotes(fallback);
-    if value.is_truthy() {
-        Ok(value.clone())
-    } else {
-        Ok(Value::Str(fallback.to_string()))
-    }
-}
-
-/// Return the length of a list, string, or dict.
-fn apply_length(value: &Value) -> Result<Value, TemplateError> {
-    match value {
-        // `.len()` cannot exceed `isize::MAX`, which always fits in `i64`.
-        Value::List(v) => Ok(Value::Int(
-            i64::try_from(v.len()).expect("len <= isize::MAX < i64::MAX"),
-        )),
-        Value::Str(s) => Ok(Value::Int(
-            i64::try_from(s.len()).expect("len <= isize::MAX < i64::MAX"),
-        )),
-        Value::Dict(m) => Ok(Value::Int(
-            i64::try_from(m.len()).expect("len <= isize::MAX < i64::MAX"),
-        )),
-        _ => Err(TemplateError::syntax(
-            "'length' requires a list, string, or dict",
-        )),
-    }
+    crate::consts::strip_string_literal(s).unwrap_or(s)
 }
 
 /// Join list items into a single string with a separator.
@@ -207,79 +170,60 @@ fn apply_limit(value: &Value, args: Option<&str>) -> Result<Value, TemplateError
     }
 }
 
-/// Check if a number is greater than a threshold.
-fn apply_gt(value: &Value, args: Option<&str>) -> Result<Value, TemplateError> {
-    let threshold: f64 = args
-        .ok_or_else(|| TemplateError::syntax("'gt' requires a comparison argument"))?
-        .parse()
-        .map_err(|e| TemplateError::syntax(format!("'gt' argument must be a number: {e}")))?;
-    match value {
-        Value::Int(i) => Ok(Value::Bool(cmp_int_f64_gt(*i, threshold))),
-        Value::Float(f) => Ok(Value::Bool(*f > threshold)),
-        _ => Err(TemplateError::syntax("'gt' requires a number")),
+/// Parsed numeric argument — either integer or floating-point.
+enum NumArg {
+    Int(i64),
+    Float(f64),
+}
+
+/// Parse a filter argument as a number, trying integer first.
+fn parse_num_arg(arg: &str, filter_name: &str) -> Result<NumArg, TemplateError> {
+    if let Ok(n) = arg.parse::<i64>() {
+        return Ok(NumArg::Int(n));
+    }
+    arg.parse::<f64>().map(NumArg::Float).map_err(|e| {
+        TemplateError::syntax(format!("'{filter_name}' argument must be a number: {e}"))
+    })
+}
+
+/// Convert `i64` to `f64`, using lossless `i32` path when possible.
+///
+/// For values within `i32` range, `f64::from(i32)` is exact.  For larger
+/// values the cast goes through `as f64` which may lose low-order bits;
+/// this is acceptable for template arithmetic.
+fn i64_to_f64(i: i64) -> f64 {
+    if let Ok(small) = i32::try_from(i) {
+        f64::from(small)
+    } else {
+        // Values outside i32 range lose at most 11 bits of precision.
+        // This is inherent to f64 and acceptable for template arithmetic.
+        i.to_string().parse().expect("i64 always parses as f64")
     }
 }
 
-/// Compare `i > threshold` without precision loss for large `i64` values.
-///
-/// Decomposes the threshold into integer and fractional parts using
-/// IEEE 754 bit manipulation, then compares using only integer arithmetic.
-fn cmp_int_f64_gt(i: i64, threshold: f64) -> bool {
-    if threshold.is_nan() {
-        return false;
+/// Add a number to the value: `{{ x | add(1) }}`.
+fn apply_add(value: &Value, args: Option<&str>) -> Result<Value, TemplateError> {
+    let raw = args.ok_or_else(|| TemplateError::syntax("'add' requires a number argument"))?;
+    let operand = parse_num_arg(raw, "add")?;
+    match (value, operand) {
+        (Value::Int(i), NumArg::Int(n)) => Ok(Value::Int(i.saturating_add(n))),
+        (Value::Int(i), NumArg::Float(n)) => Ok(Value::Float(i64_to_f64(*i) + n)),
+        (Value::Float(f), NumArg::Int(n)) => Ok(Value::Float(*f + i64_to_f64(n))),
+        (Value::Float(f), NumArg::Float(n)) => Ok(Value::Float(*f + n)),
+        _ => Err(TemplateError::syntax("'add' requires a number")),
     }
-    if threshold.is_infinite() {
-        return threshold.is_sign_negative();
-    }
+}
 
-    let bits = threshold.to_bits();
-    let negative = (bits >> 63) != 0;
-    let raw_exp = (bits >> 52) & 0x7FF; // u64
-    let mantissa = bits & 0x000F_FFFF_FFFF_FFFF;
-
-    // Zero.
-    if raw_exp == 0 && mantissa == 0 {
-        return i > 0;
-    }
-    // Subnormal or |threshold| < 1.
-    if raw_exp < 1023 {
-        return if negative { true } else { i > 0 };
-    }
-
-    let exp = raw_exp - 1023; // >= 0, u64
-    let full_mantissa = (1_u64 << 52) | mantissa;
-
-    let (int_abs, has_frac) = if exp >= 52 {
-        let shift = exp - 52;
-        if shift >= 64 {
-            return negative;
-        }
-        (full_mantissa << shift, false)
-    } else {
-        let shift = 52 - exp;
-        let int_part = full_mantissa >> shift;
-        let frac_mask = (1_u64 << shift) - 1;
-        (int_part, (full_mantissa & frac_mask) != 0)
-    };
-
-    let threshold_int: i128 = if negative {
-        -i128::from(int_abs)
-    } else {
-        i128::from(int_abs)
-    };
-
-    let i_wide = i128::from(i);
-
-    match i_wide.cmp(&threshold_int) {
-        std::cmp::Ordering::Greater => true,
-        std::cmp::Ordering::Less => false,
-        std::cmp::Ordering::Equal => {
-            if has_frac {
-                negative
-            } else {
-                false
-            }
-        }
+/// Subtract a number from the value: `{{ x | sub(1) }}`.
+fn apply_sub(value: &Value, args: Option<&str>) -> Result<Value, TemplateError> {
+    let raw = args.ok_or_else(|| TemplateError::syntax("'sub' requires a number argument"))?;
+    let operand = parse_num_arg(raw, "sub")?;
+    match (value, operand) {
+        (Value::Int(i), NumArg::Int(n)) => Ok(Value::Int(i.saturating_sub(n))),
+        (Value::Int(i), NumArg::Float(n)) => Ok(Value::Float(i64_to_f64(*i) - n)),
+        (Value::Float(f), NumArg::Int(n)) => Ok(Value::Float(*f - i64_to_f64(n))),
+        (Value::Float(f), NumArg::Float(n)) => Ok(Value::Float(*f - n)),
+        _ => Err(TemplateError::syntax("'sub' requires a number")),
     }
 }
 
@@ -393,79 +337,9 @@ mod tests {
         assert!(matches!(err, TemplateError::Syntax(_)));
     }
 
-    // -- default --
+    // -- default (removed — use := in frontmatter) --
 
-    #[test]
-    fn default_returns_value_when_truthy() {
-        let result = apply_filter(
-            &Value::Str("present".into()),
-            "default",
-            Some("\"fallback\""),
-        )
-        .unwrap();
-        assert_eq!(result, Value::Str("present".into()));
-    }
-
-    #[test]
-    fn default_returns_fallback_when_falsy() {
-        let result =
-            apply_filter(&Value::Str(String::new()), "default", Some("\"fallback\"")).unwrap();
-        assert_eq!(result, Value::Str("fallback".into()));
-    }
-
-    #[test]
-    fn default_no_args_errors() {
-        let err = apply_filter(&Value::Bool(false), "default", None)
-            .expect_err("'default' without fallback argument should fail");
-        assert!(
-            err.to_string().contains("fallback"),
-            "should mention missing fallback argument: {err}"
-        );
-    }
-
-    #[test]
-    fn default_with_single_quoted_fallback() {
-        let result = apply_filter(&Value::Int(0), "default", Some("'none'")).unwrap();
-        assert_eq!(result, Value::Str("none".into()));
-    }
-
-    // -- length --
-
-    #[test]
-    fn length_of_list() {
-        let list = Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
-        let result = apply_filter(&list, "length", None).unwrap();
-        assert_eq!(result, Value::Int(3));
-    }
-
-    #[test]
-    fn length_of_string() {
-        let result = apply_filter(&Value::Str("hello".into()), "length", None).unwrap();
-        assert_eq!(result, Value::Int(5));
-    }
-
-    #[test]
-    fn length_of_dict() {
-        use std::collections::HashMap;
-        let dict = Value::Dict(HashMap::from([
-            ("a".into(), Value::Int(1)),
-            ("b".into(), Value::Int(2)),
-        ]));
-        let result = apply_filter(&dict, "length", None).unwrap();
-        assert_eq!(result, Value::Int(2));
-    }
-
-    #[test]
-    fn length_of_empty_list() {
-        let result = apply_filter(&Value::List(vec![]), "length", None).unwrap();
-        assert_eq!(result, Value::Int(0));
-    }
-
-    #[test]
-    fn length_rejects_non_collection() {
-        let err = apply_filter(&Value::Int(42), "length", None).unwrap_err();
-        assert!(matches!(err, TemplateError::Syntax(_)));
-    }
+    // -- length (removed — use len() function instead) --
 
     // -- join --
 
@@ -528,35 +402,73 @@ mod tests {
         assert!(matches!(err, TemplateError::Syntax(_)));
     }
 
-    // -- gt --
+    // -- add --
 
     #[test]
-    fn gt_compares_int() {
+    fn add_int() {
         assert_eq!(
-            apply_filter(&Value::Int(15), "gt", Some("10")).unwrap(),
-            Value::Bool(true)
-        );
-        assert_eq!(
-            apply_filter(&Value::Int(5), "gt", Some("10")).unwrap(),
-            Value::Bool(false)
+            apply_filter(&Value::Int(5), "add", Some("3")).unwrap(),
+            Value::Int(8)
         );
     }
 
     #[test]
-    fn gt_compares_float() {
+    fn add_negative() {
         assert_eq!(
-            apply_filter(&Value::Float(15.5), "gt", Some("10")).unwrap(),
-            Value::Bool(true)
-        );
-        assert_eq!(
-            apply_filter(&Value::Float(5.5), "gt", Some("10")).unwrap(),
-            Value::Bool(false)
+            apply_filter(&Value::Int(5), "add", Some("-2")).unwrap(),
+            Value::Int(3)
         );
     }
 
     #[test]
-    fn gt_rejects_non_number() {
-        let err = apply_filter(&Value::Str("x".into()), "gt", Some("10")).unwrap_err();
+    fn add_float() {
+        assert_eq!(
+            apply_filter(&Value::Float(1.5), "add", Some("2.5")).unwrap(),
+            Value::Float(4.0)
+        );
+    }
+
+    #[test]
+    fn add_int_with_float_operand() {
+        assert_eq!(
+            apply_filter(&Value::Int(3), "add", Some("0.5")).unwrap(),
+            Value::Float(3.5)
+        );
+    }
+
+    #[test]
+    fn add_rejects_non_number() {
+        let err = apply_filter(&Value::Str("x".into()), "add", Some("1")).unwrap_err();
+        assert!(matches!(err, TemplateError::Syntax(_)));
+    }
+
+    #[test]
+    fn add_missing_arg_errors() {
+        let err = apply_filter(&Value::Int(1), "add", None).unwrap_err();
+        assert!(matches!(err, TemplateError::Syntax(_)));
+    }
+
+    // -- sub --
+
+    #[test]
+    fn sub_int() {
+        assert_eq!(
+            apply_filter(&Value::Int(10), "sub", Some("3")).unwrap(),
+            Value::Int(7)
+        );
+    }
+
+    #[test]
+    fn sub_float() {
+        assert_eq!(
+            apply_filter(&Value::Float(5.0), "sub", Some("1.5")).unwrap(),
+            Value::Float(3.5)
+        );
+    }
+
+    #[test]
+    fn sub_rejects_non_number() {
+        let err = apply_filter(&Value::Str("x".into()), "sub", Some("1")).unwrap_err();
         assert!(matches!(err, TemplateError::Syntax(_)));
     }
 

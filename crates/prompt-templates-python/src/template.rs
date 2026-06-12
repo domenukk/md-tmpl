@@ -1,8 +1,8 @@
 //! `PyO3` wrappers for [`Template`] and [`TemplateCache`].
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
-use prompt_templates::{Context, Template, TemplateCache};
+use prompt_templates::{Context, Frontmatter, Template, TemplateCache, VarType};
 use pyo3::{prelude::*, types::PyDict};
 
 use crate::convert::py_to_value;
@@ -30,6 +30,7 @@ use crate::convert::py_to_value;
 #[pyclass(name = "Template")]
 pub(crate) struct PyTemplate {
     inner: Template,
+    frontmatter: Frontmatter,
 }
 
 #[pymethods]
@@ -46,9 +47,12 @@ impl PyTemplate {
     ///     `ValueError`: If the file cannot be read or contains syntax errors.
     #[staticmethod]
     fn from_file(path: &str) -> PyResult<Self> {
-        let tmpl = Template::from_file(std::path::Path::new(path))
+        let (tmpl, fm) = Template::from_file_with_frontmatter(std::path::Path::new(path))
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        Ok(Self { inner: tmpl })
+        Ok(Self {
+            inner: tmpl,
+            frontmatter: fm,
+        })
     }
 
     /// Parse a template from an in-memory string.
@@ -67,9 +71,12 @@ impl PyTemplate {
     ///     `ValueError`: If the source contains syntax errors or unused params.
     #[staticmethod]
     fn from_source(source: &str) -> PyResult<Self> {
-        let tmpl = Template::from_source(source)
+        let (tmpl, fm) = Template::from_source_with_frontmatter(source)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        Ok(Self { inner: tmpl })
+        Ok(Self {
+            inner: tmpl,
+            frontmatter: fm,
+        })
     }
 
     /// Parse a template, allowing declared parameters that aren't used.
@@ -87,9 +94,15 @@ impl PyTemplate {
     ///     `ValueError`: If the source contains syntax errors.
     #[staticmethod]
     fn from_source_allowing_unused(source: &str) -> PyResult<Self> {
+        let fm = prompt_templates::parse_frontmatter(source)
+            .map(|(fm, _)| fm)
+            .unwrap_or_default();
         let tmpl = Template::from_source_allowing_unused(source)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        Ok(Self { inner: tmpl })
+        Ok(Self {
+            inner: tmpl,
+            frontmatter: fm,
+        })
     }
 
     /// Render the template with the given keyword arguments (strict).
@@ -193,6 +206,34 @@ impl PyTemplate {
         Ok(dict.into_any().unbind())
     }
 
+    /// Return constants defined in the template's frontmatter `consts:` block.
+    ///
+    /// Returns:
+    ///     dict: Mapping of constant name → value.
+    fn consts(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let dict = PyDict::new(py);
+        for decl in &self.frontmatter.consts {
+            if let Some(ref value) = decl.default_value {
+                dict.set_item(&decl.name, crate::convert::value_to_py(py, value)?)?;
+            }
+        }
+        Ok(dict.into_any().unbind())
+    }
+
+    /// Return constants imported from other templates.
+    ///
+    /// These are keyed by `stem.NAME` (e.g. `other.MAX_RETRIES`).
+    ///
+    /// Returns:
+    ///     dict: Mapping of qualified constant name → value.
+    fn imported_consts(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let dict = PyDict::new(py);
+        for (k, v) in &self.frontmatter.imported_consts {
+            dict.set_item(k, crate::convert::value_to_py(py, v)?)?;
+        }
+        Ok(dict.into_any().unbind())
+    }
+
     /// Validate that this template's declarations match an expected set.
     ///
     /// Call this after re-loading a template from disk to ensure that
@@ -234,6 +275,11 @@ impl PyTemplate {
     pub(crate) fn inner(&self) -> &Template {
         &self.inner
     }
+
+    /// Access the type aliases from this template's frontmatter.
+    pub(crate) fn type_aliases(&self) -> &HashMap<String, VarType> {
+        &self.frontmatter.type_aliases
+    }
 }
 
 /// Content-hashed template cache for hot-reload scenarios.
@@ -270,11 +316,15 @@ impl PyTemplateCache {
     /// Raises:
     ///     `ValueError`: If the file cannot be read or contains errors.
     fn load(&self, path: &str) -> PyResult<PyTemplate> {
-        let tmpl = self
+        let p = std::path::Path::new(path);
+        let (tmpl, fm) = self
             .inner
-            .load(std::path::Path::new(path))
+            .load_with_frontmatter(p)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        Ok(PyTemplate { inner: tmpl })
+        Ok(PyTemplate {
+            inner: tmpl,
+            frontmatter: fm,
+        })
     }
 }
 

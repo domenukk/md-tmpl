@@ -44,9 +44,9 @@ This is useful for static assertions in test modules or build scripts to guarant
 prompt_templates_macros::validate_template!("prompts/simple_greeting.tmpl.md");
 ```
 
-### `template_params_struct!`
+### `include_types!`
 
-Generates a typed parameter Rust struct from a `.tmpl.md` template's frontmatter variable declarations.
+Generates a typed parameter Rust module and struct from a `.tmpl.md` template's frontmatter variable declarations.
 
 It reads the template at compile time, inspects its variable declarations, and generates a struct with matching field names and mapped Rust types. The generated struct provides:
 
@@ -56,16 +56,16 @@ It reads the template at compile time, inspects its variable declarations, and g
 
 #### Type Mapping
 
-| Frontmatter Type          | Rust Type                                                  |
-| :------------------------ | :--------------------------------------------------------- |
-| `str`                     | `String`                                                   |
-| `int`                     | `i64`                                                      |
-| `float`                   | `f64`                                                      |
-| `bool`                    | `bool`                                                     |
-| `list<field = type, ...>` | `Vec<{StructName}{Field}Item>` (auto-generated sub-struct) |
-| `list` (untyped)          | `Vec<prompt_templates::Value>`                             |
-| `dict<field = type, ...>` | `{StructName}{Field}` (auto-generated sub-struct)          |
-| _(untyped)_               | `prompt_templates::Value`                                  |
+| Frontmatter Type          | Rust Type                                            |
+| :------------------------ | :--------------------------------------------------- |
+| `str`                     | `String`                                             |
+| `int`                     | `i64`                                                |
+| `float`                   | `f64`                                                |
+| `bool`                    | `bool`                                               |
+| `list<field = type, ...>` | `Vec<Params{Field}Item>` (auto-generated sub-struct) |
+| `list` (untyped)          | `Vec<prompt_templates::Value>`                       |
+| `dict<field = type, ...>` | `Params{Field}` (auto-generated sub-struct)          |
+| _(untyped)_               | `prompt_templates::Value`                            |
 
 #### Example
 
@@ -79,25 +79,27 @@ It reads the template at compile time, inspects its variable declarations, and g
 // ---
 // Hello {{ name }}!
 
-prompt_templates_macros::template_params_struct!("prompts/greeting.tmpl.md" => GreetingParams);
+prompt_templates_macros::include_types!("prompts/greeting.tmpl.md");
 
 // This generates:
 //
-// pub struct GreetingParams {
-//     pub name: String,
-//     pub count: i64,
-//     pub items: Vec<GreetingParamsItemsItem>,
-// }
+// pub mod greeting {
+//     pub struct Params {
+//         pub name: String,
+//         pub count: i64,
+//         pub items: Vec<ParamsItemsItem>,
+//     }
 //
-// pub struct GreetingParamsItemsItem {
-//     pub label: String,
+//     pub struct ParamsItemsItem {
+//         pub label: String,
+//     }
 // }
 
 let tmpl = prompt_templates_macros::include_template!("prompts/greeting.tmpl.md");
-let output = GreetingParams {
+let output = greeting::Params {
     name: "Alice".to_string(),
     count: 42,
-    items: vec![GreetingParamsItemsItem {
+    items: vec![greeting::ParamsItemsItem {
         label: "hello".to_string(),
     }],
 }.render(&tmpl).unwrap();
@@ -110,17 +112,17 @@ You can combine compile-time type-safety with dynamic loading (e.g. for fast loc
 ```rust
 use prompt_templates::Template;
 
-// Struct generated at compile time:
-prompt_templates_macros::template_params_struct!("prompts/greeting.tmpl.md" => GreetingParams);
+// Module generated at compile time:
+prompt_templates_macros::include_types!("prompts/greeting.tmpl.md");
 
 // At runtime, load template from disk:
 let tmpl = Template::from_file(std::path::Path::new("prompts/greeting.tmpl.md")).unwrap();
 
 // Ensure the reloaded file has not diverged from the compiled struct:
-GreetingParams::validate_template(&tmpl).unwrap();
+greeting::Params::validate_template(&tmpl).unwrap();
 
 // Safely render:
-let output = GreetingParams {
+let output = greeting::Params {
     name: "Bob".to_string(),
     count: 1,
     items: vec![],

@@ -1,6 +1,6 @@
 //! Scoped variable resolution for rendering.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use crate::{
     compiled::CompiledInlineTemplate, context::Context, error::TemplateError, value::Value,
@@ -38,10 +38,19 @@ pub struct Scope<'a> {
     active_len: usize,
     include_depth: usize,
     max_include_depth: usize,
-    /// Pre-compiled inline template definitions (borrowed from `Template`).
+    /// Pre-compiled inline template definitions (borrowed from top-level `Template`).
     inline_templates: &'a HashMap<String, CompiledInlineTemplate>,
+    /// Stack of owned inline templates from included files. Each file push its
+    /// own `{% tmpl %}` definitions when entered, and pops them when exited.
+    /// `get_inline_template` checks this stack (innermost first) before
+    /// falling back to the top-level `inline_templates`.
+    inline_template_stack: Vec<HashMap<String, CompiledInlineTemplate>>,
     /// Optional include resolver for cached include resolution.
     cache: Option<&'a dyn crate::cache::IncludeResolver>,
+    /// stack of local constants from the template frontmatter.
+    consts_stack: Vec<Arc<HashMap<String, Value>>>,
+    /// Stack of imported constants keyed by `stem.NAME`.
+    imported_consts_stack: Vec<Arc<HashMap<String, Value>>>,
 }
 
 impl<'a> Scope<'a> {
@@ -56,7 +65,10 @@ impl<'a> Scope<'a> {
             include_depth: 0,
             max_include_depth: MAX_INCLUDE_DEPTH,
             inline_templates: &EMPTY_INLINE_TEMPLATES,
+            inline_template_stack: Vec::new(),
             cache: None,
+            consts_stack: Vec::new(),
+            imported_consts_stack: Vec::new(),
         }
     }
 
@@ -71,7 +83,10 @@ impl<'a> Scope<'a> {
             include_depth: 0,
             max_include_depth: MAX_INCLUDE_DEPTH,
             inline_templates: &EMPTY_INLINE_TEMPLATES,
+            inline_template_stack: Vec::new(),
             cache: Some(cache),
+            consts_stack: Vec::new(),
+            imported_consts_stack: Vec::new(),
         }
     }
 
@@ -129,10 +144,60 @@ impl<'a> Scope<'a> {
         self.inline_templates = templates;
     }
 
+    /// Set the constants for this scope.
+    pub fn set_consts(
+        &mut self,
+        consts: &Arc<HashMap<String, Value>>,
+        imported_consts: &Arc<HashMap<String, Value>>,
+    ) {
+        self.consts_stack.push(Arc::clone(consts));
+        self.imported_consts_stack.push(Arc::clone(imported_consts));
+    }
+
+    /// Push new constants onto the scope stack (used by includes).
+    pub(crate) fn push_consts(
+        &mut self,
+        consts: HashMap<String, Value>,
+        imported_consts: HashMap<String, Value>,
+    ) {
+        self.consts_stack.push(Arc::new(consts));
+        self.imported_consts_stack.push(Arc::new(imported_consts));
+    }
+
+    /// Pop the most recently pushed constants.
+    pub(crate) fn pop_consts(&mut self) {
+        self.consts_stack.pop();
+        self.imported_consts_stack.pop();
+    }
+
+    /// Push an included file's own inline templates onto the scope stack.
+    /// These take priority over the top-level templates during resolution.
+    pub(crate) fn push_inline_templates(
+        &mut self,
+        templates: HashMap<String, CompiledInlineTemplate>,
+    ) {
+        self.inline_template_stack.push(templates);
+    }
+
+    /// Pop the most recently pushed inline template layer.
+    pub(crate) fn pop_inline_templates(&mut self) {
+        self.inline_template_stack.pop();
+    }
+
     /// Look up a pre-compiled inline template by name.
+    ///
+    /// When inside an included file (stack is non-empty), only the current
+    /// file's templates are checked. The stack acts as a scope boundary —
+    /// parent templates do NOT leak into included files.
     #[must_use]
     pub fn get_inline_template(&self, name: &str) -> Option<&CompiledInlineTemplate> {
-        self.inline_templates.get(name)
+        if let Some(current_file_templates) = self.inline_template_stack.last() {
+            // Inside an included file: only see THIS file's templates.
+            current_file_templates.get(name)
+        } else {
+            // Top-level: use the borrowed templates from the root Template.
+            self.inline_templates.get(name)
+        }
     }
 
     /// Try to evaluate a function call expression like `idx(bug)` or `len(items)`.
@@ -140,12 +205,12 @@ impl<'a> Scope<'a> {
     /// Returns `None` if the expression doesn't look like a function call,
     /// `Some(Ok(...))` on success, or `Some(Err(...))` on evaluation failure.
     pub(crate) fn try_call_function(&self, expr: &str) -> Option<Result<Value, TemplateError>> {
-        use crate::consts::{FN_IDX, FN_LEN, FN_STR};
+        use crate::consts::{FN_IDX, FN_KIND, FN_LEN};
         let (func_name, arg) = parse_function_call(expr)?;
         match func_name {
             FN_IDX => self.call_idx(arg),
             FN_LEN => Some(self.call_len(arg)),
-            FN_STR => Some(self.call_str(arg)),
+            FN_KIND => Some(self.call_kind(arg)),
             _ => None,
         }
     }
@@ -174,34 +239,26 @@ impl<'a> Scope<'a> {
         Ok(Value::Int(count))
     }
 
-    /// Evaluate `str(path)` — converts a value to its string representation.
-    fn call_str(&self, arg: &str) -> Result<Value, TemplateError> {
+    /// Evaluate `kind(path)` — returns the variant name of an enum value.
+    fn call_kind(&self, arg: &str) -> Result<Value, TemplateError> {
         use crate::consts::ENUM_TAG_KEY;
         let val = self.resolve_path(arg)?;
-        let result = match val {
-            Value::Str(s) => s.clone(),
-            Value::Int(i) => i.to_string(),
-            Value::Float(f) => f.to_string(),
-            Value::Bool(b) => b.to_string(),
-            // Enum unit variants stored as Dict with tag field:
-            // str(outcome) → "Confirmed"
+        match val {
             Value::Dict(d) => {
-                if let Some(Value::Str(tag)) = d.get(ENUM_TAG_KEY) {
-                    tag.clone()
+                if let Some(Value::Str(kind)) = d.get(ENUM_TAG_KEY) {
+                    Ok(Value::Str(kind.clone()))
                 } else {
-                    return Err(TemplateError::syntax(
-                        "str() cannot convert dict without 'tag' field",
-                    ));
+                    Err(TemplateError::syntax(
+                        "kind() requires an enum value (dict with variant tag)",
+                    ))
                 }
             }
-            Value::List(_) => {
-                return Err(TemplateError::syntax(
-                    "str() cannot convert a list to string \
-                     (use join filter instead)",
-                ));
-            }
-        };
-        Ok(Value::Str(result))
+            Value::Str(s) => Ok(Value::Str(s.clone())),
+            _ => Err(TemplateError::syntax(format!(
+                "kind() requires an enum value, got {}",
+                val.type_name()
+            ))),
+        }
     }
     /// Set the maximum include depth for this scope (builder style).
     #[must_use]
@@ -237,11 +294,20 @@ impl<'a> Scope<'a> {
     /// Resolve a simple (non-dotted) variable name.
     #[must_use]
     pub fn resolve(&self, key: &str) -> Option<&Value> {
+        // 1. Local constants (strictly immutable, highest priority).
+        // Search stack innermost first.
+        for consts in self.consts_stack.iter().rev() {
+            if let Some(v) = consts.get(key) {
+                return Some(v);
+            }
+        }
+        // 2. Layered bindings (from for-loops).
         for layer in self.layers[..self.active_len].iter().rev() {
             if let Some(v) = layer.get(key) {
                 return Some(v);
             }
         }
+        // 3. Fallback to render context.
         self.ctx.get(key)
     }
 
@@ -252,7 +318,30 @@ impl<'a> Scope<'a> {
     /// Returns [`TemplateError::UndefinedVariable`] if the root key or any
     /// intermediate field is not found.
     pub fn resolve_path(&self, path: &str) -> Result<&Value, TemplateError> {
-        let mut parts = path.split('.');
+        // 1. Check if it's an imported constant (stem.NAME[.field]*).
+        // Search stack innermost first.
+        for imported in self.imported_consts_stack.iter().rev() {
+            let mut parts = path.split(crate::consts::PATH_SEP);
+            let first = parts.next().unwrap_or("").trim();
+            if let Some(second) = parts.next() {
+                let stem_name = format!("{}.{}", first, second.trim());
+                if let Some(v) = imported.get(&stem_name) {
+                    let mut current = v;
+                    for part in parts {
+                        let part = part.trim();
+                        current = current.get_field(part).ok_or_else(|| {
+                            TemplateError::UndefinedVariable(format!(
+                                "field '{part}' not found on {}",
+                                current.type_name()
+                            ))
+                        })?;
+                    }
+                    return Ok(current);
+                }
+            }
+        }
+
+        let mut parts = path.split(crate::consts::PATH_SEP);
         let root_key = parts.next().unwrap_or("").trim();
         let root = self
             .resolve(root_key)
@@ -280,10 +369,8 @@ impl<'a> Scope<'a> {
         }
 
         // 1. String literals
-        if (token.starts_with('"') && token.ends_with('"'))
-            || (token.starts_with('\'') && token.ends_with('\''))
-        {
-            return Ok(Value::Str(token[1..token.len() - 1].to_string()));
+        if let Some(inner) = crate::consts::strip_string_literal(token) {
+            return Ok(Value::Str(inner.to_string()));
         }
 
         // 2. Boolean literals
@@ -309,7 +396,7 @@ impl<'a> Scope<'a> {
             return result;
         }
 
-        if let Some(base_path) = token.strip_suffix(".length") {
+        if let Some(base_path) = token.strip_suffix(crate::consts::PSEUDO_FIELD_LENGTH) {
             return Err(TemplateError::syntax(format!(
                 "'.length' is not supported — use len({base_path}) instead"
             )));
@@ -326,8 +413,8 @@ impl<'a> Scope<'a> {
 /// or `None` if it doesn't look like a function call.
 fn parse_function_call(expr: &str) -> Option<(&str, &str)> {
     let expr = expr.trim();
-    let open = expr.find('(')?;
-    if !expr.ends_with(')') {
+    let open = expr.find(crate::consts::PAREN_OPEN)?;
+    if !expr.ends_with(crate::consts::PAREN_CLOSE) {
         return None;
     }
     let func_name = expr[..open].trim();
@@ -563,56 +650,22 @@ mod tests {
         assert_eq!(scope.resolve("k2"), Some(&Value::Int(200)));
     }
 
-    // -- str() function tests --
+    // -- kind() function tests --
 
     #[test]
-    fn str_converts_int() {
-        let tmpl =
-            crate::Template::from_source("---\nparams: [count = int]\n---\n{{ str(count) }}")
-                .unwrap();
-        let mut ctx = crate::Context::new();
-        ctx.set("count", 42);
-        assert_eq!(tmpl.render(&ctx).unwrap(), "42");
-    }
-
-    #[test]
-    fn str_converts_float() {
-        let tmpl = crate::Template::from_source("---\nparams: [val = float]\n---\n{{ str(val) }}")
-            .unwrap();
-        let mut ctx = crate::Context::new();
-        ctx.set("val", Value::Float(2.72));
-        assert_eq!(tmpl.render(&ctx).unwrap(), "2.72");
-    }
-
-    #[test]
-    fn str_converts_bool() {
-        let tmpl = crate::Template::from_source("---\nparams: [flag = bool]\n---\n{{ str(flag) }}")
-            .unwrap();
-        let mut ctx = crate::Context::new();
-        ctx.set("flag", true);
-        assert_eq!(tmpl.render(&ctx).unwrap(), "true");
-    }
-
-    #[test]
-    fn str_passes_through_string() {
-        let tmpl = crate::Template::from_source("---\nparams: [name = str]\n---\n{{ str(name) }}")
-            .unwrap();
-        let mut ctx = crate::Context::new();
-        ctx.set("name", "hello");
-        assert_eq!(tmpl.render(&ctx).unwrap(), "hello");
-    }
-
-    #[test]
-    fn str_extracts_enum_tag() {
+    fn kind_extracts_enum_variant_name() {
         let tmpl = crate::Template::from_source(
-            "---\nparams: [outcome = dict<>]\n---\n{{ str(outcome) }}",
+            "---\nparams: [outcome = dict<>]\n---\n{{ kind(outcome) }}",
         )
         .unwrap();
         let mut ctx = crate::Context::new();
         ctx.set(
             "outcome",
             Value::Dict(HashMap::from([
-                ("tag".into(), Value::Str("Confirmed".into())),
+                (
+                    crate::consts::ENUM_TAG_KEY.into(),
+                    Value::Str("Confirmed".into()),
+                ),
                 ("evidence".into(), Value::Str("buffer overflow".into())),
             ])),
         );
@@ -620,23 +673,23 @@ mod tests {
     }
 
     #[test]
-    fn str_rejects_list() {
+    fn kind_rejects_non_dict() {
         let tmpl =
-            crate::Template::from_source("---\nparams: [items = list<>]\n---\n{{ str(items) }}")
+            crate::Template::from_source("---\nparams: [count = int]\n---\n{{ kind(count) }}")
                 .unwrap();
         let mut ctx = crate::Context::new();
-        ctx.set("items", Value::List(vec![Value::Int(1)]));
+        ctx.set("count", 42);
         let err = tmpl.render(&ctx).unwrap_err();
         assert!(
-            err.to_string().contains("list"),
-            "should mention list: {err}"
+            err.to_string().contains("enum"),
+            "should mention enum requirement: {err}"
         );
     }
 
     #[test]
-    fn str_rejects_dict_without_tag() {
+    fn kind_rejects_dict_without_variant_tag() {
         let tmpl =
-            crate::Template::from_source("---\nparams: [data = dict<>]\n---\n{{ str(data) }}")
+            crate::Template::from_source("---\nparams: [data = dict<>]\n---\n{{ kind(data) }}")
                 .unwrap();
         let mut ctx = crate::Context::new();
         ctx.set(
@@ -645,8 +698,54 @@ mod tests {
         );
         let err = tmpl.render(&ctx).unwrap_err();
         assert!(
-            err.to_string().contains("tag"),
-            "should mention missing 'tag': {err}"
+            err.to_string().contains("enum"),
+            "should mention enum requirement: {err}"
         );
+    }
+
+    #[test]
+    fn kind_key_not_accessible_via_dot_path() {
+        // The internal __kind__ key must not be accessible as {{ outcome.__kind__ }}.
+        let tmpl = crate::Template::from_source(
+            "---\nparams: [outcome = dict<>]\n---\n{{ outcome.__kind__ }}",
+        )
+        .unwrap();
+        let mut ctx = crate::Context::new();
+        ctx.set(
+            "outcome",
+            Value::Dict(HashMap::from([
+                (
+                    crate::consts::ENUM_TAG_KEY.into(),
+                    Value::Str("Confirmed".into()),
+                ),
+                ("evidence".into(), Value::Str("found it".into())),
+            ])),
+        );
+        let err = tmpl.render(&ctx).unwrap_err();
+        assert!(
+            err.to_string().contains("not found") || err.to_string().contains("undefined"),
+            "__kind__ should not be accessible from templates: {err}"
+        );
+    }
+
+    #[test]
+    fn user_field_named_tag_does_not_collide() {
+        // A user field named "tag" must not collide with the internal __kind__ key.
+        let tmpl = crate::Template::from_source(
+            "---\nparams: [entry = dict<>]\n---\n{{ kind(entry) }}: {{ entry.tag }}",
+        )
+        .unwrap();
+        let mut ctx = crate::Context::new();
+        ctx.set(
+            "entry",
+            Value::Dict(HashMap::from([
+                (
+                    crate::consts::ENUM_TAG_KEY.into(),
+                    Value::Str("Woche".into()),
+                ),
+                ("tag".into(), Value::Str("Montag".into())),
+            ])),
+        );
+        assert_eq!(tmpl.render(&ctx).unwrap(), "Woche: Montag");
     }
 }
