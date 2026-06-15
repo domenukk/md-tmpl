@@ -299,7 +299,7 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
             let mut cache = self
                 .templates
                 .write()
-                .expect("template cache lock poisoned");
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(entry) = cache.get_mut(&canonical)
                 && entry.last_modified == file_mtime
             {
@@ -331,7 +331,7 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
             let mut cache = self
                 .templates
                 .write()
-                .expect("template cache lock poisoned");
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(entry) = cache.get_mut(&canonical)
                 && entry.source_hash == source_hash
             {
@@ -384,7 +384,7 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
             let mut cache = self
                 .templates
                 .write()
-                .expect("template cache lock poisoned");
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             Self::evict_lru(&mut cache, self.max_entries);
             cache.insert(canonical, entry.clone());
         }
@@ -416,7 +416,10 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
 
         // Fast path: mtime match → skip reading the file.
         {
-            let mut cache = self.includes.write().expect("include cache lock poisoned");
+            let mut cache = self
+                .includes
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(entry) = cache.get_mut(&canonical)
                 && entry.last_modified == file_mtime
             {
@@ -433,7 +436,10 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
 
         // Content hash still matches despite mtime change?
         {
-            let mut cache = self.includes.write().expect("include cache lock poisoned");
+            let mut cache = self
+                .includes
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(entry) = cache.get_mut(&canonical)
                 && entry.source_hash == source_hash
             {
@@ -458,7 +464,10 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
         };
 
         {
-            let mut cache = self.includes.write().expect("include cache lock poisoned");
+            let mut cache = self
+                .includes
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             Self::evict_lru(&mut cache, self.max_entries);
             cache.insert(
                 canonical,
@@ -475,44 +484,32 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
     }
 
     /// Invalidate all cached entries (e.g. after a bulk file update).
-    ///
-    /// # Panics
-    ///
-    /// Panics if a cache lock is poisoned.
     pub fn clear(&self) {
         self.templates
             .write()
-            .expect("template cache lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
         self.includes
             .write()
-            .expect("include cache lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
     }
 
     /// Number of cached main templates.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the cache lock is poisoned.
     #[must_use]
     pub fn template_count(&self) -> usize {
         self.templates
             .read()
-            .expect("template cache lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .len()
     }
 
     /// Number of cached include templates.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the cache lock is poisoned.
     #[must_use]
     pub fn include_count(&self) -> usize {
         self.includes
             .read()
-            .expect("include cache lock poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .len()
     }
 

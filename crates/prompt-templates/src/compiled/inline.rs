@@ -104,11 +104,12 @@ pub fn extract_inline_templates(
     Ok((cleaned, templates))
 }
 
-/// Find the byte offset of the next `{% raw` tag (including `{% raw %}`, `{% raw=X %}`).
-fn find_raw_open(input: &str) -> Option<usize> {
-    // Match both `{% raw` and `{%- raw`.
-    let plain_pattern = format!("{STMT_START} {KW_RAW}");
-    let trim_pattern = format!("{STMT_START}{TRIM_MARKER} {KW_RAW}");
+/// Find the byte offset of the first `{% <keyword>` or `{%- <keyword>` tag.
+///
+/// Shared implementation for locating both `{% raw` and `{% tmpl ` open tags.
+fn find_tag_open(input: &str, keyword: &str) -> Option<usize> {
+    let plain_pattern = format!("{STMT_START} {keyword}");
+    let trim_pattern = format!("{STMT_START}{TRIM_MARKER} {keyword}");
     let plain = input.find(&plain_pattern);
     let trim = input.find(&trim_pattern);
     match (plain, trim) {
@@ -116,6 +117,11 @@ fn find_raw_open(input: &str) -> Option<usize> {
         (a, None) => a,
         (None, b) => b,
     }
+}
+
+/// Find the byte offset of the next `{% raw` tag (including `{% raw %}`, `{% raw=X %}`).
+fn find_raw_open(input: &str) -> Option<usize> {
+    find_tag_open(input, KW_RAW)
 }
 
 /// Skip past a `{% raw %}...{% /raw %}` or `{% raw=DELIM %}...{% /DELIM %}`
@@ -168,15 +174,7 @@ fn skip_raw_block(input: &str) -> Result<(&str, &str), TemplateError> {
 
 /// Find the byte offset of the next `{% tmpl ` or `{%- tmpl ` tag.
 fn find_tmpl_open(input: &str) -> Option<usize> {
-    let plain_pattern = format!("{STMT_START} {TAG_TMPL_PREFIX}");
-    let trim_pattern = format!("{STMT_START}{TRIM_MARKER} {TAG_TMPL_PREFIX}");
-    let plain = input.find(&plain_pattern);
-    let trim = input.find(&trim_pattern);
-    match (plain, trim) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, None) => a,
-        (None, b) => b,
-    }
+    find_tag_open(input, TAG_TMPL_PREFIX)
 }
 
 /// Parse the opening `{% tmpl NAME %}` tag and return `(name, rest_after_tag)`.

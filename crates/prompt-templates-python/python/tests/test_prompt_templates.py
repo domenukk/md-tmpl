@@ -1279,3 +1279,100 @@ class TestTypeAliases:
             > {% /match %}"""))
         output = tmpl.render(prio="High")
         assert output == "URGENT\n"
+
+
+# ---------------------------------------------------------------------------
+# from_source_with_base_dir
+# ---------------------------------------------------------------------------
+
+
+class TestFromSourceWithBaseDir:
+    """Tests for Template.from_source_with_base_dir()."""
+
+    def test_include_resolved_relative_to_base_dir(self, tmp_path: Path) -> None:
+        """Include directives should resolve relative to base_dir."""
+        child = tmp_path / "parts" / "header.tmpl.md"
+        child.parent.mkdir(parents=True, exist_ok=True)
+        child.write_text("---\nparams: [title = str]\n---\n# {{ title }}")
+
+        source = textwrap.dedent("""\
+            ---
+            params:
+              - title = str
+            ---
+            > {% include [header](parts/header.tmpl.md) with title=title %}""")
+
+        tmpl = Template.from_source_with_base_dir(source, str(tmp_path))
+        output = tmpl.render(title="Hello")
+        assert output == "# Hello"
+
+    def test_basic_source_with_base_dir(self, tmp_path: Path) -> None:
+        """A template without includes should still work with base_dir."""
+        source = "---\nparams: [name = str]\n---\nHello {{ name }}!"
+        tmpl = Template.from_source_with_base_dir(source, str(tmp_path))
+        assert tmpl.render(name="world") == "Hello world!"
+
+    def test_invalid_source_raises(self, tmp_path: Path) -> None:
+        """Invalid template source should raise ValueError."""
+        with pytest.raises(ValueError, match="frontmatter"):
+            Template.from_source_with_base_dir("no frontmatter", str(tmp_path))
+
+
+# ---------------------------------------------------------------------------
+# set_max_include_depth
+# ---------------------------------------------------------------------------
+
+
+class TestSetMaxIncludeDepth:
+    """Tests for Template.set_max_include_depth()."""
+
+    def test_depth_limit_does_not_affect_flat_template(self) -> None:
+        """Templates without includes render normally regardless of depth."""
+        tmpl = Template.from_source("---\nparams: [x = str]\n---\n{{ x }}")
+        tmpl.set_max_include_depth(1)
+        assert tmpl.render(x="ok") == "ok"
+
+    def test_depth_limit_allows_shallow_include(self, tmp_path: Path) -> None:
+        """A single-level include should work with depth >= 1."""
+        child = tmp_path / "child.tmpl.md"
+        child.write_text("---\nparams: [msg = str]\n---\nChild: {{ msg }}")
+        parent = tmp_path / "parent.tmpl.md"
+        parent.write_text(textwrap.dedent("""\
+            ---
+            params:
+              - greeting = str
+            ---
+            > {% include [child](child.tmpl.md) with msg=greeting %}"""))
+        tmpl = Template.from_file(str(parent))
+        tmpl.set_max_include_depth(2)
+        output = tmpl.render(greeting="hi")
+        assert output == "Child: hi"
+
+
+# ---------------------------------------------------------------------------
+# body()
+# ---------------------------------------------------------------------------
+
+
+class TestBody:
+    """Tests for Template.body()."""
+
+    def test_body_returns_stripped_content(self) -> None:
+        """body() should return the template text without frontmatter."""
+        tmpl = Template.from_source("---\nparams: [name = str]\n---\nHello {{ name }}!")
+        assert tmpl.body() == "Hello {{ name }}!"
+
+    def test_body_preserves_multiline(self) -> None:
+        """body() should preserve multiline template content."""
+        source = "---\nparams: [x = str]\n---\nLine 1\nLine 2\n{{ x }}"
+        tmpl = Template.from_source(source)
+        body = tmpl.body()
+        assert "Line 1" in body
+        assert "Line 2" in body
+        assert "{{ x }}" in body
+        assert "params:" not in body
+
+    def test_body_empty_template(self) -> None:
+        """body() on a template with no body content should return empty."""
+        tmpl = Template.from_source("---\nparams: []\n---\n")
+        assert tmpl.body() == ""

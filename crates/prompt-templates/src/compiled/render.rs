@@ -114,9 +114,16 @@ pub(crate) fn render_segments_into(
 fn render_value_into(val: &Value, output: &mut String) -> Result<(), TemplateError> {
     match val {
         Value::Str(s) => output.push_str(s),
-        Value::Bool(b) => write!(output, "{b}").unwrap(),
-        Value::Int(i) => write!(output, "{i}").unwrap(),
-        Value::Float(f) => write!(output, "{f}").unwrap(),
+        // Writing numeric/bool values to a `String` is infallible (the `String`
+        // writer never returns `Err`), but we propagate via `?` to stay
+        // consistent with the crate's `Result`-based error handling style.
+        Value::Bool(b) => {
+            write!(output, "{b}").map_err(|e| TemplateError::syntax(e.to_string()))?;
+        }
+        Value::Int(i) => write!(output, "{i}").map_err(|e| TemplateError::syntax(e.to_string()))?,
+        Value::Float(f) => {
+            write!(output, "{f}").map_err(|e| TemplateError::syntax(e.to_string()))?;
+        }
         Value::List(_) | Value::Dict(_) | Value::Tmpl(_) => {
             return Err(TemplateError::syntax(format!(
                 "cannot display value of type '{}'",
@@ -466,4 +473,176 @@ fn render_include(
         inc.inline_compiled.as_ref(),
         output,
     )
+}
+
+// ---------------------------------------------------------------------------
+// Tests for numeric comparison helpers
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use std::cmp::Ordering;
+
+    use super::*;
+
+    // -- cmp_int_float: NaN --
+
+    #[test]
+    fn cmp_int_float_nan_returns_none() {
+        assert_eq!(cmp_int_float(0, f64::NAN), None);
+        assert_eq!(cmp_int_float(i64::MAX, f64::NAN), None);
+        assert_eq!(cmp_int_float(i64::MIN, f64::NAN), None);
+    }
+
+    // -- cmp_int_float: infinity --
+
+    #[test]
+    fn cmp_int_float_positive_infinity() {
+        // Any integer is less than +∞.
+        assert_eq!(cmp_int_float(0, f64::INFINITY), Some(Ordering::Less));
+        assert_eq!(cmp_int_float(i64::MAX, f64::INFINITY), Some(Ordering::Less));
+        assert_eq!(cmp_int_float(i64::MIN, f64::INFINITY), Some(Ordering::Less));
+    }
+
+    #[test]
+    fn cmp_int_float_negative_infinity() {
+        // Any integer is greater than -∞.
+        assert_eq!(cmp_int_float(0, f64::NEG_INFINITY), Some(Ordering::Greater));
+        assert_eq!(
+            cmp_int_float(i64::MIN, f64::NEG_INFINITY),
+            Some(Ordering::Greater)
+        );
+    }
+
+    // -- cmp_int_float: exact equality --
+
+    #[test]
+    fn cmp_int_float_exact_zero() {
+        assert_eq!(cmp_int_float(0, 0.0), Some(Ordering::Equal));
+        assert_eq!(cmp_int_float(0, -0.0), Some(Ordering::Equal));
+    }
+
+    #[test]
+    fn cmp_int_float_exact_integer_values() {
+        assert_eq!(cmp_int_float(1, 1.0), Some(Ordering::Equal));
+        assert_eq!(cmp_int_float(-1, -1.0), Some(Ordering::Equal));
+        assert_eq!(cmp_int_float(100, 100.0), Some(Ordering::Equal));
+    }
+
+    // -- cmp_int_float: fractional values --
+
+    #[test]
+    fn cmp_int_float_integer_less_than_float_with_fraction() {
+        // 1 < 1.5
+        assert_eq!(cmp_int_float(1, 1.5), Some(Ordering::Less));
+    }
+
+    #[test]
+    fn cmp_int_float_integer_greater_than_float_with_fraction() {
+        // 2 > 1.5
+        assert_eq!(cmp_int_float(2, 1.5), Some(Ordering::Greater));
+    }
+
+    #[test]
+    fn cmp_int_float_negative_fraction() {
+        // -2 < -1.5 (i.e., -2 is more negative)
+        assert_eq!(cmp_int_float(-2, -1.5), Some(Ordering::Less));
+        // -1 > -1.5
+        assert_eq!(cmp_int_float(-1, -1.5), Some(Ordering::Greater));
+    }
+
+    // -- cmp_int_float: extreme values --
+
+    #[test]
+    fn cmp_int_float_i64_max() {
+        // i64::MAX (2^63-1) cannot be represented exactly in f64.
+        // i64::MAX as f64 rounds to 2^63, so i64::MAX < (i64::MAX as f64).
+        // Using the numeric constant directly to avoid an i64→f64 cast lint.
+        let f: f64 = 9_223_372_036_854_775_808.0; // 2^63 (rounded i64::MAX)
+        assert_eq!(cmp_int_float(i64::MAX, f), Some(Ordering::Less));
+    }
+
+    #[test]
+    fn cmp_int_float_i64_min() {
+        // i64::MIN (-2^63) CAN be represented exactly in f64.
+        // Using the numeric constant directly to avoid an i64→f64 cast lint.
+        let f: f64 = -9_223_372_036_854_775_808.0; // i64::MIN
+        assert_eq!(cmp_int_float(i64::MIN, f), Some(Ordering::Equal));
+    }
+
+    // -- cmp_int_float: subnormals --
+
+    #[test]
+    fn cmp_int_float_subnormal() {
+        // Subnormal numbers are very close to zero but not zero.
+        let subnormal = f64::MIN_POSITIVE / 2.0;
+        assert!(subnormal > 0.0 && subnormal < f64::MIN_POSITIVE);
+        // 0 < subnormal (subnormal has a fractional part, int part = 0)
+        assert_eq!(cmp_int_float(0, subnormal), Some(Ordering::Less));
+        // 1 > subnormal
+        assert_eq!(cmp_int_float(1, subnormal), Some(Ordering::Greater));
+    }
+
+    // -- decompose_f64 --
+
+    #[test]
+    fn decompose_f64_zero() {
+        let (int_part, has_frac, negative) = decompose_f64(0.0);
+        assert_eq!(int_part, 0);
+        assert!(!has_frac);
+        assert!(!negative);
+    }
+
+    #[test]
+    fn decompose_f64_negative_zero() {
+        let (int_part, has_frac, negative) = decompose_f64(-0.0);
+        assert_eq!(int_part, 0);
+        assert!(!has_frac);
+        assert!(negative);
+    }
+
+    #[test]
+    fn decompose_f64_positive_integer() {
+        let (int_part, has_frac, negative) = decompose_f64(42.0);
+        assert_eq!(int_part, 42);
+        assert!(!has_frac);
+        assert!(!negative);
+    }
+
+    #[test]
+    fn decompose_f64_negative_with_fraction() {
+        let (int_part, has_frac, negative) = decompose_f64(-2.78);
+        assert_eq!(int_part, 2);
+        assert!(has_frac);
+        assert!(negative);
+    }
+
+    #[test]
+    fn decompose_f64_subnormal() {
+        let subnormal = f64::MIN_POSITIVE / 2.0;
+        let (int_part, has_frac, negative) = decompose_f64(subnormal);
+        assert_eq!(int_part, 0);
+        assert!(has_frac); // subnormals are tiny fractions
+        assert!(!negative);
+    }
+
+    #[test]
+    fn decompose_f64_exact_float_int_boundary() {
+        // 2^52 is the largest integer where all integers up to it are
+        // exactly representable in f64.
+        // Using the numeric constant directly to avoid a u64→f64 cast lint.
+        let boundary: f64 = 4_503_599_627_370_496.0; // 2^52
+        let (int_part, has_frac, negative) = decompose_f64(boundary);
+        assert_eq!(int_part, 1_u64 << 52);
+        assert!(!has_frac);
+        assert!(!negative);
+    }
+
+    #[test]
+    fn decompose_f64_value_less_than_one() {
+        let (int_part, has_frac, negative) = decompose_f64(0.5);
+        assert_eq!(int_part, 0);
+        assert!(has_frac);
+        assert!(!negative);
+    }
 }

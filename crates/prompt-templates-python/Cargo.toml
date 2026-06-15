@@ -1,6 +1,6 @@
 [package]
 name = "prompt-templates-python"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 rust-version = "1.85"
 description = "Python bindings for the prompt-templates engine via PyO3"
@@ -18,7 +18,6 @@ crate-type = ["cdylib"]
 [dependencies]
 prompt-templates = { path = "../prompt-templates", features = ["serde"] }
 pyo3 = { version = "0.24", features = ["extension-module"] }
-serde = { version = "1", features = ["derive"] }
 
 [lints]
 workspace = true
