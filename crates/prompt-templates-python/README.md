@@ -67,6 +67,12 @@ instead of letting it propagate silently.
 | **Import hook**              | `import prompts.my_template` — use templates as regular Python modules.          |
 | **Readable as raw markdown** | `> {% %}` blockquote prefix keeps control flow visually separated from prose.    |
 
+> **Note:** The `> ` prefix is required only on the `{% %}` tag lines
+> themselves — it is stripped before compilation. Content lines between tags
+> (prose, `{{ }}` expressions) are **normal text** and should **not** use
+> `> `. If a content line starts with `> `, it is kept verbatim as a literal
+> markdown blockquote in the output.
+
 ## Installation
 
 ```bash
@@ -325,6 +331,124 @@ cache = TemplateCache()
 tmpl = cache.load("prompts/greeting.tmpl.md")
 output = tmpl.render(name="cached")
 ```
+
+## Rendering from a Dict
+
+Use `render_dict()` when your parameters come from a dictionary rather
+than keyword arguments:
+
+```python
+params = {"name": "world", "count": 3}
+output = tmpl.render_dict(params)
+```
+
+Pass `allow_extra=True` to ignore extra keys:
+
+```python
+output = tmpl.render_dict(params, allow_extra=True)
+```
+
+## Constants
+
+Templates can define constants in the `consts:` block. Access them via
+`consts()`:
+
+```python
+tmpl = Template.from_source("""
+---
+consts:
+  - MAX_RETRIES = int := 3
+  - MODEL = str := "gpt-4"
+params:
+  - query = str
+---
+{{ query }}
+""")
+
+constants = tmpl.consts()  # {"MAX_RETRIES": 3, "MODEL": "gpt-4"}
+```
+
+Use `imported_consts()` to access constants imported from other templates
+(keyed by `stem.NAME`, e.g. `shared.MAX_RETRIES`).
+
+## Hot-Reload Validation
+
+After reloading a template from disk, validate that its declarations
+haven't changed with `validate_declarations_against()`:
+
+```python
+expected = tmpl.declarations()  # save at startup
+
+# ... later, after hot-reload ...
+new_tmpl = Template.from_file("prompts/greeting.tmpl.md")
+new_tmpl.validate_declarations_against(expected)  # raises ValueError if changed
+```
+
+## Template Body and Include Depth
+
+`body()` returns the raw template text after frontmatter stripping:
+
+```python
+raw = tmpl.body()
+```
+
+`set_max_include_depth(depth)` controls how deeply `{% include %}`
+directives can nest:
+
+```python
+tmpl.set_max_include_depth(5)
+```
+
+## Loading with a Base Directory
+
+`from_source_with_base_dir()` parses a template string and resolves
+`{% include %}` paths relative to `base_dir`:
+
+```python
+tmpl = Template.from_source_with_base_dir(source, "prompts/")
+output = tmpl.render(name="world")
+```
+
+## Cache Management
+
+`TemplateCache` also exposes management methods:
+
+```python
+cache = TemplateCache()
+cache.load("prompts/greeting.tmpl.md")
+cache.load("prompts/review.tmpl.md")
+
+cache.template_count()  # 2
+cache.include_count()   # number of cached includes
+
+cache.clear()           # invalidate all entries
+cache.template_count()  # 0
+```
+
+## Filters
+
+Filters transform values inside expressions using the `|` pipe syntax:
+
+| Filter      | Description                  | Example                    |
+| ----------- | ---------------------------- | -------------------------- |
+| `upper`     | Uppercase string             | `{{ name \| upper }}`      |
+| `lower`     | Lowercase string             | `{{ name \| lower }}`      |
+| `trim`      | Strip leading/trailing space | `{{ name \| trim }}`       |
+| `fixed(N)`  | Format float to N decimals   | `{{ score \| fixed(2) }}`  |
+| `join(sep)` | Join list items with sep     | `{{ tags \| join(", ") }}` |
+| `limit(N)`  | Take first N list elements   | `{{ items \| limit(3) }}`  |
+| `add(N)`    | Add N to numeric value       | `{{ count \| add(1) }}`    |
+| `sub(N)`    | Subtract N from numeric      | `{{ count \| sub(1) }}`    |
+
+## Built-in Functions
+
+Functions can be used inside expressions:
+
+| Function       | Description                                         | Example              |
+| -------------- | --------------------------------------------------- | -------------------- |
+| `idx(binding)` | Index of current item in `{% for %}` loop (0-based) | `{{ idx(item) }}`    |
+| `len(expr)`    | Length of a list or string                          | `{{ len(items) }}`   |
+| `kind(expr)`   | Active variant name of an enum value                | `{{ kind(status) }}` |
 
 ## Full Reference
 

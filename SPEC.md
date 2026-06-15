@@ -47,9 +47,11 @@ files with an optional YAML frontmatter block followed by a body:
 ```
 
 **Standalone control-flow tags** (`{% %}`) on their own line must carry a `>`
-blockquote prefix. Content lines (text, `{{ }}` expressions) do not need it.
-The prefix is stripped before compilation and has no effect on output. In a
-markdown editor it renders as a blockquote, visually separating logic from prose:
+blockquote prefix. **Content lines inside blocks do not** — only the `{% %}`
+tags themselves need the prefix. The prose, expressions (`{{ }}`), and other
+text between the tags should be written normally. The prefix is stripped before
+compilation and has no effect on output. In a markdown editor it renders as a
+blockquote, visually separating logic from prose:
 
 <!-- prettier-ignore -->
 ```markdown
@@ -164,8 +166,25 @@ at line start is a syntax error.
 - **Statement tags mid-line** (e.g., `text{% match x case Y %}`) → no prefix
   needed.
 - **Expression tags** (`{{ ... }}`) → never need a `> ` prefix.
-- **Content lines** (e.g., `> {{ item }}`) — the `> ` is preserved in output
-  since the line doesn't start with `{% `.
+- **Content lines inside blocks are normal text.** The lines between
+  `> {% for ... %}` and `> {% /for %}` (or any other block) are just
+  regular template content — they are **not** prefixed with `> ` and
+  should never be. The `> ` prefix stripping applies **exclusively** to
+  lines where the first non-whitespace content after `> ` is `{% `.
+  If a content line happens to start with `> `, it is **not** stripped —
+  it is kept verbatim in the rendered output as a literal markdown
+  blockquote. This is completely unrelated to the `> {% %}` prefix
+  requirement.
+
+Example — only the `{% %}` tag lines carry the `> ` prefix; the prose
+lines inside the block do not:
+
+<!-- prettier-ignore -->
+```markdown
+> {% for task in tasks %}
+- **{{ task.title }}** ({{ task.priority }})
+> {% /for %}
+```
 
 ## Type Aliases
 
@@ -334,12 +353,13 @@ Constants are type-checked at parse time. The value is mandatory — a
 When a template is imported via `imports:`, its constants become
 accessible via dotted path `stem.CONST_NAME`:
 
-```yaml
+```markdown
 ---
 imports:
   - "[artist](artist.tmpl.md)"
 ---
-Notebook: { { artist.NOTEBOOK_FILENAME } }
+
+Notebook: {{ artist.NOTEBOOK_FILENAME }}
 ```
 
 Imported constants follow the same resolution rules as imported types.
@@ -599,6 +619,7 @@ after type narrowing:
 > {% include [name](path.tmpl.md) %}
 > {% include [child](child.tmpl.md) with msg=greeting %}
 > {% include [row](row.tmpl.md) for item in items %}
+> {% include [row](row.tmpl.md) for item in items with extra=val %}
 ```
 
 - The `[name]` part is a standard markdown link — clickable in editors.
@@ -607,7 +628,17 @@ after type narrowing:
   editors and renderers.
 - **Explicit parameter passing** via `with` is required; no implicit scope
   leaking.
-- **Iterated includes** via `for` unroll the list, passing each element.
+- **Iterated includes** via `for binding in list` unroll the list: for
+  each element, the included template is rendered with `binding` set to the
+  current item. The binding name satisfies the included template's
+  parameter declaration of the same name. `idx(binding)` provides the
+  0-based loop index inside the included template. Combined `for + with`
+  syntax is also supported, passing additional explicit overrides alongside
+  the iteration binding.
+- **Bare name includes**: if the include name refers to an inline template
+  defined via `{% tmpl name %}` (or a variable of type `tmpl<...>`), use
+  `{% include name with ... %}` without the markdown link syntax. The
+  engine resolves inline templates before falling back to the filesystem.
 - Parameters are type-checked against the included template's frontmatter.
 
 ### Depth Limits

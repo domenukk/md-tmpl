@@ -19,6 +19,15 @@ Tests cover:
 - Template metadata (declarations, source_hash, defaults)
 - Generated type __repr__, __eq__, __hash__
 - Generated type __match_args__ for pattern matching
+- Filters: upper, lower, trim, fixed, join, limit, add, sub
+- Built-in functions: idx, len, kind
+- Includes and iterated includes
+- Inline templates ({% tmpl %})
+- Raw blocks ({% raw %})
+- Comments ({# #})
+- Constants (consts: block)
+- Whitespace control (-/+ trimming)
+- Type aliases (types: block)
 """
 
 import sys
@@ -155,9 +164,9 @@ class TestFromSource:
 
     def test_bool_param(self) -> None:
         tmpl = Template.from_source(
-            "---\nparams: [flag = bool]\n---\n{% if flag %}yes{% /if %}"
+            "---\nparams: [flag = bool]\n---\n> {% if flag %}\nyes\n> {% /if %}"
         )
-        assert tmpl.render(flag=True) == "yes"
+        assert tmpl.render(flag=True) == "yes\n"
 
     def test_float_param(self) -> None:
         tmpl = Template.from_source("---\nparams: [score = float]\n---\n{{ score }}")
@@ -285,10 +294,9 @@ class TestTypedLists:
                 {"title": "Race condition", "severity": "High"},
             ]
         )
-        assert "Buffer overflow" in output
-        assert "Race condition" in output
-        assert "Critical" in output
-        assert "High" in output
+        assert (
+            output == "- **Buffer overflow** (Critical)\n- **Race condition** (High)\n"
+        )
 
     def test_empty_list(self, list_template_path: Path) -> None:
         tmpl = Template.from_file(str(list_template_path))
@@ -312,8 +320,7 @@ class TestDictParams:
     def test_render_dict_param(self, dict_template_path: Path) -> None:
         tmpl = Template.from_file(str(dict_template_path))
         output = tmpl.render(config={"host": "localhost", "port": 8080})
-        assert "localhost" in output
-        assert "8080" in output
+        assert output == "localhost:8080"
 
     def test_dict_missing_field_raises(self, dict_template_path: Path) -> None:
         tmpl = Template.from_file(str(dict_template_path))
@@ -332,10 +339,7 @@ class TestMultipleParamTypes:
     def test_all_types(self, multi_param_path: Path) -> None:
         tmpl = Template.from_file(str(multi_param_path))
         output = tmpl.render(name="Alice", count=42, score=9.5, enabled=True)
-        assert "Alice" in output
-        assert "42" in output
-        assert "9.5" in output
-        assert "true" in output or "True" in output
+        assert output == "Alice: count=42, score=9.5, enabled=true"
 
 
 # ---------------------------------------------------------------------------
@@ -349,7 +353,7 @@ class TestEnumDispatch:
     def test_unit_variant(self, enum_template_path: Path) -> None:
         tmpl = Template.from_file(str(enum_template_path))
         output = tmpl.render(outcome="Rejected")
-        assert "NO" in output
+        assert output == "NO\n"
 
     def test_struct_variant_as_dict(self, enum_template_path: Path) -> None:
         tmpl = Template.from_file(str(enum_template_path))
@@ -359,8 +363,7 @@ class TestEnumDispatch:
                 "evidence": "found it",
             }
         )
-        assert "YES" in output
-        assert "found it" in output
+        assert output == "YES: found it\n"
 
     def test_invalid_variant_raises(self, enum_template_path: Path) -> None:
         tmpl = Template.from_file(str(enum_template_path))
@@ -379,14 +382,12 @@ class TestDefaults:
     def test_defaults_used_when_omitted(self, default_template_path: Path) -> None:
         tmpl = Template.from_file(str(default_template_path))
         output = tmpl.render()
-        assert "Hello World" in output
-        assert "count=1" in output
+        assert output == "Hello World, count=1!"
 
     def test_defaults_overridden(self, default_template_path: Path) -> None:
         tmpl = Template.from_file(str(default_template_path))
         output = tmpl.render(name="Alice", count=99)
-        assert "Hello Alice" in output
-        assert "count=99" in output
+        assert output == "Hello Alice, count=99!"
 
     def test_defaults_dict(self, default_template_path: Path) -> None:
         tmpl = Template.from_file(str(default_template_path))
@@ -488,13 +489,12 @@ class TestTemplateHelper:
     def test_render_with_generated_enum(self, enum_template_path: Path) -> None:
         t = template(str(enum_template_path))
         output = t.render(outcome=t.Outcome.Rejected)
-        assert "NO" in output
+        assert output == "NO\n"
 
     def test_render_with_struct_variant(self, enum_template_path: Path) -> None:
         t = template(str(enum_template_path))
         output = t.render(outcome=t.Outcome.Confirmed(evidence="found it"))
-        assert "YES" in output
-        assert "found it" in output
+        assert output == "YES: found it\n"
 
     def test_generated_list_item_type(self, list_template_path: Path) -> None:
         t = template(str(list_template_path))
@@ -846,8 +846,7 @@ class TestEdgeCases:
             "---\nparams: [title = str]\n---\n# {{ title }}\n\nBody text."
         )
         output = tmpl.render(title="Test")
-        assert "# Test" in output
-        assert "Body text." in output
+        assert output == "# Test\n\nBody text."
 
     def test_multiple_vars_same_template(self) -> None:
         tmpl = Template.from_source(
@@ -914,7 +913,7 @@ class TestLoadTemplate:
         types = load_types(str(enum_template_path))
         assert hasattr(types, "Outcome")
         output = tmpl.render(outcome=types.Outcome.Rejected)
-        assert "NO" in output
+        assert output == "NO\n"
 
 
 # ---------------------------------------------------------------------------
@@ -1012,9 +1011,271 @@ class TestArithmeticFilters:
                 {"label": "second"},
             ]
         )
-        assert "1. first" in output
-        assert "2. second" in output
+        assert output == "1. first\n2. second\n"
 
     def test_sub_filter(self) -> None:
         tmpl = Template.from_source("---\nparams: [n = int]\n---\n{{ n | sub(1) }}")
         assert tmpl.render(n=10) == "9"
+
+
+# ---------------------------------------------------------------------------
+# Remaining filters (upper, lower, trim, fixed, join, limit)
+# ---------------------------------------------------------------------------
+
+
+class TestStringFilters:
+    """Tests for string and list filters."""
+
+    def test_upper_filter(self) -> None:
+        tmpl = Template.from_source("---\nparams: [msg = str]\n---\n{{ msg | upper }}")
+        assert tmpl.render(msg="hello") == "HELLO"
+
+    def test_lower_filter(self) -> None:
+        tmpl = Template.from_source("---\nparams: [msg = str]\n---\n{{ msg | lower }}")
+        assert tmpl.render(msg="HELLO") == "hello"
+
+    def test_trim_filter(self) -> None:
+        tmpl = Template.from_source("---\nparams: [msg = str]\n---\n{{ msg | trim }}")
+        assert tmpl.render(msg="  hello  ") == "hello"
+
+    def test_fixed_filter(self) -> None:
+        tmpl = Template.from_source(
+            "---\nparams: [val = float]\n---\n{{ val | fixed(2) }}"
+        )
+        assert tmpl.render(val=3.14159) == "3.14"
+
+    def test_join_filter(self) -> None:
+        tmpl = Template.from_source(
+            '---\nparams: [items = list<str>]\n---\n{{ items | join(", ") }}'
+        )
+        output = tmpl.render(items=["a", "b", "c"])
+        assert output == "a, b, c"
+
+    def test_limit_filter(self) -> None:
+        tmpl = Template.from_source(
+            '---\nparams: [items = list<str>]\n---\n{{ items | limit(2) | join(", ") }}'
+        )
+        output = tmpl.render(items=["a", "b", "c"])
+        assert output == "a, b"
+
+
+# ---------------------------------------------------------------------------
+# len() built-in function
+# ---------------------------------------------------------------------------
+
+
+class TestLenFunction:
+    """Tests for the len() built-in function."""
+
+    def test_len_list(self) -> None:
+        tmpl = Template.from_source(
+            "---\nparams: [items = list<x = str>]\n---\n{{ len(items) }}"
+        )
+        assert tmpl.render(items=[{"x": "a"}, {"x": "b"}]) == "2"
+
+    def test_len_string(self) -> None:
+        tmpl = Template.from_source("---\nparams: [msg = str]\n---\n{{ len(msg) }}")
+        assert tmpl.render(msg="hello") == "5"
+
+    def test_len_empty_list(self) -> None:
+        tmpl = Template.from_source(
+            "---\nparams: [items = list<x = str>]\n---\n{{ len(items) }}"
+        )
+        assert tmpl.render(items=[]) == "0"
+
+
+# ---------------------------------------------------------------------------
+# Includes
+# ---------------------------------------------------------------------------
+
+
+class TestIncludes:
+    """Tests for {% include %} directives."""
+
+    def test_simple_include(self, tmp_path: Path) -> None:
+        child = tmp_path / "child.tmpl.md"
+        child.write_text("---\nparams: [msg = str]\n---\nChild: {{ msg }}")
+        parent = tmp_path / "parent.tmpl.md"
+        parent.write_text(textwrap.dedent("""\
+            ---
+            params:
+              - greeting = str
+            ---
+            > {% include [child](child.tmpl.md) with msg=greeting %}"""))
+        tmpl = Template.from_file(str(parent))
+        output = tmpl.render(greeting="hello")
+        assert output == "Child: hello"
+
+    def test_iterated_include(self, tmp_path: Path) -> None:
+        row = tmp_path / "row.tmpl.md"
+        row.write_text("---\nparams: [label = str]\n---\n- {{ label }}")
+        parent = tmp_path / "list.tmpl.md"
+        parent.write_text(textwrap.dedent("""\
+            ---
+            params:
+              - items = list<label = str>
+            ---
+            > {% for item in items %}
+            > {% include [row](row.tmpl.md) with label=item.label %}
+            > {% /for %}"""))
+        tmpl = Template.from_file(str(parent))
+        output = tmpl.render(items=[{"label": "alpha"}, {"label": "beta"}])
+        assert output == "- alpha- beta"
+
+    def test_iterated_include_for_syntax(self, tmp_path: Path) -> None:
+        """Test {% include ... for item in items %} iterated include syntax."""
+        row = tmp_path / "row.tmpl.md"
+        row.write_text("---\nparams: [item = dict<>]\n---\n- {{ item.label }}")
+        parent = tmp_path / "list.tmpl.md"
+        parent.write_text(textwrap.dedent("""\
+            ---
+            params:
+              - items = list<label = str>
+            ---
+            > {% include [row](row.tmpl.md) for item in items %}"""))
+        tmpl = Template.from_file(str(parent))
+        output = tmpl.render(items=[{"label": "alpha"}, {"label": "beta"}])
+        assert output == "- alpha- beta"
+
+
+# ---------------------------------------------------------------------------
+# Inline templates
+# ---------------------------------------------------------------------------
+
+
+class TestInlineTemplates:
+    """Tests for {% tmpl %} inline template blocks."""
+
+    def test_inline_template(self) -> None:
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            params:
+              - items = list<name = str>
+            ---
+            > {% tmpl row %}
+            ---
+            params:
+              - name = str
+            ---
+            * {{ name }}
+            > {% /tmpl %}
+            > {% for item in items %}
+            > {% include row with name=item.name %}
+            > {% /for %}"""))
+        output = tmpl.render(items=[{"name": "Alice"}, {"name": "Bob"}])
+        assert output == "* Alice\n* Bob\n"
+
+
+# ---------------------------------------------------------------------------
+# Raw blocks
+# ---------------------------------------------------------------------------
+
+
+class TestRawBlocks:
+    """Tests for {% raw %} blocks."""
+
+    def test_raw_block(self) -> None:
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            params: []
+            ---
+            > {% raw %}
+            {{ not_evaluated }}
+            > {% /raw %}"""))
+        output = tmpl.render()
+        assert output == "{{ not_evaluated }}\n"
+
+
+# ---------------------------------------------------------------------------
+# Comments
+# ---------------------------------------------------------------------------
+
+
+class TestComments:
+    """Tests for {# comment #} syntax."""
+
+    def test_comment_stripped(self) -> None:
+        tmpl = Template.from_source(
+            "---\nparams: [name = str]\n---\nHello{# a comment #} {{ name }}!"
+        )
+        output = tmpl.render(name="world")
+        assert output == "Hello world!"
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+
+class TestConstants:
+    """Tests for consts: block in frontmatter."""
+
+    def test_const_in_body(self) -> None:
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            consts:
+              - APP = str := "MyApp"
+            params: []
+            ---
+            {{ APP }}"""))
+        assert tmpl.render() == "MyApp"
+
+    def test_consts_method(self) -> None:
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            consts:
+              - VERSION = str := "1.0"
+              - MAX = int := 100
+            params: []
+            ---
+            {{ VERSION }} {{ MAX }}"""))
+        consts = tmpl.consts()
+        assert consts["VERSION"] == "1.0"
+        assert consts["MAX"] == 100
+
+
+# ---------------------------------------------------------------------------
+# Whitespace control
+# ---------------------------------------------------------------------------
+
+
+class TestWhitespaceControl:
+    """Tests for whitespace trimming with - markers."""
+
+    def test_trim_left(self) -> None:
+        tmpl = Template.from_source(
+            "---\nparams: [name = str]\n---\nhello  {{- name }}"
+        )
+        assert tmpl.render(name="world") == "helloworld"
+
+    def test_trim_right(self) -> None:
+        tmpl = Template.from_source("---\nparams: [name = str]\n---\n{{ name -}}  end")
+        assert tmpl.render(name="world") == "worldend"
+
+
+# ---------------------------------------------------------------------------
+# Type aliases
+# ---------------------------------------------------------------------------
+
+
+class TestTypeAliases:
+    """Tests for types: block (type aliases)."""
+
+    def test_type_alias_enum(self) -> None:
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            types:
+              - Priority = enum<High, Medium, Low>
+            params:
+              - prio = Priority
+            ---
+            > {% match prio %}
+            > {% case High %}
+            URGENT
+            > {% case Medium %}
+            NORMAL
+            > {% case Low %}
+            MINOR
+            > {% /match %}"""))
+        output = tmpl.render(prio="High")
+        assert output == "URGENT\n"

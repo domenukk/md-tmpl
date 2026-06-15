@@ -340,25 +340,15 @@ params:
     let output = tmpl
         .render(&ctx)
         .expect("README hero example should render");
-    assert!(
-        output.contains("# Report — SecurityBot"),
-        "should contain header: {output}"
-    );
-    assert!(
-        output.contains("**Buffer overflow**"),
-        "should contain bug title: {output}"
-    );
-    assert!(
-        output.contains("RCE in parser"),
-        "should contain Critical reason: {output}"
-    );
-    assert!(
-        output.contains("🟠 High priority"),
-        "should contain High priority: {output}"
-    );
-    assert!(
-        output.contains("🟢 Normal priority"),
-        "should contain Low priority: {output}"
+    assert_eq!(
+        output,
+        "\n# Report — SecurityBot\n\n\n\
+         - **Buffer overflow**\n\
+         \x20\x20🔴 Immediate action required: `RCE in parser`\n\n\
+         - **Missing CSRF token**\n\
+         \x20\x20🟠 High priority.\n\n\
+         - **Verbose logging**\n\
+         \x20\x20🟢 Normal priority.\n"
     );
 }
 

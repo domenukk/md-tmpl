@@ -258,6 +258,52 @@ impl PyTemplate {
         }
     }
 
+    /// Parse a template from source with a base directory for include resolution.
+    ///
+    /// Use this when your template source contains `{% include %}` directives
+    /// and the included files should be resolved relative to `base_dir`.
+    ///
+    /// Args:
+    ///     source: Template source with YAML frontmatter.
+    ///     `base_dir`: Directory path for resolving includes.
+    ///
+    /// Returns:
+    ///     Template: A parsed and validated template.
+    ///
+    /// Raises:
+    ///     `ValueError`: If the source contains syntax errors or includes cannot be resolved.
+    #[staticmethod]
+    fn from_source_with_base_dir(source: &str, base_dir: &str) -> PyResult<Self> {
+        let path = std::path::Path::new(base_dir);
+        let fm = prompt_templates::parse_frontmatter_with_base_dir(source, path)
+            .map(|(fm, _)| fm)
+            .unwrap_or_default();
+        let tmpl = Template::from_source_with_base_dir(source, path)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Ok(Self {
+            inner: tmpl,
+            frontmatter: fm,
+        })
+    }
+
+    /// Return the raw template body after frontmatter stripping.
+    ///
+    /// Returns:
+    ///     str: The template body text.
+    fn body(&self) -> String {
+        self.inner.body().to_string()
+    }
+
+    /// Set the maximum include depth for rendering this template.
+    ///
+    /// Controls how deeply nested `{% include %}` directives can recurse.
+    ///
+    /// Args:
+    ///     depth: Maximum nesting depth for includes.
+    fn set_max_include_depth(&mut self, depth: usize) {
+        self.inner.set_max_include_depth(depth);
+    }
+
     fn __repr__(&self) -> String {
         let decls: Vec<String> = self
             .inner
@@ -325,6 +371,29 @@ impl PyTemplateCache {
             inner: tmpl,
             frontmatter: fm,
         })
+    }
+
+    /// Invalidate all cached entries.
+    ///
+    /// Call after a bulk file update to force re-compilation on next load.
+    fn clear(&self) {
+        self.inner.clear();
+    }
+
+    /// Return the number of cached main templates.
+    ///
+    /// Returns:
+    ///     int: Number of cached templates.
+    fn template_count(&self) -> usize {
+        self.inner.template_count()
+    }
+
+    /// Return the number of cached include templates.
+    ///
+    /// Returns:
+    ///     int: Number of cached includes.
+    fn include_count(&self) -> usize {
+        self.inner.include_count()
     }
 }
 

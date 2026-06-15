@@ -1275,7 +1275,7 @@ fn sequential_for_loops_same_binding_allowed() {
         items: [{ name: "a" }, { name: "b" }]
     };
     let output = tmpl.render(&ctx).unwrap();
-    assert!(output.contains('a') && output.contains('b'));
+    assert_eq!(output, "a\nb\na\nb\n");
 }
 
 #[test]
@@ -1287,7 +1287,7 @@ fn fresh_for_binding_allowed() {
     )
     .unwrap();
     let ctx = crate::ctx! { items: [{ name: "hello" }] };
-    assert!(tmpl.render(&ctx).unwrap().contains("hello"));
+    assert_eq!(tmpl.render(&ctx).unwrap(), "hello\n");
 }
 
 #[test]
@@ -1306,7 +1306,7 @@ fn nested_for_loops_different_bindings_allowed() {
     let ctx = crate::ctx! {
         items: [{ children: [{ name: "leaf" }] }]
     };
-    assert!(tmpl.render(&ctx).unwrap().contains("leaf"));
+    assert_eq!(tmpl.render(&ctx).unwrap(), "  leaf\n  ");
 }
 
 // -- Blockquote prefix enforcement ----------------------------------------

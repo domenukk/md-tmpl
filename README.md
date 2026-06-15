@@ -73,6 +73,12 @@ instead of letting it propagate silently.
 | **Readable as raw markdown** | `> {% %}` blockquote prefix keeps control flow visually separated from prose.               |
 | **Hot-reload safe**          | Reload templates at runtime; struct validation catches contract drift.                      |
 
+> **Note:** The `> ` prefix is required only on the `{% %}` tag lines
+> themselves — it is stripped before compilation. Content lines between tags
+> (prose, `{{ }}` expressions) are **normal text** and should **not** use
+> `> `. If a content line starts with `> `, it is kept verbatim as a literal
+> markdown blockquote in the output.
+
 ## Installation
 
 ```bash
@@ -394,15 +400,16 @@ let output = greeting::Params {
 
 Load templates by name from a directory at runtime:
 
-```rust,no_run
+```rust
 use prompt_templates::load_template;
 
-let tmpl = load_template(std::path::Path::new("prompts"), "greeting").unwrap();
-// Looks for prompts/greeting.tmpl.md
+let tmpl = load_template(std::path::Path::new("prompts"), "simple_greeting").unwrap();
+// Looks for prompts/simple_greeting.tmpl.md
 
 let mut ctx = prompt_templates::Context::new();
 ctx.set("name", "world");
 let output = tmpl.render(&ctx).unwrap();
+assert!(output.contains("Hello world!"));
 ```
 
 ## Caching
@@ -570,7 +577,7 @@ assert_eq!(output, "Alice has 3 items");
 ## Python Bindings
 
 The `prompt-templates-python` package provides full Python bindings via
-PyO3. Install with `pip install prompt-templates` (or `maturin develop`
+`PyO3`. Install with `pip install prompt-templates` (or `maturin develop`
 for development):
 
 ```python

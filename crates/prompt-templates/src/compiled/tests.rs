@@ -768,9 +768,7 @@ Stopped
     let mut ctx = Context::new();
     ctx.set("status", "Paused");
     let result = compiled_render(template, &ctx).unwrap();
-    assert!(result.contains("Paused"), "got: {result:?}");
-    assert!(!result.contains("Running"));
-    assert!(!result.contains("Stopped"));
+    assert_eq!(result, "Paused\n");
 }
 
 #[test]
@@ -791,8 +789,7 @@ NOT CONFIRMED
         ]),
     );
     let result = compiled_render(template, &ctx).unwrap();
-    assert!(result.contains("CONFIRMED: crash log"), "got: {result:?}");
-    assert!(!result.contains("NOT CONFIRMED"));
+    assert_eq!(result, "CONFIRMED: crash log\n");
 }
 
 #[test]
@@ -845,7 +842,7 @@ Found test!
         ]),
     );
     let result = compiled_render(template, &ctx).unwrap();
-    assert!(result.contains("Found test!"), "got: {result:?}");
+    assert_eq!(result, "  Found test!\n  ");
 }
 
 #[test]
@@ -865,7 +862,7 @@ Found test!
         ]),
     );
     let result = compiled_render(template, &ctx).unwrap();
-    assert!(!result.contains("Found test!"));
+    assert_eq!(result, "  ");
 }
 
 #[test]
@@ -893,7 +890,7 @@ No evidence.
     let mut ctx = Context::new();
     ctx.set("outcome", "Confirmed");
     let result = compiled_render(template, &ctx).unwrap();
-    assert!(result.contains("Evidence found."), "got: {result:?}");
+    assert_eq!(result, "Evidence found.\n");
 }
 
 #[test]
@@ -908,7 +905,7 @@ No evidence.
     let mut ctx = Context::new();
     ctx.set("outcome", "ConfirmedWithCaveats");
     let result = compiled_render(template, &ctx).unwrap();
-    assert!(result.contains("Evidence found."), "got: {result:?}");
+    assert_eq!(result, "Evidence found.\n");
 }
 
 #[test]
@@ -923,7 +920,7 @@ No evidence.
     let mut ctx = Context::new();
     ctx.set("outcome", "Inconclusive");
     let result = compiled_render(template, &ctx).unwrap();
-    assert!(!result.contains("Evidence"), "got: {result:?}");
+    assert_eq!(result, "");
 }
 
 #[test]
@@ -1032,10 +1029,7 @@ fn inline_template_include_renders_test() {
     );
     let tmpl = crate::Template::from_source(src).unwrap();
     let result = tmpl.render(&Context::new()).unwrap();
-    assert!(
-        result.contains("Hello World!"),
-        "inline template should render: {result:?}"
-    );
+    assert_eq!(result, "Hello World!\n");
 }
 
 #[test]
@@ -1102,10 +1096,7 @@ fn same_named_tmpl_in_different_files_render_independently() {
     let tmpl = crate::Template::from_source(parent_src).unwrap();
     let result = tmpl.render(&Context::new()).unwrap();
     // Parent's "helper" renders "PARENT"
-    assert!(
-        result.contains("PARENT"),
-        "parent's helper should render: {result:?}",
-    );
+    assert_eq!(result, "PARENT\n---\n");
 }
 
 #[test]
@@ -1138,10 +1129,7 @@ fn included_file_uses_own_inline_templates() {
     let mut ctx = Context::new();
     ctx.set("name", "Alice");
     let result = tmpl.render(&ctx).unwrap();
-    assert!(
-        result.contains("- Alice"),
-        "child's inline template should render: {result:?}",
-    );
+    assert_eq!(result, "- Alice\n");
 }
 
 #[test]
@@ -1220,14 +1208,7 @@ fn same_named_tmpl_in_parent_and_child_are_independent() {
 
     let tmpl = crate::Template::from_file(&dir.path().join("parent.tmpl.md")).unwrap();
     let result = tmpl.render(&Context::new()).unwrap();
-    assert!(
-        result.contains("PARENT_GREETING"),
-        "parent's greeting should render: {result:?}",
-    );
-    assert!(
-        result.contains("CHILD_GREETING"),
-        "child's greeting should render independently: {result:?}",
-    );
+    assert_eq!(result, "PARENT_GREETING\nCHILD_GREETING\n");
 }
 
 #[test]
@@ -1272,14 +1253,7 @@ fn two_included_files_same_tmpl_name_different_content() {
 
     let tmpl = crate::Template::from_file(&dir.path().join("parent.tmpl.md")).unwrap();
     let result = tmpl.render(&Context::new()).unwrap();
-    assert!(
-        result.contains("ALPHA_ROW"),
-        "alpha's row should render: {result:?}",
-    );
-    assert!(
-        result.contains("BETA_ROW"),
-        "beta's row should render: {result:?}",
-    );
+    assert_eq!(result, "ALPHA_ROW\nBETA_ROW\n");
 }
 
 #[test]
@@ -1315,14 +1289,7 @@ fn same_display_name_different_files_work() {
     let mut ctx = Context::new();
     ctx.set("name", "World");
     let result = tmpl.render(&ctx).unwrap();
-    assert!(
-        result.contains("Hello World!"),
-        "English should render: {result:?}",
-    );
-    assert!(
-        result.contains("Hallo World!"),
-        "German should render: {result:?}",
-    );
+    assert_eq!(result, "Hello World!Hallo World!");
 }
 
 #[test]
@@ -1356,9 +1323,7 @@ fn nested_include_chain_a_b_c() {
     let mut ctx = Context::new();
     ctx.set("msg", "hello");
     let result = tmpl.render(&ctx).unwrap();
-    assert!(result.contains("[A:hello]"), "A should render: {result:?}");
-    assert!(result.contains("[B:hello]"), "B should render: {result:?}");
-    assert!(result.contains("[C:hello]"), "C should render: {result:?}");
+    assert_eq!(result, "[A:hello]\n[B:hello]\n[C:hello]");
 }
 
 #[test]
@@ -1402,6 +1367,5 @@ fn diamond_include_deduplicates_correctly() {
     ctx.set("x", "from_b");
     ctx.set("y", "from_c");
     let result = tmpl.render(&ctx).unwrap();
-    assert!(result.contains("[D:from_b]"), "D via B: {result:?}");
-    assert!(result.contains("[D:from_c]"), "D via C: {result:?}");
+    assert_eq!(result, "[B]\n[D:from_b][C]\n[D:from_c]");
 }

@@ -495,8 +495,7 @@ mod tests {
         );
         let mut scope = Scope::new(&ctx);
         let result = resolve_include(&directive, &mut scope, Some(dir.path()), None).unwrap();
-        assert!(result.contains("- first"));
-        assert!(result.contains("- second"));
+        assert_eq!(result, "- first\n- second\n");
     }
 
     #[test]
@@ -570,7 +569,7 @@ mod tests {
         );
         let mut scope = Scope::new(&ctx);
         let result = resolve_include(&directive, &mut scope, Some(dir.path()), None).unwrap();
-        assert!(result.contains("- test"));
+        assert_eq!(result, "- test\n");
     }
 
     #[test]
@@ -689,10 +688,7 @@ mod tests {
         );
         let mut scope = Scope::new(&ctx);
         let result = resolve_include(&directive, &mut scope, Some(dir.path()), None).unwrap();
-        assert!(
-            result.contains("- alpha"),
-            "default prefix '-' should be injected: {result}"
-        );
+        assert_eq!(result, "- alpha\n");
     }
 
     /// Regression: when an override IS provided, it must take precedence

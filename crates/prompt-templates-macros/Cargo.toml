@@ -19,12 +19,16 @@ serde = []
 typed-builder = []
 
 [dependencies]
-prompt-templates = { version = "0.1.3", path = "../prompt-templates" }
+prompt-templates = { version = "0.1", path = "../prompt-templates" }
 syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"
 
 [dev-dependencies]
+prompt-templates = { path = "../prompt-templates", features = [
+  "serde",
+  "typed-builder",
+] }
 serde = { version = "1", features = ["derive"] }
 typed-builder = { workspace = true }
 

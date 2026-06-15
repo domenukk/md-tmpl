@@ -79,9 +79,7 @@ fn builder_params_render_correctly() {
         .build();
 
     let output = params.render(tmpl).unwrap();
-    assert!(output.contains("Hello World!"), "got: {output}");
-    assert!(output.contains("Count: 99"), "got: {output}");
-    assert!(output.contains('a'), "got: {output}");
+    assert_eq!(output, "\nHello World! Count: 99. Items: a");
 }
 
 // ── template_params_struct! with builder ───────────────────────────
@@ -111,9 +109,7 @@ fn template_params_struct_builder_renders() {
         .render(tmpl)
         .unwrap();
 
-    assert!(output.contains("Frank"), "got: {output}");
-    assert!(output.contains("Count: 5"), "got: {output}");
-    assert!(output.contains("item1"), "got: {output}");
+    assert_eq!(output, "\nHello Frank! Count: 5. Items: item1");
 }
 
 // ── Code review template with multiple list fields ─────────────────
@@ -151,6 +147,8 @@ fn builder_code_review_renders() {
         .render(tmpl)
         .unwrap();
 
-    assert!(output.contains("lib.rs"), "got: {output}");
-    assert!(output.contains("medium"), "got: {output}");
+    assert_eq!(
+        output,
+        "\n# Code Review: lib.rs\n\nSeverity: medium\n\n## Findings\n\n"
+    );
 }

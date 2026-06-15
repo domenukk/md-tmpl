@@ -47,11 +47,7 @@ fn depth_limit_15_renders_ok() {
     let tmpl = Template::from_file(&root).unwrap();
     let result = tmpl.render(&Context::new()).unwrap();
     // Should contain all intermediate levels and the leaf.
-    assert!(
-        result.contains("LEAF"),
-        "chain should render leaf: {result}"
-    );
-    assert!(result.contains("0+"), "chain should contain root: {result}");
+    assert_eq!(result, "0+1+2+3+4+5+6+7+8+9+10+11+12+13+14+LEAF");
 }
 
 /// 16-level include chain renders successfully (exactly at default limit).
@@ -61,10 +57,7 @@ fn depth_limit_16_renders_ok() {
     let root = build_include_chain(dir.path(), 16);
     let tmpl = Template::from_file(&root).unwrap();
     let result = tmpl.render(&Context::new()).unwrap();
-    assert!(
-        result.contains("LEAF"),
-        "chain should render leaf: {result}"
-    );
+    assert_eq!(result, "0+1+2+3+4+5+6+7+8+9+10+11+12+13+14+15+LEAF");
 }
 
 /// 17-level include chain exceeds default depth limit (16) and errors.
@@ -171,7 +164,7 @@ fn collision_distinct_params_ok() {
     ctx.set("first_name", "Alice");
     ctx.set("last_name", "Smith");
     let result = tmpl.render(&ctx).unwrap();
-    assert!(result.contains("Alice Smith"), "got: {result}");
+    assert_eq!(result, "Alice Smith\n");
 }
 
 // --- Rule: Reserved keyword as param name ---
@@ -195,7 +188,7 @@ fn collision_non_reserved_param_ok() {
     let mut ctx = Context::new();
     ctx.set("my_list", "items");
     let result = tmpl.render(&ctx).unwrap();
-    assert!(result.contains("items"), "got: {result}");
+    assert_eq!(result, "items\n");
 }
 
 // --- Rule: Duplicate type alias ---
@@ -219,7 +212,7 @@ fn collision_distinct_type_aliases_ok() {
     ctx.set("p", "High");
     ctx.set("s", "Active");
     let result = tmpl.render(&ctx).unwrap();
-    assert!(result.contains("High"), "got: {result}");
+    assert_eq!(result, "High Active\n");
 }
 
 // --- Rule: Type alias shadows builtin ---
@@ -243,7 +236,7 @@ fn collision_non_builtin_type_alias_ok() {
     let mut ctx = Context::new();
     ctx.set("level", "High");
     let result = tmpl.render(&ctx).unwrap();
-    assert!(result.contains("High"), "got: {result}");
+    assert_eq!(result, "High\n");
 }
 
 // --- Rule: Type alias shadows import stem (R2) ---
@@ -283,7 +276,7 @@ fn collision_type_alias_not_shadowing_import_ok() {
     let mut ctx = Context::new();
     ctx.set("x", "High");
     let result = tmpl.render(&ctx).unwrap();
-    assert!(result.contains("High"), "got: {result}");
+    assert_eq!(result, "High\n");
 }
 
 // --- Rule: Param name (PascalCase) shadows import stem (R2b) ---
@@ -325,7 +318,7 @@ fn collision_param_not_shadowing_import_ok() {
     let mut ctx = Context::new();
     ctx.set("msg", "hello");
     let result = tmpl.render(&ctx).unwrap();
-    assert!(result.contains("hello"), "got: {result}");
+    assert_eq!(result, "hello\n");
 }
 
 // --- Rule: Type alias vs param/const name collision (R1) ---
@@ -352,7 +345,7 @@ fn collision_type_param_same_type_ok() {
     let mut ctx = Context::new();
     ctx.set("priority", "High");
     let result = tmpl.render(&ctx).unwrap();
-    assert!(result.contains("High"), "got: {result}");
+    assert_eq!(result, "High\n");
 }
 
 // --- Rule: Unused type alias (R4) ---
@@ -376,7 +369,7 @@ fn collision_used_type_alias_ok() {
     let mut ctx = Context::new();
     ctx.set("s", "Active");
     let result = tmpl.render(&ctx).unwrap();
-    assert!(result.contains("Active"), "got: {result}");
+    assert_eq!(result, "Active\n");
 }
 
 // --- Rule: Duplicate constant name ---
@@ -397,10 +390,7 @@ fn collision_distinct_consts_ok() {
     let source = "---\nconsts:\n  - X = int := 1\n  - Y = int := 2\n---\n{{ X }} {{ Y }}\n";
     let tmpl = Template::from_source(source).unwrap();
     let result = tmpl.render(&Context::new()).unwrap();
-    assert!(
-        result.contains('1') && result.contains('2'),
-        "got: {result}"
-    );
+    assert_eq!(result, "1 2\n");
 }
 
 // --- Rule: Param and const with same name (R3) ---
@@ -424,10 +414,7 @@ fn collision_param_const_different_names_ok() {
     let mut ctx = Context::new();
     ctx.set("user_input", "hello");
     let result = tmpl.render(&ctx).unwrap();
-    assert!(
-        result.contains("hello") && result.contains("v1.0"),
-        "got: {result}"
-    );
+    assert_eq!(result, "hello v1.0\n");
 }
 
 // --- Rule: Reserved keyword as import stem ---
@@ -476,14 +463,12 @@ fn adversarial_many_variables() {
         ctx.set(format!("v{i}"), format!("val{i}"));
     }
     let result = tmpl.render(&ctx).unwrap();
-    assert!(
-        result.contains("val0"),
-        "should contain first var: {result}"
-    );
-    assert!(
-        result.contains("val99"),
-        "should contain last var: {result}"
-    );
+    let mut expected_parts = Vec::new();
+    for i in 0..100 {
+        expected_parts.push(format!("val{i}"));
+    }
+    let expected = format!("{}\n", expected_parts.join(" "));
+    assert_eq!(result, expected);
 }
 
 /// A for-loop over an empty list should produce no output.
@@ -522,10 +507,7 @@ fn adversarial_deeply_nested_conditionals() {
     let mut ctx = Context::new();
     ctx.set("flag", Value::Bool(true));
     let result = tmpl.render(&ctx).unwrap();
-    assert!(
-        result.contains("DEEP"),
-        "nested ifs should render: {result}"
-    );
+    assert_eq!(result, "> > > > > > > > > DEEP");
 }
 
 /// Template with only frontmatter and no body should produce empty output.
@@ -557,12 +539,7 @@ fn adversarial_unicode_content() {
     let mut ctx = Context::new();
     ctx.set("msg", "こんにちは 🦀");
     let result = tmpl.render(&ctx).unwrap();
-    assert!(result.contains("🎯"), "should contain emoji: {result}");
-    assert!(
-        result.contains("こんにちは 🦀"),
-        "should contain unicode: {result}"
-    );
-    assert!(result.contains("日本語"), "should contain kanji: {result}");
+    assert_eq!(result, "🎯 こんにちは 🦀 日本語\n");
 }
 
 // ============================================================================
@@ -578,10 +555,7 @@ fn whitespace_trim_before_tag() {
     ctx.set("show", Value::Bool(true));
     let result = tmpl.render(&ctx).unwrap();
     // Trailing whitespace after "hello" should be trimmed by `{%-`.
-    assert!(
-        result.contains("helloyes"),
-        "whitespace before tag should be trimmed: {result:?}"
-    );
+    assert_eq!(result, "helloyes");
 }
 
 /// `-%}` trims leading whitespace (through newline) from following text.
@@ -593,10 +567,7 @@ fn whitespace_trim_after_tag() {
     ctx.set("show", Value::Bool(true));
     let result = tmpl.render(&ctx).unwrap();
     // `-%}` should strip the newline after the tag.
-    assert!(
-        result.starts_with("hello"),
-        "whitespace after tag should be trimmed: {result:?}"
-    );
+    assert_eq!(result, "hello\n");
 }
 
 /// Expression trimming: `{{-` and `-}}`.
@@ -608,10 +579,7 @@ fn whitespace_trim_expression() {
     ctx.set("x", "MID");
     let result = tmpl.render(&ctx).unwrap();
     // `{{-` trims trailing whitespace before expr; `-}}` trims leading after.
-    assert!(
-        result.contains("beforeMID"),
-        "trim-before should work: {result:?}"
-    );
+    assert_eq!(result, "beforeMIDafter\n");
 }
 
 // ============================================================================
@@ -670,11 +638,7 @@ fn match_default_arm_catches_unmatched() {
     let mut ctx = Context::new();
     ctx.set("status", "Stopped");
     let result = tmpl.render(&ctx).unwrap();
-    assert!(
-        result.contains("Other"),
-        "default arm should catch unmatched: {result}"
-    );
-    assert!(!result.contains("Running"), "matched arm should not appear");
+    assert_eq!(result, "Other\n");
 }
 
 /// Nested match blocks should scope correctly.
@@ -700,13 +664,5 @@ OuterB
     ctx.set("outer", "A");
     ctx.set("inner", "X");
     let result = tmpl.render(&ctx).unwrap();
-    assert!(
-        result.contains("OuterA"),
-        "outer match should work: {result}"
-    );
-    assert!(
-        result.contains("InnerX"),
-        "inner match should work: {result}"
-    );
-    assert!(!result.contains("OuterB"), "wrong arm should not appear");
+    assert_eq!(result, "OuterA\nInnerX\n");
 }

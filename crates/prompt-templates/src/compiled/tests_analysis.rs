@@ -560,10 +560,7 @@ fn content_between_blockquoted_tags_no_prefix_needed() {
     let mut ctx = Context::new();
     ctx.set("show", Value::Bool(true));
     let result = compiled_render("> {% if show %}\nplain content\n> {% /if %}", &ctx).unwrap();
-    assert!(
-        result.contains("plain content"),
-        "content without > should render: {result:?}"
-    );
+    assert_eq!(result, "plain content\n");
 }
 
 #[test]
@@ -577,8 +574,7 @@ fn mixed_content_and_expressions_between_tags() {
         &ctx,
     )
     .unwrap();
-    assert!(result.contains("Hello Alice!"), "got: {result:?}");
-    assert!(result.contains("Goodbye."), "got: {result:?}");
+    assert_eq!(result, "Hello Alice!\nGoodbye.\n");
 }
 
 #[test]
@@ -603,8 +599,7 @@ fn multiline_for_body_no_prefix_on_content() {
         &ctx,
     )
     .unwrap();
-    assert!(result.contains("- a: 10"), "got: {result:?}");
-    assert!(result.contains("- b: 20"), "got: {result:?}");
+    assert_eq!(result, "- a: 10\n- b: 20\n");
 }
 
 #[test]
@@ -621,8 +616,7 @@ fn nested_blocks_content_no_prefix() {
         &ctx,
     )
     .unwrap();
-    assert!(result.contains("x"), "got: {result:?}");
-    assert!(result.contains("y"), "got: {result:?}");
+    assert_eq!(result, "x\ny\n");
 }
 
 #[test]
@@ -901,19 +895,7 @@ fn self_recursive_include_renders_tree() {
         ]),
     );
     let result = tmpl.render(&ctx).unwrap();
-    assert!(result.contains("root"), "should contain root: {result}");
-    assert!(
-        result.contains("child_a"),
-        "should contain child_a: {result}"
-    );
-    assert!(
-        result.contains("child_b"),
-        "should contain child_b: {result}"
-    );
-    assert!(
-        result.contains("grandchild"),
-        "should contain grandchild: {result}"
-    );
+    assert_eq!(result, "root\n> child_a\n> > child_b\n> grandchild\n> > ");
 }
 
 #[test]

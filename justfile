@@ -56,14 +56,15 @@ lint-python:
     {{ pyvenv }}black --check crates/prompt-templates-python/python/
     {{ pyvenv }}mypy crates/prompt-templates-python/python/prompt_templates/ --ignore-missing-imports
 
-# ── Test ──────────────────────────────────────────────────────────────
-
 # Run all tests
 test: test-rust test-python
 
-# Run Rust tests
+# Run Rust tests (lib + doctests + integration + macros, zero ignored)
 test-rust:
-    cargo test --all-features
+    cargo test --workspace --all-features
+    @echo "Verifying zero ignored tests..."
+    @if cargo test --workspace --all-features 2>&1 | grep 'test result:' | grep -v '0 ignored'; then echo "ERROR: ignored tests found!" && exit 1; fi
+    @echo "All tests pass, none ignored ✓"
 
 # Build and test Python bindings
 test-python:

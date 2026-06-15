@@ -121,10 +121,7 @@ fn raw_block_inside_inline_template() {
     );
     let tmpl = Template::from_source(src).unwrap();
     let output = tmpl.render(&Context::new()).unwrap();
-    assert!(
-        output.contains("{{ not_processed }}"),
-        "raw content should be preserved: {output}"
-    );
+    assert_eq!(output, "{{ not_processed }}\n");
 }
 
 #[test]
@@ -141,9 +138,9 @@ fn tmpl_inside_raw_is_literal() {
     );
     let tmpl = Template::from_source(src).unwrap();
     let output = tmpl.render(&Context::new()).unwrap();
-    assert!(
-        output.contains("{% tmpl fake %}"),
-        "tmpl tag inside raw should be literal: {output}"
+    assert_eq!(
+        output,
+        "{% tmpl fake %}\nthis is not a template\n{% /tmpl %}\n"
     );
 }
 

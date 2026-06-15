@@ -33,12 +33,10 @@ fn test_include_template_with_complex_types() {
 
     let output = tmpl.render(&ctx).unwrap();
 
-    assert!(output.contains("User: alice"), "got: {output}");
-    assert!(output.contains("Role: Admin"), "got: {output}");
-    assert!(output.contains("Score: 95.5"), "got: {output}");
-    assert!(output.contains("Active: true"), "got: {output}");
-    assert!(output.contains("- rust"), "got: {output}");
-    assert!(output.contains("- testing"), "got: {output}");
+    assert_eq!(
+        output,
+        "\nUser: alice\nRole: Admin\nScore: 95.5\nActive: true\n\nTags:\n\n\n- rust\n  > \n- testing\n  > "
+    );
 }
 
 // ── Test 2: include_types generates correct struct fields ───────────────
@@ -150,12 +148,10 @@ fn test_render_with_generated_params() {
 
     let output = params.render(tmpl).unwrap();
 
-    assert!(output.contains("User: eve"), "got: {output}");
-    assert!(output.contains("Role: Viewer"), "got: {output}");
-    assert!(output.contains("77.3"), "got: {output}");
-    assert!(output.contains("Active: true"), "got: {output}");
-    assert!(output.contains("- security"), "got: {output}");
-    assert!(output.contains("- audit"), "got: {output}");
+    assert_eq!(
+        output,
+        "\nUser: eve\nRole: Viewer\nScore: 77.3\nActive: true\n\nTags:\n\n\n- security\n  > \n- audit\n  > "
+    );
 }
 
 // ── Test 6: validate_template succeeds for matching template ────────────
@@ -189,13 +185,10 @@ fn test_bug_report_roundtrip_with_typed_enums() {
 
     let output = params.render(tmpl).unwrap();
 
-    assert!(
-        output.contains("Bug Report: Null pointer dereference"),
-        "got: {output}"
+    assert_eq!(
+        output,
+        "\n# Bug Report: Null pointer dereference\n\nSeverity: Critical\n\n\n- crash in parser (High)\n  > \n- memory leak (Medium)\n  > "
     );
-    assert!(output.contains("Severity: Critical"), "got: {output}");
-    assert!(output.contains("crash in parser"), "got: {output}");
-    assert!(output.contains("memory leak"), "got: {output}");
 }
 
 // ── Test 8: ctx! macro interop with include_template ────────────────────
@@ -216,12 +209,10 @@ fn test_ctx_macro_with_include_template() {
 
     let output = tmpl.render(&ctx).unwrap();
 
-    assert!(
-        output.contains("Bug Report: XSS vulnerability"),
-        "got: {output}"
+    assert_eq!(
+        output,
+        "\n# Bug Report: XSS vulnerability\n\nSeverity: High\n\n\n- reflected XSS (Critical)\n  > \n- stored XSS (High)\n  > "
     );
-    assert!(output.contains("reflected XSS"), "got: {output}");
-    assert!(output.contains("stored XSS"), "got: {output}");
 }
 
 // ── Test 9: to_context produces renderable context ──────────────────────
@@ -247,8 +238,10 @@ fn test_to_context_interop() {
     // Render with the context to verify it's valid.
     let tmpl = include_template!("prompts/cross_crate_complex.tmpl.md");
     let output = tmpl.render(&ctx).unwrap();
-    assert!(output.contains("User: frank"), "got: {output}");
-    assert!(output.contains("Active: false"), "got: {output}");
+    assert_eq!(
+        output,
+        "\nUser: frank\nRole: Editor\nScore: 88\nActive: false\n\nTags:\n\n"
+    );
 }
 
 // ── Test 10: Value enum interop with template rendering ─────────────────
@@ -269,7 +262,8 @@ fn test_value_dict_rendering() {
     );
 
     let output = tmpl.render(&ctx).unwrap();
-    assert!(output.contains("User: grace"), "got: {output}");
-    assert!(output.contains("Score: 100"), "got: {output}");
-    assert!(output.contains("- perf"), "got: {output}");
+    assert_eq!(
+        output,
+        "\nUser: grace\nRole: Admin\nScore: 100\nActive: true\n\nTags:\n\n\n- perf\n  > "
+    );
 }

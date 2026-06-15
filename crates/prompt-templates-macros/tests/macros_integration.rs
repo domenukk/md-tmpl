@@ -26,9 +26,7 @@ fn include_template_loads_and_renders() {
     );
 
     let output = tmpl.render(&ctx).unwrap();
-    assert!(output.contains("Hello Alice!"), "got: {output}");
-    assert!(output.contains("Count: 42"), "got: {output}");
-    assert!(output.contains("hello"), "got: {output}");
+    assert_eq!(output, "\nHello Alice! Count: 42. Items: hello");
 }
 
 #[test]
@@ -57,10 +55,7 @@ fn include_template_hot_loop_pattern() {
         let mut ctx = prompt_templates::Context::new();
         ctx.set("name", *name);
         let output = tmpl.render(&ctx).unwrap();
-        assert!(
-            output.contains(name),
-            "expected '{name}' in output, got: {output}"
-        );
+        assert_eq!(output, format!("\nHello {name}!\n"));
     }
 }
 
@@ -91,9 +86,7 @@ fn params_struct_renders_template() {
     };
 
     let output = params.render(tmpl).unwrap();
-    assert!(output.contains("Hello Alice!"), "got: {output}");
-    assert!(output.contains("Count: 42"), "got: {output}");
-    assert!(output.contains("hello"), "got: {output}");
+    assert_eq!(output, "\nHello Alice! Count: 42. Items: hello");
 }
 
 #[test]
@@ -131,8 +124,7 @@ fn params_struct_hot_reload_with_disk_template() {
     };
 
     let output = params.render(&tmpl).unwrap();
-    assert!(output.contains("Bob"), "got: {output}");
-    assert!(output.contains("Count: 1"), "got: {output}");
+    assert_eq!(output, "\nHello Bob! Count: 1. Items: ");
 }
 
 #[test]
@@ -149,10 +141,7 @@ fn params_struct_to_context_produces_valid_context() {
     let ctx = params.to_context();
     let tmpl = prompt_templates_macros::include_template!("prompts/greeting.tmpl.md");
     let output = tmpl.render(&ctx).unwrap();
-    assert!(output.contains("Test"), "got: {output}");
-    assert!(output.contains("99"), "got: {output}");
-    assert!(output.contains('a'), "got: {output}");
-    assert!(output.contains('b'), "got: {output}");
+    assert_eq!(output, "\nHello Test! Count: 99. Items: ab");
 }
 
 // ── include_types! with types: block ─────────────────────────────────

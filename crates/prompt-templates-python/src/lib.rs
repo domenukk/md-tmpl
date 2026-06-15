@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! `PyO3` Python bindings for the `prompt-templates` engine.
 //!
 //! This crate exposes the core Rust template engine to Python, providing:
