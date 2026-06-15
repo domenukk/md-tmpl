@@ -221,8 +221,19 @@ pub(crate) fn build_struct_docs(
         .collect()
 }
 
+/// Choose derive attributes for generated structs based on active features.
+///
 /// `has_tmpl_fields` — when `true`, serde derives are omitted because
 /// `Arc<Template>` does not support `Serialize` / `Deserialize`.
+///
+/// **Feature flag design:** `cfg!(feature = "serde")` and
+/// `cfg!(feature = "typed-builder")` check the *proc-macro crate's own*
+/// Cargo features, **not** the downstream user's.  These features are
+/// intentionally empty in `Cargo.toml` — they carry no dependencies of their
+/// own.  Instead, they act as code-generation toggles: when a user enables
+/// `serde` on `prompt-templates-macros`, the proc-macro emits
+/// `#[derive(Serialize, Deserialize)]` into the generated code, relying on
+/// the user's own `serde` dependency to resolve the derive.
 pub(crate) fn struct_derive_attrs(has_tmpl_fields: bool) -> proc_macro2::TokenStream {
     let use_serde = cfg!(feature = "serde") && !has_tmpl_fields;
     match (use_serde, cfg!(feature = "typed-builder")) {

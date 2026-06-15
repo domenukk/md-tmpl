@@ -12,6 +12,11 @@ use crate::{
     error::TemplateError,
 };
 
+/// Maximum display length for error-message snippets of blockquote lines.
+const SNIPPET_MAX_DISPLAY_LEN: usize = 60;
+/// Safe truncation boundary: leaves room for the trailing `…` (3 UTF-8 bytes).
+const SNIPPET_TRUNCATION_BOUNDARY: usize = SNIPPET_MAX_DISPLAY_LEN - 3;
+
 /// Validate that every line starting with `{% ` has a blockquote `>` prefix.
 ///
 /// This check runs on the raw body **before** blockquote stripping. Lines
@@ -46,12 +51,12 @@ pub(super) fn validate_blockquote_prefix(input: &str) -> Result<(), TemplateErro
         // Main check: line starts with `{%` (or `{%-`) without `>` prefix.
         if trimmed.starts_with(STMT_START) {
             // Truncate for a clean error message.
-            let snippet = if trimmed.len() > 60 {
+            let snippet = if trimmed.len() > SNIPPET_MAX_DISPLAY_LEN {
                 // Find a safe truncation point at a char boundary.
                 let end = trimmed
                     .char_indices()
                     .map(|(i, _)| i)
-                    .take_while(|&i| i <= 57)
+                    .take_while(|&i| i <= SNIPPET_TRUNCATION_BOUNDARY)
                     .last()
                     .unwrap_or(0);
                 format!("{}…", &trimmed[..end])

@@ -454,6 +454,11 @@ pub(crate) fn parse_default_value(s: &str) -> Option<Value> {
         return Some(Value::Float(n));
     }
 
-    // Unquoted string fallback
+    // Intentional fallback: values that don't match any specific type (quoted
+    // string, bool, int, float, list, dict) are treated as unquoted string
+    // literals. This is by design — frontmatter default values like
+    // `name = str := hello` should work without requiring quotes around the
+    // value. The type-checking in `parse_declarations` will catch mismatches
+    // between the declared type and this fallback value.
     Some(Value::Str(s.to_string()))
 }

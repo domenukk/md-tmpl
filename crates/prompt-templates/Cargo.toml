@@ -1,6 +1,6 @@
 [package]
 name = "prompt-templates"
-version = "0.1.3"
+version = "0.1.4"
 edition = "2024"
 rust-version = "1.85"
 description = "Lightweight template engine for .tmpl.md prompt files with typed frontmatter"
@@ -13,11 +13,13 @@ categories = ["template-engine", "text-processing"]
 [features]
 default = ["serde", "typed-builder"]
 serde = ["dep:serde"]
+# typed-builder is not used directly by core source code. It is re-exported
+# as a feature flag so that `prompt-templates-macros` generated code (e.g.
+# `#[derive(TypedBuilder)]`) can activate it via this crate's feature.
 typed-builder = ["dep:typed-builder"]
 
 [dependencies]
 thiserror = "1"
-tracing = "0.1"
 const-str = "0.5"
 serde = { version = "1", features = ["derive"], optional = true }
 typed-builder = { workspace = true, optional = true }

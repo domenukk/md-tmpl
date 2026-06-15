@@ -1,9 +1,6 @@
 use quote::{format_ident, quote};
 
-use crate::{
-    compile::to_pascal_case,
-    struct_gen::{SetterFn, builder_field_attrs, struct_derive_attrs, var_type_to_rust},
-};
+use crate::struct_gen::{SetterFn, builder_field_attrs, struct_derive_attrs, var_type_to_rust};
 
 /// Generate a sub-struct and setter for a typed list (`list<field = type, ...>`).
 pub(crate) fn typed_list_codegen(
@@ -12,7 +9,7 @@ pub(crate) fn typed_list_codegen(
     field_name: &str,
     sub_structs: &mut Vec<proc_macro2::TokenStream>,
 ) -> (proc_macro2::TokenStream, SetterFn) {
-    let capitalized = to_pascal_case(field_name);
+    let capitalized = prompt_templates::to_pascal_case(field_name);
     let item_struct_name = format_ident!("{parent_struct}{capitalized}Item");
 
     let mut item_fields = Vec::new();
@@ -68,7 +65,7 @@ pub(crate) fn typed_dict_codegen(
     field_name: &str,
     sub_structs: &mut Vec<proc_macro2::TokenStream>,
 ) -> (proc_macro2::TokenStream, SetterFn) {
-    let capitalized = to_pascal_case(field_name);
+    let capitalized = prompt_templates::to_pascal_case(field_name);
     let dict_struct_name = format_ident!("{parent_struct}{capitalized}");
 
     let mut dict_fields = Vec::new();
@@ -143,6 +140,45 @@ pub(crate) fn string_to_variant_ident(s: &str) -> (syn::Ident, Option<String>) {
     }
 }
 
+/// Convert a list of variant names into unique identifiers, appending numeric
+/// suffixes when multiple names map to the same identifier (e.g. `"!!!"` and
+/// `"???"` both map to `"Variant"` → `"Variant"` and `"Variant2"`).
+pub(crate) fn deduplicate_variant_idents(names: &[String]) -> Vec<(syn::Ident, Option<String>)> {
+    let raw: Vec<(syn::Ident, Option<String>)> =
+        names.iter().map(|n| string_to_variant_ident(n)).collect();
+
+    // Count occurrences of each ident string.
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (ident, _) in &raw {
+        *counts.entry(ident.to_string()).or_insert(0) += 1;
+    }
+
+    // For idents that appear more than once, assign sequential suffixes.
+    let mut next_suffix: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    raw.into_iter()
+        .zip(names.iter())
+        .map(|((ident, rename), original)| {
+            let key = ident.to_string();
+            if counts[&key] > 1 {
+                let suffix = next_suffix.entry(key.clone()).or_insert(1);
+                let new_name = if *suffix == 1 {
+                    key.clone()
+                } else {
+                    format!("{key}{suffix}")
+                };
+                *suffix += 1;
+                let new_ident = quote::format_ident!("{}", new_name);
+                // Always need serde rename when we've modified the ident or it
+                // differs from the original.
+                (new_ident, Some(original.clone()))
+            } else {
+                (ident, rename)
+            }
+        })
+        .collect()
+}
+
 /// Generate a sub-enum and setter for enum variables (`enum[Variant1(fields...), Variant2]`).
 pub(crate) fn typed_enum_codegen(
     variants: &[prompt_templates::VariantDecl],
@@ -150,13 +186,14 @@ pub(crate) fn typed_enum_codegen(
     field_name: &str,
     sub_structs: &mut Vec<proc_macro2::TokenStream>,
 ) -> (proc_macro2::TokenStream, SetterFn) {
-    let capitalized = to_pascal_case(field_name);
+    let capitalized = prompt_templates::to_pascal_case(field_name);
     let enum_name = quote::format_ident!("{parent_struct}{capitalized}");
 
     let mut variant_tokens = Vec::new();
+    let variant_names: Vec<String> = variants.iter().map(|v| v.name.clone()).collect();
+    let deduped = deduplicate_variant_idents(&variant_names);
 
-    for var in variants {
-        let (var_ident, rename) = string_to_variant_ident(&var.name);
+    for (var, (var_ident, rename)) in variants.iter().zip(deduped) {
         let serde_rename = rename.map(|r| quote! { #[serde(rename = #r)] });
 
         if var.fields.is_empty() {
@@ -225,8 +262,12 @@ pub(crate) fn typed_enum_codegen(
             quote! {
                 ctx.set(
                     #name_lit,
-                    ::prompt_templates::to_value(&#val)
-                        .expect("infallible: generated enum type is always serializable"),
+                    match ::prompt_templates::to_value(&#val) {
+                        ::std::result::Result::Ok(v) => v,
+                        ::std::result::Result::Err(e) => {
+                            panic!("failed to serialize enum value for '{}': {}", #name_lit, e)
+                        }
+                    },
                 );
             }
         }),
@@ -288,9 +329,10 @@ pub(crate) fn generate_toplevel_enum(
 
     let mut sub_types = Vec::new();
     let mut variant_tokens = Vec::new();
+    let variant_names: Vec<String> = variants.iter().map(|v| v.name.clone()).collect();
+    let deduped = deduplicate_variant_idents(&variant_names);
 
-    for var in variants {
-        let (var_ident, rename) = string_to_variant_ident(&var.name);
+    for (var, (var_ident, rename)) in variants.iter().zip(deduped) {
         let serde_rename = rename.map(|r| quote! { #[serde(rename = #r)] });
 
         if var.fields.is_empty() {
@@ -364,11 +406,13 @@ pub(crate) fn generate_unit_enum_impls(
     variants: &[prompt_templates::VariantDecl],
 ) -> proc_macro2::TokenStream {
     let variant_count = variants.len();
+    let names: Vec<String> = variants.iter().map(|v| v.name.clone()).collect();
+    let deduped = deduplicate_variant_idents(&names);
 
     let display_arms: Vec<_> = variants
         .iter()
-        .map(|v| {
-            let (ident, _) = string_to_variant_ident(&v.name);
+        .zip(deduped.iter())
+        .map(|(v, (ident, _))| {
             let name_str = &v.name;
             quote! { Self::#ident => f.write_str(#name_str) }
         })
@@ -376,8 +420,8 @@ pub(crate) fn generate_unit_enum_impls(
 
     let from_str_arms: Vec<_> = variants
         .iter()
-        .map(|v| {
-            let (ident, _) = string_to_variant_ident(&v.name);
+        .zip(deduped.iter())
+        .map(|(v, (ident, _))| {
             let lower = v.name.to_lowercase();
             quote! { #lower => ::std::result::Result::Ok(Self::#ident) }
         })
@@ -391,10 +435,9 @@ pub(crate) fn generate_unit_enum_impls(
         })
         .collect();
 
-    let variant_idents: Vec<_> = variants
+    let variant_idents: Vec<_> = deduped
         .iter()
-        .map(|v| {
-            let (ident, _) = string_to_variant_ident(&v.name);
+        .map(|(ident, _)| {
             quote! { Self::#ident }
         })
         .collect();
@@ -507,5 +550,75 @@ pub(crate) fn generate_toplevel_dict(
         pub struct #dict_ident {
             #(#dict_fields),*
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn string_to_variant_ident_normal_name() {
+        let (ident, rename) = string_to_variant_ident("Confirmed");
+        assert_eq!(ident.to_string(), "Confirmed");
+        assert!(rename.is_none());
+    }
+
+    #[test]
+    fn string_to_variant_ident_kebab_case() {
+        let (ident, rename) = string_to_variant_ident("in-progress");
+        assert_eq!(ident.to_string(), "InProgress");
+        assert_eq!(rename, Some("in-progress".to_string()));
+    }
+
+    #[test]
+    fn string_to_variant_ident_all_non_alphanumeric_falls_back() {
+        let (ident, rename) = string_to_variant_ident("!!!");
+        assert_eq!(ident.to_string(), "Variant");
+        assert_eq!(rename, Some("!!!".to_string()));
+    }
+
+    #[test]
+    fn deduplicate_no_collisions() {
+        let names = vec!["Alpha".to_string(), "Beta".to_string()];
+        let result = deduplicate_variant_idents(&names);
+        assert_eq!(result[0].0.to_string(), "Alpha");
+        assert!(result[0].1.is_none());
+        assert_eq!(result[1].0.to_string(), "Beta");
+        assert!(result[1].1.is_none());
+    }
+
+    #[test]
+    fn deduplicate_collision_adds_suffix() {
+        let names = vec!["!!!".to_string(), "???".to_string(), "###".to_string()];
+        let result = deduplicate_variant_idents(&names);
+        // All three map to "Variant" originally, so they get suffixed.
+        assert_eq!(result[0].0.to_string(), "Variant");
+        assert_eq!(result[1].0.to_string(), "Variant2");
+        assert_eq!(result[2].0.to_string(), "Variant3");
+        // All should have serde renames pointing to the original string.
+        assert_eq!(result[0].1.as_deref(), Some("!!!"));
+        assert_eq!(result[1].1.as_deref(), Some("???"));
+        assert_eq!(result[2].1.as_deref(), Some("###"));
+    }
+
+    #[test]
+    fn deduplicate_mixed_collision_and_unique() {
+        let names = vec![
+            "Good".to_string(),
+            "---".to_string(),
+            "___".to_string(),
+            "Fine".to_string(),
+        ];
+        let result = deduplicate_variant_idents(&names);
+        assert_eq!(result[0].0.to_string(), "Good");
+        assert!(result[0].1.is_none()); // no rename needed
+        // "---" and "___" both map to "Variant"
+        assert_eq!(result[1].0.to_string(), "Variant");
+        assert_eq!(result[1].1.as_deref(), Some("---"));
+        assert_eq!(result[2].0.to_string(), "Variant2");
+        assert_eq!(result[2].1.as_deref(), Some("___"));
+        assert_eq!(result[3].0.to_string(), "Fine");
+        assert!(result[3].1.is_none());
     }
 }

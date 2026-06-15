@@ -37,18 +37,10 @@ impl Field {
     }
 }
 
-/// The kind of a Python method.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum MethodKind {
-    /// Regular instance method (`def foo(self, ...)`).
-    Instance,
-}
-
 /// A Python method definition.
 #[derive(Debug, Clone)]
 pub(crate) struct PyMethodDef {
     pub name: String,
-    pub kind: MethodKind,
     pub params: Vec<Field>,
     pub return_annotation: Option<String>,
     pub doc: Option<String>,
@@ -263,11 +255,6 @@ impl PyClassDef {
 // ---------------------------------------------------------------------------
 
 fn render_method(out: &mut String, method: &PyMethodDef, member: &str, body: &str) {
-    // Decorator.
-    if method.kind != MethodKind::Instance {
-        unreachable!("only instance methods are currently supported");
-    }
-
     // Signature — build directly into `out` to avoid intermediate allocations.
     write!(out, "{member}def {}(self", method.name).expect("write to String");
     for p in &method.params {
@@ -341,7 +328,6 @@ impl PyClassDef {
             .collect();
         self.method(PyMethodDef {
             name: "__init__".into(),
-            kind: MethodKind::Instance,
             params: fields.to_vec(),
             return_annotation: None,
             doc: None,
@@ -357,7 +343,6 @@ impl PyClassDef {
             .collect();
         self.method(PyMethodDef {
             name: "__repr__".into(),
-            kind: MethodKind::Instance,
             params: Vec::new(),
             return_annotation: Some("str".into()),
             doc: None,
@@ -380,7 +365,6 @@ impl PyClassDef {
         }
         self.method(PyMethodDef {
             name: "__eq__".into(),
-            kind: MethodKind::Instance,
             params: vec![Field::new("other", "")],
             return_annotation: Some("bool".into()),
             doc: None,
@@ -398,7 +382,6 @@ impl PyClassDef {
         };
         self.method(PyMethodDef {
             name: "__hash__".into(),
-            kind: MethodKind::Instance,
             params: Vec::new(),
             return_annotation: Some("int".into()),
             doc: None,

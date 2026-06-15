@@ -9,7 +9,7 @@ use std::fmt::Write;
 use prompt_templates::{VarDecl, VarType, VariantDecl, to_pascal_case};
 use pyo3::{prelude::*, types::PyDict};
 
-use crate::pyclass_builder::{ClassAttr, Field, MethodKind, PyClassDef, PyMethodDef};
+use crate::pyclass_builder::{ClassAttr, Field, PyClassDef, PyMethodDef};
 
 /// Generate Python type classes for a template file.
 ///
@@ -141,7 +141,6 @@ fn build_enum_class(py: Python<'_>, name: &str, variants: &[VariantDecl]) -> PyR
             ])
             .method(PyMethodDef {
                 name: "__init__".into(),
-                kind: MethodKind::Instance,
                 params: vec![tag_field],
                 return_annotation: None,
                 doc: None,
@@ -152,7 +151,6 @@ fn build_enum_class(py: Python<'_>, name: &str, variants: &[VariantDecl]) -> PyR
             })
             .method(PyMethodDef {
                 name: "__repr__".into(),
-                kind: MethodKind::Instance,
                 params: Vec::new(),
                 return_annotation: Some("str".into()),
                 doc: None,
@@ -160,7 +158,6 @@ fn build_enum_class(py: Python<'_>, name: &str, variants: &[VariantDecl]) -> PyR
             })
             .method(PyMethodDef {
                 name: "__eq__".into(),
-                kind: MethodKind::Instance,
                 params: vec![Field::new("other", "")],
                 return_annotation: Some("bool".into()),
                 doc: None,
@@ -172,7 +169,6 @@ fn build_enum_class(py: Python<'_>, name: &str, variants: &[VariantDecl]) -> PyR
             })
             .method(PyMethodDef {
                 name: "__hash__".into(),
-                kind: MethodKind::Instance,
                 params: Vec::new(),
                 return_annotation: Some("int".into()),
                 doc: None,
@@ -314,7 +310,6 @@ fn build_params_class(
         .slots(typed_fields.clone())
         .method(PyMethodDef {
             name: "__init__".into(),
-            kind: MethodKind::Instance,
             params: init_params,
             return_annotation: None,
             doc: None,
@@ -322,7 +317,6 @@ fn build_params_class(
         })
         .method(PyMethodDef {
             name: "__repr__".into(),
-            kind: MethodKind::Instance,
             params: Vec::new(),
             return_annotation: Some("str".into()),
             doc: None,
@@ -330,7 +324,6 @@ fn build_params_class(
         })
         .method(PyMethodDef {
             name: "render".into(),
-            kind: MethodKind::Instance,
             params: vec![Field::new("template", "")],
             return_annotation: Some("str".into()),
             doc: Some("Render this params object into a template.".into()),

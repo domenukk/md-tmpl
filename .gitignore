@@ -6,8 +6,15 @@ PROJECT.md
 
 # Python
 __pycache__
+*.pyc
 *.so
 *.pyd
 .venv/
 .pytest_cache/
 *.egg-info/
+dist/
+*.whl
+.mypy_cache/
+
+# Local tooling
+SKILL.md

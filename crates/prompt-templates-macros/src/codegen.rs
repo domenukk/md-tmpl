@@ -1,6 +1,6 @@
 use quote::{format_ident, quote};
 
-use crate::{compile::to_pascal_case, type_gen::string_to_variant_ident};
+use crate::type_gen::string_to_variant_ident;
 
 pub(crate) fn codegen_segment(
     seg: &prompt_templates::compiled::Segment,
@@ -297,24 +297,31 @@ pub(crate) fn codegen_list_literal(
         });
         quote! { ::std::vec![#(#item_tokens),*] }
     } else {
-        let capitalized = to_pascal_case(field_name);
+        let capitalized = prompt_templates::to_pascal_case(field_name);
         let item_struct_name = format_ident!("{parent_struct}{capitalized}Item");
         let item_tokens = items.iter().map(|item| {
             if let Value::Dict(d) = item {
                 let field_tokens = fields.iter().map(|f_decl| {
                     let f_name = format_ident!("{}", f_decl.name);
-                    let f_val = d.get(&f_decl.name).expect("value matches type");
-                    let f_tokens = codegen_value_as_rust_literal(
-                        f_val,
-                        &f_decl.var_type,
-                        &format!("{parent_struct}{capitalized}Item"),
-                        &f_decl.name,
-                    );
+                    let f_tokens = if let Some(f_val) = d.get(&f_decl.name) {
+                        codegen_value_as_rust_literal(
+                            f_val,
+                            &f_decl.var_type,
+                            &format!("{parent_struct}{capitalized}Item"),
+                            &f_decl.name,
+                        )
+                    } else {
+                        let msg =
+                            format!("missing field `{}` in constant list item dict", f_decl.name);
+                        quote! { compile_error!(#msg) }
+                    };
                     quote! { #f_name: #f_tokens }
                 });
                 quote! { #item_struct_name { #(#field_tokens),* } }
             } else {
-                panic!("type mismatch in constant: expected Dict for list item, got {item:?}");
+                let msg =
+                    format!("type mismatch in constant: expected Dict for list item, got {item:?}");
+                quote! { compile_error!(#msg) }
             }
         });
         quote! { ::std::vec![#(#item_tokens),*] }
@@ -338,42 +345,55 @@ pub(crate) fn codegen_value_as_rust_literal(
             codegen_list_literal(items, fields, parent_struct, field_name)
         }
         (Value::Dict(d), VarType::Dict(fields)) => {
-            let capitalized = to_pascal_case(field_name);
+            let capitalized = prompt_templates::to_pascal_case(field_name);
             let struct_name = format_ident!("{parent_struct}{capitalized}");
             let field_tokens = fields.iter().map(|f_decl| {
                 let f_name = format_ident!("{}", f_decl.name);
-                let f_val = d.get(&f_decl.name).expect("value matches type");
-                let f_tokens = codegen_value_as_rust_literal(
-                    f_val,
-                    &f_decl.var_type,
-                    &format!("{parent_struct}{capitalized}"),
-                    &f_decl.name,
-                );
+                let f_tokens = if let Some(f_val) = d.get(&f_decl.name) {
+                    codegen_value_as_rust_literal(
+                        f_val,
+                        &f_decl.var_type,
+                        &format!("{parent_struct}{capitalized}"),
+                        &f_decl.name,
+                    )
+                } else {
+                    let msg = format!("missing field `{}` in constant dict", f_decl.name);
+                    quote! { compile_error!(#msg) }
+                };
                 quote! { #f_name: #f_tokens }
             });
             quote! { #struct_name { #(#field_tokens),* } }
         }
         (Value::Str(s), VarType::Enum(variants)) => {
-            let variant = variants
+            let Some(variant) = variants
                 .iter()
                 .find(|v| v.name == *s && v.fields.is_empty())
-                .expect("variant exists");
-            let capitalized = to_pascal_case(field_name);
+            else {
+                let msg = format!("unknown or non-unit enum variant `{s}` in constant");
+                return quote! { compile_error!(#msg) };
+            };
+            let capitalized = prompt_templates::to_pascal_case(field_name);
             let (var_ident, _) = string_to_variant_ident(&variant.name);
             let enum_name = format_ident!("{parent_struct}{capitalized}");
             quote! { #enum_name::#var_ident }
         }
         (Value::Dict(d), VarType::Enum(variants)) => {
-            let kind = d
+            let Some(kind) = d
                 .get("__kind__")
                 .and_then(|v| if let Value::Str(s) = v { Some(s) } else { None })
-                .expect("enum value has kind tag");
+            else {
+                let msg = format!(
+                    "enum dict constant is missing `__kind__` string tag for field `{field_name}`"
+                );
+                return quote! { compile_error!(#msg) };
+            };
 
-            let variant = variants
-                .iter()
-                .find(|v| v.name == *kind)
-                .expect("variant exists");
-            let capitalized = to_pascal_case(field_name);
+            let Some(variant) = variants.iter().find(|v| v.name == *kind) else {
+                let msg =
+                    format!("unknown enum variant `{kind}` in constant for field `{field_name}`");
+                return quote! { compile_error!(#msg) };
+            };
+            let capitalized = prompt_templates::to_pascal_case(field_name);
             let (var_ident, _) = string_to_variant_ident(&variant.name);
             let enum_name = format_ident!("{parent_struct}{capitalized}");
 
@@ -382,23 +402,29 @@ pub(crate) fn codegen_value_as_rust_literal(
             } else {
                 let field_tokens = variant.fields.iter().map(|f_decl| {
                     let f_name = format_ident!("{}", f_decl.name);
-                    let f_val = d.get(&f_decl.name).expect("field value exists");
-                    let f_tokens = codegen_value_as_rust_literal(
-                        f_val,
-                        &f_decl.var_type,
-                        &format!("{parent_struct}{capitalized}{var_ident}"),
-                        &f_decl.name,
-                    );
+                    let f_tokens = if let Some(f_val) = d.get(&f_decl.name) {
+                        codegen_value_as_rust_literal(
+                            f_val,
+                            &f_decl.var_type,
+                            &format!("{parent_struct}{capitalized}{var_ident}"),
+                            &f_decl.name,
+                        )
+                    } else {
+                        let msg = format!(
+                            "missing field `{}` in enum variant `{kind}` constant",
+                            f_decl.name
+                        );
+                        quote! { compile_error!(#msg) }
+                    };
                     quote! { #f_name: #f_tokens }
                 });
                 quote! { #enum_name::#var_ident { #(#field_tokens),* } }
             }
         }
         _ => {
-            // Last resort: if we can't generate a raw literal, emit a Value literal
-            // but this will likely fail if the target type is a struct/enum.
-            let v_tokens = codegen_value(v);
-            quote! { #v_tokens }
+            let msg =
+                format!("type mismatch in constant: cannot generate literal for {v:?} as {t:?}");
+            quote! { compile_error!(#msg) }
         }
     }
 }

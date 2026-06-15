@@ -61,9 +61,9 @@ test: test-rust test-python
 
 # Run Rust tests (lib + doctests + integration + macros, zero ignored)
 test-rust:
-    cargo test --workspace --all-features
+    cargo test --workspace --all-features 2>&1 | tee /tmp/cargo-test-output.txt
     @echo "Verifying zero ignored tests..."
-    @if cargo test --workspace --all-features 2>&1 | grep 'test result:' | grep -v '0 ignored'; then echo "ERROR: ignored tests found!" && exit 1; fi
+    @if grep 'test result:' /tmp/cargo-test-output.txt | grep -v '0 ignored'; then echo "ERROR: ignored tests found!" && exit 1; fi
     @echo "All tests pass, none ignored ✓"
 
 # Build and test Python bindings
@@ -96,3 +96,10 @@ publish-rust:
 # Publish Python package to PyPI via maturin
 publish-python:
     cd crates/prompt-templates-python && maturin publish
+
+# ── Setup ─────────────────────────────────────────────────────────────
+
+# Set up Python development environment
+setup-python:
+    python3 -m venv crates/prompt-templates-python/.venv
+    crates/prompt-templates-python/.venv/bin/pip install maturin pytest black mypy

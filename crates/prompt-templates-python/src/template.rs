@@ -96,7 +96,7 @@ impl PyTemplate {
     fn from_source_allowing_unused(source: &str) -> PyResult<Self> {
         let fm = prompt_templates::parse_frontmatter(source)
             .map(|(fm, _)| fm)
-            .unwrap_or_default();
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         let tmpl = Template::from_source_allowing_unused(source)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         Ok(Self {
@@ -277,7 +277,7 @@ impl PyTemplate {
         let path = std::path::Path::new(base_dir);
         let fm = prompt_templates::parse_frontmatter_with_base_dir(source, path)
             .map(|(fm, _)| fm)
-            .unwrap_or_default();
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         let tmpl = Template::from_source_with_base_dir(source, path)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         Ok(Self {

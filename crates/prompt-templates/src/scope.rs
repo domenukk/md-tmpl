@@ -748,4 +748,149 @@ mod tests {
         );
         assert_eq!(tmpl.render(&ctx).unwrap(), "Woche: Montag");
     }
+
+    // -- parse_function_call edge cases --
+
+    #[test]
+    fn parse_function_call_valid() {
+        let result = parse_function_call("idx(bug)");
+        assert_eq!(result, Some(("idx", "bug")));
+    }
+
+    #[test]
+    fn parse_function_call_empty_func_returns_none() {
+        // `(arg)` — empty function name.
+        assert_eq!(parse_function_call("(arg)"), None);
+    }
+
+    #[test]
+    fn parse_function_call_empty_arg_returns_none() {
+        // `func()` — empty argument.
+        assert_eq!(parse_function_call("func()"), None);
+    }
+
+    #[test]
+    fn parse_function_call_no_parens_returns_none() {
+        assert_eq!(parse_function_call("just_a_name"), None);
+    }
+
+    #[test]
+    fn parse_function_call_dotted_name_returns_none() {
+        // Dotted names are not valid function identifiers.
+        assert_eq!(parse_function_call("foo.bar(x)"), None);
+    }
+
+    // -- resolve_value_or_literal --
+
+    #[test]
+    fn resolve_value_or_literal_string_literal() {
+        let ctx = Context::new();
+        let scope = Scope::new(&ctx);
+        let val = scope.resolve_value_or_literal("\"hello\"").unwrap();
+        assert_eq!(val, Value::Str("hello".into()));
+    }
+
+    #[test]
+    fn resolve_value_or_literal_bool_true() {
+        let ctx = Context::new();
+        let scope = Scope::new(&ctx);
+        assert_eq!(
+            scope.resolve_value_or_literal("true").unwrap(),
+            Value::Bool(true)
+        );
+    }
+
+    #[test]
+    fn resolve_value_or_literal_integer() {
+        let ctx = Context::new();
+        let scope = Scope::new(&ctx);
+        assert_eq!(
+            scope.resolve_value_or_literal("42").unwrap(),
+            Value::Int(42)
+        );
+    }
+
+    #[test]
+    fn resolve_value_or_literal_float() {
+        let ctx = Context::new();
+        let scope = Scope::new(&ctx);
+        assert_eq!(
+            scope.resolve_value_or_literal("2.78").unwrap(),
+            Value::Float(2.78)
+        );
+    }
+
+    #[test]
+    fn resolve_value_or_literal_empty_token_returns_error() {
+        let ctx = Context::new();
+        let scope = Scope::new(&ctx);
+        let err = scope.resolve_value_or_literal("").unwrap_err();
+        assert!(matches!(err, TemplateError::Syntax(_)));
+    }
+
+    // -- include depth tracking --
+
+    #[test]
+    fn enter_include_enforces_max_depth() {
+        let ctx = Context::new();
+        let mut scope = Scope::new(&ctx).with_max_include_depth(2);
+        scope.enter_include().unwrap();
+        scope.enter_include().unwrap();
+        // Third should exceed depth of 2.
+        let err = scope.enter_include().unwrap_err();
+        assert!(err.to_string().contains("maximum include depth"));
+    }
+
+    #[test]
+    fn exit_include_decrements_and_allows_reentry() {
+        let ctx = Context::new();
+        let mut scope = Scope::new(&ctx).with_max_include_depth(1);
+        scope.enter_include().unwrap();
+        scope.exit_include();
+        // After exiting, re-entering should succeed.
+        scope.enter_include().unwrap();
+    }
+
+    // -- pop_layer on empty scope --
+
+    #[test]
+    fn pop_layer_on_empty_scope_is_noop() {
+        let ctx = Context::new();
+        let mut scope = Scope::new(&ctx);
+        // Should not panic.
+        scope.pop_layer();
+        scope.pop_layer();
+        assert_eq!(scope.resolve("anything"), None);
+    }
+
+    // -- constants resolution --
+
+    #[test]
+    fn consts_take_priority_over_context() {
+        let mut ctx = Context::new();
+        ctx.set("x", "from_ctx");
+        let mut scope = Scope::new(&ctx);
+        let consts = Arc::new(HashMap::from([(
+            "x".into(),
+            Value::Str("from_const".into()),
+        )]));
+        let imported = Arc::new(HashMap::new());
+        scope.set_consts(&consts, &imported);
+        // Constants should shadow context values.
+        assert_eq!(scope.resolve("x"), Some(&Value::Str("from_const".into())));
+    }
+
+    #[test]
+    fn push_pop_consts_restores_context_value() {
+        let mut ctx = Context::new();
+        ctx.set("y", "original");
+        let mut scope = Scope::new(&ctx);
+        scope.push_consts(
+            HashMap::from([("y".into(), Value::Str("overridden".into()))]),
+            HashMap::new(),
+        );
+        assert_eq!(scope.resolve("y"), Some(&Value::Str("overridden".into())));
+        scope.pop_consts();
+        assert_eq!(scope.resolve("y"), Some(&Value::Str("original".into())));
+    }
 }

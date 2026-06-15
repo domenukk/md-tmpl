@@ -1,7 +1,1 @@
----
-name: simple_greeting
-description: A simple greeting template
-params: [name = str]
----
-
-Hello {{ name }}!
+../../prompt-templates/prompts/simple_greeting.tmpl.md

@@ -4,26 +4,6 @@ use std::{
     path::PathBuf,
 };
 
-/// Convert a `snake_case`, `kebab-case`, or other string to `PascalCase`.
-///
-/// Each character after an underscore, hyphen, or at the start of the string
-/// is uppercased. All other characters are preserved.
-pub(crate) fn to_pascal_case(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut capitalize_next = true;
-    for c in s.chars() {
-        if c == '_' || c == '-' {
-            capitalize_next = true;
-        } else if capitalize_next {
-            result.extend(c.to_uppercase());
-            capitalize_next = false;
-        } else {
-            result.push(c);
-        }
-    }
-    result
-}
-
 /// Extract the file stem from a template path, stripping `.tmpl.md` or
 /// `.tmpl` suffixes.
 pub(crate) fn stem_from_path(path: &str) -> String {
@@ -258,7 +238,10 @@ pub(crate) fn resolve_includes_recursive(
                     )?;
                 }
             }
-            _ => {}
+            prompt_templates::compiled::Segment::Static(_)
+            | prompt_templates::compiled::Segment::Expr { .. }
+            | prompt_templates::compiled::Segment::Raw(_)
+            | prompt_templates::compiled::Segment::Comment(_) => {}
         }
     }
     Ok(())
