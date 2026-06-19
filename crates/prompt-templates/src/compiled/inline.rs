@@ -4,10 +4,14 @@
 //! from the body. Each template is pre-compiled (frontmatter parsed,
 //! segments compiled) at extraction time.
 
-use std::{collections::HashMap, sync::Arc};
+use alloc::{
+    string::{String, ToString},
+    sync::Arc,
+};
 
 use super::{CompiledInlineTemplate, compile_body};
 use crate::{
+    compat::HashMap,
     consts::{
         CLOSE_RAW, CLOSE_TMPL, KW_RAW, KW_RAW_ASSIGN, STMT_END, STMT_START, TAG_TMPL_PREFIX,
         TRIM_MARKER,
@@ -33,7 +37,7 @@ use crate::{
 /// compilation failures in inline template bodies.
 pub fn extract_inline_templates(
     input: &str,
-    parent_type_aliases: &std::collections::HashMap<String, crate::types::VarType>,
+    parent_type_aliases: &crate::compat::HashMap<String, crate::types::VarType>,
 ) -> Result<(String, HashMap<String, CompiledInlineTemplate>), TemplateError> {
     let mut templates: HashMap<String, CompiledInlineTemplate> = HashMap::new();
     let mut cleaned = String::with_capacity(input.len());
@@ -76,7 +80,8 @@ pub fn extract_inline_templates(
 
             if name.is_empty() {
                 return Err(TemplateError::syntax(format!(
-                    "{STMT_START} {KW_RAW} {STMT_END} requires a name"
+                    "{STMT_START} {} {STMT_END} requires a name",
+                    TAG_TMPL_PREFIX.trim()
                 )));
             }
             if templates.contains_key(&name) {

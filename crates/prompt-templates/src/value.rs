@@ -1,6 +1,13 @@
 //! Template value types.
 
-use std::{collections::HashMap, fmt};
+use alloc::{
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
+use core::fmt;
+
+use crate::compat::HashMap;
 
 /// A value that can be inserted into a template.
 #[derive(Debug, Clone)]
@@ -14,11 +21,11 @@ pub enum Value {
     /// A 64-bit float.
     Float(f64),
     /// An ordered list of values.
-    List(Vec<Value>),
+    List(Arc<Vec<Value>>),
     /// A string-keyed map of values.
-    Dict(HashMap<String, Value>),
+    Struct(Arc<HashMap<String, Value>>),
     /// A pre-compiled template.
-    Tmpl(std::sync::Arc<crate::template::Template>),
+    Tmpl(Arc<crate::template::Template>),
 }
 
 impl PartialEq for Value {
@@ -29,8 +36,8 @@ impl PartialEq for Value {
             (Self::Int(a), Self::Int(b)) => a == b,
             (Self::Float(a), Self::Float(b)) => a.to_bits() == b.to_bits(),
             (Self::List(a), Self::List(b)) => a == b,
-            (Self::Dict(a), Self::Dict(b)) => a == b,
-            (Self::Tmpl(a), Self::Tmpl(b)) => std::sync::Arc::ptr_eq(a, b),
+            (Self::Struct(a), Self::Struct(b)) => a == b,
+            (Self::Tmpl(a), Self::Tmpl(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -43,10 +50,13 @@ impl fmt::Display for Value {
         match self {
             Self::Str(s) => f.write_str(s),
             Self::Bool(b) => write!(f, "{b}"),
-            Self::Int(i) => write!(f, "{i}"),
+            Self::Int(i) => {
+                let mut buf = itoa::Buffer::new();
+                f.write_str(buf.format(*i))
+            }
             Self::Float(v) => write!(f, "{v}"),
             Self::List(items) => write!(f, "[<list of {}>]", items.len()),
-            Self::Dict(map) => write!(f, "{{<dict of {}>}}", map.len()),
+            Self::Struct(map) => write!(f, "{{<struct of {}>}}", map.len()),
             Self::Tmpl(_) => write!(f, "<template>"),
         }
     }
@@ -62,7 +72,7 @@ impl Value {
             Self::Int(i) => *i != 0,
             Self::Float(f) => *f != 0.0,
             Self::List(v) => !v.is_empty(),
-            Self::Dict(m) => !m.is_empty(),
+            Self::Struct(m) => !m.is_empty(),
             Self::Tmpl(_) => true,
         }
     }
@@ -76,19 +86,20 @@ impl Value {
             Self::Int(_) => crate::consts::TYPE_INT,
             Self::Float(_) => crate::consts::TYPE_FLOAT,
             Self::List(_) => crate::consts::TYPE_LIST,
-            Self::Dict(_) => crate::consts::TYPE_DICT,
+            Self::Struct(_) => crate::consts::TYPE_STRUCT,
             Self::Tmpl(_) => crate::consts::TYPE_TMPL,
         }
     }
 
-    /// Access a field on a Dict value.
+    /// Access a field on a Struct value.
     ///
     /// The internal enum tag key ([`ENUM_TAG_KEY`](crate::consts::ENUM_TAG_KEY))
     /// is hidden — use `str(value)` to extract the variant name instead.
+    #[inline]
     #[must_use]
     pub fn get_field(&self, key: &str) -> Option<&Value> {
         match self {
-            Self::Dict(m) => {
+            Self::Struct(m) => {
                 // Hide the internal enum tag key from template-level access.
                 if key == crate::consts::ENUM_TAG_KEY {
                     return None;
@@ -129,10 +140,10 @@ impl Value {
         matches!(self, Self::List(_))
     }
 
-    /// Returns `true` if this is a `Dict` variant.
+    /// Returns `true` if this is a `Struct` variant.
     #[must_use]
-    pub fn is_dict(&self) -> bool {
-        matches!(self, Self::Dict(_))
+    pub fn is_struct(&self) -> bool {
+        matches!(self, Self::Struct(_))
     }
 
     /// Returns the inner `&str` if this is a `Str` variant.
@@ -180,25 +191,25 @@ impl Value {
         }
     }
 
-    /// Returns a reference to the inner map if this is a `Dict` variant.
+    /// Returns a reference to the inner map if this is a `Struct` variant.
     #[must_use]
-    pub fn as_dict(&self) -> Option<&HashMap<String, Value>> {
+    pub fn as_struct(&self) -> Option<&HashMap<String, Value>> {
         match self {
-            Self::Dict(m) => Some(m),
+            Self::Struct(m) => Some(m),
             _ => None,
         }
     }
 
     /// Returns a reference to the inner template if this is a `Tmpl` variant.
     #[must_use]
-    pub fn as_tmpl(&self) -> Option<&std::sync::Arc<crate::template::Template>> {
+    pub fn as_tmpl(&self) -> Option<&Arc<crate::template::Template>> {
         match self {
             Self::Tmpl(t) => Some(t),
             _ => None,
         }
     }
 
-    /// Create a `Dict` from an iterator of key-value pairs.
+    /// Create a `Struct` from an iterator of key-value pairs.
     ///
     /// Accepts arrays, slices, vecs — anything iterable.
     ///
@@ -207,22 +218,22 @@ impl Value {
     /// ```
     /// use prompt_templates::Value;
     ///
-    /// let v = Value::dict([("name", "Alice"), ("role", "admin")]);
+    /// let v = Value::new_struct([("name", "Alice"), ("role", "admin")]);
     /// assert_eq!(v.get_field("name").unwrap().to_string(), "Alice");
     /// ```
     #[must_use]
-    pub fn dict<I, K, V>(pairs: I) -> Self
+    pub fn new_struct<I, K, V>(pairs: I) -> Self
     where
         I: IntoIterator<Item = (K, V)>,
         K: Into<String>,
         V: Into<Value>,
     {
-        Self::Dict(
+        Self::Struct(Arc::new(
             pairs
                 .into_iter()
                 .map(|(k, v)| (k.into(), v.into()))
                 .collect(),
-        )
+        ))
     }
 
     /// Create a `List` from an iterator of values.
@@ -235,8 +246,8 @@ impl Value {
     /// use prompt_templates::Value;
     ///
     /// let v = Value::list([
-    ///     Value::dict([("label", "alpha")]),
-    ///     Value::dict([("label", "beta")]),
+    ///     Value::new_struct([("label", "alpha")]),
+    ///     Value::new_struct([("label", "beta")]),
     /// ]);
     /// assert_eq!(v.type_name(), "list");
     /// ```
@@ -246,7 +257,7 @@ impl Value {
         I: IntoIterator<Item = V>,
         V: Into<Value>,
     {
-        Self::List(items.into_iter().map(Into::into).collect())
+        Self::List(Arc::new(items.into_iter().map(Into::into).collect()))
     }
 }
 
@@ -304,7 +315,7 @@ impl Value {
     ///     name: String,
     /// }
     ///
-    /// let val = Value::dict([("name", Value::Str("Alice".into()))]);
+    /// let val = Value::new_struct([("name", Value::Str("Alice".into()))]);
     /// let agent: Agent = val.deserialize_into().unwrap();
     /// assert_eq!(
     ///     agent,
@@ -317,6 +328,20 @@ impl Value {
         &'de self,
     ) -> Result<T, crate::serde_support::DeError> {
         crate::serde_support::from_value(self)
+    }
+
+    /// Create a `Value` from a `FlexBuffers` binary buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the buffer is invalid or deserialization fails.
+    pub fn from_flexbuffers(data: &[u8]) -> Result<Self, crate::error::TemplateError> {
+        let r = flexbuffers::Reader::get_root(data).map_err(|e| {
+            crate::error::TemplateError::syntax(format!("flexbuffers root error: {e}"))
+        })?;
+        serde::Deserialize::deserialize(r).map_err(|e| {
+            crate::error::TemplateError::syntax(format!("flexbuffers deserialization failed: {e}"))
+        })
     }
 }
 
@@ -361,14 +386,14 @@ impl From<u32> for Value {
 }
 
 impl TryFrom<u64> for Value {
-    type Error = std::num::TryFromIntError;
+    type Error = core::num::TryFromIntError;
     fn try_from(i: u64) -> Result<Self, Self::Error> {
         Ok(Self::Int(i64::try_from(i)?))
     }
 }
 
 impl TryFrom<usize> for Value {
-    type Error = std::num::TryFromIntError;
+    type Error = core::num::TryFromIntError;
     fn try_from(i: usize) -> Result<Self, Self::Error> {
         Ok(Self::Int(i64::try_from(i)?))
     }
@@ -388,13 +413,31 @@ impl From<f32> for Value {
 
 impl From<Vec<Value>> for Value {
     fn from(v: Vec<Value>) -> Self {
-        Self::List(v)
+        Self::List(Arc::new(v))
     }
 }
 
 impl From<HashMap<String, Value>> for Value {
     fn from(m: HashMap<String, Value>) -> Self {
-        Self::Dict(m)
+        Self::Struct(Arc::new(m))
+    }
+}
+
+impl From<crate::template::Template> for Value {
+    fn from(t: crate::template::Template) -> Self {
+        Self::Tmpl(Arc::new(t))
+    }
+}
+
+impl From<Arc<crate::template::Template>> for Value {
+    fn from(t: Arc<crate::template::Template>) -> Self {
+        Self::Tmpl(t)
+    }
+}
+
+impl From<&crate::template::Template> for Value {
+    fn from(t: &crate::template::Template) -> Self {
+        Self::Tmpl(Arc::new(t.clone()))
     }
 }
 
@@ -417,7 +460,7 @@ impl fmt::Display for ValueTypeError {
     }
 }
 
-impl std::error::Error for ValueTypeError {}
+impl core::error::Error for ValueTypeError {}
 
 impl TryFrom<Value> for String {
     type Error = ValueTypeError;
@@ -475,7 +518,7 @@ impl TryFrom<Value> for Vec<Value> {
     type Error = ValueTypeError;
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
-            Value::List(l) => Ok(l),
+            Value::List(l) => Ok(Arc::try_unwrap(l).unwrap_or_else(|arc| (*arc).clone())),
             other => Err(ValueTypeError {
                 expected: crate::consts::TYPE_LIST,
                 actual: other.type_name(),
@@ -484,13 +527,16 @@ impl TryFrom<Value> for Vec<Value> {
     }
 }
 
-impl<S: std::hash::BuildHasher + Default> TryFrom<Value> for HashMap<String, Value, S> {
+impl<S: core::hash::BuildHasher + Default> TryFrom<Value> for HashMap<String, Value, S> {
     type Error = ValueTypeError;
     fn try_from(v: Value) -> Result<Self, Self::Error> {
         match v {
-            Value::Dict(m) => Ok(m.into_iter().collect()),
+            Value::Struct(m) => {
+                let owned = Arc::try_unwrap(m).unwrap_or_else(|arc| (*arc).clone());
+                Ok(owned.into_iter().collect())
+            }
             other => Err(ValueTypeError {
-                expected: crate::consts::TYPE_DICT,
+                expected: crate::consts::TYPE_STRUCT,
                 actual: other.type_name(),
             }),
         }
@@ -531,16 +577,19 @@ mod tests {
 
     #[test]
     fn display_list() {
-        let list = Value::List(vec![Value::Int(1)]);
+        let list = Value::List(Arc::new(vec![Value::Int(1)]));
         assert_eq!(list.to_string(), "[<list of 1>]");
-        assert_eq!(Value::List(vec![]).to_string(), "[<list of 0>]");
+        assert_eq!(Value::List(Arc::new(vec![])).to_string(), "[<list of 0>]");
     }
 
     #[test]
     fn display_dict() {
-        let dict = Value::Dict(HashMap::from([("k".into(), Value::Int(1))]));
-        assert_eq!(dict.to_string(), "{<dict of 1>}");
-        assert_eq!(Value::Dict(HashMap::new()).to_string(), "{<dict of 0>}");
+        let dict = Value::Struct(Arc::new(HashMap::from([("k".into(), Value::Int(1))])));
+        assert_eq!(dict.to_string(), "{<struct of 1>}");
+        assert_eq!(
+            Value::Struct(Arc::new(HashMap::new())).to_string(),
+            "{<struct of 0>}"
+        );
     }
 
     // -- is_truthy --
@@ -572,15 +621,15 @@ mod tests {
 
     #[test]
     fn truthy_list() {
-        assert!(Value::List(vec![Value::Int(1)]).is_truthy());
-        assert!(!Value::List(vec![]).is_truthy());
+        assert!(Value::List(Arc::new(vec![Value::Int(1)])).is_truthy());
+        assert!(!Value::List(Arc::new(vec![])).is_truthy());
     }
 
     #[test]
     fn truthy_dict() {
-        let populated = Value::Dict(HashMap::from([("k".into(), Value::Int(1))]));
+        let populated = Value::Struct(Arc::new(HashMap::from([("k".into(), Value::Int(1))])));
         assert!(populated.is_truthy());
-        assert!(!Value::Dict(HashMap::new()).is_truthy());
+        assert!(!Value::Struct(Arc::new(HashMap::new())).is_truthy());
     }
 
     // -- type_name --
@@ -591,18 +640,21 @@ mod tests {
         assert_eq!(Value::Bool(true).type_name(), "bool");
         assert_eq!(Value::Int(0).type_name(), "int");
         assert_eq!(Value::Float(0.0).type_name(), "float");
-        assert_eq!(Value::List(vec![]).type_name(), "list");
-        assert_eq!(Value::Dict(HashMap::new()).type_name(), "dict");
+        assert_eq!(Value::List(Arc::new(vec![])).type_name(), "list");
+        assert_eq!(
+            Value::Struct(Arc::new(HashMap::new())).type_name(),
+            "struct"
+        );
     }
 
     // -- get_field --
 
     #[test]
     fn get_field_on_dict() {
-        let dict = Value::Dict(HashMap::from([
+        let dict = Value::Struct(Arc::new(HashMap::from([
             ("name".into(), Value::Str("Alice".into())),
             ("score".into(), Value::Int(95)),
-        ]));
+        ])));
         assert_eq!(dict.get_field("name"), Some(&Value::Str("Alice".into())));
         assert_eq!(dict.get_field("score"), Some(&Value::Int(95)));
         assert_eq!(dict.get_field("missing"), None);
@@ -612,7 +664,7 @@ mod tests {
     fn get_field_on_non_dict_returns_none() {
         assert_eq!(Value::Str("x".into()).get_field("any"), None);
         assert_eq!(Value::Int(1).get_field("any"), None);
-        assert_eq!(Value::List(vec![]).get_field("any"), None);
+        assert_eq!(Value::List(Arc::new(vec![])).get_field("any"), None);
     }
 
     // -- From conversions --
@@ -743,7 +795,7 @@ mod tests {
     #[test]
     fn as_list_returns_some_for_list() {
         let items = vec![Value::Int(1), Value::Int(2)];
-        let v = Value::List(items.clone());
+        let v = Value::List(Arc::new(items.clone()));
         assert_eq!(v.as_list(), Some(items.as_slice()));
     }
 
@@ -753,15 +805,15 @@ mod tests {
     }
 
     #[test]
-    fn as_dict_returns_some_for_dict() {
+    fn as_struct_returns_some_for_dict() {
         let map = HashMap::from([("k".into(), Value::Int(1))]);
-        let v = Value::Dict(map.clone());
-        assert_eq!(v.as_dict(), Some(&map));
+        let v = Value::Struct(Arc::new(map.clone()));
+        assert_eq!(v.as_struct(), Some(&map));
     }
 
     #[test]
-    fn as_dict_returns_none_for_non_dict() {
-        assert_eq!(Value::Int(1).as_dict(), None);
+    fn as_struct_returns_none_for_non_dict() {
+        assert_eq!(Value::Int(1).as_struct(), None);
     }
 
     // -- TryFrom conversions --
@@ -809,15 +861,56 @@ mod tests {
 
     #[test]
     fn try_from_vec_success() {
-        let v = Value::List(vec![Value::Int(1)]);
+        let v = Value::List(Arc::new(vec![Value::Int(1)]));
         let list = Vec::<Value>::try_from(v).unwrap();
         assert_eq!(list.len(), 1);
     }
 
     #[test]
     fn try_from_hashmap_success() {
-        let v = Value::Dict(HashMap::from([("k".into(), Value::Int(1))]));
+        let v = Value::Struct(Arc::new(HashMap::from([("k".into(), Value::Int(1))])));
         let map = HashMap::<String, Value>::try_from(v).unwrap();
         assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn from_template_owned() {
+        let tmpl = crate::Template::from_source("---\nparams: [x = str]\n---\n{{ x }}").unwrap();
+        let val = Value::from(tmpl);
+        assert!(matches!(val, Value::Tmpl(_)));
+        assert_eq!(val.type_name(), "tmpl");
+    }
+
+    #[test]
+    fn from_template_ref() {
+        let tmpl = crate::Template::from_source("---\nparams: [x = str]\n---\n{{ x }}").unwrap();
+        let val = Value::from(&tmpl);
+        assert!(matches!(val, Value::Tmpl(_)));
+    }
+
+    #[test]
+    fn from_template_arc() {
+        let tmpl = crate::Template::from_source("---\nparams: [x = str]\n---\n{{ x }}").unwrap();
+        let arc = Arc::new(tmpl);
+        let val = Value::from(arc);
+        assert!(matches!(val, Value::Tmpl(_)));
+    }
+
+    #[test]
+    fn context_set_with_template() {
+        let tmpl = crate::Template::from_source("---\nparams: [x = str]\n---\n{{ x }}").unwrap();
+        let mut ctx = crate::Context::new();
+        // Should compile — From<Template> for Value
+        ctx.set("widget", tmpl);
+        assert!(ctx.get("widget").unwrap().as_tmpl().is_some());
+    }
+
+    #[test]
+    fn context_set_with_template_ref() {
+        let tmpl = crate::Template::from_source("---\nparams: [x = str]\n---\n{{ x }}").unwrap();
+        let mut ctx = crate::Context::new();
+        // Should compile — From<&Template> for Value
+        ctx.set("widget", &tmpl);
+        assert!(ctx.get("widget").unwrap().as_tmpl().is_some());
     }
 }

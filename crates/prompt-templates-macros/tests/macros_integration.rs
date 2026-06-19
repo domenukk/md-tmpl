@@ -1,28 +1,35 @@
 //! Integration tests for the prompt-templates-macros crate.
 //!
-//! Exercises `include_template!`, `validate_template!`, and
-//! `include_types!` — the compile-time proc macros that were
-//! previously only shown as documentation examples.
+//! Exercises `include_template!` and `template!` — the compile-time proc macros.
 
 // ── include_template! ──────────────────────────────────────────────
 
+// Generate the module from the template — this emits:
+//   pub mod greeting { pub fn template() ...; pub struct Params { ... } ... }
+prompt_templates_macros::include_template!("prompts/greeting.tmpl.md");
+
+// Also test a simple template.
+prompt_templates_macros::include_template!("prompts/simple_greeting.tmpl.md");
+
 #[test]
 fn include_template_loads_and_renders() {
-    let tmpl = prompt_templates_macros::include_template!("prompts/greeting.tmpl.md");
+    let tmpl = greeting::template();
 
     let mut ctx = prompt_templates::Context::new();
     ctx.set("name", "Alice");
     ctx.set("count", 42);
     ctx.set(
         "items",
-        prompt_templates::Value::List(vec![prompt_templates::Value::Dict(
-            [(
-                "label".to_string(),
-                prompt_templates::Value::Str("hello".into()),
-            )]
-            .into_iter()
-            .collect(),
-        )]),
+        prompt_templates::Value::List(std::sync::Arc::new(vec![prompt_templates::Value::Struct(
+            std::sync::Arc::new(
+                [(
+                    "label".to_string(),
+                    prompt_templates::Value::Str("hello".into()),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+        )])),
     );
 
     let output = tmpl.render(&ctx).unwrap();
@@ -31,10 +38,9 @@ fn include_template_loads_and_renders() {
 
 #[test]
 fn include_template_produces_equivalent_templates() {
-    // Each include_template! call-site gets its own LazyLock, but the
-    // resulting templates should be structurally identical.
-    let tmpl1 = prompt_templates_macros::include_template!("prompts/simple_greeting.tmpl.md");
-    let tmpl2 = prompt_templates_macros::include_template!("prompts/simple_greeting.tmpl.md");
+    // Two different template calls, but both point to the same module.
+    let tmpl1 = simple_greeting::template();
+    let tmpl2 = simple_greeting::template();
 
     let mut ctx = prompt_templates::Context::new();
     ctx.set("name", "Test");
@@ -47,8 +53,7 @@ fn include_template_produces_equivalent_templates() {
 
 #[test]
 fn include_template_hot_loop_pattern() {
-    // This is the exact pattern from the doc comment: bind once, render in a loop.
-    let tmpl = prompt_templates_macros::include_template!("prompts/simple_greeting.tmpl.md");
+    let tmpl = simple_greeting::template();
 
     let names = ["Alice", "Bob", "Charlie"];
     for name in &names {
@@ -59,24 +64,10 @@ fn include_template_hot_loop_pattern() {
     }
 }
 
-// ── validate_template! ─────────────────────────────────────────────
-
-#[test]
-fn validate_template_compiles_valid_template() {
-    // This should compile without error — if the template were invalid,
-    // compilation itself would fail.
-    prompt_templates_macros::validate_template!("prompts/simple_greeting.tmpl.md");
-    prompt_templates_macros::validate_template!("prompts/greeting.tmpl.md");
-}
-
-// ── include_types! ────────────────────────────────────────────────────
-
-prompt_templates_macros::include_types!("prompts/greeting.tmpl.md");
+// ── Module-level Params struct (from include_template!) ──────────────
 
 #[test]
 fn params_struct_renders_template() {
-    let tmpl = prompt_templates_macros::include_template!("prompts/greeting.tmpl.md");
-
     let params = greeting::Params {
         name: "Alice".into(),
         count: 42,
@@ -85,13 +76,32 @@ fn params_struct_renders_template() {
         }],
     };
 
-    let output = params.render(tmpl).unwrap();
+    // Zero-arg render using the embedded template.
+    let output = params.render().unwrap();
     assert_eq!(output, "\nHello Alice! Count: 42. Items: hello");
 }
 
 #[test]
+fn params_struct_render_with_external_template() {
+    // Test hot-reload: render_with() accepts an externally-loaded template.
+    let params = greeting::Params {
+        name: "Bob".into(),
+        count: 1,
+        items: vec![],
+    };
+
+    let tmpl =
+        prompt_templates::Template::from_file(std::path::Path::new("prompts/greeting.tmpl.md"))
+            .unwrap();
+    greeting::Params::validate_template(&tmpl).unwrap();
+
+    let output = params.render_with(&tmpl).unwrap();
+    assert_eq!(output, "\nHello Bob! Count: 1. Items: ");
+}
+
+#[test]
 fn params_struct_validate_template_succeeds_for_matching() {
-    let tmpl = prompt_templates_macros::include_template!("prompts/greeting.tmpl.md");
+    let tmpl = greeting::template();
     greeting::Params::validate_template(tmpl).unwrap();
 }
 
@@ -108,26 +118,6 @@ fn params_struct_validate_template_fails_for_mismatched() {
 }
 
 #[test]
-fn params_struct_hot_reload_with_disk_template() {
-    // Exercises the hot-reload pattern from the doc example:
-    // compile-time struct + runtime-loaded template.
-    let tmpl =
-        prompt_templates::Template::from_file(std::path::Path::new("prompts/greeting.tmpl.md"))
-            .unwrap();
-
-    greeting::Params::validate_template(&tmpl).unwrap();
-
-    let params = greeting::Params {
-        name: "Bob".into(),
-        count: 1,
-        items: vec![],
-    };
-
-    let output = params.render(&tmpl).unwrap();
-    assert_eq!(output, "\nHello Bob! Count: 1. Items: ");
-}
-
-#[test]
 fn params_struct_to_context_produces_valid_context() {
     let params = greeting::Params {
         name: "Test".into(),
@@ -139,14 +129,28 @@ fn params_struct_to_context_produces_valid_context() {
     };
 
     let ctx = params.to_context();
-    let tmpl = prompt_templates_macros::include_template!("prompts/greeting.tmpl.md");
+    let tmpl = greeting::template();
     let output = tmpl.render(&ctx).unwrap();
     assert_eq!(output, "\nHello Test! Count: 99. Items: ab");
 }
 
-// ── include_types! with types: block ─────────────────────────────────
+// ── include_template! with custom module name ─────────────────────────
 
-prompt_templates_macros::include_types!("prompts/type_library.tmpl.md");
+prompt_templates_macros::include_template!("prompts/simple_greeting.tmpl.md" => my_greeting);
+
+#[test]
+fn custom_module_name_works() {
+    let output = my_greeting::Params {
+        name: "Custom".into(),
+    }
+    .render()
+    .unwrap();
+    assert_eq!(output, "\nHello Custom!\n");
+}
+
+// ── include_template! with types: block ─────────────────────────────
+
+prompt_templates_macros::include_template!("prompts/type_library.tmpl.md");
 
 #[test]
 fn type_alias_enum_variants_exist() {
@@ -249,4 +253,267 @@ fn type_alias_data_enum_exists() {
     };
     let rejected = type_library::Outcome::Rejected;
     assert_ne!(confirmed, rejected);
+}
+
+// ── template! (inline) with module ────────────────────────────────────
+
+prompt_templates_macros::template!(
+    r#"
+---
+params:
+  - name = str
+---
+Hello {{ name }}!
+"# => inline_greeting
+);
+
+#[test]
+fn template_inline_basic_render() {
+    let output = inline_greeting::Params {
+        name: "World".into(),
+    }
+    .render()
+    .unwrap();
+    assert_eq!(output, "Hello World!\n");
+}
+
+#[test]
+fn template_inline_template_accessor() {
+    let tmpl = inline_greeting::template();
+    let mut ctx = prompt_templates::Context::new();
+    ctx.set("name", "Test");
+    let output = tmpl.render(&ctx).unwrap();
+    assert_eq!(output, "Hello Test!\n");
+}
+
+prompt_templates_macros::template!(
+    r#"
+---
+params:
+  - greeting = str := "Howdy"
+  - name = str
+---
+{{ greeting }} {{ name }}!
+"# => defaults_tmpl
+);
+
+#[test]
+fn template_inline_with_defaults() {
+    let tmpl = defaults_tmpl::template();
+    let mut ctx = tmpl.defaults_context();
+    ctx.set("name", "Partner");
+    let output = tmpl.render(&ctx).unwrap();
+    assert_eq!(output, "Howdy Partner!\n");
+}
+
+prompt_templates_macros::template!(
+    r#"
+---
+params:
+  - user = str
+  - count = int
+  - active = bool
+---
+{{ user }}: {{ count }} (active={{ active }})
+"# => multi_param
+);
+
+#[test]
+fn template_inline_multi_param_types() {
+    let tmpl = multi_param::template();
+
+    let mut ctx = prompt_templates::Context::new();
+    ctx.set("user", "Alice");
+    ctx.set("count", 42);
+    ctx.set("active", true);
+    let output = tmpl.render(&ctx).unwrap();
+    assert_eq!(output, "Alice: 42 (active=true)\n");
+}
+
+prompt_templates_macros::template!(
+    r#"
+---
+params:
+  - x = str
+  - y = int := 10
+---
+{{ x }}: {{ y }}
+"# => decls_tmpl
+);
+
+#[test]
+fn template_inline_declarations() {
+    let tmpl = decls_tmpl::template();
+
+    let decls = tmpl.declarations();
+    assert_eq!(decls.len(), 2);
+    assert_eq!(decls[0].name, "x");
+    assert_eq!(decls[1].name, "y");
+    assert_eq!(
+        decls[1].default_value,
+        Some(prompt_templates::Value::Int(10))
+    );
+}
+
+prompt_templates_macros::template!(
+    r#"
+---
+params:
+  - item = str
+---
+Buy: {{ item }}
+"# => reuse_tmpl
+);
+
+#[test]
+fn template_inline_reuse_in_loop() {
+    let tmpl = reuse_tmpl::template();
+
+    let items = ["Coffee", "Tea", "Juice"];
+    for item in &items {
+        let mut ctx = prompt_templates::Context::new();
+        ctx.set("item", *item);
+        let output = tmpl.render(&ctx).unwrap();
+        assert_eq!(output, format!("Buy: {item}\n"));
+    }
+}
+
+// ── template() function accessible ────────────────────────────────────
+
+#[test]
+fn include_template_module_has_template_function() {
+    // Verify the module exposes a template() accessor.
+    let tmpl: &'static prompt_templates::Template = greeting::template();
+    assert!(
+        !tmpl.declarations().is_empty(),
+        "template should have declarations"
+    );
+}
+
+// ── include_template! with option<T> params ──────────────────────────
+
+prompt_templates_macros::include_template!("prompts/option_test.tmpl.md");
+
+#[test]
+fn option_param_struct_fields_are_option_type() {
+    // Verify that option<str> generates Option<String> and
+    // option<int> generates Option<i64>.
+    let params = option_test::Params {
+        name: "Alice".into(),
+        nickname: Some("Ali".into()),
+        age: Some(30),
+    };
+    assert_eq!(params.name, "Alice");
+    assert_eq!(params.nickname, Some("Ali".to_string()));
+    assert_eq!(params.age, Some(30));
+}
+
+#[test]
+fn option_param_none_renders_correctly() {
+    let params = option_test::Params {
+        name: "Bob".into(),
+        nickname: None,
+        age: None,
+    };
+
+    let output = params.render().unwrap();
+    // With None for both options, the if-has blocks should be skipped.
+    assert!(output.contains("Hello Bob!"), "output: {output}");
+    assert!(
+        !output.contains("Nickname:"),
+        "None nickname should not render, output: {output}"
+    );
+    assert!(
+        !output.contains("Age:"),
+        "None age should not render, output: {output}"
+    );
+}
+
+#[test]
+fn option_param_some_renders_correctly() {
+    let params = option_test::Params {
+        name: "Charlie".into(),
+        nickname: Some("Chuck".into()),
+        age: Some(25),
+    };
+
+    let output = params.render().unwrap();
+    assert!(output.contains("Hello Charlie!"), "output: {output}");
+    assert!(output.contains("Nickname: Chuck"), "output: {output}");
+    assert!(output.contains("Age: 25"), "output: {output}");
+}
+
+#[test]
+fn option_param_to_context_produces_valid_context() {
+    let params = option_test::Params {
+        name: "Dave".into(),
+        nickname: Some("D".into()),
+        age: None,
+    };
+
+    let ctx = params.to_context();
+    let tmpl = option_test::template();
+    let output = tmpl.render(&ctx).unwrap();
+    assert!(output.contains("Hello Dave!"), "output: {output}");
+    assert!(output.contains("Nickname: D"), "output: {output}");
+    assert!(!output.contains("Age:"), "output: {output}");
+}
+
+#[test]
+fn option_param_defaults_to_none() {
+    // Option fields should default to None (no value set).
+    let params = option_test::Params {
+        name: "Eve".into(),
+        nickname: None,
+        age: None,
+    };
+
+    let output = params.render().unwrap();
+    assert!(output.contains("Hello Eve!"), "output: {output}");
+}
+
+// ── template! inline with option<T> ──────────────────────────────────
+
+prompt_templates_macros::template!(
+    r#"
+---
+params:
+  - label = str
+  - count = option<int>
+---
+{{ label }}
+
+> {% if has(count) %}
+
+({{ count.val }})
+
+> {% /if %}
+"# => option_inline
+);
+
+#[test]
+fn template_inline_option_none() {
+    let output = option_inline::Params {
+        label: "test".into(),
+        count: None,
+    }
+    .render()
+    .unwrap();
+    assert!(output.contains("test"), "output: {output}");
+    assert!(
+        !output.contains('('),
+        "None should skip the block, output: {output}"
+    );
+}
+
+#[test]
+fn template_inline_option_some() {
+    let output = option_inline::Params {
+        label: "test".into(),
+        count: Some(42),
+    }
+    .render()
+    .unwrap();
+    assert!(output.contains("test"), "output: {output}");
+    assert!(output.contains("(42)"), "output: {output}");
 }

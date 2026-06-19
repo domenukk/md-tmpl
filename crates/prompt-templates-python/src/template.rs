@@ -1,9 +1,12 @@
 //! `PyO3` wrappers for [`Template`] and [`TemplateCache`].
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
-use prompt_templates::{Context, Frontmatter, Template, TemplateCache, VarType};
-use pyo3::{prelude::*, types::PyDict};
+use hashbrown::HashMap;
+use prompt_templates::{
+    CompileOptions, Context, Frontmatter, RenderOptions, Template, TemplateCache, VarType,
+};
+use pyo3::{Py, prelude::*, types::PyDict};
 
 use crate::convert::py_to_value;
 
@@ -46,9 +49,10 @@ impl PyTemplate {
     /// Raises:
     ///     `ValueError`: If the file cannot be read or contains syntax errors.
     #[staticmethod]
-    fn from_file(path: &str) -> PyResult<Self> {
-        let (tmpl, fm) = Template::from_file_with_frontmatter(std::path::Path::new(path))
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    #[allow(clippy::needless_pass_by_value)] // PyO3 requires owned PathBuf
+    fn from_file(path: std::path::PathBuf) -> PyResult<Self> {
+        let (tmpl, fm) = Template::compile_file(&path, CompileOptions::default())
+            .map_err(|e| crate::errors::template_error_to_py(&e))?;
         Ok(Self {
             inner: tmpl,
             frontmatter: fm,
@@ -71,8 +75,8 @@ impl PyTemplate {
     ///     `ValueError`: If the source contains syntax errors or unused params.
     #[staticmethod]
     fn from_source(source: &str) -> PyResult<Self> {
-        let (tmpl, fm) = Template::from_source_with_frontmatter(source)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let (tmpl, fm) = Template::compile(source, CompileOptions::default())
+            .map_err(|e| crate::errors::template_error_to_py(&e))?;
         Ok(Self {
             inner: tmpl,
             frontmatter: fm,
@@ -94,11 +98,8 @@ impl PyTemplate {
     ///     `ValueError`: If the source contains syntax errors.
     #[staticmethod]
     fn from_source_allowing_unused(source: &str) -> PyResult<Self> {
-        let fm = prompt_templates::parse_frontmatter(source)
-            .map(|(fm, _)| fm)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        let tmpl = Template::from_source_allowing_unused(source)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let (tmpl, fm) = Template::compile(source, CompileOptions::default().allow_unused(true))
+            .map_err(|e| crate::errors::template_error_to_py(&e))?;
         Ok(Self {
             inner: tmpl,
             frontmatter: fm,
@@ -130,12 +131,9 @@ impl PyTemplate {
     #[pyo3(signature = (*, allow_extra=false, **kwargs))]
     fn render(&self, allow_extra: bool, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<String> {
         let ctx = build_context(kwargs)?;
-        let result = if allow_extra {
-            self.inner.render_allowing_extra(&ctx)
-        } else {
-            self.inner.render(&ctx)
-        };
-        result.map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+        self.inner
+            .render_with(&ctx, RenderOptions::default().allow_extra(allow_extra))
+            .map_err(|e| crate::errors::template_error_to_py(&e))
     }
 
     /// Render the template from a dict of parameters.
@@ -155,12 +153,188 @@ impl PyTemplate {
     #[pyo3(signature = (params, *, allow_extra=false))]
     fn render_dict(&self, params: &Bound<'_, PyDict>, allow_extra: bool) -> PyResult<String> {
         let ctx = build_context(Some(params))?;
-        let result = if allow_extra {
-            self.inner.render_allowing_extra(&ctx)
-        } else {
-            self.inner.render(&ctx)
-        };
-        result.map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+        self.inner
+            .render_with(&ctx, RenderOptions::default().allow_extra(allow_extra))
+            .map_err(|e| crate::errors::template_error_to_py(&e))
+    }
+
+    /// Render the template using a cache for include resolution.
+    ///
+    /// Includes are resolved from the cache instead of reading files
+    /// from disk, improving performance when rendering many templates
+    /// with shared includes.
+    ///
+    /// Args:
+    ///     cache: A `TemplateCache` instance for include resolution.
+    ///     `allow_extra`: If True, extra kwargs not declared in frontmatter
+    ///         are silently ignored. Default: False.
+    ///     **kwargs: Template parameters as keyword arguments.
+    ///
+    /// Returns:
+    ///     str: The rendered output.
+    ///
+    /// Raises:
+    ///     `TypeError`: If a value cannot be converted to a template type.
+    ///     `ValueError`: If validation or rendering fails.
+    #[pyo3(signature = (cache, *, allow_extra=false, **kwargs))]
+    fn render_cached(
+        &self,
+        cache: &PyTemplateCache,
+        allow_extra: bool,
+        kwargs: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<String> {
+        let ctx = build_context(kwargs)?;
+        self.inner
+            .render_cached_with(
+                &ctx,
+                &*cache.inner,
+                RenderOptions::default().allow_extra(allow_extra),
+            )
+            .map_err(|e| crate::errors::template_error_to_py(&e))
+    }
+
+    /// Render the template from a dict, using a cache for includes.
+    ///
+    /// Combines `render_dict()` with cache-aware include resolution.
+    ///
+    /// Args:
+    ///     params: Dictionary of template parameters.
+    ///     cache: A `TemplateCache` instance for include resolution.
+    ///     `allow_extra`: If True, extra keys are silently ignored.
+    ///
+    /// Returns:
+    ///     str: The rendered output.
+    #[pyo3(signature = (params, cache, *, allow_extra=false))]
+    fn render_cached_dict(
+        &self,
+        params: &Bound<'_, PyDict>,
+        cache: &PyTemplateCache,
+        allow_extra: bool,
+    ) -> PyResult<String> {
+        let ctx = build_context(Some(params))?;
+        self.inner
+            .render_cached_with(
+                &ctx,
+                &*cache.inner,
+                RenderOptions::default().allow_extra(allow_extra),
+            )
+            .map_err(|e| crate::errors::template_error_to_py(&e))
+    }
+
+    /// Render the template from a `FlexBuffers` binary buffer.
+    ///
+    /// Args:
+    ///     buffer: `FlexBuffers` binary buffer (bytes).
+    ///     `allow_extra`: If True, extra keys are silently ignored.
+    ///
+    /// Returns:
+    ///     str: The rendered output.
+    #[pyo3(signature = (buffer, *, allow_extra=false))]
+    fn render_flexbuffers(&self, buffer: &[u8], allow_extra: bool) -> PyResult<String> {
+        let ctx = prompt_templates::Context::from_flexbuffers(buffer)
+            .map_err(|e| crate::errors::template_error_to_py(&e))?;
+        self.inner
+            .render_with(
+                &ctx,
+                prompt_templates::RenderOptions::default().allow_extra(allow_extra),
+            )
+            .map_err(|e| crate::errors::template_error_to_py(&e))
+    }
+
+    /// Render the template from a `FlexBuffers` binary buffer, using a cache for includes.
+    ///
+    /// Args:
+    ///     buffer: `FlexBuffers` binary buffer (bytes).
+    ///     cache: A `TemplateCache` instance for include resolution.
+    ///     `allow_extra`: If True, extra keys are silently ignored.
+    ///
+    /// Returns:
+    ///     str: The rendered output.
+    #[pyo3(signature = (buffer, cache, *, allow_extra=false))]
+    fn render_cached_flexbuffers(
+        &self,
+        buffer: &[u8],
+        cache: &PyTemplateCache,
+        allow_extra: bool,
+    ) -> PyResult<String> {
+        let ctx = prompt_templates::Context::from_flexbuffers(buffer)
+            .map_err(|e| crate::errors::template_error_to_py(&e))?;
+        self.inner
+            .render_cached_with(
+                &ctx,
+                &*cache.inner,
+                prompt_templates::RenderOptions::default().allow_extra(allow_extra),
+            )
+            .map_err(|e| crate::errors::template_error_to_py(&e))
+    }
+
+    /// Render the template from a JSON string.
+    ///
+    /// This is the **fastest rendering path from Python** — use it when your
+    /// parameters are JSON-serialisable and you want maximum throughput.
+    ///
+    /// Why is this faster than `render(**kwargs)`?
+    /// - `render(**kwargs)` does N per-key Python→Rust FFI crossings with
+    ///   `isinstance` type checks on each value.
+    /// - `render_json()` does a single FFI crossing; `CPython`'s C-optimised
+    ///   `json.dumps` serialises the dict (~1µs), then Rust deserialises the
+    ///   JSON string directly into the template's internal `Value` type.
+    ///
+    /// Args:
+    ///     `json_str`: A JSON string representing a dict of template parameters.
+    ///         Use `json.dumps(params)` to produce this.
+    ///     `allow_extra`: If True, extra keys are silently ignored.
+    ///
+    /// Returns:
+    ///     str: The rendered output.
+    ///
+    /// Raises:
+    ///     `ValueError`: If the JSON is invalid or rendering fails.
+    ///
+    /// Examples:
+    ///
+    /// ```python
+    /// import json
+    /// from prompt_templates import Template
+    ///
+    /// tmpl = Template.from_source("---\nparams:\n  - name = str\n---\nHello {{ name }}!")
+    /// tmpl.render_json(json.dumps({"name": "world"}))
+    /// # => 'Hello world!'
+    /// ```
+    #[pyo3(signature = (json_str, *, allow_extra=false))]
+    fn render_json(&self, json_str: &str, allow_extra: bool) -> PyResult<String> {
+        let ctx = json_str_to_context(json_str)?;
+        self.inner
+            .render_with(&ctx, RenderOptions::default().allow_extra(allow_extra))
+            .map_err(|e| crate::errors::template_error_to_py(&e))
+    }
+
+    /// Render the template from a JSON string, using a cache for includes.
+    ///
+    /// Combines `render_json()` with cache-aware include resolution.
+    ///
+    /// Args:
+    ///     `json_str`: A JSON string representing a dict of template parameters.
+    ///     cache: A `TemplateCache` instance for include resolution.
+    ///     `allow_extra`: If True, extra keys are silently ignored.
+    ///
+    /// Returns:
+    ///     str: The rendered output.
+    #[pyo3(signature = (json_str, cache, *, allow_extra=false))]
+    fn render_json_cached(
+        &self,
+        json_str: &str,
+        cache: &PyTemplateCache,
+        allow_extra: bool,
+    ) -> PyResult<String> {
+        let ctx = json_str_to_context(json_str)?;
+        self.inner
+            .render_cached_with(
+                &ctx,
+                &*cache.inner,
+                RenderOptions::default().allow_extra(allow_extra),
+            )
+            .map_err(|e| crate::errors::template_error_to_py(&e))
     }
 
     /// Return the declared parameter names and their types.
@@ -197,7 +371,7 @@ impl PyTemplate {
     ///
     /// Returns:
     ///     dict: Mapping of parameter name → default value.
-    fn defaults(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn defaults(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let defaults = self.inner.defaults();
         let dict = PyDict::new(py);
         for (k, v) in &defaults {
@@ -210,7 +384,7 @@ impl PyTemplate {
     ///
     /// Returns:
     ///     dict: Mapping of constant name → value.
-    fn consts(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn consts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let dict = PyDict::new(py);
         for decl in &self.frontmatter.consts {
             if let Some(ref value) = decl.default_value {
@@ -226,7 +400,7 @@ impl PyTemplate {
     ///
     /// Returns:
     ///     dict: Mapping of qualified constant name → value.
-    fn imported_consts(&self, py: Python<'_>) -> PyResult<PyObject> {
+    fn imported_consts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let dict = PyDict::new(py);
         for (k, v) in &self.frontmatter.imported_consts {
             dict.set_item(k, crate::convert::value_to_py(py, v)?)?;
@@ -273,13 +447,10 @@ impl PyTemplate {
     /// Raises:
     ///     `ValueError`: If the source contains syntax errors or includes cannot be resolved.
     #[staticmethod]
-    fn from_source_with_base_dir(source: &str, base_dir: &str) -> PyResult<Self> {
-        let path = std::path::Path::new(base_dir);
-        let fm = prompt_templates::parse_frontmatter_with_base_dir(source, path)
-            .map(|(fm, _)| fm)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        let tmpl = Template::from_source_with_base_dir(source, path)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    #[allow(clippy::needless_pass_by_value)] // PyO3 requires owned PathBuf
+    fn from_source_with_base_dir(source: &str, base_dir: std::path::PathBuf) -> PyResult<Self> {
+        let (tmpl, fm) = Template::compile(source, CompileOptions::default().base_dir(&base_dir))
+            .map_err(|e| crate::errors::template_error_to_py(&e))?;
         Ok(Self {
             inner: tmpl,
             frontmatter: fm,
@@ -304,6 +475,22 @@ impl PyTemplate {
         self.inner.set_max_include_depth(depth);
     }
 
+    /// Enter the context manager — returns `self` unchanged.
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    /// Exit the context manager — never suppresses exceptions.
+    #[allow(clippy::unused_self)]
+    fn __exit__(
+        &self,
+        _exc_type: &Bound<'_, PyAny>,
+        _exc_val: &Bound<'_, PyAny>,
+        _exc_tb: &Bound<'_, PyAny>,
+    ) -> bool {
+        false
+    }
+
     fn __repr__(&self) -> String {
         let decls: Vec<String> = self
             .inner
@@ -326,6 +513,13 @@ impl PyTemplate {
     pub(crate) fn type_aliases(&self) -> &HashMap<String, VarType> {
         &self.frontmatter.type_aliases
     }
+
+    /// Construct from a pre-existing `Template` and `Frontmatter`.
+    ///
+    /// Used by `value_to_py` to wrap `Value::Tmpl` back into a Python object.
+    pub(crate) fn from_inner(inner: Template, frontmatter: Frontmatter) -> Self {
+        Self { inner, frontmatter }
+    }
 }
 
 /// Content-hashed template cache for hot-reload scenarios.
@@ -344,10 +538,20 @@ pub(crate) struct PyTemplateCache {
 #[pymethods]
 impl PyTemplateCache {
     /// Create a new empty template cache.
+    ///
+    /// Args:
+    ///     `max_entries`: Optional maximum number of cached templates.
+    ///         When exceeded, the least-recently-used entry is evicted.
+    ///         ``None`` (default) disables eviction.
     #[new]
-    fn new() -> Self {
+    #[pyo3(signature = (*, max_entries=None))]
+    fn new(max_entries: Option<usize>) -> Self {
+        let mut cache = TemplateCache::new();
+        if let Some(max) = max_entries {
+            cache = cache.with_max_entries(max);
+        }
         Self {
-            inner: Arc::new(TemplateCache::new()),
+            inner: Arc::new(cache),
         }
     }
 
@@ -361,12 +565,12 @@ impl PyTemplateCache {
     ///
     /// Raises:
     ///     `ValueError`: If the file cannot be read or contains errors.
-    fn load(&self, path: &str) -> PyResult<PyTemplate> {
-        let p = std::path::Path::new(path);
+    #[allow(clippy::needless_pass_by_value)] // PyO3 requires owned PathBuf
+    fn load(&self, path: std::path::PathBuf) -> PyResult<PyTemplate> {
         let (tmpl, fm) = self
             .inner
-            .load_with_frontmatter(p)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+            .load_with_frontmatter(&path)
+            .map_err(|e| crate::errors::template_error_to_py(&e))?;
         Ok(PyTemplate {
             inner: tmpl,
             frontmatter: fm,
@@ -395,6 +599,30 @@ impl PyTemplateCache {
     fn include_count(&self) -> usize {
         self.inner.include_count()
     }
+
+    /// Return the total number of cached entries (templates + includes).
+    ///
+    /// Returns:
+    ///     int: Number of cached entries.
+    fn __len__(&self) -> usize {
+        self.inner.template_count() + self.inner.include_count()
+    }
+
+    /// Enter the context manager — returns `self` unchanged.
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    /// Exit the context manager — never suppresses exceptions.
+    #[allow(clippy::unused_self)]
+    fn __exit__(
+        &self,
+        _exc_type: &Bound<'_, PyAny>,
+        _exc_val: &Bound<'_, PyAny>,
+        _exc_tb: &Bound<'_, PyAny>,
+    ) -> bool {
+        false
+    }
 }
 
 /// Build a [`Context`] from Python keyword arguments.
@@ -411,7 +639,18 @@ fn build_context(kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Context> {
     Ok(ctx)
 }
 
+/// Build a [`Context`] from a JSON string.
+///
+/// Deserialises the JSON via `serde_json` into the engine's [`Value`] type,
+/// then wraps it in a `Context`.  This avoids per-key Python→Rust FFI
+/// crossings — the entire dict is transferred as a single string.
+fn json_str_to_context(json_str: &str) -> PyResult<Context> {
+    let value: prompt_templates::Value = serde_json::from_str(json_str)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("invalid JSON: {e}")))?;
+    Context::from_value(value).map_err(|e| crate::errors::template_error_to_py(&e))
+}
+
 /// Create a `PyTemplate` from a file path (used by typegen).
 pub(crate) fn load_template(path: &str) -> PyResult<PyTemplate> {
-    PyTemplate::from_file(path)
+    PyTemplate::from_file(std::path::PathBuf::from(path))
 }

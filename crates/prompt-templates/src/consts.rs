@@ -14,11 +14,14 @@ pub(crate) const FN_LEN: &str = "len";
 /// Name of the explicit kind/variant-name function: `kind(expr)`.
 pub(crate) const FN_KIND: &str = "kind";
 
+/// Name of the option-presence function: `has(expr)`.
+pub(crate) const FN_HAS: &str = "has";
+
 /// All built-in function names.
 ///
 /// Used by static analysis to avoid treating function names as variable
-/// references (e.g. `idx` in `idx(bug)` is not a variable).
-pub(crate) const BUILTIN_FUNCTIONS: &[&str] = &[FN_IDX, FN_LEN, FN_KIND];
+/// references (e.g. `idx` in `idx(item)` is not a variable).
+pub(crate) const BUILTIN_FUNCTIONS: &[&str] = &[FN_IDX, FN_LEN, FN_KIND, FN_HAS];
 
 // -- Filter names -------------------------------------------------------------
 
@@ -41,7 +44,7 @@ pub(crate) const FILTER_SUB: &str = "sub";
 
 // -- Enum tag key -------------------------------------------------------------
 
-/// Dict key used for internally-tagged enum variants:
+/// Struct key used for internally-tagged enum variants:
 /// `{"__kind__": "VariantName", ...}`.
 ///
 /// Uses a dunder prefix to avoid collisions with user-defined field names.
@@ -52,7 +55,7 @@ pub(crate) const PSEUDO_FIELD_LENGTH: &str = ".length";
 
 // -- Expression syntax chars --------------------------------------------------
 
-/// Opening parenthesis for function calls: `idx(bug)`, `len(items)`.
+/// Opening parenthesis for function calls: `idx(item)`, `len(items)`.
 pub const PAREN_OPEN: char = '(';
 /// Closing parenthesis for function calls.
 pub const PAREN_CLOSE: char = ')';
@@ -136,15 +139,6 @@ pub(crate) const CLOSE_TMPL: &str = "/tmpl";
 /// Closing tag for match block: `/match`.
 pub(crate) const CLOSE_MATCH: &str = "/match";
 
-// -- Legacy block tags (for warnings/errors) ----------------------------------
-
-/// Legacy closing tag for `if` statement block: `endif`.
-pub(crate) const LEGACY_ENDIF: &str = "endif";
-/// Legacy closing tag for `for` statement block: `endfor`.
-pub(crate) const LEGACY_ENDFOR: &str = "endfor";
-/// Legacy closing tag for `raw` statement block: `endraw`.
-pub(crate) const LEGACY_ENDRAW: &str = "endraw";
-
 // -- Markdown Blockquote delimiters -------------------------------------------
 
 /// Blockquote character used to prefix template directives: `>`.
@@ -190,8 +184,8 @@ pub(crate) const TYPE_INT: &str = "int";
 pub(crate) const TYPE_FLOAT: &str = "float";
 /// Type name for lists: `list`.
 pub(crate) const TYPE_LIST: &str = "list";
-/// Type name for dictionaries: `dict`.
-pub(crate) const TYPE_DICT: &str = "dict";
+/// Type name for structs: `struct`.
+pub(crate) const TYPE_STRUCT: &str = "struct";
 /// Type name for enums: `enum`.
 pub(crate) const TYPE_ENUM: &str = "enum";
 /// Type name for templates: `tmpl`.
@@ -199,12 +193,24 @@ pub(crate) const TYPE_TMPL: &str = "tmpl";
 
 /// Type prefix for lists with angle brackets: `list<`.
 pub(crate) const TYPE_LIST_PREFIX: &str = "list<";
-/// Type prefix for dicts with angle brackets: `dict<`.
-pub(crate) const TYPE_DICT_PREFIX: &str = "dict<";
+/// Type prefix for structs with angle brackets: `struct<`.
+pub(crate) const TYPE_STRUCT_PREFIX: &str = "struct<";
 /// Type prefix for enums with angle brackets: `enum<`.
 pub(crate) const TYPE_ENUM_PREFIX: &str = "enum<";
 /// Type prefix for templates with angle brackets: `tmpl<`.
 pub(crate) const TYPE_TMPL_PREFIX: &str = "tmpl<";
+/// Type name for options: `option`.
+pub(crate) const TYPE_OPTION: &str = "option";
+/// Type prefix for options with angle brackets: `option<`.
+#[allow(dead_code)]
+pub(crate) const TYPE_OPTION_PREFIX: &str = "option<";
+
+/// Variant name for the `Some` variant of `option<T>`.
+pub const OPTION_SOME: &str = "Some";
+/// Variant name for the `None` variant of `option<T>`.
+pub const OPTION_NONE: &str = "None";
+/// Field name for the inner value of `option<T>`'s `Some` variant.
+pub const OPTION_VAL_FIELD: &str = "val";
 
 // -- Literals -----------------------------------------------------------------
 
@@ -250,6 +256,7 @@ pub(crate) const ERR_BUILTIN_SHADOW: &str = "type alias shadows built-in type na
 pub(crate) const ERR_TYPE_PARAM_CONFLICT: &str =
     "type alias name conflicts with parameter name (PascalCase collision)";
 /// Error for circular import chains.
+#[cfg(feature = "std")]
 pub(crate) const ERR_CIRCULAR_IMPORT: &str = "circular import detected";
 /// Error when a type alias name shadows an import alias (stem).
 pub(crate) const ERR_TYPE_SHADOWS_IMPORT: &str = "type alias shadows import alias";
@@ -270,5 +277,159 @@ pub(crate) const ERR_BARE_STMT_TAG: &str =
 
 /// Built-in type names and keywords that cannot be used as user-defined names.
 pub(crate) const RESERVED_NAMES: &[&str] = &[
-    TYPE_LIST, TYPE_DICT, TYPE_ENUM, TYPE_TMPL, "params", TYPE_STR, TYPE_INT, TYPE_FLOAT, TYPE_BOOL,
+    TYPE_LIST,
+    TYPE_STRUCT,
+    TYPE_ENUM,
+    TYPE_TMPL,
+    TYPE_OPTION,
+    "params",
+    TYPE_STR,
+    TYPE_INT,
+    TYPE_FLOAT,
+    TYPE_BOOL,
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- strip_string_literal -------------------------------------------------
+
+    #[test]
+    fn strip_double_quoted_string() {
+        assert_eq!(strip_string_literal("\"hello\""), Some("hello"));
+    }
+
+    #[test]
+    fn strip_single_quoted_string() {
+        assert_eq!(strip_string_literal("'world'"), Some("world"));
+    }
+
+    #[test]
+    fn strip_empty_double_quoted_string() {
+        assert_eq!(strip_string_literal("\"\""), Some(""));
+    }
+
+    #[test]
+    fn strip_empty_single_quoted_string() {
+        assert_eq!(strip_string_literal("''"), Some(""));
+    }
+
+    #[test]
+    fn strip_unquoted_string_returns_none() {
+        assert_eq!(strip_string_literal("hello"), None);
+    }
+
+    #[test]
+    fn strip_mismatched_quotes_returns_none() {
+        assert_eq!(strip_string_literal("\"hello'"), None);
+        assert_eq!(strip_string_literal("'hello\""), None);
+    }
+
+    #[test]
+    fn strip_single_quote_char_returns_none() {
+        assert_eq!(strip_string_literal("\""), None);
+        assert_eq!(strip_string_literal("'"), None);
+    }
+
+    #[test]
+    fn strip_empty_input_returns_none() {
+        assert_eq!(strip_string_literal(""), None);
+    }
+
+    #[test]
+    fn strip_quoted_string_with_spaces() {
+        assert_eq!(strip_string_literal("\"hello world\""), Some("hello world"));
+        assert_eq!(strip_string_literal("'hello world'"), Some("hello world"));
+    }
+
+    #[test]
+    fn strip_quoted_string_with_inner_quotes() {
+        // Inner quotes of the opposite kind are preserved.
+        assert_eq!(strip_string_literal("\"it's\""), Some("it's"));
+        assert_eq!(strip_string_literal("'say \"hi\"'"), Some("say \"hi\""));
+    }
+
+    // -- RESERVED_NAMES -------------------------------------------------------
+
+    #[test]
+    fn reserved_names_contains_type_names() {
+        for name in &[
+            "list", "struct", "enum", "tmpl", "option", "str", "int", "float", "bool",
+        ] {
+            assert!(
+                RESERVED_NAMES.contains(name),
+                "{name} should be in RESERVED_NAMES"
+            );
+        }
+    }
+
+    #[test]
+    fn reserved_names_contains_params() {
+        assert!(RESERVED_NAMES.contains(&"params"));
+    }
+
+    // -- BUILTIN_FUNCTIONS ----------------------------------------------------
+
+    #[test]
+    fn builtin_functions_contains_expected_entries() {
+        assert!(BUILTIN_FUNCTIONS.contains(&"idx"));
+        assert!(BUILTIN_FUNCTIONS.contains(&"len"));
+        assert!(BUILTIN_FUNCTIONS.contains(&"kind"));
+        assert!(BUILTIN_FUNCTIONS.contains(&"has"));
+    }
+
+    #[test]
+    fn builtin_functions_length() {
+        assert_eq!(BUILTIN_FUNCTIONS.len(), 4);
+    }
+
+    // -- Delimiter constants --------------------------------------------------
+
+    #[test]
+    fn expr_delimiters() {
+        assert_eq!(EXPR_START, "{{");
+        assert_eq!(EXPR_END, "}}");
+    }
+
+    #[test]
+    fn stmt_delimiters() {
+        assert_eq!(STMT_START, "{%");
+        assert_eq!(STMT_END, "%}");
+    }
+
+    #[test]
+    fn comment_delimiters() {
+        assert_eq!(COMMENT_START, "{#");
+        assert_eq!(COMMENT_END, "#}");
+    }
+
+    #[test]
+    fn closing_block_tags() {
+        assert_eq!(CLOSE_IF, "/if");
+        assert_eq!(CLOSE_FOR, "/for");
+        assert_eq!(CLOSE_RAW, "/raw");
+        assert_eq!(CLOSE_TMPL, "/tmpl");
+        assert_eq!(CLOSE_MATCH, "/match");
+    }
+
+    #[test]
+    fn frontmatter_delimiter() {
+        assert_eq!(FM_DELIMITER, "---");
+    }
+
+    #[test]
+    fn enum_tag_key_value() {
+        assert_eq!(ENUM_TAG_KEY, "__kind__");
+    }
+
+    #[test]
+    fn syntax_chars() {
+        assert_eq!(PAREN_OPEN, '(');
+        assert_eq!(PAREN_CLOSE, ')');
+        assert_eq!(PATH_SEP, '.');
+        assert_eq!(PIPE, '|');
+        assert_eq!(QUOTE_DOUBLE, '"');
+        assert_eq!(QUOTE_SINGLE, '\'');
+    }
+}

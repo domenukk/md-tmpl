@@ -1,8 +1,8 @@
 //! User-facing template rendering context.
 
-use std::collections::HashMap;
+use alloc::string::String;
 
-use crate::value::Value;
+use crate::{compat::HashMap, value::Value};
 
 /// Template rendering context — holds all variables available during rendering.
 ///
@@ -65,7 +65,7 @@ impl Context {
     /// mismatches are caught at [`render()`](crate::Template::render) time,
     /// not here. For compile-time type safety, prefer one of:
     ///
-    /// - `include_types!` (from `prompt-templates-macros`)
+    /// - `include_template!` (from `prompt-templates-macros`)
     ///   — generates a strongly-typed parameter struct from your template.
     /// - [`Template::render_serde`](crate::Template::render_serde) (feature `serde`)
     ///   — renders directly from any `Serialize` struct.
@@ -88,7 +88,7 @@ impl Context {
 
     /// Consume this context and return the inner variable map.
     ///
-    /// Useful for converting a context into a [`Value::Dict`](crate::Value::Dict).
+    /// Useful for converting a context into a [`Value::Struct`](crate::Value::Struct).
     #[must_use]
     pub fn into_inner(self) -> HashMap<String, Value> {
         self.values
@@ -98,7 +98,9 @@ impl Context {
 /// Collect `(&str, Value)` tuples into a `Context`.
 impl<K: Into<String>, V: Into<Value>> FromIterator<(K, V)> for Context {
     fn from_iter<I: IntoIterator<Item = (K, V)>>(iter: I) -> Self {
-        let mut ctx = Self::new();
+        let iter = iter.into_iter();
+        let (lower, _) = iter.size_hint();
+        let mut ctx = Self::with_capacity(lower);
         for (k, v) in iter {
             ctx.set(k, v);
         }
@@ -108,30 +110,66 @@ impl<K: Into<String>, V: Into<Value>> FromIterator<(K, V)> for Context {
 
 #[cfg(feature = "serde")]
 impl Context {
-    /// Build a `Context` from any `Serialize` type that serializes as a map/struct.
+    /// Build a `Context` directly from a [`Value::Struct`](crate::Value::Struct).
     ///
     /// # Errors
     ///
-    /// Returns [`TemplateError::Syntax`](crate::TemplateError::Syntax) if the serialized value is not a dict/map.
-    pub fn from_serialize<T: serde::Serialize>(
-        value: &T,
-    ) -> Result<Self, crate::error::TemplateError> {
-        let val = crate::serde_support::to_value(value).map_err(|e| {
-            crate::error::TemplateError::syntax(format!("serde conversion failed: {e}"))
-        })?;
+    /// Returns `TemplateError::Syntax` if the value is not a dict/map.
+    pub fn from_value(val: Value) -> Result<Self, crate::error::TemplateError> {
         match val {
-            Value::Dict(map) => {
-                let mut ctx = Self::new();
-                for (k, v) in map {
-                    ctx.values.insert(k, v);
-                }
-                Ok(ctx)
+            Value::Struct(arc_map) => {
+                // Try to unwrap the Arc to avoid cloning — we're the sole owner
+                // if it was just deserialized or serialized.
+                let values =
+                    alloc::sync::Arc::try_unwrap(arc_map).unwrap_or_else(|arc| (*arc).clone());
+                Ok(Self { values })
             }
             other => Err(crate::error::TemplateError::syntax(format!(
                 "expected struct/map, got {}",
                 other.type_name()
             ))),
         }
+    }
+
+    /// Build a `Context` from any `Serialize` type that serializes as a map/struct.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TemplateError::Syntax` if the serialized value is not a dict/map.
+    pub fn from_serialize<T: serde::Serialize>(
+        value: &T,
+    ) -> Result<Self, crate::error::TemplateError> {
+        let val = crate::serde_support::to_value(value).map_err(|e| {
+            crate::error::TemplateError::syntax(format!("serde conversion failed: {e}"))
+        })?;
+        Self::from_value(val)
+    }
+
+    /// Build a `Context` from a `FlexBuffers` binary buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TemplateError::Syntax` if the buffer is invalid or not a dict/map.
+    pub fn from_flexbuffers(data: &[u8]) -> Result<Self, crate::error::TemplateError> {
+        let r = flexbuffers::Reader::get_root(data).map_err(|e| {
+            crate::error::TemplateError::syntax(format!("flexbuffers root error: {e}"))
+        })?;
+        let val: Value = serde::Deserialize::deserialize(r).map_err(|e| {
+            crate::error::TemplateError::syntax(format!("flexbuffers deserialization failed: {e}"))
+        })?;
+        Self::from_value(val)
+    }
+
+    /// Build a `Context` from a CBOR binary buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TemplateError::Syntax` if the buffer is invalid or not a dict/map.
+    pub fn from_cbor(data: &[u8]) -> Result<Self, crate::error::TemplateError> {
+        let val: Value = ciborium::from_reader(data).map_err(|e| {
+            crate::error::TemplateError::syntax(format!("cbor deserialization failed: {e}"))
+        })?;
+        Self::from_value(val)
     }
 }
 

@@ -2,6 +2,28 @@ use quote::{format_ident, quote};
 
 use crate::struct_gen::{SetterFn, builder_field_attrs, struct_derive_attrs, var_type_to_rust};
 
+/// Check whether any field in `decls` (recursively) contains a `tmpl<>` type.
+///
+/// Used to decide whether serde derives should be suppressed on generated
+/// sub-structs — `Arc<Template>` does not implement `Serialize` / `Deserialize`.
+fn contains_tmpl_field(decls: &[prompt_templates::VarDecl]) -> bool {
+    decls.iter().any(|d| var_type_has_tmpl(&d.var_type))
+}
+
+/// Recursively check whether a [`VarType`] contains a `Tmpl` variant.
+fn var_type_has_tmpl(vt: &prompt_templates::VarType) -> bool {
+    match vt {
+        prompt_templates::VarType::Tmpl(_) => true,
+        prompt_templates::VarType::List(fields) | prompt_templates::VarType::Struct(fields) => {
+            contains_tmpl_field(fields)
+        }
+        prompt_templates::VarType::Enum(variants) => {
+            variants.iter().any(|v| contains_tmpl_field(&v.fields))
+        }
+        _ => false,
+    }
+}
+
 /// Generate a sub-struct and setter for a typed list (`list<field = type, ...>`).
 pub(crate) fn typed_list_codegen(
     inner_fields: &[prompt_templates::VarDecl],
@@ -29,7 +51,7 @@ pub(crate) fn typed_list_codegen(
         item_set_stmts.push(inner_set(quote! { item.#inner_field }, inner_name_str));
     }
 
-    let derive_attrs = struct_derive_attrs(false);
+    let derive_attrs = struct_derive_attrs(contains_tmpl_field(inner_fields));
 
     sub_structs.push(quote! {
         /// Auto-generated sub-struct for list items.
@@ -46,19 +68,19 @@ pub(crate) fn typed_list_codegen(
             let name_lit = name.to_string();
             let stmts = &item_set_stmts;
             quote! {
-                ctx.set(#name_lit, ::prompt_templates::Value::List(
+                ctx.set(#name_lit, ::prompt_templates::Value::List(::prompt_templates::__private::Arc::new(
                     #val.iter().map(|item| {
                         let mut ctx = ::prompt_templates::Context::new();
                         #(#stmts)*
-                        ::prompt_templates::Value::Dict(ctx.into_inner())
+                        ::prompt_templates::Value::Struct(::prompt_templates::__private::Arc::new(ctx.into_inner()))
                     }).collect()
-                ));
+                )));
             }
         }),
     )
 }
 
-/// Generate a sub-struct and setter for a typed dict (`dict<field = type, ...>`).
+/// Generate a sub-struct and setter for a typed struct (`struct<field = type, ...>`).
 pub(crate) fn typed_dict_codegen(
     inner_fields: &[prompt_templates::VarDecl],
     parent_struct: &str,
@@ -85,7 +107,7 @@ pub(crate) fn typed_dict_codegen(
         dict_set_stmts.push(inner_set(quote! { val.#inner_field }, inner_name_str));
     }
 
-    let derive_attrs = struct_derive_attrs(false);
+    let derive_attrs = struct_derive_attrs(contains_tmpl_field(inner_fields));
 
     sub_structs.push(quote! {
         /// Auto-generated sub-struct for dict fields.
@@ -106,7 +128,7 @@ pub(crate) fn typed_dict_codegen(
                     let val = &#val;
                     let mut inner_ctx = ::prompt_templates::Context::new();
                     #(#stmts)*
-                    ctx.set(#name_lit, ::prompt_templates::Value::Dict(inner_ctx.into_inner()));
+                    ctx.set(#name_lit, ::prompt_templates::Value::Struct(::prompt_templates::__private::Arc::new(inner_ctx.into_inner())));
                 }
             }
         }),
@@ -194,7 +216,11 @@ pub(crate) fn typed_enum_codegen(
     let deduped = deduplicate_variant_idents(&variant_names);
 
     for (var, (var_ident, rename)) in variants.iter().zip(deduped) {
-        let serde_rename = rename.map(|r| quote! { #[serde(rename = #r)] });
+        let serde_rename = if cfg!(feature = "serde") {
+            rename.map(|r| quote! { #[serde(rename = #r)] })
+        } else {
+            None
+        };
 
         if var.fields.is_empty() {
             variant_tokens.push(quote! {
@@ -263,9 +289,9 @@ pub(crate) fn typed_enum_codegen(
                 ctx.set(
                     #name_lit,
                     match ::prompt_templates::to_value(&#val) {
-                        ::std::result::Result::Ok(v) => v,
-                        ::std::result::Result::Err(e) => {
-                            panic!("failed to serialize enum value for '{}': {}", #name_lit, e)
+                        ::core::result::Result::Ok(v) => v,
+                        ::core::result::Result::Err(e) => {
+                            unreachable!("generated enum type should always be serializable: {}", e)
                         }
                     },
                 );
@@ -274,8 +300,72 @@ pub(crate) fn typed_enum_codegen(
     )
 }
 
+/// Generate `Option<T>` and a setter for option-typed variables (`option<T>`).
+///
+/// Instead of generating a full `enum { Some { val: T }, None }`, this produces
+/// a Rust `Option<inner_type>` field and a setter that converts:
+/// - `None` → template `Value::Str("None")`
+/// - `Some(v)` → template `Value::Struct({ __kind__: "Some", val: serialized_v })`
+pub(crate) fn typed_option_codegen(
+    var_type: &prompt_templates::VarType,
+    parent_struct: &str,
+    field_name: &str,
+    sub_structs: &mut Vec<proc_macro2::TokenStream>,
+) -> (proc_macro2::TokenStream, SetterFn) {
+    let inner_vt = var_type
+        .option_inner_type()
+        .expect("typed_option_codegen called on non-option type");
+
+    let (inner_type, inner_set) =
+        var_type_to_rust(inner_vt, parent_struct, field_name, sub_structs);
+
+    (
+        quote! { ::core::option::Option<#inner_type> },
+        Box::new(move |val, name| {
+            let name_lit = name.to_string();
+            // The inner setter generates `ctx.set(key, value)` statements.
+            // We shadow `ctx` with a temporary context to capture the inner value,
+            // then extract it for wrapping in the option enum representation.
+            //
+            // We clone the inner value from &T to T so that the inner setter
+            // receives an owned value (satisfying Into<Value> for primitives
+            // like i64 and for String via ctx.set(.., val.as_str())).
+            let inner_stmt = inner_set(quote! { __option_inner_val }, "__option_val__");
+            quote! {
+                ctx.set(#name_lit, {
+                    let __option_ref = &#val;
+                    if let ::core::option::Option::Some(__option_inner_ref) = __option_ref {
+                        let __option_inner_val = ::core::clone::Clone::clone(__option_inner_ref);
+                        // Use a temporary context to serialize the inner value via
+                        // the generated setter.
+                        let mut ctx = ::prompt_templates::Context::new();
+                        #inner_stmt
+                        let __inner_value = ctx.get("__option_val__")
+                            .cloned()
+                            .unwrap_or(::prompt_templates::Value::Str(::prompt_templates::__private::String::new()));
+                        ::prompt_templates::Value::Struct(::prompt_templates::__private::Arc::new(
+                            [
+                                (
+                                    ::prompt_templates::__private::String::from("__kind__"),
+                                    ::prompt_templates::Value::Str(::prompt_templates::__private::String::from("Some")),
+                                ),
+                                (
+                                    ::prompt_templates::__private::String::from("val"),
+                                    __inner_value,
+                                ),
+                            ].into_iter().collect()
+                        ))
+                    } else {
+                        ::prompt_templates::Value::Str(::prompt_templates::__private::String::from("None"))
+                    }
+                });
+            }
+        }),
+    )
+}
+
 // ---------------------------------------------------------------------------
-// Top-level type alias codegen (for `include_types!`)
+// Top-level type alias codegen (for `include_template!` and `template!`)
 // ---------------------------------------------------------------------------
 
 /// Generate Rust type definitions from frontmatter `types:` declarations.
@@ -291,7 +381,7 @@ pub(crate) fn typed_enum_codegen(
 /// - `VARIANTS` constant (list of all variants)
 /// - `all()` convenience method
 pub(crate) fn generate_type_alias_tokens(
-    type_aliases: &std::collections::HashMap<String, prompt_templates::VarType>,
+    type_aliases: &hashbrown::HashMap<String, prompt_templates::VarType>,
 ) -> Vec<proc_macro2::TokenStream> {
     let mut tokens = Vec::new();
 
@@ -301,13 +391,16 @@ pub(crate) fn generate_type_alias_tokens(
 
     for (name, var_type) in aliases {
         match var_type {
+            prompt_templates::VarType::Enum(_) if var_type.is_option() => {
+                tokens.push(generate_toplevel_option_alias(name, var_type));
+            }
             prompt_templates::VarType::Enum(variants) => {
                 tokens.push(generate_toplevel_enum(name, variants));
             }
             prompt_templates::VarType::List(fields) => {
                 tokens.push(generate_toplevel_list_item(name, fields));
             }
-            prompt_templates::VarType::Dict(fields) => {
+            prompt_templates::VarType::Struct(fields) => {
                 tokens.push(generate_toplevel_dict(name, fields));
             }
             // Scalar aliases (str, int, float, bool) don't generate new types —
@@ -333,7 +426,11 @@ pub(crate) fn generate_toplevel_enum(
     let deduped = deduplicate_variant_idents(&variant_names);
 
     for (var, (var_ident, rename)) in variants.iter().zip(deduped) {
-        let serde_rename = rename.map(|r| quote! { #[serde(rename = #r)] });
+        let serde_rename = if cfg!(feature = "serde") {
+            rename.map(|r| quote! { #[serde(rename = #r)] })
+        } else {
+            None
+        };
 
         if var.fields.is_empty() {
             variant_tokens.push(quote! {
@@ -423,7 +520,7 @@ pub(crate) fn generate_unit_enum_impls(
         .zip(deduped.iter())
         .map(|(v, (ident, _))| {
             let lower = v.name.to_lowercase();
-            quote! { #lower => ::std::result::Result::Ok(Self::#ident) }
+            quote! { #lower => ::core::result::Result::Ok(Self::#ident) }
         })
         .collect();
 
@@ -445,21 +542,21 @@ pub(crate) fn generate_unit_enum_impls(
     let enum_name_str = enum_ident.to_string();
 
     quote! {
-        impl ::std::fmt::Display for #enum_ident {
-            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        impl ::core::fmt::Display for #enum_ident {
+            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
                 match self {
                     #(#display_arms),*
                 }
             }
         }
 
-        impl ::std::str::FromStr for #enum_ident {
-            type Err = String;
+        impl ::core::str::FromStr for #enum_ident {
+            type Err = ::prompt_templates::__private::String;
 
-            fn from_str(s: &str) -> ::std::result::Result<Self, Self::Err> {
+            fn from_str(s: &str) -> ::core::result::Result<Self, Self::Err> {
                 match s.to_lowercase().as_str() {
                     #(#from_str_arms,)*
-                    other => ::std::result::Result::Err(::std::format!(
+                    other => ::core::result::Result::Err(::prompt_templates::__private::format!(
                         "unknown {} variant {:?}: expected one of [{}]",
                         #enum_name_str,
                         other,
@@ -506,7 +603,7 @@ pub(crate) fn generate_toplevel_list_item(
         item_fields.push(quote! { #builder_attrs pub #field_ident: #field_type });
     }
 
-    let derive_attrs = struct_derive_attrs(false);
+    let derive_attrs = struct_derive_attrs(contains_tmpl_field(fields));
     let doc = format!("Item type for list alias `{name}` from template `types:` block.");
 
     quote! {
@@ -520,7 +617,7 @@ pub(crate) fn generate_toplevel_list_item(
     }
 }
 
-/// Generate a top-level struct for a `dict<field = type, ...>` type alias.
+/// Generate a top-level struct for a `struct<field = type, ...>` type alias.
 pub(crate) fn generate_toplevel_dict(
     name: &str,
     fields: &[prompt_templates::VarDecl],
@@ -539,8 +636,8 @@ pub(crate) fn generate_toplevel_dict(
         dict_fields.push(quote! { #builder_attrs pub #field_ident: #field_type });
     }
 
-    let derive_attrs = struct_derive_attrs(false);
-    let doc = format!("Dict alias `{name}` from template `types:` block.");
+    let derive_attrs = struct_derive_attrs(contains_tmpl_field(fields));
+    let doc = format!("Struct alias `{name}` from template `types:` block.");
 
     quote! {
         #(#sub_types)*
@@ -550,6 +647,31 @@ pub(crate) fn generate_toplevel_dict(
         pub struct #dict_ident {
             #(#dict_fields),*
         }
+    }
+}
+
+/// Generate a top-level type alias for an `option<T>` type alias.
+///
+/// Instead of emitting a full enum, this generates `pub type Name = Option<InnerType>`.
+/// If the inner type is complex (struct, list), sub-types are generated first.
+pub(crate) fn generate_toplevel_option_alias(
+    name: &str,
+    var_type: &prompt_templates::VarType,
+) -> proc_macro2::TokenStream {
+    let inner_vt = var_type
+        .option_inner_type()
+        .expect("generate_toplevel_option_alias called on non-option type");
+
+    let alias_ident = format_ident!("{}", name);
+    let mut sub_types = Vec::new();
+    let (inner_type, _) = var_type_to_rust(inner_vt, name, "inner", &mut sub_types);
+    let doc = format!("Type alias `{name}` (option) from template `types:` block.");
+
+    quote! {
+        #(#sub_types)*
+
+        #[doc = #doc]
+        pub type #alias_ident = ::core::option::Option<#inner_type>;
     }
 }
 

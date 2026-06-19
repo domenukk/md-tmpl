@@ -13,7 +13,7 @@
 //! params:
 //!   - name = str
 //!   - count = int := 42
-//!   - bugs = list<title = str, severity = int>
+//!   - tasks = list<title = str, priority = int>
 //! ---
 //! ```
 
@@ -22,14 +22,21 @@ mod params;
 mod type_aliases;
 mod validation;
 
-use std::{collections::HashMap, path::PathBuf};
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
+#[cfg(feature = "std")]
+use std::path::PathBuf;
 
 pub use imports::*;
+pub use params::parse_type_annotation;
 pub(crate) use params::*;
 pub(crate) use type_aliases::*;
 pub(crate) use validation::*;
 
 use crate::{
+    compat::HashMap,
     consts::{
         FM_ALLOW_UNUSED_PREFIX, FM_CONSTS_PREFIX, FM_DELIMITER, FM_DELIMITER_NEWLINE,
         FM_DESC_PREFIX, FM_IMPORTS_PREFIX, FM_NAME_PREFIX, FM_PARAMS_PREFIX, FM_TYPES_PREFIX,
@@ -45,7 +52,11 @@ pub struct Import {
     /// Short alias used as namespace prefix, e.g. `other`.
     pub stem: String,
     /// Relative path to the imported template file.
+    #[cfg(feature = "std")]
     pub path: PathBuf,
+    /// Relative path as a string (always available).
+    #[cfg(not(feature = "std"))]
+    pub path: alloc::string::String,
 }
 
 /// Resolved namespace from an imported template.
@@ -87,6 +98,10 @@ pub struct Frontmatter {
     pub consts: Vec<VarDecl>,
     /// Resolved constants from imports, keyed by `stem.NAME`.
     pub imported_consts: HashMap<String, crate::value::Value>,
+    /// Keys in `imported_consts` that are enum type namespace dicts
+    /// (injected from imported enum type aliases). Used by the bare-enum-access
+    /// check to distinguish enum namespaces from struct constants.
+    pub imported_enum_type_keys: Vec<String>,
 }
 
 /// Strip YAML frontmatter delimited by `---` and return only the body text.
@@ -193,6 +208,7 @@ pub fn parse_frontmatter(source: &str) -> Result<(Frontmatter, &str), TemplateEr
 ///
 /// Returns [`TemplateError::Syntax`] if the frontmatter block is invalid,
 /// an imported file cannot be read, or imported types cannot be resolved.
+#[cfg(feature = "std")]
 pub fn parse_frontmatter_with_base_dir<'a>(
     source: &'a str,
     base_dir: &std::path::Path,
@@ -256,12 +272,7 @@ pub fn parse_frontmatter_with_base_dir<'a>(
         resolve_imports(&fm.imports, base_dir, &mut visited)?
     };
 
-    for (stem, ns) in &resolved_imports {
-        for (name, val) in &ns.consts {
-            fm.imported_consts
-                .insert(format!("{stem}.{name}"), val.clone());
-        }
-    }
+    inject_imported_consts(&mut fm, &resolved_imports);
 
     if let Some(raw) = params_raw {
         let decls = parse_declarations(&raw, &fm.type_aliases, &resolved_imports, false)?;
@@ -371,6 +382,60 @@ pub fn parse_frontmatter_with_parent_scope<'a>(
     Ok((fm, body))
 }
 
+/// Inject imported constants and enum type namespace dicts into `fm`.
+///
+/// For each import namespace, copies over user-defined constants and
+/// synthesizes enum type namespace dicts so that `{{ lib.EnumType.Variant }}`
+/// expressions work.
+#[cfg(feature = "std")]
+fn inject_imported_consts(
+    fm: &mut Frontmatter,
+    resolved_imports: &HashMap<String, ImportedNamespace>,
+) {
+    for (stem, ns) in resolved_imports {
+        for (name, val) in &ns.consts {
+            fm.imported_consts
+                .insert(format!("{stem}.{name}"), val.clone());
+        }
+        // Inject enum type aliases from the imported namespace as constants,
+        // enabling `{{ lib.EnumType.Variant }}` expressions.
+        for (type_name, var_type) in &ns.type_aliases {
+            let VarType::Enum(variants) = var_type else {
+                continue;
+            };
+            let key = format!("{stem}.{type_name}");
+            // Don't overwrite a user-defined constant with the same name.
+            if fm.imported_consts.contains_key(&key) {
+                continue;
+            }
+            let mut variant_map = HashMap::new();
+            for variant in variants {
+                if variant.fields.is_empty() {
+                    variant_map.insert(
+                        variant.name.clone(),
+                        crate::value::Value::Str(variant.name.clone()),
+                    );
+                } else {
+                    let mut partial = HashMap::new();
+                    partial.insert(
+                        crate::consts::ENUM_TAG_KEY.into(),
+                        crate::value::Value::Str(variant.name.clone()),
+                    );
+                    variant_map.insert(
+                        variant.name.clone(),
+                        crate::value::Value::Struct(alloc::sync::Arc::new(partial)),
+                    );
+                }
+            }
+            fm.imported_consts.insert(
+                key.clone(),
+                crate::value::Value::Struct(alloc::sync::Arc::new(variant_map)),
+            );
+            fm.imported_enum_type_keys.push(key);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -460,19 +525,19 @@ mod tests {
     }
 
     #[test]
-    fn parse_dict_type() {
-        let source = "---\nparams: [config = dict<key = str, enabled = bool>]\n---\nbody";
+    fn parse_struct_type() {
+        let source = "---\nparams: [config = struct<key = str, enabled = bool>]\n---\nbody";
         let (fm, _) = parse_frontmatter(source).unwrap();
         assert_eq!(fm.declarations.len(), 1);
         match &fm.declarations[0].var_type {
-            VarType::Dict(fields) => {
+            VarType::Struct(fields) => {
                 assert_eq!(fields.len(), 2);
                 assert_eq!(fields[0].name, "key");
                 assert_eq!(fields[0].var_type, VarType::Str);
                 assert_eq!(fields[1].name, "enabled");
                 assert_eq!(fields[1].var_type, VarType::Bool);
             }
-            other => panic!("Expected Dict, got {other:?}"),
+            other => panic!("Expected Struct, got {other:?}"),
         }
     }
 
@@ -567,7 +632,8 @@ mod tests {
         assert_eq!(parse_type_annotation("float").unwrap(), VarType::Float);
         parse_type_annotation("garbage").expect_err("unknown type 'garbage' should be rejected");
         parse_type_annotation("list").expect_err("bare 'list' without <fields> should be rejected");
-        parse_type_annotation("dict").expect_err("bare 'dict' without <fields> should be rejected");
+        parse_type_annotation("struct")
+            .expect_err("bare 'struct' without <fields> should be rejected");
     }
 
     #[test]
@@ -664,7 +730,7 @@ mod tests {
     fn default_does_not_confuse_with_inner_colons() {
         // The `:=` inside `<>` should not be treated as a default separator.
         // This is handled by find_assign_default_at_depth_zero.
-        let source = "---\nparams: [bugs = list<title = str>]\n---\nbody";
+        let source = "---\nparams: [tasks = list<title = str>]\n---\nbody";
         let (fm, _) = parse_frontmatter(source).unwrap();
         assert_eq!(fm.declarations[0].default_value, None);
         match &fm.declarations[0].var_type {
@@ -709,16 +775,16 @@ mod tests {
 
     #[test]
     fn parse_nested_types() {
-        let source = "---\nparams: [data = list<item = dict<name = str, tags = list<label = str>>>]\n---\nbody";
+        let source = "---\nparams: [data = list<item = struct<name = str, tags = list<label = str>>>]\n---\nbody";
         let (fm, _) = parse_frontmatter(source).unwrap();
         match &fm.declarations[0].var_type {
             VarType::List(fields) => {
                 assert_eq!(fields[0].name, "item");
                 match &fields[0].var_type {
-                    VarType::Dict(dict_fields) => {
-                        assert_eq!(dict_fields[0].name, "name");
-                        assert_eq!(dict_fields[0].var_type, VarType::Str);
-                        match &dict_fields[1].var_type {
+                    VarType::Struct(struct_fields) => {
+                        assert_eq!(struct_fields[0].name, "name");
+                        assert_eq!(struct_fields[0].var_type, VarType::Str);
+                        match &struct_fields[1].var_type {
                             VarType::List(inner) => {
                                 assert_eq!(inner[0].name, "label");
                                 assert_eq!(inner[0].var_type, VarType::Str);
@@ -726,7 +792,7 @@ mod tests {
                             other => panic!("Expected inner List, got {other:?}"),
                         }
                     }
-                    other => panic!("Expected Dict, got {other:?}"),
+                    other => panic!("Expected Struct, got {other:?}"),
                 }
             }
             other => panic!("Expected List, got {other:?}"),
@@ -850,10 +916,12 @@ type library";
 
     #[test]
     fn reject_unused_type_alias_without_allow_unused() {
+        // Enum types are exempt from R4 (always auto-injected as constants).
+        // Use a struct type alias to test the unused check.
         let source = "\
 ---
 types:
-  - Severity = enum<Low, Medium, High>
+  - Config = struct<host = str, port = int>
 params:
   - x = str
 ---
@@ -874,14 +942,14 @@ types:
   - Labelled = enum<Known(label = str), Unknown>
   - Severity = enum<Informational, Low, Medium, High, Critical>
 params:
-  - bugs = list<title = str, vuln_type = Labelled, component = Labelled>
+  - tasks = list<title = str, category = Labelled, component = Labelled>
   - post_types = list<tag = str>
 allow_unused: true
 ---
 {# type library #}";
         let (fm, _) = parse_frontmatter(source).unwrap();
         assert_eq!(fm.declarations.len(), 2);
-        // Labelled is used by bugs param, so it remains in type_aliases.
+        // Labelled is used by tasks param, so it remains in type_aliases.
         assert!(fm.type_aliases.contains_key("Labelled"));
         // Severity is NOT used by any param, but allow_unused suppresses the error.
         // It remains in the explicit type_aliases map.

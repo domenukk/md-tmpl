@@ -12,8 +12,8 @@ fn basic_inline_template() {
         "---\n",
         "params: [name = str]\n",
         "---\n",
-        "Hello {{ name }}!\n",
-        "> {% /tmpl %}\n",
+        "Hello {{ name }}!\n\n",
+        "> {% /tmpl %}\n\n",
         "> {% include greeting with name=name %}",
     );
     let tmpl = Template::from_source(src).unwrap();
@@ -31,13 +31,13 @@ fn inline_template_with_typed_vars() {
         "---\n",
         "params: [label = str, count = int]\n",
         "---\n",
-        "- {{ label }}: {{ count }}\n",
-        "> {% /tmpl %}\n",
+        "- {{ label }}: {{ count }}\n\n",
+        "> {% /tmpl %}\n\n",
         "> {% include row with label=label, count=count %}",
     );
     let tmpl = Template::from_source(src).unwrap();
-    let output = tmpl.render(&ctx! { label: "bugs", count: 42 }).unwrap();
-    assert_eq!(output, "- bugs: 42\n");
+    let output = tmpl.render(&ctx! { label: "tasks", count: 42 }).unwrap();
+    assert_eq!(output, "- tasks: 42\n");
 }
 
 #[test]
@@ -50,8 +50,8 @@ fn inline_template_type_mismatch() {
         "---\n",
         "params: [count = int]\n",
         "---\n",
-        "{{ count }}\n",
-        "> {% /tmpl %}\n",
+        "{{ count }}\n\n",
+        "> {% /tmpl %}\n\n",
         "> {% include row with count=name %}",
     );
     let tmpl = Template::from_source(src).unwrap();
@@ -66,14 +66,14 @@ fn inline_template_type_mismatch() {
 fn inline_template_for_loop() {
     let src = concat!(
         "---\n",
-        "params: [items = list<>]\n",
+        "params: [items = list<str>]\n",
         "---\n",
         "> {% tmpl item %}\n",
         "---\n",
         "params: [it = str]\n",
         "---\n",
-        "- {{ it }}\n",
-        "> {% /tmpl %}\n",
+        "- {{ it }}\n\n",
+        "> {% /tmpl %}\n\n",
         "> {% include item for it in items %}",
     );
     let tmpl = Template::from_source(src).unwrap();
@@ -91,11 +91,13 @@ fn inline_template_used_twice() {
         "---\n",
         "params: []\n",
         "---\n",
-        "---\n",
-        "> {% /tmpl %}\n",
-        "A\n",
-        "> {% include sep %}\n",
-        "B\n",
+        "---\n\n",
+        "> {% /tmpl %}\n\n",
+        "\n",
+        "A\n\n",
+        "> {% include sep %}\n\n",
+        "\n",
+        "B\n\n",
         "> {% include sep %}",
     );
     let tmpl = Template::from_source(src).unwrap();
@@ -114,9 +116,9 @@ fn raw_block_inside_inline_template() {
         "params: []\n",
         "---\n",
         "> {% raw %}\n",
-        "{{ not_processed }}\n",
-        "> {% /raw %}\n",
-        "> {% /tmpl %}\n",
+        "{{ not_processed }}\n\n",
+        "> {% /raw %}\n\n",
+        "> {% /tmpl %}\n\n",
         "> {% include code %}",
     );
     let tmpl = Template::from_source(src).unwrap();
@@ -133,7 +135,7 @@ fn tmpl_inside_raw_is_literal() {
         "> {% raw %}\n",
         "{% tmpl fake %}\n",
         "this is not a template\n",
-        "{% /tmpl %}\n",
+        "{% /tmpl %}\n\n",
         "> {% /raw %}",
     );
     let tmpl = Template::from_source(src).unwrap();
@@ -154,9 +156,9 @@ fn tmpl_definition_produces_no_output() {
         "---\n",
         "params: []\n",
         "---\n",
-        "invisible\n",
-        "> {% /tmpl %}\n",
-        "visible\n",
+        "invisible\n\n",
+        "> {% /tmpl %}\n\n",
+        "visible\n\n",
         "> {% include unused_but_included_later %}",
     );
     let tmpl = Template::from_source(src).unwrap();
@@ -188,8 +190,8 @@ fn inline_template_name_not_flagged_as_undeclared() {
         "---\n",
         "params: [name = str]\n",
         "---\n",
-        "Hello {{ name }}!\n",
-        "> {% /tmpl %}\n",
+        "Hello {{ name }}!\n\n",
+        "> {% /tmpl %}\n\n",
         "> {% include greeting with name=name %}",
     );
     // This should NOT fail with "undeclared variable: greeting".

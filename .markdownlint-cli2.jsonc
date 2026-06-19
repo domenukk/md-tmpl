@@ -1,13 +1,31 @@
 {
   "globs": ["**/*.md"],
-  "ignores": ["target/**", ".venv/**", "**/node_modules/**"],
+  "ignores": ["target/**", "**/.venv/**", "**/node_modules/**", ".agents/**", "**/*.tmpl.md"],
 
   "config": {
+    "MD001": false,
+    "MD028": false,
     // Line length: disabled — README prose, tables, and code examples
     // regularly exceed 80 chars and that's fine for rendered markdown.
     "MD013": false,
 
     // Template files (.tmpl.md) start with YAML frontmatter, not headings.
-    "MD041": false
+    "MD041": false,
+
+    // Spaces inside code spans: disabled — we need to document syntax like `> ` and `{% `.
+    "MD038": false,
+
+    // Duplicate headings: disabled — `SPEC.md` uses `### Syntax` under multiple feature sections.
+    "MD024": false,
+
+    // Fenced code language: disabled — raw text/example output blocks don't need a language.
+    "MD040": false,
+
+    // Table column style / alignment: disabled — we let prettier manage table formatting.
+    "MD060": false,
+
+    // Blanks around headings/lists: disabled — allow compact lists/headings in request/project docs.
+    "MD022": false,
+    "MD032": false
   }
 }

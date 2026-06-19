@@ -1,6 +1,6 @@
 [package]
 name = "prompt-templates-macros"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Proc macros for compile-time template validation and pre-parsing"
@@ -14,21 +14,20 @@ categories = ["development-tools::procedural-macro-helpers"]
 proc-macro = true
 
 [features]
-default = []
-# These feature flags are intentionally empty — they control *code generation*,
-# not dependency activation.  When a user enables `serde` on this crate, the
-# proc-macros emit `#[derive(Serialize, Deserialize)]` on generated structs and
-# enums (using `cfg!(feature = "serde")` at macro-expansion time).  The actual
-# `serde` dependency lives in the user's crate, not here.
-#
-# Similarly, `typed-builder` causes the macros to emit
-# `#[derive(TypedBuilder)]` and builder-related field attributes on generated
-# structs.
+default = ["serde", "typed-builder"]
+# These feature flags are intentionally minimal — they control *code generation*,
+# not dependency activation.  When enabled, the proc-macros emit
+# `#[derive(Serialize, Deserialize)]` and `#[derive(TypedBuilder)]` on generated
+# structs and enums (using `cfg!(feature = ...)` at macro-expansion time).
+# The actual `serde`/`typed-builder` dependencies live in the user's crate.
 serde = []
 typed-builder = []
 
 [dependencies]
-prompt-templates = { version = "0.1", path = "../prompt-templates" }
+prompt-templates = { version = "0.2", path = "../prompt-templates" }
+hashbrown = { version = "0.17", default-features = false, features = [
+  "default-hasher",
+] }
 syn = { version = "2", features = ["full"] }
 quote = "1"
 proc-macro2 = "1"

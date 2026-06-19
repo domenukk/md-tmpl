@@ -1,130 +1,106 @@
-# prompt-templates-macros: Compile-time validation and code generation for prompt-templates
+# prompt-templates-macros
 
-Proc macros for compile-time template validation, pre-parsing, and typed parameter struct generation in the `prompt-templates` template engine.
-
-These macros ensure that template files are valid and that the variable references match their Rust representations before your code even compiles.
+Proc macros for compile-time template validation, pre-parsing, and typed
+parameter struct generation for
+[prompt-templates](https://github.com/domenukk/prompt-templates).
 
 ## Macros
 
 ### `include_template!`
 
-Reads, parses, and validates a `.tmpl.md` template file at compile time.
-
-The file path is resolved relative to the calling crate's `CARGO_MANIFEST_DIR`. At compile time, this macro:
-
-1. Reads the template file.
-2. Parses its frontmatter (template name, description, typed variable declarations).
-3. Validates that all `{{ var }}` expressions in the body reference declared variables (when frontmatter declares a `params:` block).
-4. Verifies that all type annotations are syntactically valid.
-
-If any checks fail, a **compile error** is emitted. At runtime, the returned `Template` has **zero parsing overhead** — all parsing and validation was done at compile time. Only rendering runs.
-
-Additionally, this macro registers the template file as a dependency using `include_str!` internally, ensuring that Cargo automatically rebuilds your crate whenever the template file is modified.
+Reads, parses, and validates a `.tmpl.md` file at compile time. Emits a
+module with the pre-compiled template, typed parameter struct, sub-structs,
+constants, and type aliases.
 
 ```rust
 use prompt_templates_macros::include_template;
 
-// Pre-parsed and validated at compile time.
-let tmpl = include_template!("prompts/simple_greeting.tmpl.md");
+include_template!("prompts/simple_greeting.tmpl.md");
 
-// At runtime, just render — zero parsing overhead.
-let mut ctx = prompt_templates::Context::new();
-ctx.set("name", "world");
-let output = tmpl.render(&ctx).unwrap();
+let output = simple_greeting::Params { name: "World".into() }
+    .render()
+    .unwrap();
+assert_eq!(output, "\nHello World!\n");
 ```
 
-### `validate_template!`
-
-Like `include_template!`, but only performs compile-time validation. It does not produce a runtime `Template` value.
-
-This is useful for static assertions in test modules or build scripts to guarantee template validity without loading them into memory.
+Override the module name:
 
 ```rust
-// Fails the build if the template is invalid.
-prompt_templates_macros::validate_template!("prompts/simple_greeting.tmpl.md");
+use prompt_templates_macros::include_template;
+
+include_template!("prompts/simple_greeting.tmpl.md" => my_greet);
+
+let output = my_greet::Params { name: "Alice".into() }
+    .render()
+    .unwrap();
+assert_eq!(output, "\nHello Alice!\n");
 ```
 
-### `include_types!`
+#### Generated module contents
 
-Generates a typed parameter Rust module and struct from a `.tmpl.md` template's frontmatter variable declarations.
+- **`pub fn template() -> &'static Template`** — pre-compiled template singleton.
+- **`pub struct Params { ... }`** — typed parameter struct with:
+  - `render()` — render using the embedded template.
+  - `render_with(tmpl)` — render with an externally-loaded template (hot-reload).
+  - `validate_template(tmpl)` — check template compatibility.
+  - `to_context()` — convert to a `Context`.
+- Sub-structs for compound types (e.g. `ParamsItemsItem`).
+- Constants from the `consts:` block.
+- Type aliases / enums from the `types:` block.
 
-It reads the template at compile time, inspects its variable declarations, and generates a struct with matching field names and mapped Rust types. The generated struct provides:
+### `template!`
 
-- **`to_context(&self) -> Context`**: Converts the struct's fields into a rendering context.
-- **`validate_template(tmpl: &Template) -> Result<(), TemplateError>`**: Checks that a template's declarations match this struct (essential for hot-reloading safety).
-- **`render(&self, tmpl: &Template) -> Result<String, TemplateError>`**: Validates the template and renders it using the struct's fields.
-
-#### Type Mapping
-
-| Frontmatter Type          | Rust Type                                            |
-| :------------------------ | :--------------------------------------------------- |
-| `str`                     | `String`                                             |
-| `int`                     | `i64`                                                |
-| `float`                   | `f64`                                                |
-| `bool`                    | `bool`                                               |
-| `list<field = type, ...>` | `Vec<Params{Field}Item>` (auto-generated sub-struct) |
-| `list` (untyped)          | `Vec<prompt_templates::Value>`                       |
-| `dict<field = type, ...>` | `Params{Field}` (auto-generated sub-struct)          |
-| _(untyped)_               | `prompt_templates::Value`                            |
-
-#### Example
+Like `include_template!`, but for inline template strings. The
+`=> module_name` is required.
 
 ```rust
-// Given `prompts/greeting.tmpl.md` with the following frontmatter:
-// ---
-// params:
-//   - name = str
-//   - count = int
-//   - items = list<label = str>
-// ---
-// Hello {{ name }}!
+prompt_templates_macros::template!(r#"
+---
+params:
+  - name = str
+---
+Hello {{ name }}!
+"# => greeting);
 
-prompt_templates_macros::include_types!("prompts/greeting.tmpl.md");
-
-// This generates:
-//
-// pub mod greeting {
-//     pub struct Params {
-//         pub name: String,
-//         pub count: i64,
-//         pub items: Vec<ParamsItemsItem>,
-//     }
-//
-//     pub struct ParamsItemsItem {
-//         pub label: String,
-//     }
-// }
-
-let tmpl = prompt_templates_macros::include_template!("prompts/greeting.tmpl.md");
-let output = greeting::Params {
-    name: "Alice".to_string(),
-    count: 42,
-    items: vec![greeting::ParamsItemsItem {
-        label: "hello".to_string(),
-    }],
-}.render(&tmpl).unwrap();
+let output = greeting::Params { name: "World".into() }
+    .render()
+    .unwrap();
+assert_eq!(output, "Hello World!\n");
 ```
 
-## Hot-Reloading and Type Safety
+## Hot-Reload with Type Safety
 
-You can combine compile-time type-safety with dynamic loading (e.g. for fast local iteration of prompts without recompilation). Load the template from the filesystem at runtime, and validate it against the generated parameter struct:
+Combine compile-time types with runtime loading:
 
 ```rust
 use prompt_templates::Template;
 
-// Module generated at compile time:
-prompt_templates_macros::include_types!("prompts/greeting.tmpl.md");
+prompt_templates_macros::include_template!("prompts/greeting.tmpl.md");
 
-// At runtime, load template from disk:
+// Load from disk at runtime:
 let tmpl = Template::from_file(std::path::Path::new("prompts/greeting.tmpl.md")).unwrap();
 
-// Ensure the reloaded file has not diverged from the compiled struct:
+// Validate the reloaded file hasn't diverged:
 greeting::Params::validate_template(&tmpl).unwrap();
 
-// Safely render:
+// Render with the disk-loaded template:
 let output = greeting::Params {
     name: "Bob".to_string(),
     count: 1,
     items: vec![],
-}.render(&tmpl).unwrap();
+}.render_with(&tmpl).unwrap();
 ```
+
+## Type Mapping
+
+| Frontmatter Type            | Rust Type                                            |
+| :-------------------------- | :--------------------------------------------------- |
+| `str`                       | `String`                                             |
+| `int`                       | `i64`                                                |
+| `float`                     | `f64`                                                |
+| `bool`                      | `bool`                                               |
+| `list<field = type, ...>`   | `Vec<Params{Field}Item>` (auto-generated sub-struct) |
+| `struct<field = type, ...>` | `Params{Field}` (auto-generated sub-struct)          |
+| `enum<Variant, ...>`        | `Params{Field}` (auto-generated enum)                |
+| `option<T>`                 | `Option<RustType>`                                   |
+| `tmpl<field = type, ...>`   | `Params{Field}` (template callable)                  |

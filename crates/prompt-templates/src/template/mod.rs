@@ -1,19 +1,108 @@
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
+use alloc::{
+    string::{String, ToString},
     sync::Arc,
+    vec::Vec,
 };
+#[cfg(feature = "std")]
+use std::path::{Path, PathBuf};
 
 use crate::{
-    cache::hash_source,
+    compat::{HashMap, HashSet},
     compiled::{self, CompiledInlineTemplate, Segment},
     context::Context,
     error::TemplateError,
     frontmatter::{self, Frontmatter},
     scope::Scope,
-    types::VarDecl,
+    types::{VarDecl, VarType},
     value::Value,
 };
+
+/// Configuration for template compilation.
+///
+/// Collects all optional parameters that previously required separate
+/// constructor functions. Use with [`Template::compile`] or
+/// [`Template::compile_file`].
+///
+/// # Examples
+///
+/// ```
+/// use prompt_templates::CompileOptions;
+///
+/// // Default options (strict mode):
+/// let opts = CompileOptions::default();
+///
+/// // Allow unused declared parameters:
+/// let opts = CompileOptions::default().allow_unused(true);
+/// ```
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CompileOptions<'a> {
+    /// When `true`, declared parameters that are never referenced in the
+    /// template body are allowed instead of producing an error.
+    ///
+    /// Equivalent to `allow_unused: true` in frontmatter.
+    pub allow_unused: bool,
+    /// Base directory for resolving `{% include %}` and `{% import %}` directives.
+    ///
+    /// When `None`, includes are not resolved (suitable for in-memory templates).
+    #[cfg(feature = "std")]
+    pub base_dir: Option<&'a std::path::Path>,
+    // Lifetime anchor for no_std where base_dir doesn't exist.
+    #[cfg(not(feature = "std"))]
+    _phantom: core::marker::PhantomData<&'a ()>,
+}
+
+#[cfg(feature = "std")]
+impl<'a> CompileOptions<'a> {
+    /// Set the base directory for include resolution.
+    #[must_use]
+    pub fn base_dir(mut self, dir: &'a std::path::Path) -> Self {
+        self.base_dir = Some(dir);
+        self
+    }
+}
+
+impl CompileOptions<'_> {
+    /// Allow unused declared parameters.
+    #[must_use]
+    pub fn allow_unused(mut self, allow: bool) -> Self {
+        self.allow_unused = allow;
+        self
+    }
+}
+
+/// Options for template rendering.
+///
+/// Controls strictness for render calls. Use with [`Template::render_with`],
+/// [`Template::render_into_with`], or [`Template::render_cached_with`].
+///
+/// # Examples
+///
+/// ```
+/// use prompt_templates::RenderOptions;
+///
+/// // Default options (strict mode):
+/// let opts = RenderOptions::default();
+///
+/// // Allow extra undeclared context keys:
+/// let opts = RenderOptions::default().allow_extra(true);
+/// ```
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RenderOptions {
+    /// When `true`, extra (undeclared) context keys are silently ignored
+    /// instead of producing an error.
+    pub allow_extra: bool,
+}
+
+impl RenderOptions {
+    /// Allow extra (undeclared) parameters during rendering.
+    #[must_use]
+    pub fn allow_extra(mut self, allow: bool) -> Self {
+        self.allow_extra = allow;
+        self
+    }
+}
 
 /// A parsed template ready for rendering.
 ///
@@ -29,6 +118,7 @@ pub struct Template {
     /// Declared variables from frontmatter.
     declared_variables: Arc<[VarDecl]>,
     /// Base directory for resolving includes (from file path).
+    #[cfg(feature = "std")]
     base_dir: Option<PathBuf>,
     /// Pre-compiled inline template definitions (`{% tmpl name %}...{% /tmpl %}`).
     inline_templates: Arc<HashMap<String, CompiledInlineTemplate>>,
@@ -40,6 +130,8 @@ pub struct Template {
     consts: Arc<HashMap<String, crate::value::Value>>,
     /// Imported constants keyed by `stem.NAME`.
     imported_consts: Arc<HashMap<String, crate::value::Value>>,
+    /// Pre-computed estimated output capacity (cached from segment tree walk).
+    estimated_capacity: usize,
 }
 
 impl Template {
@@ -48,9 +140,11 @@ impl Template {
     /// # Errors
     ///
     /// Returns [`TemplateError::Io`] if the file cannot be read.
+    #[cfg(feature = "std")]
     pub fn from_file(path: &Path) -> Result<Self, TemplateError> {
         let source = std::fs::read_to_string(path)?;
-        let (tmpl, _fm) = Self::compile_from_source(&source, path.parent())?;
+        let (tmpl, _fm) =
+            Self::compile_from_source(&source, Some(path.parent().unwrap_or(Path::new("."))))?;
         Ok(tmpl)
     }
 
@@ -60,7 +154,10 @@ impl Template {
     ///
     /// Returns [`TemplateError::Syntax`] if the body contains a syntax error.
     pub fn from_source(source: &str) -> Result<Self, TemplateError> {
+        #[cfg(feature = "std")]
         let (tmpl, _fm) = Self::compile_from_source(source, None)?;
+        #[cfg(not(feature = "std"))]
+        let (tmpl, _fm) = Self::compile_from_source_no_std(source)?;
         Ok(tmpl)
     }
 
@@ -74,8 +171,12 @@ impl Template {
     /// # Errors
     ///
     /// Returns [`TemplateError::Syntax`] if the body contains a syntax error.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use `Template::compile(source, CompileOptions::default().allow_unused(true))` instead"
+    )]
     pub fn from_source_allowing_unused(source: &str) -> Result<Self, TemplateError> {
-        let (tmpl, _fm) = Self::compile_inner(source, None, true)?;
+        let (tmpl, _fm) = Self::compile(source, CompileOptions::default().allow_unused(true))?;
         Ok(tmpl)
     }
 
@@ -84,8 +185,13 @@ impl Template {
     /// # Errors
     ///
     /// Returns [`TemplateError::Syntax`] if the body contains a syntax error.
+    #[cfg(feature = "std")]
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use `Template::compile(source, CompileOptions::default().base_dir(dir))` instead"
+    )]
     pub fn from_source_with_base_dir(source: &str, base_dir: &Path) -> Result<Self, TemplateError> {
-        let (tmpl, _fm) = Self::compile_from_source(source, Some(base_dir))?;
+        let (tmpl, _fm) = Self::compile(source, CompileOptions::default().base_dir(base_dir))?;
         Ok(tmpl)
     }
 
@@ -94,10 +200,14 @@ impl Template {
     /// # Errors
     ///
     /// Returns [`TemplateError::Syntax`] if the body contains a syntax error.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use `Template::compile(source, CompileOptions::default())` which always returns Frontmatter"
+    )]
     pub fn from_source_with_frontmatter(
         source: &str,
     ) -> Result<(Self, Frontmatter), TemplateError> {
-        Self::compile_from_source(source, None)
+        Self::compile(source, CompileOptions::default())
     }
 
     /// Load and return frontmatter too.
@@ -105,12 +215,78 @@ impl Template {
     /// # Errors
     ///
     /// Returns [`TemplateError::Io`] if the file cannot be read.
+    #[cfg(feature = "std")]
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use `Template::compile_file(path, CompileOptions::default())` which always returns Frontmatter"
+    )]
     pub fn from_file_with_frontmatter(path: &Path) -> Result<(Self, Frontmatter), TemplateError> {
+        Self::compile_file(path, CompileOptions::default())
+    }
+
+    /// Parse a template from source with compile options, returning both the
+    /// template and its frontmatter.
+    ///
+    /// This is the unified entry point that replaces the family of
+    /// `from_source_*` constructors.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use prompt_templates::{CompileOptions, Template};
+    ///
+    /// let (tmpl, fm) = Template::compile(
+    ///     "---\nparams: [name = str]\n---\nHello {{ name }}!",
+    ///     CompileOptions::default(),
+    /// )
+    /// .unwrap();
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TemplateError::Syntax`] if the body contains a syntax error.
+    pub fn compile(
+        source: &str,
+        options: CompileOptions<'_>,
+    ) -> Result<(Self, Frontmatter), TemplateError> {
+        #[cfg(feature = "std")]
+        return Self::compile_inner(source, options.base_dir, options.allow_unused);
+        #[cfg(not(feature = "std"))]
+        return Self::compile_inner_no_std(source, options.allow_unused);
+    }
+
+    /// Load a template from a file with compile options, returning both the
+    /// template and its frontmatter.
+    ///
+    /// The file's parent directory is used as the base directory for include
+    /// resolution unless overridden in `options`.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::path::Path;
+    ///
+    /// use prompt_templates::{CompileOptions, Template};
+    ///
+    /// let (tmpl, fm) =
+    ///     Template::compile_file(Path::new("template.tmpl.md"), CompileOptions::default()).unwrap();
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TemplateError::Io`] if the file cannot be read.
+    #[cfg(feature = "std")]
+    pub fn compile_file(
+        path: &Path,
+        options: CompileOptions<'_>,
+    ) -> Result<(Self, Frontmatter), TemplateError> {
         let source = std::fs::read_to_string(path)?;
-        Self::compile_from_source(&source, path.parent())
+        let base_dir = options.base_dir.or_else(|| path.parent());
+        Self::compile_inner(&source, base_dir, options.allow_unused)
     }
 
     /// Shared compilation entry point — honours `allow_unused` from frontmatter.
+    #[cfg(feature = "std")]
     fn compile_from_source(
         source: &str,
         base_dir: Option<&Path>,
@@ -122,12 +298,13 @@ impl Template {
     ///
     /// When `force_allow_unused` is `true` the unused-params check is skipped
     /// regardless of the frontmatter setting.
+    #[cfg(feature = "std")]
     fn compile_inner(
         source: &str,
         base_dir: Option<&Path>,
         force_allow_unused: bool,
     ) -> Result<(Self, Frontmatter), TemplateError> {
-        let source_hash = hash_source(source);
+        let source_hash = crate::cache::hash_source(source);
         let (fm, body) = if let Some(dir) = base_dir {
             frontmatter::parse_frontmatter_with_base_dir(source, dir)?
         } else {
@@ -145,16 +322,22 @@ impl Template {
             force_allow_unused || fm.allow_unused,
         )?;
         check_name_collisions(&fm, &inline_templates, &segments)?;
+        let enum_keys = collect_enum_type_keys(&fm);
+        check_bare_enum_access(&segments, &enum_keys)?;
 
         let has_defaults = fm.declarations.iter().any(|d| d.default_value.is_some());
-        let consts = fm
+        let mut consts: HashMap<String, Value> = fm
             .consts
             .iter()
             .filter_map(|d| d.default_value.clone().map(|v| (d.name.clone(), v)))
             .collect();
+        // Inject enum type aliases as namespace constants (e.g. Phase.Explore).
+        inject_enum_type_constants(&fm.type_aliases, &mut consts);
+        let segments: Arc<[Segment]> = Arc::from(segments);
+        let estimated_capacity = compiled::render::estimate_output_capacity(&segments);
         let tmpl = Self {
             body,
-            segments: Arc::from(segments),
+            segments,
             declared_variables: Arc::from(fm.declarations.clone()),
             base_dir: base_dir.map(Path::to_path_buf),
             inline_templates: Arc::new(inline_templates),
@@ -163,6 +346,60 @@ impl Template {
             has_defaults,
             consts: Arc::new(consts),
             imported_consts: Arc::new(fm.imported_consts.clone()),
+            estimated_capacity,
+        };
+        Ok((tmpl, fm))
+    }
+
+    /// `no_std` compilation entry point (no base directory, no imports).
+    #[cfg(not(feature = "std"))]
+    fn compile_from_source_no_std(source: &str) -> Result<(Self, Frontmatter), TemplateError> {
+        Self::compile_inner_no_std(source, false)
+    }
+
+    /// `no_std` core compilation.
+    #[cfg(not(feature = "std"))]
+    fn compile_inner_no_std(
+        source: &str,
+        force_allow_unused: bool,
+    ) -> Result<(Self, Frontmatter), TemplateError> {
+        let source_hash = hash_source_no_std(source);
+        let (fm, body) = frontmatter::parse_frontmatter(source)?;
+        let body = body.to_string();
+        let (segments, inline_templates) = compiled::compile(&body, &fm.type_aliases)?;
+
+        let referenced = compiled::collect_referenced_params(&segments);
+        check_undeclared_variables(&referenced, &fm, &inline_templates)?;
+        check_unused_params(
+            &fm.declarations,
+            &referenced,
+            force_allow_unused || fm.allow_unused,
+        )?;
+        check_name_collisions(&fm, &inline_templates, &segments)?;
+        let enum_keys = collect_enum_type_keys(&fm);
+        check_bare_enum_access(&segments, &enum_keys)?;
+
+        let has_defaults = fm.declarations.iter().any(|d| d.default_value.is_some());
+        let mut consts: HashMap<String, Value> = fm
+            .consts
+            .iter()
+            .filter_map(|d| d.default_value.clone().map(|v| (d.name.clone(), v)))
+            .collect();
+        // Inject enum type aliases as namespace constants (e.g. Phase.Explore).
+        inject_enum_type_constants(&fm.type_aliases, &mut consts);
+        let segments: Arc<[Segment]> = Arc::from(segments);
+        let estimated_capacity = compiled::render::estimate_output_capacity(&segments);
+        let tmpl = Self {
+            body,
+            segments,
+            declared_variables: Arc::from(fm.declarations.clone()),
+            inline_templates: Arc::new(inline_templates),
+            source_hash,
+            max_include_depth: crate::scope::MAX_INCLUDE_DEPTH,
+            has_defaults,
+            consts: Arc::new(consts),
+            imported_consts: Arc::new(fm.imported_consts.clone()),
+            estimated_capacity,
         };
         Ok((tmpl, fm))
     }
@@ -173,6 +410,7 @@ impl Template {
     /// providing correct, pre-compiled data.
     ///
     /// [`TemplateCache`]: crate::TemplateCache
+    #[cfg(feature = "std")]
     pub(crate) fn from_cached(
         segments: Arc<[Segment]>,
         declared_variables: Arc<[VarDecl]>,
@@ -183,6 +421,7 @@ impl Template {
         imported_consts: Arc<HashMap<String, crate::value::Value>>,
     ) -> Self {
         let has_defaults = declared_variables.iter().any(|d| d.default_value.is_some());
+        let estimated_capacity = compiled::render::estimate_output_capacity(&segments);
         Self {
             body: String::new(),
             segments,
@@ -194,6 +433,7 @@ impl Template {
             has_defaults,
             consts,
             imported_consts,
+            estimated_capacity,
         }
     }
 
@@ -221,10 +461,13 @@ impl Template {
             .map(|(k, v)| (k.to_string(), v.clone()))
             .collect();
         let has_defaults = declared_variables.iter().any(|d| d.default_value.is_some());
+        let segments: Arc<[Segment]> = Arc::from(segments);
+        let estimated_capacity = compiled::render::estimate_output_capacity(&segments);
         Self {
             body: String::new(),
-            segments: Arc::from(segments),
+            segments,
             declared_variables: Arc::from(declared_variables),
+            #[cfg(feature = "std")]
             base_dir: None,
             inline_templates: Arc::new(inline_map),
             source_hash,
@@ -232,6 +475,7 @@ impl Template {
             has_defaults,
             consts: Arc::new(const_map),
             imported_consts: Arc::new(imported_const_map),
+            estimated_capacity,
         }
     }
 
@@ -288,7 +532,7 @@ impl Template {
         }
         // Reject extra (undeclared) parameters unless explicitly allowed.
         if !allow_extra {
-            let mut declared: std::collections::HashSet<&str> = self
+            let mut declared: HashSet<&str> = self
                 .declared_variables
                 .iter()
                 .map(|d| d.name.as_str())
@@ -311,7 +555,7 @@ impl Template {
 
     /// Returns default values for all params that have them.
     #[must_use]
-    pub fn defaults(&self) -> std::collections::HashMap<String, crate::value::Value> {
+    pub fn defaults(&self) -> HashMap<String, crate::value::Value> {
         self.declared_variables
             .iter()
             .filter_map(|d| {
@@ -387,20 +631,59 @@ impl Template {
         &self.segments
     }
 
-    pub(crate) fn base_dir(&self) -> Option<&Path> {
+    /// Returns the base directory used for resolving filesystem `{% include %}` paths.
+    #[cfg(feature = "std")]
+    #[must_use]
+    pub fn base_dir(&self) -> Option<&Path> {
         self.base_dir.as_deref()
     }
 
-    pub(crate) fn consts(&self) -> Arc<HashMap<String, Value>> {
+    /// Returns the constants defined in this template's frontmatter.
+    ///
+    /// Constants are defined with `consts:` in frontmatter and are automatically
+    /// available during rendering without being passed in the context.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use prompt_templates::Template;
+    ///
+    /// let tmpl =
+    ///     Template::from_source("---\nconsts:\n  - MAX = int := 100\nparams: []\n---\n{{ MAX }}")
+    ///         .unwrap();
+    /// let consts = tmpl.consts();
+    /// assert_eq!(consts.get("MAX").unwrap().as_int(), Some(100));
+    /// ```
+    #[must_use]
+    pub fn consts(&self) -> Arc<HashMap<String, Value>> {
         self.consts.clone()
     }
 
-    pub(crate) fn imported_consts(&self) -> Arc<HashMap<String, Value>> {
+    /// Returns a borrowed reference to the constants defined in this
+    /// template's frontmatter, avoiding the [`Arc`] clone of [`consts`](Self::consts).
+    #[must_use]
+    pub fn consts_ref(&self) -> &HashMap<String, Value> {
+        &self.consts
+    }
+
+    /// Returns the imported constants (from `{% import %}` directives).
+    ///
+    /// These are constants imported from other template files and are
+    /// automatically available during rendering alongside regular constants.
+    #[must_use]
+    pub fn imported_consts(&self) -> Arc<HashMap<String, Value>> {
         self.imported_consts.clone()
     }
 
-    pub(crate) fn inline_templates(&self) -> Arc<HashMap<String, CompiledInlineTemplate>> {
-        self.inline_templates.clone()
+    /// Returns a borrowed reference to the imported constants, avoiding
+    /// the [`Arc`] clone of [`imported_consts`](Self::imported_consts).
+    #[must_use]
+    pub fn imported_consts_ref(&self) -> &HashMap<String, Value> {
+        &self.imported_consts
+    }
+
+    pub(crate) fn inline_templates(&self) -> &HashMap<String, CompiledInlineTemplate> {
+        &self.inline_templates
     }
 
     /// Content hash of the raw source — use to detect unchanged files on
@@ -429,19 +712,18 @@ impl Template {
     /// Returns [`TemplateError::DeclarationsMutated`] with a human-readable
     /// diff if the declarations don't match.
     pub fn validate_declarations(&self, expected: &[VarDecl]) -> Result<(), TemplateError> {
-        let current: std::collections::HashMap<&str, &crate::types::VarType> = self
+        let current: HashMap<&str, &crate::types::VarType> = self
             .declared_variables
             .iter()
             .map(|d| (d.name.as_str(), &d.var_type))
             .collect();
-        let expected_map: std::collections::HashMap<&str, &crate::types::VarType> = expected
+        let expected_map: HashMap<&str, &crate::types::VarType> = expected
             .iter()
             .map(|d| (d.name.as_str(), &d.var_type))
             .collect();
 
-        let current_names: std::collections::HashSet<&str> = current.keys().copied().collect();
-        let expected_names: std::collections::HashSet<&str> =
-            expected_map.keys().copied().collect();
+        let current_names: HashSet<&str> = current.keys().copied().collect();
+        let expected_names: HashSet<&str> = expected_map.keys().copied().collect();
 
         let missing: Vec<&str> = expected_names.difference(&current_names).copied().collect();
         let extra: Vec<&str> = current_names.difference(&expected_names).copied().collect();
@@ -509,18 +791,156 @@ impl Template {
     ///
     /// Returns [`TemplateError`] if validation fails or a rendering error
     /// occurs.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use `render_with(&ctx, RenderOptions::default().allow_extra(true))` instead"
+    )]
     pub fn render_allowing_extra(&self, ctx: &Context) -> Result<String, TemplateError> {
         self.render_inner(ctx, true)
     }
 
+    /// Render the template with options controlling strictness.
+    ///
+    /// When `allow_extra` is `false`, this behaves like [`render`](Self::render).
+    /// When `allow_extra` is `true`, extra context keys that aren't declared
+    /// in frontmatter are silently ignored.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TemplateError`] if validation fails or a rendering error
+    /// occurs.
+    pub fn render_with(
+        &self,
+        ctx: &Context,
+        options: RenderOptions,
+    ) -> Result<String, TemplateError> {
+        self.render_inner(ctx, options.allow_extra)
+    }
+
     /// Internal render path with configurable strictness.
     fn render_inner(&self, ctx: &Context, allow_extra: bool) -> Result<String, TemplateError> {
+        let mut output = String::with_capacity(self.estimated_capacity);
+        self.render_into_inner(ctx, allow_extra, &mut output)?;
+        Ok(output)
+    }
+
+    /// Render the template directly into an existing `String` buffer.
+    ///
+    /// Unlike [`render`](Self::render), this appends to `output` without
+    /// allocating a new `String`. Useful when composing multiple template
+    /// outputs into a single buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TemplateError`] if validation fails or a rendering error
+    /// occurs. On error, `output` may contain partial results.
+    pub fn render_into(&self, ctx: &Context, output: &mut String) -> Result<(), TemplateError> {
+        self.render_into_inner(ctx, false, output)
+    }
+
+    /// Like [`render_into`](Self::render_into), but allows extra (undeclared)
+    /// parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TemplateError`] if validation fails or a rendering error
+    /// occurs.
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use `render_into_with(&ctx, &mut output, RenderOptions::default().allow_extra(true))` instead"
+    )]
+    pub fn render_into_allowing_extra(
+        &self,
+        ctx: &Context,
+        output: &mut String,
+    ) -> Result<(), TemplateError> {
+        self.render_into_inner(ctx, true, output)
+    }
+
+    /// Like [`render_with`](Self::render_with), but appends to a buffer
+    /// instead of allocating a new `String`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TemplateError`] if validation fails or a rendering error
+    /// occurs. On error, `output` may contain partial results.
+    pub fn render_into_with(
+        &self,
+        ctx: &Context,
+        output: &mut String,
+        options: RenderOptions,
+    ) -> Result<(), TemplateError> {
+        self.render_into_inner(ctx, options.allow_extra, output)
+    }
+
+    /// Shared implementation for all render-into paths.
+    fn render_into_inner(
+        &self,
+        ctx: &Context,
+        allow_extra: bool,
+        output: &mut String,
+    ) -> Result<(), TemplateError> {
         self.validate_context(ctx, allow_extra)?;
+        self.render_core(ctx, output)
+    }
+
+    /// Core rendering without any context validation.
+    ///
+    /// Used by both `render_into_inner` (after validation) and
+    /// `render_unchecked` (no validation at all).
+    fn render_core(&self, ctx: &Context, output: &mut String) -> Result<(), TemplateError> {
         let ctx = self.inject_defaults(ctx);
         let mut scope = Scope::new(&ctx).with_max_include_depth(self.max_include_depth);
-        scope.set_consts(&self.consts, &self.imported_consts);
+        // Skip Arc clones when there are no constants (common case).
+        if !self.consts.is_empty() || !self.imported_consts.is_empty() {
+            scope.set_consts(&self.consts, &self.imported_consts);
+        }
         scope.set_inline_templates(&self.inline_templates);
-        compiled::render_segments(&self.segments, &mut scope, self.base_dir.as_deref())
+        #[cfg(feature = "std")]
+        return compiled::render::render_segments_into(
+            &self.segments,
+            &mut scope,
+            self.base_dir.as_deref(),
+            output,
+        );
+        #[cfg(not(feature = "std"))]
+        return compiled::render_segments_into_no_std(&self.segments, &mut scope, output);
+    }
+
+    /// Render the template **without** context validation.
+    ///
+    /// Skips the parameter presence, type, and extra-key checks that
+    /// [`render`](Self::render) performs on every call. This is a safe
+    /// operation — rendering errors (e.g. undefined variable) are still
+    /// reported via `Err` — but the upfront validation overhead is removed.
+    ///
+    /// Use this when the context is known-good (e.g. constructed from a
+    /// strongly-typed params struct, or pre-validated once at startup).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TemplateError`] if a rendering error occurs (e.g.
+    /// undefined variable, filter error).
+    pub fn render_unchecked(&self, ctx: &Context) -> Result<String, TemplateError> {
+        let mut output = String::with_capacity(self.estimated_capacity);
+        self.render_core(ctx, &mut output)?;
+        Ok(output)
+    }
+
+    /// Render into a buffer **without** context validation.
+    ///
+    /// Like [`render_unchecked`](Self::render_unchecked), but appends to
+    /// an existing buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TemplateError`] if a rendering error occurs.
+    pub fn render_into_unchecked(
+        &self,
+        ctx: &Context,
+        output: &mut String,
+    ) -> Result<(), TemplateError> {
+        self.render_core(ctx, output)
     }
 
     /// Render the template using a [`TemplateCache`](crate::TemplateCache) for include resolution.
@@ -534,12 +954,38 @@ impl Template {
     ///
     /// Returns [`TemplateError`] if validation fails or a rendering error
     /// occurs.
-    pub fn render_cached<S: std::hash::BuildHasher + Send + Sync>(
+    #[cfg(feature = "std")]
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use `render_cached_with(&ctx, &cache, RenderOptions::default())` instead"
+    )]
+    pub fn render_cached<S: core::hash::BuildHasher + Send + Sync>(
         &self,
         ctx: &Context,
         cache: &crate::TemplateCache<S>,
     ) -> Result<String, TemplateError> {
-        self.validate_context(ctx, false)?;
+        self.render_cached_with(ctx, cache, RenderOptions::default())
+    }
+
+    /// Render using a [`TemplateCache`](crate::TemplateCache), with options.
+    ///
+    /// Like [`render_with`](Self::render_with), but included templates are
+    /// resolved through the cache — unchanged includes are not re-read or
+    /// re-compiled. This is the recommended rendering path for hot-reload
+    /// scenarios where templates are re-rendered frequently.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TemplateError`] if validation fails or a rendering error
+    /// occurs.
+    #[cfg(feature = "std")]
+    pub fn render_cached_with<S: core::hash::BuildHasher + Send + Sync>(
+        &self,
+        ctx: &Context,
+        cache: &crate::TemplateCache<S>,
+        options: RenderOptions,
+    ) -> Result<String, TemplateError> {
+        self.validate_context(ctx, options.allow_extra)?;
         let ctx = self.inject_defaults(ctx);
         let mut scope =
             Scope::with_cache(&ctx, cache).with_max_include_depth(self.max_include_depth);
@@ -551,9 +997,9 @@ impl Template {
     /// Inject default values for any declared params not present in `ctx`.
     ///
     /// Returns a `Cow::Borrowed` if no defaults needed, avoiding allocation.
-    fn inject_defaults<'a>(&self, ctx: &'a Context) -> std::borrow::Cow<'a, Context> {
+    fn inject_defaults<'a>(&self, ctx: &'a Context) -> alloc::borrow::Cow<'a, Context> {
         if !self.has_defaults {
-            return std::borrow::Cow::Borrowed(ctx);
+            return alloc::borrow::Cow::Borrowed(ctx);
         }
         let mut owned: Option<Context> = None;
         for decl in self.declared_variables.iter() {
@@ -566,8 +1012,8 @@ impl Template {
             }
         }
         match owned {
-            Some(ctx) => std::borrow::Cow::Owned(ctx),
-            None => std::borrow::Cow::Borrowed(ctx),
+            Some(ctx) => alloc::borrow::Cow::Owned(ctx),
+            None => alloc::borrow::Cow::Borrowed(ctx),
         }
     }
 }
@@ -615,13 +1061,36 @@ impl Template {
         let ctx = Context::from_serialize(value)?;
         self.render(&ctx)
     }
+
+    /// Like [`render_serde`](Self::render_serde), but appends output into an
+    /// existing buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TemplateError`] if serialization fails, the value is not a
+    /// struct/map, or rendering encounters an error.
+    pub fn render_serde_into<T: serde::Serialize>(
+        &self,
+        value: &T,
+        output: &mut String,
+    ) -> Result<(), crate::error::TemplateError> {
+        let ctx = Context::from_serialize(value)?;
+        self.render_into(&ctx, output)
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Trait impls for embedding Template in macro-generated structs
 // ---------------------------------------------------------------------------
 
-/// Two templates are equal if they were compiled from the same source.
+/// Two templates are considered equal if they were compiled from the same
+/// source (compared via non-cryptographic 64-bit hash).
+///
+/// **Note:** This is an approximate comparison — different sources that
+/// produce the same hash would incorrectly compare as equal.  Do not use
+/// `Template` as a `HashMap` key or rely on `Eq` for deduplication in
+/// security-sensitive contexts.  For exact source comparison, compare
+/// [`body()`](Self::body) and [`declarations()`](Self::declarations).
 impl PartialEq for Template {
     fn eq(&self, other: &Self) -> bool {
         self.source_hash == other.source_hash
@@ -665,9 +1134,147 @@ impl<'de> serde::Deserialize<'de> for Template {
 /// # Errors
 ///
 /// Returns [`TemplateError::Io`] if the file is not found or cannot be read.
+#[cfg(feature = "std")]
 pub fn load_template(dir: &Path, name: &str) -> Result<Template, TemplateError> {
     let path = dir.join(format!("{name}.tmpl.md"));
     Template::from_file(&path)
+}
+/// Inject enum type aliases as namespace constants.
+///
+/// For each enum type alias like `Phase = enum<Explore, Triage>`, this creates
+/// a dict constant `Phase` → `{Explore: "Explore", Triage: "Triage"}`.
+/// This enables expressions like `{{ kind(Phase.Explore) }}` in templates.
+/// Bare access like `{{ Phase.Explore }}` is rejected at compile time —
+/// users must wrap enum literals in `kind()` for explicit variant name extraction.
+///
+/// Unit variants map to `Value::Str(name)`. Struct variants map to a tagged
+/// dict with just `__kind__` set (a partial value suitable for `kind()` and
+/// match arms).
+fn inject_enum_type_constants(
+    type_aliases: &HashMap<String, VarType>,
+    consts: &mut HashMap<String, Value>,
+) {
+    for (type_name, var_type) in type_aliases {
+        let VarType::Enum(variants) = var_type else {
+            continue;
+        };
+        // Don't overwrite a user-defined constant with the same name.
+        if consts.contains_key(type_name) {
+            continue;
+        }
+        let mut variant_map = HashMap::new();
+        for variant in variants {
+            if variant.fields.is_empty() {
+                // Unit variant → simple string.
+                variant_map.insert(variant.name.clone(), Value::Str(variant.name.clone()));
+            } else {
+                // Struct variant → tagged dict with __kind__ only.
+                let mut partial = HashMap::new();
+                partial.insert(
+                    crate::consts::ENUM_TAG_KEY.into(),
+                    Value::Str(variant.name.clone()),
+                );
+                variant_map.insert(variant.name.clone(), Value::Struct(Arc::new(partial)));
+            }
+        }
+        consts.insert(type_name.clone(), Value::Struct(Arc::new(variant_map)));
+    }
+}
+
+/// Collect the set of enum type names (both local and imported).
+///
+/// For local types, stores just the type name (e.g. `"Phase"`).
+/// For imported types, stores the full `stem.TypeName` key (e.g.
+/// `"lib.Color"`), so that non-enum imports like `lib.MAX_TIMEOUT`
+/// are not incorrectly flagged.
+fn collect_enum_type_keys(fm: &Frontmatter) -> HashSet<String> {
+    let mut keys = HashSet::new();
+    // Local enum types.
+    for (name, ty) in &fm.type_aliases {
+        if matches!(ty, VarType::Enum(_)) {
+            keys.insert(name.clone());
+        }
+    }
+    // Imported enum types: recorded during frontmatter import resolution.
+    for key in &fm.imported_enum_type_keys {
+        keys.insert(key.clone());
+    }
+    keys
+}
+
+/// Reject bare enum literal expressions like `{{ Phase.Explore }}`.
+///
+/// Enum type namespaces are injected as dict constants so that `kind()` can
+/// access them, but they should not be rendered directly. Instead, users
+/// must wrap them in `kind()`: `{{ kind(Phase.Explore) }}`.
+///
+/// This prevents accidental confusion between enum type access and regular
+/// variable dot-access.
+fn check_bare_enum_access(
+    segments: &[compiled::Segment],
+    enum_keys: &HashSet<String>,
+) -> Result<(), TemplateError> {
+    for seg in segments {
+        match seg {
+            compiled::Segment::Expr {
+                expr: compiled::CompiledExpr::Path(path),
+                ..
+            } => {
+                let parts = path.parts();
+                if parts.len() >= 2 && is_enum_path(parts, enum_keys) {
+                    return Err(TemplateError::syntax(format!(
+                        "bare enum literal '{}' is not allowed — \
+                         use kind({}) to get the variant name as a string",
+                        path.as_str(),
+                        path.as_str(),
+                    )));
+                }
+            }
+            compiled::Segment::ForLoop { body, .. } => {
+                check_bare_enum_access(body, enum_keys)?;
+            }
+            compiled::Segment::If {
+                branches,
+                else_body,
+            } => {
+                for (_, branch_body) in branches {
+                    check_bare_enum_access(branch_body, enum_keys)?;
+                }
+                check_bare_enum_access(else_body, enum_keys)?;
+            }
+            compiled::Segment::Match { arms, .. } => {
+                for (_, arm_body) in arms {
+                    check_bare_enum_access(arm_body, enum_keys)?;
+                }
+            }
+            compiled::Segment::Include(inc) => {
+                if let Some(ref inline) = inc.inline_compiled {
+                    check_bare_enum_access(&inline.segments, enum_keys)?;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Check if a dotted path matches a known enum type namespace.
+///
+/// - Local: `["Phase", "Explore"]` → checks `"Phase"` in keys.
+/// - Imported: `["lib", "Color", "Red"]` → checks `"lib.Color"` in keys.
+fn is_enum_path(parts: &[String], enum_keys: &HashSet<String>) -> bool {
+    // Try 1-part root (local enum type).
+    if enum_keys.contains(&parts[0]) {
+        return true;
+    }
+    // Try 2-part root (imported enum type: stem.TypeName).
+    if parts.len() >= 3 {
+        let key = format!("{}.{}", parts[0], parts[1]);
+        if enum_keys.contains(&key) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Enforce that all parameters referenced in the body are declared.
@@ -676,16 +1283,23 @@ pub fn load_template(dir: &Path, name: &str) -> Result<Template, TemplateError> 
 /// template names) and checks every referenced variable against it. Produces
 /// 'did you mean?' suggestions via Levenshtein distance for near-misses.
 fn check_undeclared_variables(
-    referenced: &std::collections::HashSet<String>,
+    referenced: &HashSet<String>,
     fm: &Frontmatter,
     inline_templates: &HashMap<String, CompiledInlineTemplate>,
 ) -> Result<(), TemplateError> {
-    let mut declared: std::collections::HashSet<String> = fm.params.iter().cloned().collect();
+    let mut declared: HashSet<String> = fm.params.iter().cloned().collect();
     for c in &fm.consts {
         declared.insert(c.name.clone());
     }
     for import in &fm.imports {
         declared.insert(import.stem.clone());
+    }
+    // Enum type aliases are auto-injected as namespace constants,
+    // so references like `Phase.Explore` (root = `Phase`) are valid.
+    for (name, ty) in &fm.type_aliases {
+        if matches!(ty, VarType::Enum(_)) {
+            declared.insert(name.clone());
+        }
     }
     // Inline template names ({% tmpl NAME %}) are valid targets for
     // {% include NAME %} and should not be flagged as undeclared variables.
@@ -710,7 +1324,7 @@ fn check_undeclared_variables(
         let mut best: Option<(&str, usize)> = None;
         for candidate in &declared {
             let dist = crate::error::levenshtein_distance(name, candidate);
-            if dist > 0 && dist <= 2 && (best.is_none() || dist < best.unwrap().1) {
+            if dist > 0 && dist <= 2 && best.is_none_or(|b| dist < b.1) {
                 best = Some((candidate, dist));
             }
         }
@@ -735,7 +1349,7 @@ fn check_undeclared_variables(
 /// Skipped when `allow_unused` is `true` (set via frontmatter or API).
 fn check_unused_params(
     declarations: &[VarDecl],
-    referenced: &std::collections::HashSet<String>,
+    referenced: &HashSet<String>,
     allow_unused: bool,
 ) -> Result<(), TemplateError> {
     if allow_unused {
@@ -781,7 +1395,7 @@ fn check_name_collisions(
     // Rule 12: Param/const name vs inline template name collision.
     // Check against params + consts only — NOT the full declared set which
     // already contains inline template names (for undeclared-var analysis).
-    let param_and_const_names: std::collections::HashSet<&str> = fm
+    let param_and_const_names: HashSet<&str> = fm
         .params
         .iter()
         .map(String::as_str)
@@ -796,7 +1410,7 @@ fn check_name_collisions(
     }
 
     // Rule 13: for-loop bindings must not shadow declared names.
-    let protected_names: std::collections::HashSet<&str> = fm
+    let protected_names: HashSet<&str> = fm
         .params
         .iter()
         .map(String::as_str)
@@ -814,7 +1428,7 @@ fn check_name_collisions(
 /// is scoped to the loop body and does not persist.
 fn validate_for_bindings(
     segments: &[crate::compiled::Segment],
-    protected: &std::collections::HashSet<&str>,
+    protected: &HashSet<&str>,
 ) -> Result<(), TemplateError> {
     use crate::compiled::Segment;
     for seg in segments {
@@ -848,6 +1462,14 @@ fn validate_for_bindings(
     Ok(())
 }
 
+/// Simple FNV-1a hash for `no_std` environments.
+///
+/// Delegates to the shared implementation in [`crate::__private::fnv1a_hash`].
+#[cfg(not(feature = "std"))]
+fn hash_source_no_std(source: &str) -> u64 {
+    crate::__private::fnv1a_hash(source.as_bytes())
+}
+
 #[cfg(test)]
 mod adversarial_tests;
 #[cfg(test)]
@@ -856,5 +1478,7 @@ mod const_tests;
 mod error_diagnostic_tests;
 #[cfg(test)]
 mod higher_order_tests;
+#[cfg(test)]
+mod render_integration_tests;
 #[cfg(test)]
 mod tests;

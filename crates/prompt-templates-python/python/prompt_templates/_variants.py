@@ -45,6 +45,8 @@ Example::
 
 from __future__ import annotations
 
+import os
+
 from types import SimpleNamespace
 from typing import Any, Callable, Sequence
 
@@ -191,9 +193,11 @@ class _UnitSentinel:
         return self._prompt_template_tag
 
     def __eq__(self, other: object) -> bool:  # type: ignore[override]
-        if not isinstance(other, _UnitSentinel):
-            return NotImplemented  # type: ignore[return-value]
-        return self._prompt_template_tag == other._prompt_template_tag
+        if isinstance(other, str):
+            return self._prompt_template_tag == other
+        if isinstance(other, _UnitSentinel):
+            return self._prompt_template_tag == other._prompt_template_tag
+        return NotImplemented  # type: ignore[return-value]
 
     def __hash__(self) -> int:
         return hash(self._prompt_template_tag)
@@ -239,7 +243,7 @@ def _build_variant_from_dict(name: str, fields: dict[str, type]) -> type:
     """Build a struct variant class from a ``{field: type}`` dict."""
     field_names = list(fields.keys())
 
-    # Validate field names are safe Python identifiers (guards the exec below).
+    # Validate field names are valid Python identifiers.
     for fname in field_names:
         if not fname.isidentifier():
             raise ValueError(
@@ -253,14 +257,42 @@ def _build_variant_from_dict(name: str, fields: dict[str, type]) -> type:
     namespace["_prompt_template_tag"] = name
     namespace["__annotations__"] = fields.copy()
 
-    # __init__ with positional + keyword args.
-    # Field names are validated as identifiers above, so this is safe.
-    init_code = f"def __init__(self, {', '.join(field_names)}):\n"
-    for f in field_names:
-        init_code += f"    self.{f} = {f}\n"
-    exec_ns: dict[str, Any] = {}
-    exec(init_code, exec_ns)  # noqa: S102 — input validated above
-    namespace["__init__"] = exec_ns["__init__"]
+    # __init__ with positional + keyword args (closure-based, no exec).
+    def make_init(variant_name: str, fnames: list[str]) -> Callable[..., None]:
+        def __init__(self: Any, *args: Any, **kwargs: Any) -> None:
+            if len(args) > len(fnames):
+                raise TypeError(
+                    f"{variant_name}() takes {len(fnames)} positional "
+                    f"argument(s) but {len(args)} were given"
+                )
+            # Merge positional args into kwargs.
+            for field, value in zip(fnames, args):
+                if field in kwargs:
+                    raise TypeError(
+                        f"{variant_name}() got multiple values for "
+                        f"argument {field!r}"
+                    )
+                kwargs[field] = value
+            # Validate all required fields are present.
+            missing = [f for f in fnames if f not in kwargs]
+            if missing:
+                raise TypeError(
+                    f"{variant_name}() missing required argument(s): "
+                    f"{', '.join(repr(m) for m in missing)}"
+                )
+            # Reject unexpected fields.
+            unexpected = set(kwargs) - set(fnames)
+            if unexpected:
+                raise TypeError(
+                    f"{variant_name}() got unexpected keyword argument(s): "
+                    f"{', '.join(sorted(unexpected))}"
+                )
+            for field in fnames:
+                object.__setattr__(self, field, kwargs[field])
+
+        return __init__
+
+    namespace["__init__"] = make_init(name, field_names)
 
     # _prompt_template_fields property
     def make_fields_prop(fnames: list[str]) -> Any:
@@ -337,6 +369,10 @@ class Variants(metaclass=_VariantsMeta):
     ``_prompt_template_fields`` for converter compatibility.
     """
 
+    def __class_getitem__(cls, item: Any) -> type:
+        """Allow ``Variants[...]`` syntax for type annotations."""
+        return cls
+
 
 # ---------------------------------------------------------------------------
 # load_types
@@ -344,7 +380,7 @@ class Variants(metaclass=_VariantsMeta):
 
 
 def load_types(
-    path: str,
+    path: str | os.PathLike[str],
     pick: Sequence[str] | None = None,
 ) -> SimpleNamespace:
     """Load generated types from a ``.tmpl.md`` template file.
@@ -379,6 +415,7 @@ def load_types(
     """
     from prompt_templates._prompt_templates import generate_types_for_template
 
+    path = os.fspath(path)
     all_types: dict[str, Any] = generate_types_for_template(path)
 
     if pick is not None:

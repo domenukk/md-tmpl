@@ -192,7 +192,7 @@ params:
 
 #[test]
 fn nested_list_with_enum_single_line() {
-    let yaml = "params:\n  - agent_name = str\n  - bugs = list<title = str, severity = enum<Critical(reason = str), High, Medium, Low>>";
+    let yaml = "params:\n  - agent_name = str\n  - tasks = list<title = str, severity = enum<Critical(reason = str), High, Medium, Low>>";
     let source = source_from_yaml(yaml);
     let ours = our_parser_params(&source);
     let theirs = serde_yaml_parsed_params(yaml);
@@ -204,7 +204,7 @@ fn nested_list_with_enum_multiline() {
     let yaml = "\
 params:
   - agent_name = str
-  - bugs = list<
+  - tasks = list<
       title = str,
       severity = enum<Critical(reason = str), High, Medium, Low>,
     >";
@@ -215,26 +215,26 @@ params:
 }
 
 #[test]
-fn dict_type_single_line() {
-    let yaml = "params:\n  - metadata = dict<key = str, value = int>";
+fn struct_type_single_line() {
+    let yaml = "params:\n  - metadata = struct<key = str, value = int>";
     let source = source_from_yaml(yaml);
     let ours = our_parser_params(&source);
     let theirs = serde_yaml_parsed_params(yaml);
-    assert_eq!(ours, theirs, "dict type mismatch");
+    assert_eq!(ours, theirs, "struct type mismatch");
 }
 
 #[test]
-fn dict_type_multiline() {
+fn struct_type_multiline() {
     let yaml = "\
 params:
-  - metadata = dict<
+  - metadata = struct<
       key = str,
       value = int,
     >";
     let source = source_from_yaml(yaml);
     let ours = our_parser_params(&source);
     let theirs = serde_yaml_parsed_params(yaml);
-    assert_eq!(ours, theirs, "multiline dict type mismatch");
+    assert_eq!(ours, theirs, "multiline struct type mismatch");
 }
 
 #[test]
@@ -287,7 +287,7 @@ fn readme_hero_example_renders_correctly() {
 ---
 params:
   - agent_name = str
-  - bugs = list<
+  - tasks = list<
       title = str,
       severity = enum<Critical(reason = str), High, Medium, Low>,
     >
@@ -295,44 +295,58 @@ params:
 
 # Report — {{ agent_name }}
 
-> {% for bug in bugs %}
+> {% for task in tasks %}
 
-- **{{ bug.title }}**
-> {% match bug.severity %}
+- **{{ task.title }}**
+
+> {% match task.severity %}
 > {% case Critical %}
-  🔴 Immediate action required: `{{ bug.severity.reason }}`
+
+  🔴 Immediate action required: `{{ task.severity.reason }}`
+
 > {% case High %}
+
   🟠 High priority.
+
 > {% case Medium | Low %}
+
   🟢 Normal priority.
+
 > {% /match %}
+
 > {% /for %}";
 
     let tmpl = Template::from_source(source).expect("README hero example should parse");
 
     let tag_key = prompt_templates::consts::ENUM_TAG_KEY;
     let mut ctx = Context::new();
-    ctx.set("agent_name", "SecurityBot");
+    ctx.set("agent_name", "TaskBot");
     ctx.set(
-        "bugs",
+        "tasks",
         vec![
-            Value::dict([
-                ("title", Value::from("Buffer overflow")),
+            Value::new_struct([
+                ("title", Value::from("Update dependencies")),
                 (
                     "severity",
-                    Value::dict([
+                    Value::new_struct([
                         (tag_key, Value::from("Critical")),
-                        ("reason", Value::from("RCE in parser")),
+                        ("reason", Value::from("blocking release")),
                     ]),
                 ),
             ]),
-            Value::dict([
-                ("title", Value::from("Missing CSRF token")),
-                ("severity", Value::dict([(tag_key, Value::from("High"))])),
+            Value::new_struct([
+                ("title", Value::from("Fix CI pipeline")),
+                (
+                    "severity",
+                    Value::new_struct([(tag_key, Value::from("High"))]),
+                ),
             ]),
-            Value::dict([
-                ("title", Value::from("Verbose logging")),
-                ("severity", Value::dict([(tag_key, Value::from("Low"))])),
+            Value::new_struct([
+                ("title", Value::from("Update README")),
+                (
+                    "severity",
+                    Value::new_struct([(tag_key, Value::from("Low"))]),
+                ),
             ]),
         ],
     );
@@ -342,12 +356,12 @@ params:
         .expect("README hero example should render");
     assert_eq!(
         output,
-        "\n# Report — SecurityBot\n\n\n\
-         - **Buffer overflow**\n\
-         \x20\x20🔴 Immediate action required: `RCE in parser`\n\n\
-         - **Missing CSRF token**\n\
-         \x20\x20🟠 High priority.\n\n\
-         - **Verbose logging**\n\
+        "\n# Report — TaskBot\n\
+         - **Update dependencies**\n\
+         \x20\x20🔴 Immediate action required: `blocking release`\n\
+         - **Fix CI pipeline**\n\
+         \x20\x20🟠 High priority.\n\
+         - **Update README**\n\
          \x20\x20🟢 Normal priority.\n"
     );
 }
@@ -374,17 +388,17 @@ params:
 }
 
 #[test]
-fn enum_with_nested_dict_field_crossval() {
+fn enum_with_nested_struct_field_crossval() {
     let yaml = "\
 params:
   - response = enum<
-      Success(metadata = dict<key = str, value = str>),
+      Success(metadata = struct<key = str, value = str>),
       Error(code = int, details = str),
     >";
     let source = source_from_yaml(yaml);
     let ours = our_parser_params(&source);
     let theirs = serde_yaml_parsed_params(yaml);
-    assert_eq!(ours, theirs, "enum with nested dict field mismatch");
+    assert_eq!(ours, theirs, "enum with nested struct field mismatch");
 }
 
 #[test]
@@ -407,7 +421,7 @@ fn enum_with_nested_enum_field_crossval() {
 
 #[test]
 fn simple_param_with_default() {
-    let yaml = "params:\n  - name = str := world";
+    let yaml = "params:\n  - name = str := \"world\"";
     let source = source_from_yaml(yaml);
     let (fm, _) = parse_frontmatter(&source).expect("parse failed");
     assert_eq!(fm.declarations[0].name, "name");
@@ -439,7 +453,7 @@ params:
       name = str,
       score = int,
     >
-  - label = str := untitled
+  - label = str := \"untitled\"
 ---
 body";
     let (fm, _) = parse_frontmatter(source).expect("parse failed");

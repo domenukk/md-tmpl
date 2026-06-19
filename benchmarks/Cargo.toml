@@ -1,0 +1,23 @@
+[package]
+name = "prompt-templates-benchmarks"
+version = "0.2.0"
+edition = "2024"
+publish = false
+
+# Standalone project — not part of the parent workspace.
+[workspace]
+
+[dependencies]
+prompt-templates = { path = "../crates/prompt-templates" }
+prompt-templates-macros = { path = "../crates/prompt-templates-macros" }
+tera = "2.0.0-alpha.9"
+minijinja = "2.21"
+handlebars = "6"
+criterion = { version = "0.8", features = ["html_reports"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+typed-builder = "0.23"
+
+[[bench]]
+name = "comparison"
+harness = false

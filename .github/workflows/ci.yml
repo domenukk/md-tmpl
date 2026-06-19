@@ -56,6 +56,26 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --all-features --no-deps
 
+  no-std:
+    name: no_std
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf
+      - uses: Swatinem/rust-cache@v2
+      - name: Integration tests (--no-default-features)
+        run: cargo test -p prompt-templates --no-default-features --test no_std_compat
+      - name: True no_std target (bare)
+        run: cargo build -p prompt-templates --no-default-features --target thumbv7em-none-eabihf
+      - name: True no_std target (+ serde)
+        run: cargo build -p prompt-templates --no-default-features --features serde --target thumbv7em-none-eabihf
+      - name: True no_std target (+ typed-builder)
+        run: cargo build -p prompt-templates --no-default-features --features typed-builder --target thumbv7em-none-eabihf
+      - name: True no_std target (+ serde + typed-builder)
+        run: cargo build -p prompt-templates --no-default-features --features serde,typed-builder --target thumbv7em-none-eabihf
+
   python:
     name: Python (${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -72,3 +92,53 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: pip install maturin pytest
       - run: cd crates/prompt-templates-python && maturin develop && pytest python/tests/ -v
+
+  go:
+    name: Go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - uses: Swatinem/rust-cache@v2
+      - name: Build FFI library
+        run: cargo build -p prompt-templates-ffi --release
+      - name: Run Go tests
+        run: cd go/prompt_templates && go test -v -count=1 ./...
+
+  typescript:
+    name: TypeScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: cd crates/prompt-templates-typescript && npm install
+      - name: Type-check
+        run: cd crates/prompt-templates-typescript && npx tsc --noEmit --strict
+      - name: Build
+        run: cd crates/prompt-templates-typescript && npx tsc
+      - name: Run tests
+        run: cd crates/prompt-templates-typescript && node --test dist/tests/*.test.js
+
+  wasm:
+    name: WASM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: Swatinem/rust-cache@v2
+      - name: Install wasm-pack
+        run: cargo install wasm-pack
+      - name: Build WASM package
+        run: cd crates/prompt-templates-wasm && wasm-pack build --target nodejs --out-dir pkg --release
+      - name: Run WASM tests
+        run: cd crates/prompt-templates-wasm && node tests/correctness.mjs && node --test tests/wasm.test.mjs
+

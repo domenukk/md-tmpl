@@ -21,4 +21,5 @@ Tags:
 > {% for tag in tags %}
 
 - {{ tag.label }}
+
   > {% /for %}

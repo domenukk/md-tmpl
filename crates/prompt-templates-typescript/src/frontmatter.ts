@@ -1,0 +1,676 @@
+/**
+ * YAML frontmatter parser.
+ *
+ * Parses the `---` delimited frontmatter block from `.tmpl.md` files.
+ * Extracts params, types, consts, and imports declarations.
+ *
+ * This is a lightweight parser — not a full YAML parser. It handles
+ * the subset of YAML used by prompt-templates frontmatter.
+ *
+ * @module
+ */
+
+import { TemplateSyntaxError } from "./errors.js";
+import { type Value, ENUM_TAG_KEY, str, int, float, bool } from "./value.js";
+
+// ---------------------------------------------------------------------------
+// Public types
+// ---------------------------------------------------------------------------
+
+/** A single parameter declaration from frontmatter. */
+export interface VarDecl {
+  readonly name: string;
+  readonly varType: VarType;
+  readonly defaultValue?: Value;
+}
+
+/** The type of a template variable. */
+export type VarType =
+  | { kind: "str" }
+  | { kind: "bool" }
+  | { kind: "int" }
+  | { kind: "float" }
+  | { kind: "list"; fields: readonly VarDecl[] }
+  | { kind: "scalar_list"; elementType: VarType }
+  | { kind: "struct"; fields: readonly VarDecl[] }
+  | { kind: "enum"; variants: readonly VariantDecl[]; isOption?: boolean }
+  | { kind: "alias"; name: string }
+  | { kind: "untyped_list" };
+
+/** A variant in an enum type. */
+export interface VariantDecl {
+  readonly name: string;
+  readonly fields: readonly VarDecl[];
+}
+
+/** Parsed frontmatter. */
+export interface Frontmatter {
+  readonly name?: string;
+  readonly description?: string;
+  readonly params: readonly VarDecl[];
+  readonly allowUnused: boolean;
+  readonly typeAliases: ReadonlyMap<string, VarType>;
+  readonly consts: readonly VarDecl[];
+  readonly imports: readonly ImportDecl[];
+  /** Resolved constants from imports, keyed by `stem.NAME`. */
+  readonly importedConsts: Readonly<Record<string, unknown>>;
+}
+
+/** An import declaration. */
+export interface ImportDecl {
+  readonly stem: string;
+  readonly path: string;
+}
+
+// ---------------------------------------------------------------------------
+// Formatting
+// ---------------------------------------------------------------------------
+
+/** Format a VarType as a string (for declarations output). */
+export function varTypeToString(vt: VarType): string {
+  switch (vt.kind) {
+    case "str":
+    case "bool":
+    case "int":
+    case "float":
+      return vt.kind;
+    case "list":
+      if (vt.fields.length === 0) return "list<>";
+      return `list<${vt.fields.map((f) => `${f.name} = ${varTypeToString(f.varType)}`).join(", ")}>`;
+    case "scalar_list":
+      return `list<${varTypeToString(vt.elementType)}>`;
+    case "struct":
+      if (vt.fields.length === 0) return "struct<>";
+      return `struct<${vt.fields.map((f) => `${f.name} = ${varTypeToString(f.varType)}`).join(", ")}>`;
+    case "enum": {
+      if (vt.isOption) {
+        const someVariant = vt.variants.find((v) => v.name === "Some");
+        if (someVariant && someVariant.fields.length === 1) {
+          return `option<${varTypeToString(someVariant.fields[0]!.varType)}>`;
+        }
+      }
+      const parts = vt.variants.map((v) => {
+        if (v.fields.length === 0) return v.name;
+        return `${v.name}(${v.fields.map((f) => `${f.name} = ${varTypeToString(f.varType)}`).join(", ")})`;
+      });
+      return `enum<${parts.join(", ")}>`;
+    }
+    case "alias":
+      return vt.name;
+    case "untyped_list":
+      return "list<>";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Parser
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse the frontmatter and body from a template source string.
+ *
+ * Returns `[frontmatter, body]` where body is everything after the
+ * closing `---` delimiter.
+ */
+export function parseFrontmatter(source: string): [Frontmatter, string] {
+  const lines = source.split("\n");
+
+  // Find opening ---
+  let startIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i]!.trim() === `---`) {
+      startIdx = i;
+      break;
+    }
+  }
+  if (startIdx === -1) {
+    throw new TemplateSyntaxError(
+      "missing mandatory YAML frontmatter block (starts with ---)",
+    );
+  }
+
+  // Find closing ---
+  let endIdx = -1;
+  for (let i = startIdx + 1; i < lines.length; i++) {
+    if (lines[i]!.trim() === `---`) {
+      endIdx = i;
+      break;
+    }
+  }
+  if (endIdx === -1) {
+    throw new TemplateSyntaxError("unclosed YAML frontmatter block");
+  }
+
+  const fmLines = lines.slice(startIdx + 1, endIdx);
+  const body = lines.slice(endIdx + 1).join("\n");
+
+  // Parse the frontmatter YAML subset
+  const fm = parseFrontmatterYaml(fmLines);
+  return [fm, body];
+}
+
+/**
+ * Strip frontmatter from source, returning just the body.
+ */
+export function stripFrontmatter(source: string): string {
+  const [, body] = parseFrontmatter(source);
+  return body;
+}
+
+// ---------------------------------------------------------------------------
+// Internal YAML-subset parser
+// ---------------------------------------------------------------------------
+
+function parseFrontmatterYaml(lines: string[]): Frontmatter {
+  let name: string | undefined;
+  let description: string | undefined;
+  let allowUnused = false;
+  const params: VarDecl[] = [];
+  const typeAliases = new Map<string, VarType>();
+  const consts: VarDecl[] = [];
+  const imports: ImportDecl[] = [];
+
+  let currentBlock: "none" | "params" | "types" | "consts" | "imports" = "none";
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed === "" || trimmed.startsWith("#")) continue;
+
+    // Top-level keys
+    if (trimmed.startsWith("name:")) {
+      name = trimmed
+        .slice(5)
+        .trim()
+        .replace(/^["']|["']$/g, "");
+      currentBlock = "none";
+      continue;
+    }
+    if (trimmed.startsWith("description:")) {
+      description = trimmed
+        .slice(12)
+        .trim()
+        .replace(/^["']|["']$/g, "");
+      currentBlock = "none";
+      continue;
+    }
+    if (trimmed.startsWith("allow_unused:")) {
+      allowUnused = trimmed.slice(13).trim() === "true";
+      currentBlock = "none";
+      continue;
+    }
+
+    // Block starts
+    if (trimmed.startsWith("params:")) {
+      currentBlock = "params";
+      // Inline params: [x = str, y = int]
+      const rest = trimmed.slice(7).trim();
+      if (rest.startsWith("[")) {
+        const inlineParams = parseInlineList(rest);
+        for (const p of inlineParams) {
+          params.push(parseParamDecl(p));
+        }
+        currentBlock = "none";
+      }
+      continue;
+    }
+    if (trimmed.startsWith("types:")) {
+      currentBlock = "types";
+      continue;
+    }
+    if (trimmed.startsWith("consts:")) {
+      currentBlock = "consts";
+      continue;
+    }
+    if (trimmed.startsWith("imports:")) {
+      currentBlock = "imports";
+      continue;
+    }
+
+    // List items
+    if (trimmed.startsWith("- ")) {
+      const item = trimmed.slice(2).trim();
+      switch (currentBlock) {
+        case "params":
+          params.push(parseParamDecl(item));
+          break;
+        case "types":
+          typeAliases.set(...parseTypeAlias(item));
+          break;
+        case "consts":
+          consts.push(parseConstDecl(item));
+          break;
+        case "imports":
+          imports.push(parseImportDecl(item));
+          break;
+        default:
+          break;
+      }
+    }
+  }
+
+  return {
+    name,
+    description,
+    params,
+    allowUnused,
+    typeAliases,
+    consts,
+    imports,
+    importedConsts: {},
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Declaration parsers
+// ---------------------------------------------------------------------------
+
+/** Parse `name = type` or `name = type := default`. */
+function parseParamDecl(raw: string): VarDecl {
+  const defaultSplit = splitDefault(raw);
+  const [nameType, defaultLiteral] = defaultSplit;
+
+  const eqIdx = nameType!.indexOf("=");
+  if (eqIdx === -1) {
+    throw new TemplateSyntaxError(
+      `parameter must have explicit type: '${raw}'`,
+    );
+  }
+
+  const name = nameType!.slice(0, eqIdx).trim();
+  const typeStr = nameType!.slice(eqIdx + 1).trim();
+
+  const varType = parseVarType(typeStr);
+  const defaultValue =
+    defaultLiteral !== undefined
+      ? parseLiteral(defaultLiteral.trim(), varType)
+      : undefined;
+
+  return { name, varType, defaultValue };
+}
+
+/** Parse `Name = type` for type aliases. */
+function parseTypeAlias(raw: string): [string, VarType] {
+  const eqIdx = raw.indexOf("=");
+  if (eqIdx === -1) {
+    throw new TemplateSyntaxError(
+      `type alias must have form 'Name = type': '${raw}'`,
+    );
+  }
+  const name = raw.slice(0, eqIdx).trim();
+  const typeStr = raw.slice(eqIdx + 1).trim();
+  return [name, parseVarType(typeStr)];
+}
+
+/** Parse `NAME = type := value` for constants. */
+function parseConstDecl(raw: string): VarDecl {
+  return parseParamDecl(raw);
+}
+
+/** Parse `"[stem](path.tmpl.md)"` for imports. */
+function parseImportDecl(raw: string): ImportDecl {
+  // Remove surrounding quotes
+  const unquoted = raw.replace(/^["']|["']$/g, "");
+  const match = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(unquoted);
+  if (!match || !match[1] || !match[2]) {
+    throw new TemplateSyntaxError(
+      `import must be in format "[stem](path.tmpl.md)": '${raw}'`,
+    );
+  }
+  return { stem: match[1], path: match[2] };
+}
+
+// ---------------------------------------------------------------------------
+// Type parser
+// ---------------------------------------------------------------------------
+
+/** Parse a type annotation string into a VarType. */
+export function parseVarType(typeStr: string): VarType {
+  const t = typeStr.trim();
+
+  if (t === "str") return { kind: "str" };
+  if (t === "bool") return { kind: "bool" };
+  if (t === "int") return { kind: "int" };
+  if (t === "float") return { kind: "float" };
+
+  if (t.startsWith("list<")) {
+    const inner = extractAngleBrackets(t, "list");
+    if (inner === "") {
+      throw new TemplateSyntaxError(
+        "untyped list<> is not allowed; must specify element type or fields (e.g., list<str> or list<name = str>)",
+      );
+    }
+    // Check if it's a simple type list (list<str>) or structured (list<name = str>)
+    // We must check for `=` at the top level only, not inside nested <> brackets.
+    const topItems = splitTopLevel(inner, ",");
+    const hasTopLevelEquals = topItems.some(
+      (item) =>
+        item.indexOf("=") !== -1 &&
+        !item.trim().startsWith("struct<") &&
+        !item.trim().startsWith("enum<") &&
+        !item.trim().startsWith("list<") &&
+        !item.trim().startsWith("tmpl<"),
+    );
+    if (!hasTopLevelEquals) {
+      if (topItems.length > 1) {
+        throw new TemplateSyntaxError(
+          "list with multiple fields must use named fields (e.g. list<name = str, count = int>)",
+        );
+      }
+      // Simple type list like list<str>, list<int>, list<enum<A, B>>
+      const elementType = parseVarType(inner);
+      if (elementType.kind === "struct") {
+        throw new TemplateSyntaxError(
+          "list<struct<...>> is redundant; use named fields directly: list<name = str, count = int>",
+        );
+      }
+      return { kind: "scalar_list", elementType };
+    }
+    const fields = parseFieldList(inner);
+    return { kind: "list", fields };
+  }
+
+  if (t.startsWith("struct<")) {
+    const inner = extractAngleBrackets(t, "struct");
+    if (inner === "") {
+      throw new TemplateSyntaxError(
+        "untyped struct<> is not allowed; must specify fields (e.g., struct<name = str>)",
+      );
+    }
+    const fields = parseFieldList(inner);
+    return { kind: "struct", fields };
+  }
+
+  if (t.startsWith("option<")) {
+    const inner = extractAngleBrackets(t, "option");
+    const innerType = parseVarType(inner);
+    // Desugar option<T> to enum<Some(val = T), None> with isOption flag
+    return {
+      kind: "enum",
+      variants: [
+        { name: "Some", fields: [{ name: "val", varType: innerType }] },
+        { name: "None", fields: [] },
+      ],
+      isOption: true,
+    };
+  }
+
+  if (t.startsWith("enum<")) {
+    const inner = extractAngleBrackets(t, "enum");
+    const variants = parseVariantList(inner);
+    // Reject variant names that shadow builtin type keywords.
+    const RESERVED_TYPE_KEYWORDS = [
+      "str",
+      "bool",
+      "int",
+      "float",
+      "list",
+      "struct",
+      "enum",
+      "tmpl",
+      "option",
+    ];
+    for (const v of variants) {
+      if (RESERVED_TYPE_KEYWORDS.includes(v.name)) {
+        throw new TemplateSyntaxError(
+          `enum variant name '${v.name}' shadows a builtin type keyword`,
+        );
+      }
+    }
+    return { kind: "enum", variants };
+  }
+
+  if (t.startsWith("tmpl<")) {
+    const inner = extractAngleBrackets(t, "tmpl");
+    if (inner === "") return { kind: "struct", fields: [] };
+    const fields = parseFieldList(inner);
+    return { kind: "struct", fields };
+  }
+
+  // Type alias reference
+  return { kind: "alias", name: t };
+}
+
+/** Extract content between angle brackets: `list<...>` → `...`. */
+function extractAngleBrackets(s: string, prefix: string): string {
+  const start = prefix.length + 1; // skip "prefix<"
+  // Find matching closing >
+  let depth = 1;
+  let i = start;
+  while (i < s.length && depth > 0) {
+    if (s[i] === "<") depth++;
+    else if (s[i] === ">") depth--;
+    i++;
+  }
+  return s.slice(start, i - 1).trim();
+}
+
+/** Parse a comma-separated field list: `name = str, score = int`. */
+function parseFieldList(inner: string): VarDecl[] {
+  const items = splitTopLevel(inner, ",");
+  return items.map((item) => {
+    const trimmed = item.trim();
+    const eqIdx = trimmed.indexOf("=");
+    if (eqIdx === -1) {
+      throw new TemplateSyntaxError(
+        `field must have form 'name = type': '${trimmed}'`,
+      );
+    }
+    const name = trimmed.slice(0, eqIdx).trim();
+    const typeStr = trimmed.slice(eqIdx + 1).trim();
+    return { name, varType: parseVarType(typeStr) };
+  });
+}
+
+/** Parse a comma-separated variant list: `Confirmed(evidence = str), Rejected`. */
+function parseVariantList(inner: string): VariantDecl[] {
+  const items = splitTopLevel(inner, ",");
+  return items.map((item) => {
+    const trimmed = item.trim();
+    const parenIdx = trimmed.indexOf("(");
+    if (parenIdx === -1) {
+      return { name: trimmed, fields: [] };
+    }
+    const name = trimmed.slice(0, parenIdx).trim();
+    const fieldsStr = trimmed.slice(parenIdx + 1, -1).trim();
+    const fields = parseFieldList(fieldsStr);
+    return { name, fields };
+  });
+}
+
+/**
+ * Split a string by a delimiter, respecting nested angle brackets, curly braces, and parens.
+ */
+function splitTopLevel(s: string, delimiter: string): string[] {
+  const result: string[] = [];
+  let depth = 0;
+  let current = "";
+
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]!;
+    if (ch === "<" || ch === "(" || ch === "{") {
+      depth++;
+      current += ch;
+    } else if (ch === ">" || ch === ")" || ch === "}") {
+      depth--;
+      current += ch;
+    } else if (ch === delimiter && depth === 0) {
+      result.push(current);
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  if (current.trim().length > 0) {
+    result.push(current);
+  }
+  return result;
+}
+
+/** Parse inline list like `[x = str, y = int]`. */
+function parseInlineList(s: string): string[] {
+  const trimmed = s.trim();
+  if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) {
+    throw new TemplateSyntaxError(`expected inline list: ${s}`);
+  }
+  const inner = trimmed.slice(1, -1).trim();
+  if (inner === "") return [];
+  return splitTopLevel(inner, ",");
+}
+
+/** Split `name = type := default` into `["name = type", "default"]`. */
+function splitDefault(raw: string): [string, string | undefined] {
+  const marker = ":=";
+  const idx = raw.indexOf(marker);
+  if (idx === -1) return [raw, undefined];
+  return [raw.slice(0, idx).trim(), raw.slice(idx + marker.length).trim()];
+}
+
+/** Parse a literal value for a default. */
+function parseLiteral(literal: string, varType: VarType): Value {
+  // Option types need to be checked first so that quoted strings like
+  // "None" are correctly parsed as Some(val="None") rather than being
+  // consumed by the generic string literal handler as str("None").
+  if (varType.kind === "enum" && varType.isOption) {
+    // Bare None → unit variant
+    if (literal === "None") {
+      return str("None");
+    }
+    // Any other literal → auto-wrap to Some(val = <parsed value>)
+    const someVariant = varType.variants.find((v) => v.name === "Some");
+    if (someVariant && someVariant.fields.length === 1) {
+      const innerType = someVariant.fields[0]!.varType;
+      const innerVal = parseLiteral(literal, innerType);
+      return {
+        type: "dict",
+        fields: new Map<string, Value>([
+          [ENUM_TAG_KEY, str("Some")],
+          ["val", innerVal],
+        ]),
+      };
+    }
+  }
+
+  // String literals
+  if (
+    (literal.startsWith('"') && literal.endsWith('"')) ||
+    (literal.startsWith("'") && literal.endsWith("'"))
+  ) {
+    return str(literal.slice(1, -1));
+  }
+
+  // Boolean
+  if (literal === "true") return bool(true);
+  if (literal === "false") return bool(false);
+
+  // Struct literals: {KEY = "val", KEY2 = 42}
+  if (varType.kind === "struct" && literal.startsWith("{")) {
+    return parseStructLiteral(literal, varType);
+  }
+
+  // Integer
+  if (
+    varType.kind === "int" ||
+    (varType.kind !== "float" && /^-?\d+$/.test(literal))
+  ) {
+    const n = parseInt(literal, 10);
+    if (!isNaN(n)) return int(n);
+  }
+
+  // Float
+  const f = parseFloat(literal);
+  if (!isNaN(f)) return float(f);
+
+  // If the expected type is an Enum, validate variant identifiers.
+  if (varType.kind === "enum") {
+    // Check for struct variant default: VariantName(field = value, ...)
+    const openParen = literal.indexOf("(");
+    if (openParen !== -1 && literal.endsWith(")")) {
+      const variantName = literal.slice(0, openParen).trim();
+      const innerFields = literal.slice(openParen + 1, -1).trim();
+      const variant = varType.variants.find((v) => v.name === variantName);
+      if (!variant) {
+        throw new TemplateSyntaxError(`unknown enum variant '${variantName}'`);
+      }
+      if (variant.fields.length === 0) {
+        throw new TemplateSyntaxError(
+          `unit variant '${variantName}' cannot have fields`,
+        );
+      }
+      // Parse field values and build a tagged dict.
+      const fieldEntries = splitTopLevel(innerFields, ",");
+      const entries: [string, Value][] = [[ENUM_TAG_KEY, str(variantName)]];
+      // Build a lookup for field types.
+      const fieldTypeMap = new Map<string, VarType>();
+      for (const f of variant.fields) {
+        fieldTypeMap.set(f.name, f.varType);
+      }
+      for (const entry of fieldEntries) {
+        const trimmedEntry = entry.trim();
+        if (trimmedEntry === "") continue;
+        const eqPos = trimmedEntry.indexOf("=");
+        if (eqPos === -1) continue;
+        const key = trimmedEntry.slice(0, eqPos).trim();
+        const valStr = trimmedEntry.slice(eqPos + 1).trim();
+        const fieldType = fieldTypeMap.get(key) ?? { kind: "str" as const };
+        entries.push([key, parseLiteral(valStr, fieldType)]);
+      }
+      return { type: "dict", fields: new Map(entries) };
+    }
+
+    // Bare identifier — must be a known variant.
+    const variant = varType.variants.find((v) => v.name === literal);
+    if (!variant) {
+      throw new TemplateSyntaxError(`unknown enum variant '${literal}'`);
+    }
+    if (variant.fields.length > 0) {
+      throw new TemplateSyntaxError(
+        `struct variant '${literal}' requires fields; use ${literal}(field = value)`,
+      );
+    }
+    return str(literal);
+  }
+
+  // If the expected type is a type alias, allow unquoted identifiers.
+  if (varType.kind === "alias") {
+    return str(literal);
+  }
+
+  // Fallback to string
+  throw new TemplateSyntaxError(
+    `invalid default value: '${literal}' (strings must be quoted)`,
+  );
+}
+
+/**
+ * Parse a struct literal like `{KEY = "value", KEY2 = 42}`.
+ * Supports string, int, float, and bool values.
+ */
+function parseStructLiteral(
+  literal: string,
+  varType: Extract<VarType, { kind: "struct" }>,
+): Value {
+  const inner = literal.slice(1, -1).trim();
+  if (inner === "") {
+    return { type: "dict", fields: new Map() };
+  }
+
+  // Build a lookup of field name → VarType from the struct declaration
+  const fieldTypeMap = new Map<string, VarType>();
+  for (const field of varType.fields) {
+    fieldTypeMap.set(field.name, field.varType);
+  }
+
+  const entries: [string, Value][] = [];
+  // Split top-level by comma, respecting nested brackets/quotes
+  const pairs = splitTopLevel(inner, ",");
+  for (const pair of pairs) {
+    const trimmed = pair.trim();
+    const eqIdx = trimmed.indexOf("=");
+    if (eqIdx === -1) continue;
+    const key = trimmed.slice(0, eqIdx).trim();
+    const valStr = trimmed.slice(eqIdx + 1).trim();
+    const fieldType = fieldTypeMap.get(key) ?? { kind: "str" as const };
+    entries.push([key, parseLiteral(valStr, fieldType)]);
+  }
+  return { type: "dict", fields: new Map(entries) };
+}

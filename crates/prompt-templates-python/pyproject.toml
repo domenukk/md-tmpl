@@ -4,10 +4,11 @@ build-backend = "maturin"
 
 [project]
 name = "prompt-templates"
-version = "0.1.4"
-description = "Strongly-typed template engine for LLM prompts — Python bindings"
+version = "0.2.0"
+description = "Strongly-typed template engine for LLM prompts"
 license = { text = "Apache-2.0 OR MIT" }
 requires-python = ">=3.10"
+dependencies = ["flatbuffers>=25.12"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Intended Audience :: Developers",
@@ -27,7 +28,7 @@ keywords = ["template", "prompt", "llm", "ai", "typed"]
 [project.urls]
 Homepage = "https://github.com/domenukk/prompt-templates"
 Repository = "https://github.com/domenukk/prompt-templates"
-Documentation = "https://github.com/domenukk/prompt-templates/blob/main/README.md"
+Documentation = "https://github.com/domenukk/prompt-templates/blob/main/crates/prompt-templates-python/README.md"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]

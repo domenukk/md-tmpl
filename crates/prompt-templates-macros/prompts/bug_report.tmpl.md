@@ -1,1 +1,0 @@
-../../prompt-templates/prompts/bug_report.tmpl.md

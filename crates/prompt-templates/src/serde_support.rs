@@ -2,15 +2,20 @@
 //!
 //! Enabled by the `serde` feature flag.
 
-use std::{collections::HashMap, fmt};
+use alloc::{
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
+use core::fmt;
 
 use serde::ser::{self, Serialize};
 
-use crate::value::Value;
+use crate::{compat::HashMap, value::Value};
 
 /// Convert any `Serialize` type into a [`Value`].
 ///
-/// Structs become `Dict`, vectors become `List`, strings/numbers/bools map
+/// Structs become `Struct`, vectors become `List`, strings/numbers/bools map
 /// to their corresponding `Value` variants.
 ///
 /// # Errors
@@ -51,7 +56,7 @@ impl fmt::Display for SerError {
     }
 }
 
-impl std::error::Error for SerError {}
+impl core::error::Error for SerError {}
 
 impl ser::Error for SerError {
     fn custom<T: fmt::Display>(msg: T) -> Self {
@@ -124,7 +129,8 @@ impl ser::Serializer for ValueSerializer {
     }
 
     fn serialize_none(self) -> Result<Value, SerError> {
-        Ok(Value::Str(String::new()))
+        // Map to the template engine's `None` variant for `option<T>`.
+        Ok(Value::Str(crate::consts::OPTION_NONE.to_string()))
     }
     fn serialize_some<T: ?Sized + Serialize>(self, value: &T) -> Result<Value, SerError> {
         value.serialize(self)
@@ -160,7 +166,10 @@ impl ser::Serializer for ValueSerializer {
         value: &T,
     ) -> Result<Value, SerError> {
         let inner = value.serialize(ValueSerializer)?;
-        Ok(Value::Dict(HashMap::from([(variant.to_string(), inner)])))
+        Ok(Value::Struct(Arc::new(HashMap::from([(
+            variant.to_string(),
+            inner,
+        )]))))
     }
 
     fn serialize_seq(self, len: Option<usize>) -> Result<SeqBuilder, SerError> {
@@ -186,15 +195,15 @@ impl ser::Serializer for ValueSerializer {
         Ok(SeqBuilder(Vec::with_capacity(len)))
     }
 
-    fn serialize_map(self, _len: Option<usize>) -> Result<MapBuilder, SerError> {
+    fn serialize_map(self, len: Option<usize>) -> Result<MapBuilder, SerError> {
         Ok(MapBuilder {
-            map: HashMap::new(),
+            map: HashMap::with_capacity(len.unwrap_or(0)),
             pending_key: None,
         })
     }
-    fn serialize_struct(self, _name: &'static str, _len: usize) -> Result<MapBuilder, SerError> {
+    fn serialize_struct(self, _name: &'static str, len: usize) -> Result<MapBuilder, SerError> {
         Ok(MapBuilder {
-            map: HashMap::new(),
+            map: HashMap::with_capacity(len),
             pending_key: None,
         })
     }
@@ -203,9 +212,9 @@ impl ser::Serializer for ValueSerializer {
         _name: &'static str,
         _idx: u32,
         variant: &'static str,
-        _len: usize,
+        len: usize,
     ) -> Result<MapBuilder, SerError> {
-        let mut map = HashMap::new();
+        let mut map = HashMap::with_capacity(len + 1); // +1 for the tag key
         map.insert(
             crate::consts::ENUM_TAG_KEY.to_string(),
             Value::Str(variant.to_string()),
@@ -231,7 +240,7 @@ impl ser::SerializeSeq for SeqBuilder {
         Ok(())
     }
     fn end(self) -> Result<Value, SerError> {
-        Ok(Value::List(self.0))
+        Ok(Value::List(Arc::new(self.0)))
     }
 }
 
@@ -306,7 +315,7 @@ impl ser::SerializeMap for MapBuilder {
         Ok(())
     }
     fn end(self) -> Result<Value, SerError> {
-        Ok(Value::Dict(self.map))
+        Ok(Value::Struct(Arc::new(self.map)))
     }
 }
 
@@ -323,7 +332,7 @@ impl ser::SerializeStruct for MapBuilder {
         Ok(())
     }
     fn end(self) -> Result<Value, SerError> {
-        Ok(Value::Dict(self.map))
+        Ok(Value::Struct(Arc::new(self.map)))
     }
 }
 
@@ -358,7 +367,7 @@ impl fmt::Display for DeError {
     }
 }
 
-impl std::error::Error for DeError {}
+impl core::error::Error for DeError {}
 
 impl de::Error for DeError {
     fn custom<T: fmt::Display>(msg: T) -> Self {
@@ -370,7 +379,7 @@ impl de::Error for DeError {
 ///
 /// This is the inverse of [`to_value`]. Enums are supported:
 /// - `Value::Str("Variant")` deserializes as a unit variant.
-/// - `Value::Dict({"__kind__": "Variant", ...})` deserializes as a struct variant.
+/// - `Value::Struct({"__kind__": "Variant", ...})` deserializes as a struct variant.
 ///
 /// # Errors
 ///
@@ -388,7 +397,7 @@ impl de::Error for DeError {
 ///     score: i64,
 /// }
 ///
-/// let val = Value::dict([
+/// let val = Value::new_struct([
 ///     ("name", Value::Str("Alice".into())),
 ///     ("score", Value::Int(95)),
 /// ]);
@@ -417,7 +426,7 @@ impl<'de> de::Deserializer<'de> for ValueDeserializer<'de> {
             Value::Float(f) => visitor.visit_f64(*f),
             Value::Bool(b) => visitor.visit_bool(*b),
             Value::List(v) => visitor.visit_seq(SeqDeserializer::new(v)),
-            Value::Dict(m) => visitor.visit_map(MapDeserializer::new(m)),
+            Value::Struct(m) => visitor.visit_map(MapDeserializer::new(m)),
             Value::Tmpl(_) => Err(DeError(
                 "cannot deserialize a Tmpl value — templates are not data".into(),
             )),
@@ -468,7 +477,7 @@ impl<'de> de::Deserializer<'de> for ValueDeserializer<'de> {
 
     fn deserialize_map<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
         match self.0 {
-            Value::Dict(m) => visitor.visit_map(MapDeserializer::new(m)),
+            Value::Struct(m) => visitor.visit_map(MapDeserializer::new(m)),
             other => Err(DeError(format!("expected dict, got {}", other.type_name()))),
         }
     }
@@ -491,8 +500,8 @@ impl<'de> de::Deserializer<'de> for ValueDeserializer<'de> {
         match self.0 {
             // Unit variant: Value::Str("Variant")
             Value::Str(s) => visitor.visit_enum(EnumDeserializer::Unit(s)),
-            // Struct variant: Value::Dict({"__kind__": "Variant", ...fields})
-            Value::Dict(m) => {
+            // Struct variant: Value::Struct({"__kind__": "Variant", ...fields})
+            Value::Struct(m) => {
                 let tag_key = crate::consts::ENUM_TAG_KEY;
                 let tag = match m.get(tag_key) {
                     Some(Value::Str(s)) => s.as_str(),
@@ -512,9 +521,11 @@ impl<'de> de::Deserializer<'de> for ValueDeserializer<'de> {
     }
 
     fn deserialize_option<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
-        // Empty string → None, anything else → Some
+        // Template `None` variant or empty string → Rust None, anything else → Some.
         match self.0 {
-            Value::Str(s) if s.is_empty() => visitor.visit_none(),
+            Value::Str(s) if s.is_empty() || s == crate::consts::OPTION_NONE => {
+                visitor.visit_none()
+            }
             _ => visitor.visit_some(self),
         }
     }
@@ -571,7 +582,7 @@ impl<'de> de::Deserializer<'de> for ValueDeserializer<'de> {
 // -- Sequence deserializer --
 
 struct SeqDeserializer<'de> {
-    iter: std::slice::Iter<'de, Value>,
+    iter: core::slice::Iter<'de, Value>,
 }
 
 impl<'de> SeqDeserializer<'de> {
@@ -596,7 +607,7 @@ impl<'de> de::SeqAccess<'de> for SeqDeserializer<'de> {
 // -- Map deserializer --
 
 struct MapDeserializer<'de> {
-    iter: std::collections::hash_map::Iter<'de, String, Value>,
+    iter: crate::compat::hash_map::Iter<'de, String, Value>,
     current_value: Option<&'de Value>,
 }
 
@@ -716,7 +727,7 @@ impl<'de> de::VariantAccess<'de> for VariantDeserializer<'de> {
 // -- Filtered map deserializer (skips ENUM_TAG_KEY for struct variants) --
 
 struct FilteredMapDeserializer<'de> {
-    iter: std::collections::hash_map::Iter<'de, String, Value>,
+    iter: crate::compat::hash_map::Iter<'de, String, Value>,
     current_value: Option<&'de Value>,
 }
 
@@ -761,6 +772,73 @@ impl<'de> de::MapAccess<'de> for FilteredMapDeserializer<'de> {
             .take()
             .ok_or_else(|| DeError("map value without key".into()))?;
         seed.deserialize(ValueDeserializer(val))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Deserializer implementation: D → Value
+// ---------------------------------------------------------------------------
+
+impl<'de> serde::Deserialize<'de> for Value {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ValueVisitor;
+        impl<'de> serde::de::Visitor<'de> for ValueVisitor {
+            type Value = Value;
+            fn expecting(&self, formatter: &mut core::fmt::Formatter) -> core::fmt::Result {
+                formatter.write_str("any valid template value")
+            }
+            fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<Self::Value, E> {
+                Ok(Value::Bool(v))
+            }
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Self::Value, E> {
+                Ok(Value::Int(v))
+            }
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Self::Value, E> {
+                Ok(Value::Int(v.try_into().map_err(serde::de::Error::custom)?))
+            }
+            fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Self::Value, E> {
+                Ok(Value::Float(v))
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(Value::Str(v.into()))
+            }
+            fn visit_string<E: serde::de::Error>(self, v: String) -> Result<Self::Value, E> {
+                Ok(Value::Str(v))
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut vec = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+                while let Some(elem) = seq.next_element()? {
+                    vec.push(elem);
+                }
+                Ok(Value::List(Arc::new(vec)))
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut hashmap =
+                    crate::compat::HashMap::with_capacity(map.size_hint().unwrap_or(0));
+                while let Some((key, value)) = map.next_entry::<String, Value>()? {
+                    hashmap.insert(key, value);
+                }
+                Ok(Value::Struct(Arc::new(hashmap)))
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                // null / unit → template `None` variant for `option<T>`.
+                Ok(Value::Str(crate::consts::OPTION_NONE.to_string()))
+            }
+            fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                // serde `None` → template `None` variant for `option<T>`.
+                Ok(Value::Str(crate::consts::OPTION_NONE.to_string()))
+            }
+        }
+        deserializer.deserialize_any(ValueVisitor)
     }
 }
 
@@ -840,7 +918,7 @@ mod tests {
     #[test]
     fn option_none() {
         let val = to_value(&Option::<String>::None).unwrap();
-        assert_eq!(val, Value::Str(String::new()));
+        assert_eq!(val, Value::Str("None".into()));
     }
 
     #[test]
@@ -871,18 +949,18 @@ mod tests {
 
         // Struct variant → tagged dict (no #[serde(tag)] needed)
         let val = to_value(&Severity::Critical {
-            reason: "RCE".into(),
+            reason: "urgent".into(),
         })
         .unwrap();
         let dict = match &val {
-            Value::Dict(m) => m,
-            other => panic!("expected Dict, got {}", other.type_name()),
+            Value::Struct(m) => m,
+            other => panic!("expected Struct, got {}", other.type_name()),
         };
         assert_eq!(
             dict.get(crate::consts::ENUM_TAG_KEY),
             Some(&Value::Str("Critical".into()))
         );
-        assert_eq!(dict.get("reason"), Some(&Value::Str("RCE".into())));
+        assert_eq!(dict.get("reason"), Some(&Value::Str("urgent".into())));
 
         // Unit variant → plain string (unchanged)
         let val = to_value(&Severity::High).unwrap();
@@ -898,7 +976,7 @@ mod tests {
             name: String,
             score: i64,
         }
-        let val = Value::dict([
+        let val = Value::new_struct([
             ("name", Value::Str("Alice".into())),
             ("score", Value::Int(95)),
         ]);
@@ -925,7 +1003,7 @@ mod tests {
 
     #[test]
     fn from_value_vec() {
-        let val = Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        let val = Value::List(Arc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
         let v: Vec<i64> = from_value(&val).unwrap();
         assert_eq!(v, vec![1, 2, 3]);
     }
@@ -948,15 +1026,15 @@ mod tests {
             Critical { reason: String },
             High,
         }
-        let val = Value::dict([
+        let val = Value::new_struct([
             (crate::consts::ENUM_TAG_KEY, Value::Str("Critical".into())),
-            ("reason", Value::Str("RCE".into())),
+            ("reason", Value::Str("urgent".into())),
         ]);
         let sev: Severity = from_value(&val).unwrap();
         assert_eq!(
             sev,
             Severity::Critical {
-                reason: "RCE".into()
+                reason: "urgent".into()
             }
         );
     }
@@ -970,7 +1048,7 @@ mod tests {
         }
 
         let original = Severity::Critical {
-            reason: "overflow".into(),
+            reason: "critical issue".into(),
         };
         let val = to_value(&original).unwrap();
         let restored: Severity = from_value(&val).unwrap();
@@ -1027,8 +1105,8 @@ mod tests {
         enum Status {
             Active,
         }
-        // Dict without ENUM_TAG_KEY key
-        let val = Value::dict([("name", Value::Str("oops".into()))]);
+        // Struct without ENUM_TAG_KEY key
+        let val = Value::new_struct([("name", Value::Str("oops".into()))]);
         let result = from_value::<Status>(&val);
         assert!(result.is_err());
         assert!(
@@ -1050,7 +1128,7 @@ mod tests {
             score: i64,
         }
 
-        let original = Value::dict([
+        let original = Value::new_struct([
             ("name", Value::Str("Alice".into())),
             ("score", Value::Int(95)),
         ]);
@@ -1067,9 +1145,9 @@ mod tests {
             High,
         }
 
-        let original = Value::dict([
+        let original = Value::new_struct([
             (crate::consts::ENUM_TAG_KEY, Value::Str("Critical".into())),
-            ("reason", Value::Str("RCE".into())),
+            ("reason", Value::Str("urgent".into())),
         ]);
         let sev: Severity = from_value(&original).unwrap();
         let restored = to_value(&sev).unwrap();
@@ -1108,7 +1186,7 @@ mod tests {
         struct Agent {
             name: String,
         }
-        let val = Value::dict([("name", Value::Str("Bob".into()))]);
+        let val = Value::new_struct([("name", Value::Str("Bob".into()))]);
         let agent: Agent = val.deserialize_into().unwrap();
         assert_eq!(agent, Agent { name: "Bob".into() });
     }

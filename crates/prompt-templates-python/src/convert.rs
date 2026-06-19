@@ -1,9 +1,11 @@
 //! Bidirectional conversion between Python objects and [`Value`].
 
-use std::collections::HashMap;
+use std::sync::Arc;
 
-use prompt_templates::Value;
+use hashbrown::HashMap;
+use prompt_templates::{Frontmatter, Value};
 use pyo3::{
+    Py,
     prelude::*,
     types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString},
 };
@@ -20,15 +22,23 @@ const ENUM_TAG_KEY: &str = prompt_templates::consts::ENUM_TAG_KEY;
 /// - `float` → `Value::Float`
 /// - `str`  → `Value::Str`
 /// - `list` → `Value::List`  (recursive)
-/// - `dict` → `Value::Dict`  (recursive)
+/// - `dict` → `Value::Struct`  (recursive)
 /// - objects with `_prompt_template_tag` → enum variant dicts
 /// - `enum.Enum` members (have `_name_`) → `Value::Str` or tagged dict
-/// - objects with `__dict__` → `Value::Dict` (dataclass-like)
+/// - objects with `__dict__` → `Value::Struct` (dataclass-like)
 ///
 /// # Errors
 ///
 /// Returns a `PyErr` if the value type is not supported or conversion fails.
 pub(crate) fn py_to_value(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
+    // Python None maps to the template engine's `None` variant, used by
+    // `option<T>` types (desugared to `enum<Some(val=T), None>`).
+    if obj.is_none() {
+        return Ok(Value::Str(
+            prompt_templates::consts::OPTION_NONE.to_string(),
+        ));
+    }
+
     // Bool must be checked before int because bool is a subclass of int.
     if obj.is_instance_of::<PyBool>() {
         return Ok(Value::Bool(obj.extract::<bool>()?));
@@ -42,16 +52,21 @@ pub(crate) fn py_to_value(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
     if obj.is_instance_of::<PyString>() {
         return Ok(Value::Str(obj.extract::<String>()?));
     }
+    // Template objects → Value::Tmpl (must be before __dict__ fallback).
+    if obj.is_instance_of::<crate::template::PyTemplate>() {
+        let py_template: PyRef<'_, crate::template::PyTemplate> = obj.extract()?;
+        return Ok(Value::Tmpl(Arc::new(py_template.inner().clone())));
+    }
     if obj.is_instance_of::<PyList>() {
-        let list = obj.downcast::<PyList>()?;
+        let list = obj.cast::<PyList>()?;
         let mut items = Vec::with_capacity(list.len());
         for item in list.iter() {
             items.push(py_to_value(&item)?);
         }
-        return Ok(Value::List(items));
+        return Ok(Value::List(Arc::new(items)));
     }
     if obj.is_instance_of::<PyDict>() {
-        return py_dict_to_value(obj.downcast::<PyDict>()?);
+        return py_dict_to_value(obj.cast::<PyDict>()?);
     }
 
     // Check for generated enum variant instances (have `_prompt_template_tag`).
@@ -100,7 +115,7 @@ fn try_convert_tagged_variant(obj: &Bound<'_, PyAny>) -> PyResult<Option<Value>>
     })?;
 
     // _prompt_template_fields may be a property returning a dict or a stored dict.
-    let fields_dict = fields_attr.downcast::<PyDict>().map_err(|_| {
+    let fields_dict = fields_attr.cast::<PyDict>().map_err(|_| {
         pyo3::exceptions::PyTypeError::new_err("_prompt_template_fields must return a dict")
     })?;
 
@@ -109,7 +124,7 @@ fn try_convert_tagged_variant(obj: &Bound<'_, PyAny>) -> PyResult<Option<Value>>
         map.insert(key, py_to_value(&v)?);
     }
 
-    Ok(Some(Value::Dict(map)))
+    Ok(Some(Value::Struct(Arc::new(map))))
 }
 
 /// Try to convert a `enum.Enum` member (has `_name_` attribute).
@@ -130,7 +145,7 @@ fn try_convert_enum_member(obj: &Bound<'_, PyAny>) -> PyResult<Option<Value>> {
         return Ok(Some(Value::Str(name)));
     };
 
-    match value_attr.downcast::<PyDict>() {
+    match value_attr.cast::<PyDict>() {
         Ok(dict) => {
             let mut map = HashMap::with_capacity(dict.len() + 1);
             map.insert(ENUM_TAG_KEY.to_string(), Value::Str(name));
@@ -138,7 +153,7 @@ fn try_convert_enum_member(obj: &Bound<'_, PyAny>) -> PyResult<Option<Value>> {
                 let key: String = k.extract()?;
                 map.insert(key, py_to_value(&v)?);
             }
-            Ok(Some(Value::Dict(map)))
+            Ok(Some(Value::Struct(Arc::new(map))))
         }
         Err(_) => Ok(Some(Value::Str(name))),
     }
@@ -152,20 +167,20 @@ fn try_convert_dict_object(obj: &Bound<'_, PyAny>) -> PyResult<Option<Value>> {
         return Ok(None);
     };
 
-    match dict_attr.downcast::<PyDict>() {
+    match dict_attr.cast::<PyDict>() {
         Ok(dict) => py_dict_to_value(dict).map(Some),
         Err(_) => Ok(None),
     }
 }
 
-/// Convert a Python dict to `Value::Dict`.
+/// Convert a Python dict to `Value::Struct`.
 fn py_dict_to_value(dict: &Bound<'_, PyDict>) -> PyResult<Value> {
     let mut map = HashMap::with_capacity(dict.len());
     for (k, v) in dict.iter() {
         let key: String = k.extract()?;
         map.insert(key, py_to_value(&v)?);
     }
-    Ok(Value::Dict(map))
+    Ok(Value::Struct(Arc::new(map)))
 }
 
 /// Convert a template [`Value`] back to a Python object.
@@ -173,7 +188,7 @@ fn py_dict_to_value(dict: &Bound<'_, PyDict>) -> PyResult<Value> {
 /// # Errors
 ///
 /// Returns a `PyErr` if allocation fails.
-pub(crate) fn value_to_py(py: Python<'_>, value: &Value) -> PyResult<PyObject> {
+pub(crate) fn value_to_py(py: Python<'_>, value: &Value) -> PyResult<Py<PyAny>> {
     match value {
         Value::Str(s) => Ok(s.into_pyobject(py)?.into_any().unbind()),
         Value::Bool(b) => Ok(b.into_pyobject(py)?.to_owned().into_any().unbind()),
@@ -181,20 +196,26 @@ pub(crate) fn value_to_py(py: Python<'_>, value: &Value) -> PyResult<PyObject> {
         Value::Float(f) => Ok(f.into_pyobject(py)?.into_any().unbind()),
         Value::List(items) => {
             let list = PyList::empty(py);
-            for item in items {
+            for item in items.iter() {
                 list.append(value_to_py(py, item)?)?;
             }
             Ok(list.into_any().unbind())
         }
-        Value::Dict(map) => {
+        Value::Struct(map) => {
             let dict = PyDict::new(py);
-            for (k, v) in map {
+            for (k, v) in map.iter() {
                 dict.set_item(k, value_to_py(py, v)?)?;
             }
             Ok(dict.into_any().unbind())
         }
-        Value::Tmpl(_) => Err(pyo3::exceptions::PyTypeError::new_err(
-            "cannot convert template value to Python object",
-        )),
+        Value::Tmpl(tmpl) => {
+            let inner = (**tmpl).clone();
+            let frontmatter = Frontmatter {
+                declarations: inner.declarations().to_vec(),
+                ..Default::default()
+            };
+            let py_tmpl = crate::template::PyTemplate::from_inner(inner, frontmatter);
+            Ok(Py::new(py, py_tmpl)?.into_any())
+        }
     }
 }

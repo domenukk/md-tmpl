@@ -134,8 +134,8 @@ fn types_chained_aliases() {
     let yaml = concat!(
         "types:\n",
         "  - Severity = enum<Critical, High, Medium, Low>\n",
-        "  - BugEntry = list<title = str, severity = Severity>\n",
-        "params: [bugs = BugEntry]"
+        "  - TaskEntry = list<title = str, severity = Severity>\n",
+        "params: [tasks = TaskEntry]"
     );
     let doc = assert_valid_yaml(yaml);
     let types = doc["types"].as_sequence().unwrap();
@@ -143,7 +143,7 @@ fn types_chained_aliases() {
     let source = source_from_yaml(yaml);
     let our_types = our_parser_type_names(&source);
     assert!(our_types.contains(&"Severity".to_string()));
-    assert!(our_types.contains(&"BugEntry".to_string()));
+    assert!(our_types.contains(&"TaskEntry".to_string()));
 }
 
 #[test]
@@ -234,7 +234,7 @@ fn params_simple_types() {
 #[test]
 fn params_with_defaults() {
     let yaml =
-        "params:\n  - name = str := world\n  - count = int := 42\n  - verbose = bool := true";
+        "params:\n  - name = str := \"world\"\n  - count = int := 42\n  - verbose = bool := true";
     assert_valid_yaml(yaml);
     let source = source_from_yaml(yaml);
     let (fm, _) = parse_frontmatter(&source).expect("parse failed");
@@ -265,13 +265,13 @@ fn params_compound_list() {
 }
 
 #[test]
-fn params_compound_dict() {
-    let yaml = "params:\n  - meta = dict<key = str, value = int>";
+fn params_compound_struct() {
+    let yaml = "params:\n  - meta = struct<key = str, value = int>";
     assert_valid_yaml(yaml);
     let source = source_from_yaml(yaml);
     let our_params = our_parser_params(&source);
     assert_eq!(our_params[0].0, "meta");
-    assert!(our_params[0].1.contains("dict"));
+    assert!(our_params[0].1.contains("struct"));
 }
 
 #[test]
@@ -337,7 +337,7 @@ fn full_realistic_types_imports_params() {
         "  - \"[header](header.tmpl.md)\"\n",
         "params:\n",
         "  - title = str\n",
-        "  - bugs = list<name = str, severity = Severity>\n",
+        "  - tasks = list<name = str, severity = Severity>\n",
         "allow_unused: true"
     );
     let doc = assert_valid_yaml(yaml);
@@ -346,7 +346,7 @@ fn full_realistic_types_imports_params() {
     assert!(mapping.contains_key(serde_yaml::Value::String("imports".into())));
     assert!(mapping.contains_key(serde_yaml::Value::String("params".into())));
 
-    let source = "---\ntypes:\n  - Severity = enum<Critical, High, Medium, Low>\nimports: [[header](header.tmpl.md)]\nparams:\n  - title = str\n  - bugs = list<name = str, severity = Severity>\nallow_unused: true\n---\nbody";
+    let source = "---\ntypes:\n  - Severity = enum<Critical, High, Medium, Low>\nimports: [[header](header.tmpl.md)]\nparams:\n  - title = str\n  - tasks = list<name = str, severity = Severity>\nallow_unused: true\n---\nbody";
     let (fm, _) = parse_frontmatter(source).expect("our parser failed");
     assert!(fm.type_aliases.contains_key("Severity"));
     assert_eq!(fm.imports.len(), 1);
@@ -412,13 +412,13 @@ fn kitchen_sink() {
         "description: Everything at once\n",
         "types:\n",
         "  - Priority = enum<Low, Medium, High>\n",
-        "  - BugList = list<title = str, severity = Priority>\n",
+        "  - TaskList = list<title = str, severity = Priority>\n",
         "imports:\n",
         "  - \"[header](header.tmpl.md)\"\n",
         "  - \"[footer](footer.tmpl.md)\"\n",
         "params:\n",
         "  - agent_name = str\n",
-        "  - bugs = BugList\n",
+        "  - tasks = TaskList\n",
         "  - verbose = bool := false\n",
         "allow_unused: true"
     );
@@ -428,7 +428,7 @@ fn kitchen_sink() {
     assert!(mapping.contains_key(serde_yaml::Value::String("types".into())));
     assert!(mapping.contains_key(serde_yaml::Value::String("params".into())));
 
-    let source = "---\nname: kitchen_sink\ndescription: Everything at once\ntypes:\n  - Priority = enum<Low, Medium, High>\n  - BugList = list<title = str, severity = Priority>\nimports: [[header](header.tmpl.md), [footer](footer.tmpl.md)]\nparams:\n  - agent_name = str\n  - bugs = BugList\n  - verbose = bool := false\nallow_unused: true\n---\nbody";
+    let source = "---\nname: kitchen_sink\ndescription: Everything at once\ntypes:\n  - Priority = enum<Low, Medium, High>\n  - TaskList = list<title = str, severity = Priority>\nimports: [[header](header.tmpl.md), [footer](footer.tmpl.md)]\nparams:\n  - agent_name = str\n  - tasks = TaskList\n  - verbose = bool := false\nallow_unused: true\n---\nbody";
     let (fm, _) = parse_frontmatter(source).expect("our parser failed");
     assert_eq!(fm.name, "kitchen_sink");
     assert_eq!(fm.imports.len(), 2);
@@ -651,9 +651,9 @@ fn duplicate_type_alias_names_rejected() {
 // Rule 3: Param/type name collision with type mismatch → error
 #[test]
 fn param_type_collision_different_types_rejected() {
-    // Type alias `Bugs` exists, but param `bugs` has a different type (str).
-    // PascalCase of `bugs` = `Bugs`, which collides with the alias.
-    let source = "---\ntypes:\n  - Bugs = enum<A, B>\nparams: [bugs = str]\n---\nbody";
+    // Type alias `Tasks` exists, but param `tasks` has a different type (str).
+    // PascalCase of `tasks` = `Tasks`, which collides with the alias.
+    let source = "---\ntypes:\n  - Tasks = enum<A, B>\nparams: [tasks = str]\n---\nbody";
     let err = parse_frontmatter(source).expect_err("param/type collision should fail");
     assert!(
         err.to_string().contains("conflicts with type alias"),
@@ -664,11 +664,10 @@ fn param_type_collision_different_types_rejected() {
 // Rule 3 (positive): Param/type match is allowed
 #[test]
 fn param_type_collision_same_type_allowed() {
-    // Param `bugs` has type `Bugs` which matches the alias — this is OK.
-    let source =
-        "---\ntypes:\n  - Bugs = enum<A, B>\nparams: [bugs = Bugs]\nallow_unused: true\n---\nbody";
+    // Param `tasks` has type `Tasks` which matches the alias — this is OK.
+    let source = "---\ntypes:\n  - Tasks = enum<A, B>\nparams: [tasks = Tasks]\nallow_unused: true\n---\nbody";
     let (fm, _) = parse_frontmatter(source).expect("matching param/type should succeed");
-    assert!(fm.type_aliases.contains_key("Bugs"));
+    assert!(fm.type_aliases.contains_key("Tasks"));
 }
 
 // Rule 4a: Type alias shadows import stem → error
@@ -697,7 +696,7 @@ fn param_pascal_case_shadows_import_stem_rejected() {
 // Rule 7: Reserved keyword as param name → error
 #[test]
 fn reserved_keyword_as_param_name_rejected() {
-    for keyword in &["list", "dict", "enum", "str", "int", "float", "bool"] {
+    for keyword in &["list", "struct", "enum", "str", "int", "float", "bool"] {
         let source = format!("---\nparams: [{keyword} = str]\n---\nbody");
         let err = parse_frontmatter(&source)
             .unwrap_err_or_else(|| panic!("param named '{keyword}' should be rejected"));
@@ -787,12 +786,12 @@ fn type_alias_used_in_multiple_params() {
 // Implicit param types are generated for compound types
 #[test]
 fn implicit_param_types_generated() {
-    let source = "---\nparams:\n  - bugs = list<title = str>\n  - name = str\n---\nbody";
+    let source = "---\nparams:\n  - tasks = list<title = str>\n  - name = str\n---\nbody";
     let (fm, _) = parse_frontmatter(source).expect("parse should succeed");
-    // `bugs` is a compound type → implicit alias `Bugs` should be generated
+    // `tasks` is a compound type → implicit alias `Tasks` should be generated
     assert!(
-        fm.type_aliases.contains_key("Bugs"),
-        "should have implicit 'Bugs' type alias, got: {:?}",
+        fm.type_aliases.contains_key("Tasks"),
+        "should have implicit 'Tasks' type alias, got: {:?}",
         fm.type_aliases.keys().collect::<Vec<_>>()
     );
     // `name` is simple → no implicit alias

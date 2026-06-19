@@ -1,5 +1,11 @@
 //! Built-in expression filters.
 
+use alloc::{
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
+
 use crate::{compiled::FilterKind, error::TemplateError, value::Value};
 
 /// Apply a filter by its strongly-typed [`FilterKind`].
@@ -99,7 +105,15 @@ fn apply_lower(value: &Value) -> Result<Value, TemplateError> {
 /// Trim leading and trailing whitespace from a string.
 fn apply_trim(value: &Value) -> Result<Value, TemplateError> {
     match value {
-        Value::Str(s) => Ok(Value::Str(s.trim().to_string())),
+        Value::Str(s) => {
+            let trimmed = s.trim();
+            if trimmed.len() == s.len() {
+                // No whitespace was trimmed — return the original to avoid cloning.
+                Ok(value.clone())
+            } else {
+                Ok(Value::Str(trimmed.to_string()))
+            }
+        }
         _ => Err(TemplateError::syntax("'trim' requires a string")),
     }
 }
@@ -113,11 +127,13 @@ fn apply_fixed(value: &Value, args: Option<&str>) -> Result<Value, TemplateError
     match value {
         Value::Float(f) => Ok(Value::Str(format!("{f:.precision$}"))),
         Value::Int(i) => {
+            let mut buf = itoa::Buffer::new();
+            let int_str = buf.format(*i);
             if precision == 0 {
-                Ok(Value::Str(format!("{i}")))
+                Ok(Value::Str(int_str.to_string()))
             } else {
                 let zeros = "0".repeat(precision);
-                Ok(Value::Str(format!("{i}.{zeros}")))
+                Ok(Value::Str(format!("{int_str}.{zeros}")))
             }
         }
         _ => Err(TemplateError::syntax("'fixed' requires a number")),
@@ -144,7 +160,7 @@ fn apply_join(value: &Value, args: Option<&str>) -> Result<Value, TemplateError>
                 match v {
                     Value::Str(s) => buf.push_str(s),
                     other => {
-                        use std::fmt::Write;
+                        use core::fmt::Write;
                         write!(buf, "{other}").expect("fmt::Write to String is infallible");
                     }
                 }
@@ -164,7 +180,7 @@ fn apply_limit(value: &Value, args: Option<&str>) -> Result<Value, TemplateError
     match value {
         Value::List(items) => {
             let taken = items.iter().take(limit).cloned().collect::<Vec<Value>>();
-            Ok(Value::List(taken))
+            Ok(Value::List(Arc::new(taken)))
         }
         _ => Err(TemplateError::syntax("'limit' requires a list")),
     }
@@ -189,15 +205,14 @@ fn parse_num_arg(arg: &str, filter_name: &str) -> Result<NumArg, TemplateError> 
 /// Convert `i64` to `f64`, using lossless `i32` path when possible.
 ///
 /// For values within `i32` range, `f64::from(i32)` is exact.  For larger
-/// values the cast goes through `as f64` which may lose low-order bits;
-/// this is acceptable for template arithmetic.
+/// values the cast may lose low-order bits; this is acceptable for template
+/// arithmetic.
+#[allow(clippy::cast_precision_loss)]
 fn i64_to_f64(i: i64) -> f64 {
     if let Ok(small) = i32::try_from(i) {
         f64::from(small)
     } else {
-        // Values outside i32 range lose at most 11 bits of precision.
-        // This is inherent to f64 and acceptable for template arithmetic.
-        i.to_string().parse().expect("i64 always parses as f64")
+        i as f64
     }
 }
 
@@ -345,32 +360,35 @@ mod tests {
 
     #[test]
     fn join_strings_with_separator() {
-        let list = Value::List(vec![
+        let list = Value::List(Arc::new(vec![
             Value::Str("a".into()),
             Value::Str("b".into()),
             Value::Str("c".into()),
-        ]);
+        ]));
         let result = apply_filter(&list, "join", Some("\", \"")).unwrap();
         assert_eq!(result, Value::Str("a, b, c".into()));
     }
 
     #[test]
     fn join_without_separator() {
-        let list = Value::List(vec![Value::Str("x".into()), Value::Str("y".into())]);
+        let list = Value::List(Arc::new(vec![
+            Value::Str("x".into()),
+            Value::Str("y".into()),
+        ]));
         let result = apply_filter(&list, "join", None).unwrap();
         assert_eq!(result, Value::Str("xy".into()));
     }
 
     #[test]
     fn join_converts_non_strings() {
-        let list = Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        let list = Value::List(Arc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
         let result = apply_filter(&list, "join", Some("\"-\"")).unwrap();
         assert_eq!(result, Value::Str("1-2-3".into()));
     }
 
     #[test]
     fn join_empty_list() {
-        let result = apply_filter(&Value::List(vec![]), "join", Some("\",\"")).unwrap();
+        let result = apply_filter(&Value::List(Arc::new(vec![])), "join", Some("\",\"")).unwrap();
         assert_eq!(result, Value::Str(String::new()));
     }
 
@@ -384,16 +402,19 @@ mod tests {
 
     #[test]
     fn limit_takes_elements() {
-        let list = Value::List(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        let list = Value::List(Arc::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]));
         let result = apply_filter(&list, "limit", Some("2")).unwrap();
-        assert_eq!(result, Value::List(vec![Value::Int(1), Value::Int(2)]));
+        assert_eq!(
+            result,
+            Value::List(Arc::new(vec![Value::Int(1), Value::Int(2)]))
+        );
     }
 
     #[test]
     fn limit_keeps_all_if_large() {
-        let list = Value::List(vec![Value::Int(1)]);
+        let list = Value::List(Arc::new(vec![Value::Int(1)]));
         let result = apply_filter(&list, "limit", Some("5")).unwrap();
-        assert_eq!(result, Value::List(vec![Value::Int(1)]));
+        assert_eq!(result, Value::List(Arc::new(vec![Value::Int(1)])));
     }
 
     #[test]

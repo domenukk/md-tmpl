@@ -1,0 +1,22 @@
+[package]
+name = "prompt-templates-wasm"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.85"
+description = "WebAssembly bindings for prompt-templates"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/domenukk/prompt-templates"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+prompt-templates = { path = "../prompt-templates", features = ["std", "serde"] }
+serde_json = "1"
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+serde-wasm-bindgen = "0.6"
+
+[lints]
+workspace = true

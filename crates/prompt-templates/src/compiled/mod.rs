@@ -10,18 +10,32 @@ mod inline;
 pub(crate) mod render;
 pub(crate) mod type_check;
 
-use std::{borrow::Cow, collections::HashMap, sync::Arc};
+use alloc::{
+    borrow::Cow,
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
 
 // Re-export submodule items used by the rest of the crate.
 pub use analysis::collect_referenced_params;
-pub(crate) use render::{register_loop_meta, render_segments, render_segments_into};
+#[cfg(feature = "std")]
+pub(crate) use render::register_loop_meta;
+#[cfg(feature = "std")]
+pub(crate) use render::render_segments;
+#[cfg(feature = "std")]
+pub(crate) use render::render_segments_into;
+#[cfg(not(feature = "std"))]
+pub(crate) use render::render_segments_into_no_std;
 pub use type_check::{validate_field_accesses, validate_field_accesses_with_opaque};
 
+pub use crate::scope::{CompiledExpr, CompiledPath, ConditionOperand};
 use crate::{
+    compat::HashMap,
     consts::{
         CLOSE_FOR, CLOSE_IF, CLOSE_MATCH, CLOSE_RAW, KW_DEFAULT, KW_ELSE, KW_RAW, KW_RAW_ASSIGN,
-        LEGACY_ENDFOR, LEGACY_ENDIF, LEGACY_ENDRAW, STMT_END, STMT_START, TAG_CASE_PREFIX,
-        TAG_ELIF_PREFIX, TAG_FOR_PREFIX, TAG_IF_PREFIX, TAG_INCLUDE_PREFIX, TAG_MATCH_PREFIX,
+        STMT_END, STMT_START, TAG_CASE_PREFIX, TAG_ELIF_PREFIX, TAG_FOR_PREFIX, TAG_IF_PREFIX,
+        TAG_INCLUDE_PREFIX, TAG_MATCH_PREFIX,
     },
     error::TemplateError,
     parser,
@@ -57,14 +71,15 @@ pub enum Segment {
     Static(Cow<'static, str>),
     /// Expression `{{ path | filter1 | filter2(arg) }}`.
     Expr {
-        path: Cow<'static, str>,
+        expr: CompiledExpr,
         filters: Vec<ParsedFilter>,
     },
     /// `{% for binding in list_path %}body{% /for %}`.
     ForLoop {
         binding: Cow<'static, str>,
-        list_path: Cow<'static, str>,
+        list_path: CompiledPath,
         body: Vec<Segment>,
+        else_body: Vec<Segment>,
     },
     /// `{% if cond %}...{% elif cond %}...{% else %}...{% /if %}`.
     If {
@@ -78,7 +93,7 @@ pub enum Segment {
     /// declaration.  Non-exhaustive matches produce compile errors.
     Match {
         /// The expression to match on (e.g. `outcome`).
-        expr: Cow<'static, str>,
+        expr: CompiledPath,
         /// `(variant_name, body)` pairs.
         arms: MatchArms,
     },
@@ -97,13 +112,13 @@ pub enum Segment {
 /// string for operators.
 #[derive(Debug, Clone)]
 pub enum Condition {
-    /// Simple truthiness check: `{% if show %}`.
-    Truthy(Cow<'static, str>),
+    /// Simple truthiness check: `{% if show %}` or `{% if has(opt) %}`.
+    Truthy(ConditionOperand),
     /// Binary comparison: `{% if count > 0 %}`.
     Comparison {
-        left: Cow<'static, str>,
+        left: ConditionOperand,
         op: ComparisonOp,
-        right: Cow<'static, str>,
+        right: ConditionOperand,
     },
 }
 
@@ -125,7 +140,7 @@ pub enum ComparisonOp {
 }
 
 /// A pre-parsed filter with typed kind and optional argument.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedFilter {
     /// The resolved filter kind.
     pub kind: FilterKind,
@@ -443,7 +458,7 @@ fn extract_comment_variable_refs(content: &str) -> Vec<Cow<'static, str>> {
 /// Compile an expression tag into a `Segment::Expr`.
 fn compile_expr(expr: &str) -> Result<Segment, TemplateError> {
     let parts: Vec<&str> = expr.splitn(2, crate::consts::PIPE).collect();
-    let path = Cow::Owned(parts[0].trim().to_string());
+    let expr_obj = CompiledExpr::compile(parts[0])?;
     let mut filters = Vec::new();
 
     if parts.len() > 1 {
@@ -461,7 +476,10 @@ fn compile_expr(expr: &str) -> Result<Segment, TemplateError> {
         }
     }
 
-    Ok(Segment::Expr { path, filters })
+    Ok(Segment::Expr {
+        expr: expr_obj,
+        filters,
+    })
 }
 
 /// Resolve a filter name to a strongly-typed [`FilterKind`].
@@ -524,16 +542,60 @@ fn compile_statement<'a>(
         Err(TemplateError::syntax(format!(
             "unexpected '{{% {stmt} %}}' without matching opening tag"
         )))
-    } else if stmt == LEGACY_ENDIF || stmt == LEGACY_ENDFOR || stmt == LEGACY_ENDRAW {
-        let new_tag = stmt.replacen("end", "/", 1);
-        Err(TemplateError::syntax(format!(
-            "'{{% {stmt} %}}' is not valid — use '{{% {new_tag} %}}' instead"
-        )))
     } else {
         Err(TemplateError::syntax(format!(
             "unknown statement: '{stmt}'"
         )))
     }
+}
+
+/// Split a for-loop body at `{% else %}` (depth-aware).
+///
+/// Returns `(for_body, Optional else_body)`. If no `{% else %}` is found at depth 0,
+/// the entire body is the `for_body` and `else_body` is `None`.
+///
+/// Handles nesting: `{% else %}` tags inside nested `{% for %}` or `{% if %}` blocks
+/// are correctly skipped.
+fn split_for_else(body: &str) -> (&str, Option<&str>) {
+    let mut depth: u32 = 0;
+    let mut search_from: usize = 0;
+
+    while search_from < body.len() {
+        let rest = &body[search_from..];
+        let Ok(scan) = parser::scan_next_tag(rest) else {
+            break;
+        };
+
+        match scan {
+            parser::ScanResult::Literal(_) => break,
+            parser::ScanResult::Found {
+                before,
+                tag: parser::Tag::Stmt(stmt),
+                after,
+                ..
+            } => {
+                let tag_end_offset = rest.len() - after.len();
+
+                if stmt.starts_with(TAG_FOR_PREFIX) || stmt.starts_with(TAG_IF_PREFIX) {
+                    depth += 1;
+                } else if stmt == CLOSE_FOR || stmt == CLOSE_IF {
+                    depth = depth.saturating_sub(1);
+                } else if stmt == KW_ELSE && depth == 0 {
+                    // Found top-level {% else %} — split here.
+                    let split_pos = search_from + before.len();
+                    let else_body_start = search_from + tag_end_offset;
+                    return (&body[..split_pos], Some(&body[else_body_start..]));
+                }
+
+                search_from += tag_end_offset;
+            }
+            parser::ScanResult::Found { after, .. } => {
+                // Expression or comment — skip past.
+                search_from = body.len() - after.len();
+            }
+        }
+    }
+    (body, None)
 }
 
 /// Compile a for-loop block.
@@ -542,14 +604,23 @@ fn compile_for_loop<'a>(
     after_tag: &'a str,
 ) -> Result<(Segment, &'a str), TemplateError> {
     let (binding, list_path) = parser::parse_for_tag(stmt_body)?;
+    let list_compiled = CompiledPath::compile(list_path);
     let (body_text, rest) = parser::find_closing_block(after_tag, TAG_FOR_PREFIX, CLOSE_FOR)?;
-    let body = compile_body(body_text).map_err(|e| enrich_error(e, body_text))?;
+
+    // Split body at {% else %} if present (respecting nesting).
+    let (for_text, else_text) = split_for_else(body_text);
+    let body = compile_body(for_text).map_err(|e| enrich_error(e, for_text))?;
+    let else_body = match else_text {
+        Some(text) => compile_body(text).map_err(|e| enrich_error(e, text))?,
+        None => Vec::new(),
+    };
 
     Ok((
         Segment::ForLoop {
             binding: Cow::Owned(binding.to_string()),
-            list_path: Cow::Owned(list_path.to_string()),
+            list_path: list_compiled,
             body,
+            else_body,
         },
         rest,
     ))
@@ -567,9 +638,9 @@ fn compile_conditional<'a>(
     for (i, &(cond_str, branch_body)) in raw_branches.iter().enumerate() {
         let cond = if i == 0 {
             // First branch uses the condition from the opening `{% if ... %}` tag.
-            analysis::parse_condition(condition)
+            analysis::parse_condition(condition)?
         } else {
-            analysis::parse_condition(cond_str)
+            analysis::parse_condition(cond_str)?
         };
         branches.push((
             cond,
@@ -633,6 +704,8 @@ fn compile_match<'a>(
         ));
     }
 
+    let expr_compiled = CompiledPath::compile(expr);
+
     let (body_text, rest) = parser::find_closing_block(after_tag, TAG_MATCH_PREFIX, CLOSE_MATCH)?;
 
     if let Some(variant) = inline_variant {
@@ -640,7 +713,7 @@ fn compile_match<'a>(
         let body = compile_body(body_text).map_err(|e| enrich_error(e, body_text))?;
         Ok((
             Segment::Match {
-                expr: Cow::Owned(expr.to_string()),
+                expr: expr_compiled,
                 arms: vec![(
                     variant
                         .split(crate::consts::PIPE)
@@ -661,7 +734,7 @@ fn compile_match<'a>(
         }
         Ok((
             Segment::Match {
-                expr: Cow::Owned(expr.to_string()),
+                expr: expr_compiled,
                 arms,
             },
             rest,

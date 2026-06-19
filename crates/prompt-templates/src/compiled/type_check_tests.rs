@@ -33,7 +33,7 @@ fn unit_variant(name: &str) -> VariantDecl {
 
 fn compile_and_check(template: &str, decls: &[VarDecl]) -> Vec<String> {
     let (_fm, body) = crate::parse_frontmatter(template).expect("parse");
-    let empty_aliases = std::collections::HashMap::new();
+    let empty_aliases = crate::compat::HashMap::new();
     let (segments, _) = crate::compiled::compile(body, &empty_aliases).expect("compile");
     validate_field_accesses(&segments, decls)
 }
@@ -460,7 +460,7 @@ fn field_nonexistent_on_all_variants() {
 #[test]
 fn for_loop_binding_typed_from_list() {
     let decls = vec![VarDecl {
-        name: "bugs".to_string(),
+        name: "tasks".to_string(),
         var_type: VarType::List(vec![
             VarDecl {
                 name: "title".to_string(),
@@ -478,8 +478,8 @@ fn for_loop_binding_typed_from_list() {
         ]),
         default_value: None,
     }];
-    let tmpl = "---\nname: t\nparams:\n  - bugs = list<title = str, vt = enum<Known(label = str), Unknown>>\n---\n\
-                     > {% for bug in bugs %}{% match bug.vt case Known %}{{ bug.vt.label }}{% /match %}{% /for %}";
+    let tmpl = "---\nname: t\nparams:\n  - tasks = list<title = str, vt = enum<Known(label = str), Unknown>>\n---\n\
+                     > {% for task in tasks %}{% match task.vt case Known %}{{ task.vt.label }}{% /match %}{% /for %}";
     let errors = compile_and_check(tmpl, &decls);
     assert!(
         errors.is_empty(),
@@ -490,7 +490,7 @@ fn for_loop_binding_typed_from_list() {
 #[test]
 fn for_loop_binding_field_access_validated() {
     let decls = vec![VarDecl {
-        name: "bugs".to_string(),
+        name: "tasks".to_string(),
         var_type: VarType::List(vec![
             VarDecl {
                 name: "title".to_string(),
@@ -509,8 +509,8 @@ fn for_loop_binding_field_access_validated() {
         default_value: None,
     }];
     // Access .label outside match — should fail since Unknown has no label.
-    let tmpl = "---\nname: t\nparams:\n  - bugs = list<title = str, vt = enum<Known(label = str), Unknown>>\n---\n\
-                     > {% for bug in bugs %}{{ bug.vt.label }}{% /for %}";
+    let tmpl = "---\nname: t\nparams:\n  - tasks = list<title = str, vt = enum<Known(label = str), Unknown>>\n---\n\
+                     > {% for task in tasks %}{{ task.vt.label }}{% /for %}";
     let errors = compile_and_check(tmpl, &decls);
     assert_eq!(errors.len(), 1, "expected error: {errors:?}");
     assert!(
@@ -599,7 +599,7 @@ fn match_with_no_arms_is_error() {
     // Construct directly since the parser might not produce this.
     let decls = vec![enum_decl("x", vec![unit_variant("A"), unit_variant("B")])];
     let segments = vec![Segment::Match {
-        expr: "x".into(),
+        expr: CompiledPath::compile("x"),
         arms: vec![],
     }];
     let errors = validate_field_accesses(&segments, &decls);
@@ -713,20 +713,20 @@ fn field_on_int_is_error() {
     );
 }
 
-// -- Dict field validation -------------------------------------------
+// -- Struct field validation -------------------------------------------
 
 #[test]
 fn dict_unknown_field_is_error() {
     let decls = vec![VarDecl {
         name: "config".to_string(),
-        var_type: VarType::Dict(vec![VarDecl {
+        var_type: VarType::Struct(vec![VarDecl {
             name: "host".to_string(),
             var_type: VarType::Str,
             default_value: None,
         }]),
         default_value: None,
     }];
-    let tmpl = "---\nname: t\nparams:\n  - config = dict<host = str>\n---\n{{ config.port }}";
+    let tmpl = "---\nname: t\nparams:\n  - config = struct<host = str>\n---\n{{ config.port }}";
     let errors = compile_and_check(tmpl, &decls);
     assert_eq!(errors.len(), 1, "expected error: {errors:?}");
     assert!(
@@ -740,14 +740,14 @@ fn dict_unknown_field_is_error() {
 fn dict_known_field_ok() {
     let decls = vec![VarDecl {
         name: "config".to_string(),
-        var_type: VarType::Dict(vec![VarDecl {
+        var_type: VarType::Struct(vec![VarDecl {
             name: "host".to_string(),
             var_type: VarType::Str,
             default_value: None,
         }]),
         default_value: None,
     }];
-    let tmpl = "---\nname: t\nparams:\n  - config = dict<host = str>\n---\n{{ config.host }}";
+    let tmpl = "---\nname: t\nparams:\n  - config = struct<host = str>\n---\n{{ config.host }}";
     let errors = compile_and_check(tmpl, &decls);
     assert!(errors.is_empty(), "declared field: {errors:?}");
 }
@@ -923,7 +923,7 @@ fn include_dotted_path_type_resolution() {
     );
     let parent_decls = vec![VarDecl {
         name: "config".to_string(),
-        var_type: VarType::Dict(vec![str_decl("host")]),
+        var_type: VarType::Struct(vec![str_decl("host")]),
         default_value: None,
     }];
     let segments = vec![Segment::Include(inc)];
@@ -945,7 +945,7 @@ fn include_dotted_path_type_mismatch() {
     );
     let parent_decls = vec![VarDecl {
         name: "config".to_string(),
-        var_type: VarType::Dict(vec![str_decl("host")]), // host is str
+        var_type: VarType::Struct(vec![str_decl("host")]), // host is str
         default_value: None,
     }];
     let segments = vec![Segment::Include(inc)];
@@ -1014,7 +1014,7 @@ fn include_body_undeclared_var_error() {
         None,
         vec![], // no declarations in child
         vec![Segment::Expr {
-            path: "ghost".into(),
+            expr: CompiledExpr::compile("ghost").unwrap(),
             filters: vec![],
         }],
     );
@@ -1034,7 +1034,7 @@ fn include_body_field_on_scalar_error() {
         None,
         vec![str_decl("name")],
         vec![Segment::Expr {
-            path: "name.length".into(),
+            expr: CompiledExpr::compile("name.length").unwrap(),
             filters: vec![],
         }],
     );
@@ -1057,7 +1057,7 @@ fn include_body_valid_references_ok() {
         None,
         vec![str_decl("msg")],
         vec![Segment::Expr {
-            path: "msg".into(),
+            expr: CompiledExpr::compile("msg").unwrap(),
             filters: vec![],
         }],
     );
@@ -1222,7 +1222,7 @@ fn types_compatible_untyped_containers() {
 #[test]
 fn types_compatible_cross_kind() {
     assert!(!types_compatible(&VarType::Str, &VarType::List(vec![])));
-    assert!(!types_compatible(&VarType::Dict(vec![]), &VarType::Int));
+    assert!(!types_compatible(&VarType::Struct(vec![]), &VarType::Int));
 }
 
 // -- Include inside control flow ------------------------------------
@@ -1235,7 +1235,7 @@ fn include_inside_for_loop() {
         None,
         vec![str_decl("label")],
         vec![Segment::Expr {
-            path: "label".into(),
+            expr: CompiledExpr::compile("label").unwrap(),
             filters: vec![],
         }],
     );
@@ -1246,8 +1246,9 @@ fn include_inside_for_loop() {
     }];
     let segments = vec![Segment::ForLoop {
         binding: "item".into(),
-        list_path: "items".into(),
+        list_path: CompiledPath::compile("items"),
         body: vec![Segment::Include(inc)],
+        else_body: vec![],
     }];
     let errors = validate_field_accesses(&segments, &parent_decls);
     assert!(
@@ -1268,7 +1269,7 @@ fn include_inside_match_arm() {
         None,
         vec![str_decl("proof")],
         vec![Segment::Expr {
-            path: "proof".into(),
+            expr: CompiledExpr::compile("proof").unwrap(),
             filters: vec![],
         }],
     );
@@ -1278,7 +1279,7 @@ fn include_inside_match_arm() {
         default_value: None,
     }];
     let segments = vec![Segment::Match {
-        expr: "outcome".into(),
+        expr: CompiledPath::compile("outcome"),
         arms: vec![(vec!["Confirmed".into()], vec![Segment::Include(inc)])],
     }];
     let errors = validate_field_accesses(&segments, &parent_decls);
@@ -1353,7 +1354,7 @@ fn same_name_different_content_both_type_checked() {
         for_each: None,
         inline_compiled: Some(CompiledInlineTemplate {
             segments: Arc::from(vec![Segment::Expr {
-                path: std::borrow::Cow::Borrowed("msg"),
+                expr: CompiledExpr::compile("msg").unwrap(),
                 filters: vec![],
             }]),
             declarations: Arc::from(vec![str_decl("msg")]),
@@ -1370,11 +1371,11 @@ fn same_name_different_content_both_type_checked() {
             // This body references "ghost" which is NOT declared.
             segments: Arc::from(vec![
                 Segment::Expr {
-                    path: std::borrow::Cow::Borrowed("msg"),
+                    expr: CompiledExpr::compile("msg").unwrap(),
                     filters: vec![],
                 },
                 Segment::Expr {
-                    path: std::borrow::Cow::Borrowed("ghost"),
+                    expr: CompiledExpr::compile("ghost").unwrap(),
                     filters: vec![],
                 },
             ]),
@@ -1401,7 +1402,7 @@ fn same_arc_deduplicates_body_walk() {
     use std::sync::Arc;
     // Two includes using the SAME Arc (same file) should only walk once.
     let shared_segments: Arc<[Segment]> = Arc::from(vec![Segment::Expr {
-        path: std::borrow::Cow::Borrowed("msg"),
+        expr: CompiledExpr::compile("msg").unwrap(),
         filters: vec![],
     }]);
     let shared_decls: Arc<[VarDecl]> = Arc::from(vec![str_decl("msg")]);
@@ -1501,7 +1502,7 @@ fn include_inside_if_false_branch_still_checked() {
     let parent_decls = vec![str_decl("flag")];
     let segments = vec![Segment::If {
         branches: vec![(
-            super::Condition::Truthy(std::borrow::Cow::Borrowed("flag")),
+            super::Condition::Truthy(crate::scope::ConditionOperand::compile("flag").unwrap()),
             vec![Segment::Include(inc)],
         )],
         else_body: vec![],
@@ -1575,11 +1576,11 @@ fn include_with_var_references_undeclared_parent() {
 // -- Same template, different types at different sites ------------------
 
 #[test]
-fn same_template_different_types_at_different_sites() {
+fn same_template_different_sites() {
     use std::sync::Arc;
     let child_decls: Arc<[VarDecl]> = Arc::from(vec![str_decl("msg")]);
     let child_segments: Arc<[Segment]> = Arc::from(vec![Segment::Expr {
-        path: std::borrow::Cow::Borrowed("msg"),
+        expr: CompiledExpr::compile("msg").unwrap(),
         filters: vec![],
     }]);
 
@@ -1634,7 +1635,7 @@ fn include_list_dict_cross_kind_mismatch() {
         None,
         vec![VarDecl {
             name: "data".to_string(),
-            var_type: VarType::Dict(vec![str_decl("key")]),
+            var_type: VarType::Struct(vec![str_decl("key")]),
             default_value: None,
         }],
         vec![],
@@ -1733,7 +1734,7 @@ fn nested_include_grandchild_type_error() {
     use std::sync::Arc;
     // Parent → child → grandchild. Grandchild has an undeclared var.
     let grandchild_segments: Arc<[Segment]> = Arc::from(vec![Segment::Expr {
-        path: std::borrow::Cow::Borrowed("undefined_in_grandchild"),
+        expr: CompiledExpr::compile("undefined_in_grandchild").unwrap(),
         filters: vec![],
     }]);
     let grandchild_decls: Arc<[VarDecl]> = Arc::from(vec![str_decl("msg")]);
@@ -1753,7 +1754,7 @@ fn nested_include_grandchild_type_error() {
 
     let child_segments: Arc<[Segment]> = Arc::from(vec![
         Segment::Expr {
-            path: std::borrow::Cow::Borrowed("child_msg"),
+            expr: CompiledExpr::compile("child_msg").unwrap(),
             filters: vec![],
         },
         Segment::Include(child_inc),
@@ -1795,16 +1796,16 @@ fn compile_and_check_self(template: &str) -> Vec<String> {
 
 #[test]
 fn list_type_alias_in_types_block() {
-    let tmpl = "---\nname: t\ntypes:\n  - BugList = list<title = str, score = int>\nparams:\n  - bugs = BugList\n---\n\
-                     > {% for b in bugs %}{{ b.title }}: {{ b.score }}\n> {% /for %}";
+    let tmpl = "---\nname: t\ntypes:\n  - TaskList = list<title = str, score = int>\nparams:\n  - tasks = TaskList\n---\n\
+                     > {% for b in tasks %}{{ b.title }}: {{ b.score }}\n> {% /for %}";
     let errors = compile_and_check_self(tmpl);
     assert!(errors.is_empty(), "list type alias should work: {errors:?}");
 }
 
 #[test]
 fn chained_type_alias_enum_in_list() {
-    let tmpl = "---\nname: t\ntypes:\n  - Severity = enum<High, Medium, Low>\n  - BugReport = list<title = str, severity = Severity>\nparams:\n  - bugs = BugReport\n---\n\
-                     > {% for b in bugs %}{{ b.title }} {% match b.severity %}{% case High %}🔴{% case Medium %}🟡{% case Low %}🟢{% /match %}\n> {% /for %}";
+    let tmpl = "---\nname: t\ntypes:\n  - Severity = enum<High, Medium, Low>\n  - TaskReport = list<title = str, severity = Severity>\nparams:\n  - tasks = TaskReport\n---\n\
+                     > {% for b in tasks %}{{ b.title }} {% match b.severity %}{% case High %}🔴{% case Medium %}🟡{% case Low %}🟢{% /match %}\n> {% /for %}";
     let errors = compile_and_check_self(tmpl);
     assert!(
         errors.is_empty(),
@@ -1820,7 +1821,7 @@ fn compile_and_check_with_opaque(
     opaque: &[&str],
 ) -> Vec<String> {
     let (_fm, body) = crate::parse_frontmatter(template).expect("parse");
-    let empty_aliases = std::collections::HashMap::new();
+    let empty_aliases = crate::compat::HashMap::new();
     let (segments, _) = crate::compiled::compile(body, &empty_aliases).expect("compile");
     let opaque_set: HashSet<&str> = opaque.iter().copied().collect();
     validate_field_accesses_with_opaque(&segments, decls, &opaque_set)
@@ -1828,11 +1829,11 @@ fn compile_and_check_with_opaque(
 
 #[test]
 fn opaque_root_skips_undeclared_error() {
-    // `artist.NOTEBOOK_FILENAME` should not error when `artist` is opaque.
+    // `imported.NOTEBOOK_FILENAME` should not error when `imported` is opaque.
     let errors = compile_and_check_with_opaque(
-        "---\nparams: []\n---\n{{ artist.NOTEBOOK_FILENAME }}",
+        "---\nparams: []\n---\n{{ imported.NOTEBOOK_FILENAME }}",
         &[],
-        &["artist"],
+        &["imported"],
     );
     assert!(
         errors.is_empty(),
@@ -1871,8 +1872,11 @@ fn opaque_root_bare_reference() {
 #[test]
 fn non_opaque_unknown_variable_still_errors() {
     // Unknown variable that is NOT opaque should still error.
-    let errors =
-        compile_and_check_with_opaque("---\nparams: []\n---\n{{ unknown_var }}", &[], &["artist"]);
+    let errors = compile_and_check_with_opaque(
+        "---\nparams: []\n---\n{{ unknown_var }}",
+        &[],
+        &["imported"],
+    );
     assert_eq!(errors.len(), 1, "non-opaque unknown should error");
     assert!(errors[0].contains("undeclared variable"));
 }
@@ -1881,9 +1885,9 @@ fn non_opaque_unknown_variable_still_errors() {
 fn opaque_root_in_conditional() {
     // Opaque roots used in if conditions should not error.
     let errors = compile_and_check_with_opaque(
-        "---\nparams: []\n---\n> {% if artist.ENABLED %}yes> {% /if %}",
+        "---\nparams: []\n---\n> {% if imported.ENABLED %}yes> {% /if %}",
         &[],
-        &["artist"],
+        &["imported"],
     );
     assert!(errors.is_empty(), "opaque root in conditional: {errors:?}");
 }
@@ -1897,9 +1901,9 @@ fn opaque_root_coexists_with_typed_params() {
         default_value: None,
     }];
     let errors = compile_and_check_with_opaque(
-        "---\nparams:\n  - name = str\n---\n{{ name }} {{ artist.CONST }}",
+        "---\nparams:\n  - name = str\n---\n{{ name }} {{ imported.CONST }}",
         &decls,
-        &["artist"],
+        &["imported"],
     );
     assert!(
         errors.is_empty(),
@@ -1911,9 +1915,9 @@ fn opaque_root_coexists_with_typed_params() {
 fn multiple_opaque_roots() {
     // Multiple opaque roots should all be recognized.
     let errors = compile_and_check_with_opaque(
-        "---\nparams: []\n---\n{{ artist.X }} {{ config.Y }} {{ MAX }}",
+        "---\nparams: []\n---\n{{ imported.X }} {{ config.Y }} {{ MAX }}",
         &[],
-        &["artist", "config", "MAX"],
+        &["imported", "config", "MAX"],
     );
     assert!(errors.is_empty(), "multiple opaque roots: {errors:?}");
 }

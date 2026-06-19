@@ -1,0 +1,46 @@
+{
+  "name": "prompt-templates",
+  "version": "0.2.0",
+  "description": "Strongly-typed template engine for LLM prompts, designed for markdown",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "!dist/tests",
+    "!dist/benchmarks",
+    "!src/tests",
+    "!src/benchmarks"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test dist/tests/*.test.js",
+    "bench": "node dist/benchmarks/bench.js",
+    "lint": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "keywords": [
+    "template",
+    "prompt",
+    "llm",
+    "typed",
+    "frontmatter"
+  ],
+  "license": "MIT OR Apache-2.0",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/mustache": "^4.2.6",
+    "@types/node": "^25.9.3",
+    "handlebars": "^4.7.9",
+    "mustache": "^4.2.0",
+    "typescript": "^5.7.0"
+  }
+}

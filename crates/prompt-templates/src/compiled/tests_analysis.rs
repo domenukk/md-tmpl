@@ -1,14 +1,18 @@
 //! Analysis, `eval_condition`, whitespace control, and blockquote tests
 //! for the compiled template engine.
 
-use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use super::{
     analysis::{collect_referenced_params, parse_condition},
     render::eval_condition,
     *,
 };
-use crate::{context::Context, value::Value};
+use crate::{
+    compat::{HashMap, HashSet},
+    context::Context,
+    value::Value,
+};
 
 /// Wrapper for `compile` without parent type aliases (for tests that don't need them).
 fn compile(
@@ -289,8 +293,17 @@ fn trim_before_strips_preceding_whitespace() {
     // back to the previous newline (keeping the newline).
     let mut ctx = Context::new();
     ctx.set("show", Value::Bool(true));
-    let result = compiled_render("hello\n> {%- if show %}yes{%- /if %}", &ctx).unwrap();
-    assert_eq!(result, "hello\nyes");
+    let result = compiled_render(
+        r"hello
+> {%- if show %}yes{%- /if %}",
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(
+        result,
+        r"hello
+yes"
+    );
 }
 
 #[test]
@@ -299,7 +312,15 @@ fn trim_after_strips_following_whitespace() {
     // the next newline.
     let mut ctx = Context::new();
     ctx.set("show", Value::Bool(true));
-    let result = compiled_render("> {% if show -%}\n  content\n> {% /if %}", &ctx).unwrap();
+    let result = compiled_render(
+        r"> {% if show -%}
+
+  content
+
+> {% /if %}",
+        &ctx,
+    )
+    .unwrap();
     assert_eq!(result, "content\n");
 }
 
@@ -308,7 +329,12 @@ fn trim_expr_both_sides() {
     // `{{-` and `-}}` trim whitespace around expression tags.
     let mut ctx = Context::new();
     ctx.set("name", "world");
-    let result = compiled_render("hello  {{- name -}}  \nbye", &ctx).unwrap();
+    let result = compiled_render(
+        r"hello  {{- name -}}  
+bye",
+        &ctx,
+    )
+    .unwrap();
     assert_eq!(result, "helloworldbye");
 }
 
@@ -319,8 +345,20 @@ fn trim_combined_both_sides() {
     // find_closing_block which doesn't apply trim logic.
     let mut ctx = Context::new();
     ctx.set("show", Value::Bool(true));
-    let result = compiled_render("begin\n> {%- if show -%}\ncontent{% /if %}", &ctx).unwrap();
-    assert_eq!(result, "begin\ncontent");
+    let result = compiled_render(
+        r"begin
+
+> {%- if show -%}
+
+content{% /if %}",
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(
+        result,
+        r"begin
+content"
+    );
 }
 
 #[test]
@@ -337,19 +375,30 @@ fn trim_for_loop_with_whitespace_control() {
     let mut ctx = Context::new();
     ctx.set(
         "items",
-        Value::List(vec![Value::Str("a".into()), Value::Str("b".into())]),
+        Value::List(Arc::new(vec![
+            Value::Str("a".into()),
+            Value::Str("b".into()),
+        ])),
     );
     // `{%-` before for trims the preceding newline from "list:\n".
     // Inside the loop body, `{{- item -}}` trims around the expression.
     let result = compiled_render(
-        "list:{%- for item in items %}\n- {{- item -}}\n> {%- /for %}",
+        r"list:{%- for item in items %}
+- {{- item -}}
+
+> {%- /for %}",
         &ctx,
     )
     .unwrap();
     // After the opening for tag (no -%}), \n is kept.
     // `{{- item -}}` strips surrounding whitespace around item value.
     // `{%- /for %}` — the `{%-` trims trailing whitespace before the close tag.
-    assert_eq!(result, "list:\n-a\n-b");
+    assert_eq!(
+        result,
+        r"list:
+-a
+-b"
+    );
 }
 
 #[test]
@@ -393,7 +442,7 @@ fn trim_expr_only_right() {
 /// Helper: evaluate a condition string through the production path
 /// (`parse_condition` → `eval_condition`).
 fn eval_cond(condition: &str, ctx: &Context) -> Result<bool, crate::error::TemplateError> {
-    let cond = parse_condition(condition);
+    let cond = parse_condition(condition)?;
     let scope = crate::scope::Scope::new(ctx);
     eval_condition(&cond, &scope)
 }
@@ -404,7 +453,10 @@ fn eval_condition_comprehensive() {
     ctx.set("outcome", "Confirmed");
     ctx.set("count", 5_i64);
     ctx.set("ratio", 1.23_f64);
-    ctx.set("items", Value::List(vec![Value::Int(10), Value::Int(20)]));
+    ctx.set(
+        "items",
+        Value::List(Arc::new(vec![Value::Int(10), Value::Int(20)])),
+    );
 
     // String comparisons
     assert!(eval_cond("outcome == 'Confirmed'", &ctx).unwrap());
@@ -447,7 +499,10 @@ fn eval_condition_truthy_bool_values() {
 #[test]
 fn condition_in_template_with_len_function() {
     let mut ctx = Context::new();
-    ctx.set("items", Value::List(vec![Value::Int(10), Value::Int(20)]));
+    ctx.set(
+        "items",
+        Value::List(Arc::new(vec![Value::Int(10), Value::Int(20)])),
+    );
 
     // len() in conditions — tested via compiled_render (full pipeline)
     assert_eq!(
@@ -517,8 +572,11 @@ fn bare_match_at_line_start_rejected() {
 #[test]
 fn bare_stmt_on_second_line_rejected() {
     // First line is content (OK), second line is bare {% %} (rejected).
-    let err = compile("hello\n{% if show %}yes{% /if %}")
-        .expect_err("bare {% %} on any line must be rejected");
+    let err = compile(
+        r"hello
+{% if show %}yes{% /if %}",
+    )
+    .expect_err("bare {% %} on any line must be rejected");
     let msg = err.to_string();
     assert!(
         msg.contains("blockquote") || msg.contains("> "),
@@ -541,8 +599,17 @@ fn expression_on_own_line_no_prefix_needed() {
     let mut ctx = Context::new();
     ctx.set("a", "one");
     ctx.set("b", "two");
-    let result = compiled_render("{{ a }}\n{{ b }}", &ctx).unwrap();
-    assert_eq!(result, "one\ntwo");
+    let result = compiled_render(
+        r"{{ a }}
+{{ b }}",
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(
+        result,
+        r"one
+two"
+    );
 }
 
 #[test]
@@ -559,7 +626,15 @@ fn content_between_blockquoted_tags_no_prefix_needed() {
     // Content lines between > {% %} tags do NOT need > prefix.
     let mut ctx = Context::new();
     ctx.set("show", Value::Bool(true));
-    let result = compiled_render("> {% if show %}\nplain content\n> {% /if %}", &ctx).unwrap();
+    let result = compiled_render(
+        r"> {% if show %}
+
+plain content
+
+> {% /if %}",
+        &ctx,
+    )
+    .unwrap();
     assert_eq!(result, "plain content\n");
 }
 
@@ -570,11 +645,21 @@ fn mixed_content_and_expressions_between_tags() {
     ctx.set("name", "Alice");
     ctx.set("show", Value::Bool(true));
     let result = compiled_render(
-        "> {% if show %}\nHello {{ name }}!\nGoodbye.\n> {% /if %}",
+        r"> {% if show %}
+
+Hello {{ name }}!
+Goodbye.
+
+> {% /if %}",
         &ctx,
     )
     .unwrap();
-    assert_eq!(result, "Hello Alice!\nGoodbye.\n");
+    assert_eq!(
+        result,
+        r"Hello Alice!
+Goodbye.
+"
+    );
 }
 
 #[test]
@@ -583,23 +668,32 @@ fn multiline_for_body_no_prefix_on_content() {
     let mut ctx = Context::new();
     ctx.set(
         "items",
-        Value::List(vec![
-            Value::Dict(HashMap::from([
+        Value::List(Arc::new(vec![
+            Value::Struct(Arc::new(HashMap::from([
                 ("name".into(), Value::Str("a".into())),
                 ("score".into(), Value::Int(10)),
-            ])),
-            Value::Dict(HashMap::from([
+            ]))),
+            Value::Struct(Arc::new(HashMap::from([
                 ("name".into(), Value::Str("b".into())),
                 ("score".into(), Value::Int(20)),
-            ])),
-        ]),
+            ]))),
+        ])),
     );
     let result = compiled_render(
-        "> {% for item in items %}\n- {{ item.name }}: {{ item.score }}\n> {% /for %}",
+        r"> {% for item in items %}
+
+- {{ item.name }}: {{ item.score }}
+
+> {% /for %}",
         &ctx,
     )
     .unwrap();
-    assert_eq!(result, "- a: 10\n- b: 20\n");
+    assert_eq!(
+        result,
+        r"- a: 10
+- b: 20
+"
+    );
 }
 
 #[test]
@@ -609,14 +703,30 @@ fn nested_blocks_content_no_prefix() {
     ctx.set("show", Value::Bool(true));
     ctx.set(
         "items",
-        Value::List(vec![Value::Str("x".into()), Value::Str("y".into())]),
+        Value::List(Arc::new(vec![
+            Value::Str("x".into()),
+            Value::Str("y".into()),
+        ])),
     );
     let result = compiled_render(
-        "> {% for item in items %}\n> {% if show %}\n{{ item }}\n> {% /if %}\n> {% /for %}",
+        r"> {% for item in items %}
+
+> {% if show %}
+
+{{ item }}
+
+> {% /if %}
+
+> {% /for %}",
         &ctx,
     )
     .unwrap();
-    assert_eq!(result, "x\ny\n");
+    assert_eq!(
+        result,
+        r"x
+y
+"
+    );
 }
 
 #[test]
@@ -647,7 +757,15 @@ fn indented_bare_stmt_rejected() {
 fn blockquote_if_compact() {
     let mut ctx = Context::new();
     ctx.set("show", Value::Bool(true));
-    let result = compiled_render(">{% if show %}\nyes\n>{% /if %}", &ctx).unwrap();
+    let result = compiled_render(
+        r">{% if show %}
+
+yes
+
+>{% /if %}",
+        &ctx,
+    )
+    .unwrap();
     assert_eq!(result, "yes\n");
 }
 
@@ -655,7 +773,15 @@ fn blockquote_if_compact() {
 fn blockquote_if_spaced() {
     let mut ctx = Context::new();
     ctx.set("show", Value::Bool(true));
-    let result = compiled_render("> {% if show %}\nyes\n> {% /if %}", &ctx).unwrap();
+    let result = compiled_render(
+        r"> {% if show %}
+
+yes
+
+> {% /if %}",
+        &ctx,
+    )
+    .unwrap();
     assert_eq!(result, "yes\n");
 }
 
@@ -663,7 +789,19 @@ fn blockquote_if_spaced() {
 fn blockquote_if_else() {
     let mut ctx = Context::new();
     ctx.set("show", Value::Bool(false));
-    let result = compiled_render(">{% if show %}\nyes\n>{% else %}\nno\n>{% /if %}", &ctx).unwrap();
+    let result = compiled_render(
+        r">{% if show %}
+
+yes
+
+>{% else %}
+
+no
+
+>{% /if %}",
+        &ctx,
+    )
+    .unwrap();
     assert_eq!(result, "no\n");
 }
 
@@ -672,10 +810,26 @@ fn blockquote_for_loop() {
     let mut ctx = Context::new();
     ctx.set(
         "items",
-        Value::List(vec![Value::Str("a".into()), Value::Str("b".into())]),
+        Value::List(Arc::new(vec![
+            Value::Str("a".into()),
+            Value::Str("b".into()),
+        ])),
     );
-    let result = compiled_render(">{% for x in items %}\n- {{ x }}\n>{% /for %}", &ctx).unwrap();
-    assert_eq!(result, "- a\n- b\n");
+    let result = compiled_render(
+        r">{% for x in items %}
+
+- {{ x }}
+
+>{% /for %}",
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(
+        result,
+        r"- a
+- b
+"
+    );
 }
 
 #[test]
@@ -691,7 +845,19 @@ fn blockquote_elif() {
     let mut ctx = Context::new();
     ctx.set("status", "paused");
     let result = compiled_render(
-        ">{% if status == \"active\" %}\nrunning\n>{% elif status == \"paused\" %}\npaused\n>{% else %}\nstopped\n>{% /if %}",
+        r#">{% if status == "active" %}
+
+running
+
+>{% elif status == "paused" %}
+
+paused
+
+>{% else %}
+
+stopped
+
+>{% /if %}"#,
         &ctx,
     )
     .unwrap();
@@ -704,7 +870,15 @@ fn blockquote_elif() {
 fn blockquote_if_false_renders_empty() {
     let mut ctx = Context::new();
     ctx.set("show", Value::Bool(false));
-    let result = compiled_render(">{% if show %}\nyes\n>{% /if %}", &ctx).unwrap();
+    let result = compiled_render(
+        r">{% if show %}
+
+yes
+
+>{% /if %}",
+        &ctx,
+    )
+    .unwrap();
     assert_eq!(result, "");
 }
 
@@ -713,19 +887,27 @@ fn blockquote_nested_if_in_for() {
     let mut ctx = Context::new();
     ctx.set(
         "items",
-        Value::List(vec![
-            Value::Dict(HashMap::from([
+        Value::List(Arc::new(vec![
+            Value::Struct(Arc::new(HashMap::from([
                 ("name".into(), Value::Str("alpha".into())),
                 ("show".into(), Value::Bool(true)),
-            ])),
-            Value::Dict(HashMap::from([
+            ]))),
+            Value::Struct(Arc::new(HashMap::from([
                 ("name".into(), Value::Str("beta".into())),
                 ("show".into(), Value::Bool(false)),
-            ])),
-        ]),
+            ]))),
+        ])),
     );
     let result = compiled_render(
-        "> {% for item in items %}\n> {% if item.show %}\n{{ item.name }}\n> {% /if %}\n> {% /for %}",
+        r"> {% for item in items %}
+
+> {% if item.show %}
+
+{{ item.name }}
+
+> {% /if %}
+
+> {% /for %}",
         &ctx,
     )
     .unwrap();
@@ -739,8 +921,14 @@ fn blockquote_nested_if_in_for() {
 fn blockquote_stripping_is_idempotent() {
     // Running the blockquote-stripped form through compile should give
     // the same output as the blockquoted form.
-    let blockquoted = "> {% if show %}\nyes\n> {% /if %}";
-    let stripped = "> {% if show %}yes\n> {% /if %}";
+    let blockquoted = r"> {% if show %}
+
+yes
+
+> {% /if %}";
+    let stripped = r"> {% if show %}yes
+
+> {% /if %}";
     let mut ctx = Context::new();
     ctx.set("show", Value::Bool(true));
     let result_bq = compiled_render(blockquoted, &ctx).unwrap();
@@ -755,11 +943,22 @@ fn blockquote_mixed_with_expressions() {
     ctx.set("name", "world");
     ctx.set("show", Value::Bool(true));
     let result = compiled_render(
-        "Hello {{ name }}!\n>{% if show %}\nVisible.\n>{% /if %}",
+        r"Hello {{ name }}!
+
+>{% if show %}
+
+Visible.
+
+>{% /if %}",
         &ctx,
     )
     .unwrap();
-    assert_eq!(result, "Hello world!\nVisible.\n");
+    assert_eq!(
+        result,
+        r"Hello world!
+Visible.
+"
+    );
 }
 
 #[test]
@@ -770,23 +969,50 @@ fn blockquote_with_trim_markers() {
     // and `{%-` on the /if trims trailing whitespace before it.
     let mut ctx = Context::new();
     ctx.set("show", Value::Bool(true));
-    let result = compiled_render("> {%- if show -%}\ncontent\n> {%- /if -%}", &ctx).unwrap();
+    let result = compiled_render(
+        r"> {%- if show -%}
+
+content
+
+> {%- /if -%}",
+        &ctx,
+    )
+    .unwrap();
     assert_eq!(result, "content\n");
 }
 
 #[test]
 fn blockquote_for_single_item() {
     let mut ctx = Context::new();
-    ctx.set("items", Value::List(vec![Value::Str("only".into())]));
-    let result = compiled_render(">{% for x in items %}\n{{ x }}\n>{% /for %}", &ctx).unwrap();
+    ctx.set(
+        "items",
+        Value::List(Arc::new(vec![Value::Str("only".into())])),
+    );
+    let result = compiled_render(
+        r">{% for x in items %}
+
+{{ x }}
+
+>{% /for %}",
+        &ctx,
+    )
+    .unwrap();
     assert_eq!(result, "only\n");
 }
 
 #[test]
 fn blockquote_for_empty_list() {
     let mut ctx = Context::new();
-    ctx.set("items", Value::List(vec![]));
-    let result = compiled_render(">{% for x in items %}\n{{ x }}\n>{% /for %}", &ctx).unwrap();
+    ctx.set("items", Value::List(Arc::new(vec![])));
+    let result = compiled_render(
+        r">{% for x in items %}
+
+{{ x }}
+
+>{% /for %}",
+        &ctx,
+    )
+    .unwrap();
     assert_eq!(result, "");
 }
 
@@ -797,12 +1023,20 @@ fn markdown_link_include_simple() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("greeting.tmpl.md"),
-        "---\nname: greeting\nparams: []\n---\nHello!",
+        r"---
+name: greeting
+params: []
+---
+Hello!",
     )
     .unwrap();
     std::fs::write(
         dir.path().join("main.tmpl.md"),
-        "---\nname: main\nparams: []\n---\n> {% include [greeting](greeting.tmpl.md) %}",
+        r"---
+name: main
+params: []
+---
+> {% include [greeting](greeting.tmpl.md) %}",
     )
     .unwrap();
 
@@ -817,12 +1051,20 @@ fn markdown_link_include_with_vars() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("child.tmpl.md"),
-        "---\nname: child\nparams: [msg = str]\n---\nGot: {{ msg }}",
+        r"---
+name: child
+params: [msg = str]
+---
+Got: {{ msg }}",
     )
     .unwrap();
     std::fs::write(
         dir.path().join("parent.tmpl.md"),
-        "---\nname: parent\nparams: []\n---\n> {% include [child](child.tmpl.md) with msg=\"hi\" %}",
+        r#"---
+name: parent
+params: []
+---
+> {% include [child](child.tmpl.md) with msg="hi" %}"#,
     )
     .unwrap();
 
@@ -837,12 +1079,20 @@ fn markdown_link_include_for_each() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("row.tmpl.md"),
-        "---\nname: row\nparams: [item = str]\n---\n- {{ item }}",
+        r"---
+name: row
+params: [item = str]
+---
+- {{ item }}",
     )
     .unwrap();
     std::fs::write(
         dir.path().join("list.tmpl.md"),
-        "---\nname: list\nparams: [items = list<>]\n---\n> {% include [row](row.tmpl.md) for item in items %}",
+        r"---
+name: list
+params: [items = list<str>]
+---
+> {% include [row](row.tmpl.md) for item in items %}",
     )
     .unwrap();
 
@@ -850,7 +1100,10 @@ fn markdown_link_include_for_each() {
     let mut ctx = Context::new();
     ctx.set(
         "items",
-        Value::List(vec![Value::Str("one".into()), Value::Str("two".into())]),
+        Value::List(Arc::new(vec![
+            Value::Str("one".into()),
+            Value::Str("two".into()),
+        ])),
     );
     let result = tmpl.render(&ctx).unwrap();
     assert_eq!(result, "- one- two");
@@ -864,11 +1117,15 @@ fn self_recursive_include_renders_tree() {
     // A template that includes itself for each child.
     std::fs::write(
         dir.path().join("node.tmpl.md"),
-        "---\nname: node\nparams:\n  - label = str\n  - children = list<>\n---\n\
-         {{ label }}\n\
-         > {% for child in children %}\
-         > {% include [node](node.tmpl.md) with label=child.label, children=child.children %}\
-         > {% /for %}",
+        r"---
+name: node
+params:
+  - label = str
+  - children = list<label = str, children = list<label = str, children = list<str>>>
+---
+{{ label }}
+
+> {% for child in children %}> {% include [node](node.tmpl.md) with label=child.label, children=child.children %}> {% /for %}",
     )
     .unwrap();
 
@@ -877,25 +1134,36 @@ fn self_recursive_include_renders_tree() {
     ctx.set("label", "root");
     ctx.set(
         "children",
-        Value::List(vec![
-            Value::Dict(HashMap::from([
+        Value::List(Arc::new(vec![
+            Value::Struct(Arc::new(HashMap::from([
                 ("label".into(), Value::Str("child_a".into())),
-                ("children".into(), Value::List(vec![])),
-            ])),
-            Value::Dict(HashMap::from([
+                ("children".into(), Value::List(Arc::new(vec![]))),
+            ]))),
+            Value::Struct(Arc::new(HashMap::from([
                 ("label".into(), Value::Str("child_b".into())),
                 (
                     "children".into(),
-                    Value::List(vec![Value::Dict(HashMap::from([
+                    Value::List(Arc::new(vec![Value::Struct(Arc::new(HashMap::from([
                         ("label".into(), Value::Str("grandchild".into())),
-                        ("children".into(), Value::List(vec![])),
-                    ]))]),
+                        ("children".into(), Value::List(Arc::new(vec![]))),
+                    ])))])),
                 ),
-            ])),
-        ]),
+            ]))),
+        ])),
     );
     let result = tmpl.render(&ctx).unwrap();
-    assert_eq!(result, "root\n> child_a\n> > child_b\n> grandchild\n> > ");
+    assert_eq!(
+        result,
+        r"root
+
+> child_a
+
+> > child_b
+
+> grandchild
+
+> > "
+    );
 }
 
 #[test]
@@ -903,18 +1171,22 @@ fn self_recursive_include_terminates_on_empty_children() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("leaf.tmpl.md"),
-        "---\nname: leaf\nparams:\n  - label = str\n  - children = list<>\n---\n\
-         {{ label }}\n\
-         > {% for child in children %}\
-         > {% include [leaf](leaf.tmpl.md) with label=child.label, children=child.children %}\
-         > {% /for %}",
+        r"---
+name: leaf
+params:
+  - label = str
+  - children = list<label = str, children = list<label = str, children = list<str>>>
+---
+{{ label }}
+
+> {% for child in children %}> {% include [leaf](leaf.tmpl.md) with label=child.label, children=child.children %}> {% /for %}",
     )
     .unwrap();
 
     let tmpl = crate::Template::from_file(&dir.path().join("leaf.tmpl.md")).unwrap();
     let mut ctx = Context::new();
     ctx.set("label", "solo");
-    ctx.set("children", Value::List(vec![]));
+    ctx.set("children", Value::List(Arc::new(vec![])));
     let result = tmpl.render(&ctx).unwrap();
     assert_eq!(result.trim(), "solo");
 }

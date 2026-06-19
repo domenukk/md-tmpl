@@ -7,18 +7,18 @@
 use std::str::FromStr;
 
 use prompt_templates::{Template, Value, ctx};
-use prompt_templates_macros::{include_template, include_types};
+use prompt_templates_macros::include_template;
 
 // ── Generate typed modules from templates ────────────────────────────────
 
-include_types!("prompts/cross_crate_complex.tmpl.md");
-include_types!("prompts/bug_report.tmpl.md");
+include_template!("prompts/cross_crate_complex.tmpl.md");
+include_template!("prompts/task_report.tmpl.md");
 
 // ── Test 1: include_template with complex types ─────────────────────────
 
 #[test]
 fn test_include_template_with_complex_types() {
-    let tmpl = include_template!("prompts/cross_crate_complex.tmpl.md");
+    let tmpl = cross_crate_complex::template();
 
     let ctx = ctx! {
         username: "alice",
@@ -35,14 +35,14 @@ fn test_include_template_with_complex_types() {
 
     assert_eq!(
         output,
-        "\nUser: alice\nRole: Admin\nScore: 95.5\nActive: true\n\nTags:\n\n\n- rust\n  > \n- testing\n  > "
+        "\nUser: alice\nRole: Admin\nScore: 95.5\nActive: true\n\nTags:\n- rust\n- testing\n"
     );
 }
 
-// ── Test 2: include_types generates correct struct fields ───────────────
+// ── Test 2: include_template generates correct struct fields ───────────────
 
 #[test]
-fn test_include_types_generates_correct_structs() {
+fn test_include_template_generates_correct_structs() {
     // Construct the Params struct with all field types to verify codegen.
     let params = cross_crate_complex::Params {
         username: "bob".into(),
@@ -62,39 +62,39 @@ fn test_include_types_generates_correct_structs() {
     assert_eq!(params.tags[0].label, "integration");
 }
 
-// ── Test 3: include_types enum variant generation ───────────────────────
+// ── Test 3: include_template enum variant generation ───────────────────────
 
 #[test]
-fn test_include_types_enum_variants() {
-    // The `bug_report` template defines `Severity = enum<Critical, High, Medium, Low>`.
+fn test_include_template_enum_variants() {
+    // The `task_report` template defines `Priority = enum<Critical, High, Medium, Low>`.
     // Verify all variants exist and can be pattern-matched.
-    let severity = bug_report::Severity::Critical;
+    let severity = task_report::Priority::Critical;
 
     let label = match severity {
-        bug_report::Severity::Critical => "critical",
-        bug_report::Severity::High => "high",
-        bug_report::Severity::Medium => "medium",
-        bug_report::Severity::Low => "low",
+        task_report::Priority::Critical => "critical",
+        task_report::Priority::High => "high",
+        task_report::Priority::Medium => "medium",
+        task_report::Priority::Low => "low",
     };
 
     assert_eq!(label, "critical");
 
     // Verify Display trait works for the top-level type alias enum.
-    assert_eq!(bug_report::Severity::High.to_string(), "High");
-    assert_eq!(bug_report::Severity::Low.to_string(), "Low");
+    assert_eq!(task_report::Priority::High.to_string(), "High");
+    assert_eq!(task_report::Priority::Low.to_string(), "Low");
 
     // Verify FromStr roundtrip.
-    let parsed = bug_report::Severity::from_str("medium").unwrap();
-    assert_eq!(parsed, bug_report::Severity::Medium);
+    let parsed = task_report::Priority::from_str("medium").unwrap();
+    assert_eq!(parsed, task_report::Priority::Medium);
 
     // Verify VARIANT_NAMES constant.
     assert_eq!(
-        bug_report::Severity::VARIANT_NAMES,
+        task_report::Priority::VARIANT_NAMES,
         ["Critical", "High", "Medium", "Low"]
     );
 
     // Verify ALL constant.
-    assert_eq!(bug_report::Severity::ALL.len(), 4);
+    assert_eq!(task_report::Priority::ALL.len(), 4);
 }
 
 // ── Test 4: validate_template catches parameter drift ───────────────────
@@ -129,8 +129,6 @@ params:
 
 #[test]
 fn test_render_with_generated_params() {
-    let tmpl = include_template!("prompts/cross_crate_complex.tmpl.md");
-
     let params = cross_crate_complex::Params {
         username: "eve".into(),
         role: cross_crate_complex::ParamsRole::Viewer,
@@ -138,19 +136,20 @@ fn test_render_with_generated_params() {
         active: true,
         tags: vec![
             cross_crate_complex::ParamsTagsItem {
-                label: "security".into(),
+                label: "performance".into(),
             },
             cross_crate_complex::ParamsTagsItem {
-                label: "audit".into(),
+                label: "review".into(),
             },
         ],
     };
 
-    let output = params.render(tmpl).unwrap();
+    // Use zero-arg render() which uses the embedded template.
+    let output = params.render().unwrap();
 
     assert_eq!(
         output,
-        "\nUser: eve\nRole: Viewer\nScore: 77.3\nActive: true\n\nTags:\n\n\n- security\n  > \n- audit\n  > "
+        "\nUser: eve\nRole: Viewer\nScore: 77.3\nActive: true\n\nTags:\n- performance\n- review\n"
     );
 }
 
@@ -158,36 +157,34 @@ fn test_render_with_generated_params() {
 
 #[test]
 fn test_validate_template_succeeds_for_matching() {
-    let tmpl = include_template!("prompts/cross_crate_complex.tmpl.md");
+    let tmpl = cross_crate_complex::template();
     cross_crate_complex::Params::validate_template(tmpl).unwrap();
 }
 
-// ── Test 7: bug_report full roundtrip with typed enum params ────────────
+// ── Test 7: task_report full roundtrip with typed enum params ────────────
 
 #[test]
-fn test_bug_report_roundtrip_with_typed_enums() {
-    let tmpl = include_template!("prompts/bug_report.tmpl.md");
-
-    let params = bug_report::Params {
-        title: "Null pointer dereference".into(),
-        severity: bug_report::ParamsSeverity::Critical,
-        bugs: vec![
-            bug_report::ParamsBugsItem {
-                name: "crash in parser".into(),
-                priority: bug_report::ParamsBugsItemPriority::High,
+fn test_task_report_roundtrip_with_typed_enums() {
+    let params = task_report::Params {
+        title: "Update deployment pipeline".into(),
+        priority: task_report::ParamsPriority::Critical,
+        tasks: vec![
+            task_report::ParamsTasksItem {
+                name: "fix build script".into(),
+                urgency: task_report::ParamsTasksItemUrgency::High,
             },
-            bug_report::ParamsBugsItem {
-                name: "memory leak".into(),
-                priority: bug_report::ParamsBugsItemPriority::Medium,
+            task_report::ParamsTasksItem {
+                name: "write tests".into(),
+                urgency: task_report::ParamsTasksItemUrgency::Medium,
             },
         ],
     };
 
-    let output = params.render(tmpl).unwrap();
+    let output = params.render().unwrap();
 
     assert_eq!(
         output,
-        "\n# Bug Report: Null pointer dereference\n\nSeverity: Critical\n\n\n- crash in parser (High)\n  > \n- memory leak (Medium)\n  > "
+        "\n# Task Report: Update deployment pipeline\n\nPriority: Critical\n- fix build script (High)\n- write tests (Medium)\n"
     );
 }
 
@@ -195,15 +192,15 @@ fn test_bug_report_roundtrip_with_typed_enums() {
 
 #[test]
 fn test_ctx_macro_with_include_template() {
-    let tmpl = include_template!("prompts/bug_report.tmpl.md");
+    let tmpl = task_report::template();
 
     // Use the ctx! macro (from prompt_templates) with macros (from prompt_templates_macros).
     let ctx = ctx! {
-        title: "XSS vulnerability",
-        severity: "High",
-        bugs: [
-            { name: "reflected XSS", priority: "Critical" },
-            { name: "stored XSS", priority: "High" }
+        title: "Refactor auth module",
+        priority: "High",
+        tasks: [
+            { name: "extract interfaces", urgency: "Critical" },
+            { name: "add error handling", urgency: "High" }
         ]
     };
 
@@ -211,7 +208,7 @@ fn test_ctx_macro_with_include_template() {
 
     assert_eq!(
         output,
-        "\n# Bug Report: XSS vulnerability\n\nSeverity: High\n\n\n- reflected XSS (Critical)\n  > \n- stored XSS (High)\n  > "
+        "\n# Task Report: Refactor auth module\n\nPriority: High\n- extract interfaces (Critical)\n- add error handling (High)\n"
     );
 }
 
@@ -236,11 +233,11 @@ fn test_to_context_interop() {
     assert!(ctx.get("active").is_some());
 
     // Render with the context to verify it's valid.
-    let tmpl = include_template!("prompts/cross_crate_complex.tmpl.md");
+    let tmpl = cross_crate_complex::template();
     let output = tmpl.render(&ctx).unwrap();
     assert_eq!(
         output,
-        "\nUser: frank\nRole: Editor\nScore: 88\nActive: false\n\nTags:\n\n"
+        "\nUser: frank\nRole: Editor\nScore: 88\nActive: false\n\nTags:\n"
     );
 }
 
@@ -248,7 +245,7 @@ fn test_to_context_interop() {
 
 #[test]
 fn test_value_dict_rendering() {
-    let tmpl = include_template!("prompts/cross_crate_complex.tmpl.md");
+    let tmpl = cross_crate_complex::template();
 
     // Build context entirely from Value constructors.
     let mut ctx = prompt_templates::Context::new();
@@ -258,12 +255,39 @@ fn test_value_dict_rendering() {
     ctx.set("active", Value::Bool(true));
     ctx.set(
         "tags",
-        Value::List(vec![Value::dict([("label", Value::Str("perf".into()))])]),
+        Value::List(std::sync::Arc::new(vec![Value::new_struct([(
+            "label",
+            Value::Str("perf".into()),
+        )])])),
     );
 
     let output = tmpl.render(&ctx).unwrap();
     assert_eq!(
         output,
-        "\nUser: grace\nRole: Admin\nScore: 100\nActive: true\n\nTags:\n\n\n- perf\n  > "
+        "\nUser: grace\nRole: Admin\nScore: 100\nActive: true\n\nTags:\n- perf\n"
+    );
+}
+
+// ── Test 11: render_with for hot-reload ─────────────────────────────────
+
+#[test]
+fn test_render_with_hot_reload() {
+    let params = cross_crate_complex::Params {
+        username: "hot_reload".into(),
+        role: cross_crate_complex::ParamsRole::Admin,
+        score: 50.0,
+        active: true,
+        tags: vec![],
+    };
+
+    // Load the same template from disk (hot-reload scenario).
+    let disk_tmpl =
+        Template::from_file(std::path::Path::new("prompts/cross_crate_complex.tmpl.md")).unwrap();
+
+    // render_with() validates then renders.
+    let output = params.render_with(&disk_tmpl).unwrap();
+    assert_eq!(
+        output,
+        "\nUser: hot_reload\nRole: Admin\nScore: 50\nActive: true\n\nTags:\n"
     );
 }

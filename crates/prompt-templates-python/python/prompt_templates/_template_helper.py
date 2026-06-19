@@ -19,6 +19,7 @@ as attributes::
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 
@@ -41,15 +42,15 @@ class _TemplateWithTypes:
         review.render(reviewer="Alice", items=[...])  # render
     """
 
-    def __init__(self, template_path: str) -> None:
+    def __init__(self, template_path: str | os.PathLike[str]) -> None:
         from prompt_templates._prompt_templates import (
             Template as _NativeTemplate,
             generate_types_for_template,
         )
 
-        self._path = template_path
-        self._native = _NativeTemplate.from_file(template_path)
-        self._types: dict[str, Any] = generate_types_for_template(template_path)
+        self._path = os.fspath(template_path)
+        self._native = _NativeTemplate.from_file(self._path)
+        self._types: dict[str, Any] = generate_types_for_template(self._path)
 
         # Attach generated types as attributes.
         for name, cls in self._types.items():
@@ -91,7 +92,7 @@ class _TemplateWithTypes:
         return f"template({self._path!r})"
 
 
-def template(path: str) -> _TemplateWithTypes:
+def template(path: str | os.PathLike[str]) -> _TemplateWithTypes:
     """Load a template and generate typed Python classes from its frontmatter.
 
     This is the recommended API for using typed templates without the

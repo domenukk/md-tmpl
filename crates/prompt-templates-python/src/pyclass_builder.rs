@@ -15,7 +15,7 @@
 
 use std::fmt::Write;
 
-use pyo3::{prelude::*, types::PyDict};
+use pyo3::{Py, prelude::*, types::PyDict};
 
 // ---------------------------------------------------------------------------
 // Core types
@@ -163,8 +163,29 @@ impl PyClassDef {
     }
 
     /// Execute the rendered source and extract the class object.
-    pub fn exec(&self, py: Python<'_>) -> PyResult<PyObject> {
+    pub fn exec(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        self.exec_with_locals(py, None)
+    }
+
+    /// Execute the rendered source with extra bindings available in scope.
+    ///
+    /// Extra bindings are placed in the **globals** dict because Python class
+    /// bodies resolve names from globals, not locals.
+    pub fn exec_with_locals(
+        &self,
+        py: Python<'_>,
+        extra_globals: Option<&[(String, Py<PyAny>)]>,
+    ) -> PyResult<Py<PyAny>> {
         let source = self.render();
+        let globals = PyDict::new(py);
+        // Add builtins so the generated code can use built-in names.
+        let builtins = py.import("builtins")?;
+        globals.set_item("__builtins__", builtins)?;
+        if let Some(extras) = extra_globals {
+            for (name, obj) in extras {
+                globals.set_item(name, obj)?;
+            }
+        }
         let locals = PyDict::new(py);
         py.run(
             &std::ffi::CString::new(source.as_str()).map_err(|e| {
@@ -173,7 +194,7 @@ impl PyClassDef {
                     self.name
                 ))
             })?,
-            None,
+            Some(&globals),
             Some(&locals),
         )?;
 

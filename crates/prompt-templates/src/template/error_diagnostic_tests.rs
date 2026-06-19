@@ -32,10 +32,18 @@ fn test_error_undefined_variable_message() {
     // UndefinedVariable fires at runtime when a dotted path reaches
     // a missing field — validate_context returns MissingParams for
     // top-level keys, so we use a dotted path instead.
-    let tmpl = Template::from_source("---\nparams: [data = dict<>]\n---\n{{ data.missing_field }}")
-        .unwrap();
+    let tmpl = Template::from_source(
+        r"---
+params: [data = struct<x = str>]
+---
+{{ data.missing_field }}",
+    )
+    .unwrap();
     let mut ctx = Context::new();
-    ctx.set("data", crate::Value::Dict(std::collections::HashMap::new()));
+    ctx.set(
+        "data",
+        crate::Value::new_struct([("x", crate::Value::from("hello"))]),
+    );
     let err = tmpl.render(&ctx).unwrap_err();
     let msg = err.to_string();
     assert!(
@@ -55,8 +63,13 @@ fn test_error_undefined_variable_message() {
 #[test]
 fn test_error_syntax_has_line_and_snippet() {
     // An unknown filter triggers a Syntax error with line/snippet info via enrich_error.
-    let err =
-        Template::from_source("---\nparams: [x = str]\n---\n{{ x | badfilter }}").unwrap_err();
+    let err = Template::from_source(
+        r"---
+params: [x = str]
+---
+{{ x | badfilter }}",
+    )
+    .unwrap_err();
     let msg = err.to_string();
     assert!(
         matches!(err, TemplateError::Syntax(_)),
@@ -76,8 +89,13 @@ fn test_error_syntax_has_line_and_snippet() {
 
 #[test]
 fn test_error_syntax_unknown_filter_includes_name() {
-    let err =
-        Template::from_source("---\nparams: [x = str]\n---\n{{ x | nonexistent }}").unwrap_err();
+    let err = Template::from_source(
+        r"---
+params: [x = str]
+---
+{{ x | nonexistent }}",
+    )
+    .unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("nonexistent"),
@@ -92,7 +110,10 @@ fn test_error_syntax_unknown_filter_includes_name() {
 #[test]
 fn test_error_missing_params_lists_all() {
     let tmpl = Template::from_source(
-        "---\nparams: [a = str, b = int, c = bool]\n---\n{{ a }}{{ b }}{{ c }}",
+        r"---
+params: [a = str, b = int, c = bool]
+---
+{{ a }}{{ b }}{{ c }}",
     )
     .unwrap();
     let ctx = Context::new();
@@ -113,7 +134,13 @@ fn test_error_missing_params_lists_all() {
 
 #[test]
 fn test_error_type_mismatch_includes_path_and_types() {
-    let tmpl = Template::from_source("---\nparams: [count = int]\n---\n{{ count }}").unwrap();
+    let tmpl = Template::from_source(
+        r"---
+params: [count = int]
+---
+{{ count }}",
+    )
+    .unwrap();
     let ctx = ctx! { count: "not-a-number" };
     let err = tmpl.render(&ctx).unwrap_err();
     let msg = err.to_string();
@@ -133,8 +160,13 @@ fn test_error_type_mismatch_includes_path_and_types() {
 #[test]
 fn test_error_type_mismatch_nested_path() {
     // list<score = int>: provide str at the leaf.
-    let tmpl = Template::from_source("---\nparams: [items = list<score = int>]\n---\n{{ items }}")
-        .unwrap();
+    let tmpl = Template::from_source(
+        r"---
+params: [items = list<score = int>]
+---
+{{ items }}",
+    )
+    .unwrap();
     let ctx = ctx! {
         items: [
             { score: "not-int" }
@@ -162,8 +194,13 @@ fn test_error_unknown_filter_message() {
     // When enrich_error doesn't find the needle, the raw UnknownFilter is preserved.
     // But from_source always runs through enrich_error which converts it.
     // We still verify the content.
-    let err =
-        Template::from_source("---\nparams: [x = str]\n---\n{{ x | nosuchfilter }}").unwrap_err();
+    let err = Template::from_source(
+        r"---
+params: [x = str]
+---
+{{ x | nosuchfilter }}",
+    )
+    .unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("nosuchfilter"),
@@ -182,7 +219,13 @@ fn test_error_include_not_found_message() {
     // A template that includes a nonexistent file.
     std::fs::write(
         &main_path,
-        "---\nparams: [x = str]\nallow_unused: true\n---\n> {% include [missing](missing.tmpl.md) %}\n{{ x }}",
+        r"---
+params: [x = str]
+allow_unused: true
+---
+> {% include [missing](missing.tmpl.md) %}
+
+{{ x }}",
     )
     .unwrap();
     let tmpl = Template::from_file(&main_path).unwrap();
@@ -202,12 +245,19 @@ fn test_error_include_not_found_message() {
 
 #[test]
 fn test_error_declarations_mutated_shows_diff() {
-    let tmpl_v1 =
-        Template::from_source("---\nparams: [name = str, count = int]\n---\n{{ name }}{{ count }}")
-            .unwrap();
+    let tmpl_v1 = Template::from_source(
+        r"---
+params: [name = str, count = int]
+---
+{{ name }}{{ count }}",
+    )
+    .unwrap();
     // Simulate a reloaded template with different params.
     let tmpl_v2 = Template::from_source(
-        "---\nparams: [name = str, score = float]\n---\n{{ name }}{{ score }}",
+        r"---
+params: [name = str, score = float]
+---
+{{ name }}{{ score }}",
     )
     .unwrap();
     let err = tmpl_v2
@@ -231,7 +281,13 @@ fn test_error_declarations_mutated_shows_diff() {
 
 #[test]
 fn test_error_extra_params_lists_names() {
-    let tmpl = Template::from_source("---\nparams: [name = str]\n---\n{{ name }}").unwrap();
+    let tmpl = Template::from_source(
+        r"---
+params: [name = str]
+---
+{{ name }}",
+    )
+    .unwrap();
     let ctx = ctx! { name: "Alice", bonus: 42_i64 };
     let err = tmpl.render(&ctx).unwrap_err();
     let msg = err.to_string();
@@ -248,7 +304,13 @@ fn test_error_extra_params_lists_names() {
 
 #[test]
 fn test_did_you_mean_misspelled_variable() {
-    let err = Template::from_source("---\nparams: [name = str]\n---\n{{ nme }}").unwrap_err();
+    let err = Template::from_source(
+        r"---
+params: [name = str]
+---
+{{ nme }}",
+    )
+    .unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("did you mean"),
@@ -259,8 +321,13 @@ fn test_did_you_mean_misspelled_variable() {
 
 #[test]
 fn test_did_you_mean_no_suggestion_for_distant_name() {
-    let err = Template::from_source("---\nparams: [name = str, count = int]\n---\n{{ xyz }}")
-        .unwrap_err();
+    let err = Template::from_source(
+        r"---
+params: [name = str, count = int]
+---
+{{ xyz }}",
+    )
+    .unwrap_err();
     let msg = err.to_string();
     assert!(
         !msg.contains("did you mean"),
@@ -274,7 +341,13 @@ fn test_did_you_mean_levenshtein_distance_1() {
     // but let's use a true distance-1 example: "namee" → insert).
     // Actually "naem" vs "name" = 2 (swap a,e). Let's use "namee" (distance 1 insert)
     // or "nme" (distance 1 delete).
-    let err = Template::from_source("---\nparams: [name = str]\n---\n{{ nme }}").unwrap_err();
+    let err = Template::from_source(
+        r"---
+params: [name = str]
+---
+{{ nme }}",
+    )
+    .unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("did you mean 'name'"),
@@ -288,9 +361,12 @@ fn test_did_you_mean_levenshtein_distance_1() {
 
 #[test]
 fn test_type_mismatch_dotted_path_for_deeply_nested() {
-    // list<config = dict<timeout = int>>: provide str at deepest level.
+    // list<config = struct<timeout = int>>: provide str at deepest level.
     let tmpl = Template::from_source(
-        "---\nparams: [items = list<config = dict<timeout = int>>]\n---\n{{ items }}",
+        r"---
+params: [items = list<config = struct<timeout = int>>]
+---
+{{ items }}",
     )
     .unwrap();
     let ctx = ctx! {

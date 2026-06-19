@@ -3,11 +3,13 @@ members = [
   "crates/prompt-templates",
   "crates/prompt-templates-macros",
   "crates/prompt-templates-python",
+  "crates/prompt-templates-ffi",
+  "crates/prompt-templates-wasm",
 ]
 resolver = "3"
 
 [workspace.dependencies]
-typed-builder = "0.20"
+typed-builder = "0.23"
 
 [workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }

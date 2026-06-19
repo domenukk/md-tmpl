@@ -12,6 +12,7 @@
 //!   internal [`Value`](prompt_templates::Value) type.
 
 mod convert;
+mod errors;
 mod pyclass_builder;
 mod template;
 mod typegen;
@@ -27,5 +28,9 @@ fn _prompt_templates(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<template::PyTemplate>()?;
     m.add_class::<template::PyTemplateCache>()?;
     m.add_function(wrap_pyfunction!(typegen::generate_types_for_template, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        typegen::generate_python_source_for_template,
+        m
+    )?)?;
     Ok(())
 }

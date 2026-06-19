@@ -1,6 +1,10 @@
 //! Frontmatter type declarations and validation.
 
-use std::fmt;
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
+use core::fmt;
 
 use crate::value::Value;
 
@@ -17,8 +21,8 @@ pub enum VarType {
     Float,
     /// `list<field = type, ...>` — required fields per item.
     List(Vec<VarDecl>),
-    /// `dict<field = type, ...>` — required fields.
-    Dict(Vec<VarDecl>),
+    /// `struct<field = type, ...>` — required fields.
+    Struct(Vec<VarDecl>),
     /// `enum<Option1, Option2, ...>` — expects one of these variants.
     Enum(Vec<VariantDecl>),
     /// `tmpl<field = type, ...>` — expects a template with matching params.
@@ -52,25 +56,30 @@ impl fmt::Display for VarType {
                 fmt_fields(fields, f)?;
                 write!(f, ">")
             }
-            Self::Dict(fields) => {
-                f.write_str(crate::consts::TYPE_DICT_PREFIX)?;
+            Self::Struct(fields) => {
+                f.write_str(crate::consts::TYPE_STRUCT_PREFIX)?;
                 fmt_fields(fields, f)?;
                 write!(f, ">")
             }
             Self::Enum(variants) => {
-                f.write_str(crate::consts::TYPE_ENUM_PREFIX)?;
-                for (i, var) in variants.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
+                // Detect desugared option<T> pattern and display as `option<T>`.
+                if let Some(inner_ty) = Self::detect_option_inner(variants) {
+                    write!(f, "option<{inner_ty}>")
+                } else {
+                    f.write_str(crate::consts::TYPE_ENUM_PREFIX)?;
+                    for (i, var) in variants.iter().enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", var.name)?;
+                        if !var.fields.is_empty() {
+                            write!(f, "(")?;
+                            fmt_fields(&var.fields, f)?;
+                            write!(f, ")")?;
+                        }
                     }
-                    write!(f, "{}", var.name)?;
-                    if !var.fields.is_empty() {
-                        write!(f, "(")?;
-                        fmt_fields(&var.fields, f)?;
-                        write!(f, ")")?;
-                    }
+                    write!(f, ">")
                 }
-                write!(f, ">")
             }
             Self::Tmpl(fields) => {
                 f.write_str(crate::consts::TYPE_TMPL_PREFIX)?;
@@ -86,12 +95,12 @@ impl VarType {
     ///
     /// - Scalar types match their corresponding `Value` variant.
     /// - `List(fields)` matches `Value::List`; if `fields` is non-empty,
-    ///   **every** item must be a `Dict` with all required keys **and**
+    ///   **every** item must be a `Struct` with all required keys **and**
     ///   matching value types (recursive).
-    /// - `Dict(fields)` matches `Value::Dict`; required keys must be present
+    /// - `Struct(fields)` matches `Value::Struct`; required keys must be present
     ///   with matching value types (recursive).
     /// - `Enum(variants)` matches unit variants as `Value::Str`, struct
-    ///   variants as `Value::Dict` with `__kind__` + typed fields.
+    ///   variants as `Value::Struct` with `__kind__` + typed fields.
     #[must_use]
     pub fn matches(&self, value: &Value) -> bool {
         self.check(value).is_ok()
@@ -100,12 +109,129 @@ impl VarType {
     /// Validate `value` against this type, returning a structured error with
     /// the path to the first mismatch on failure.
     ///
+    /// Uses a two-pass strategy: a fast discriminant-only check first (zero
+    /// allocations), falling back to the full path-building check only when
+    /// a mismatch is detected.
+    ///
     /// # Errors
     ///
     /// Returns [`TypeCheckError`] with the dotted path to the mismatched field,
     /// the expected type, the actual type, and a preview of the actual value.
     pub fn check(&self, value: &Value) -> Result<(), TypeCheckError> {
+        // Fast path: discriminant-only check, zero allocations.
+        if self.check_fast(value) {
+            return Ok(());
+        }
+        // Slow path: build the full error path.
         self.check_inner(value, String::new())
+    }
+
+    /// Fast discriminant-only type check — returns `true` if the value matches.
+    ///
+    /// This avoids all `String` allocations (no path building, no error
+    /// formatting) and is used as the first pass in [`check`](Self::check).
+    /// For deeply nested types with many list items, this is dramatically
+    /// faster than the full `check_inner` path on the success case.
+    #[inline]
+    fn check_fast(&self, value: &Value) -> bool {
+        match self {
+            Self::Str => matches!(value, Value::Str(_)),
+            Self::Bool => matches!(value, Value::Bool(_)),
+            Self::Int => matches!(value, Value::Int(_)),
+            Self::Float => matches!(value, Value::Float(_)),
+            Self::List(fields) => {
+                let Value::List(items) = value else {
+                    return false;
+                };
+                if fields.is_empty() {
+                    return true;
+                }
+                for item in items.iter() {
+                    if fields.len() == 1 && fields[0].name.is_empty() {
+                        if !fields[0].var_type.check_fast(item) {
+                            return false;
+                        }
+                        continue;
+                    }
+                    let Value::Struct(map) = item else {
+                        return false;
+                    };
+                    for decl in fields {
+                        match map.get(&decl.name) {
+                            Some(v) => {
+                                if !decl.var_type.check_fast(v) {
+                                    return false;
+                                }
+                            }
+                            None => return false,
+                        }
+                    }
+                }
+                true
+            }
+            Self::Struct(fields) => {
+                let Value::Struct(map) = value else {
+                    return false;
+                };
+                for decl in fields {
+                    match map.get(&decl.name) {
+                        Some(v) => {
+                            if !decl.var_type.check_fast(v) {
+                                return false;
+                            }
+                        }
+                        None => return false,
+                    }
+                }
+                true
+            }
+            Self::Enum(variants) => match value {
+                Value::Str(s) => variants.iter().any(|v| v.name == *s && v.fields.is_empty()),
+                Value::Struct(map) => {
+                    let tag_key = crate::consts::ENUM_TAG_KEY;
+                    let Some(Value::Str(tag)) = map.get(tag_key) else {
+                        return false;
+                    };
+                    let Some(var) = variants.iter().find(|v| v.name == *tag) else {
+                        return false;
+                    };
+                    for decl in &var.fields {
+                        match map.get(&decl.name) {
+                            Some(v) => {
+                                if !decl.var_type.check_fast(v) {
+                                    return false;
+                                }
+                            }
+                            None => return false,
+                        }
+                    }
+                    true
+                }
+                _ => false,
+            },
+            Self::Tmpl(expected) => {
+                let Value::Tmpl(tmpl) = value else {
+                    return false;
+                };
+                let actual_decls = tmpl.declarations();
+                for exp in expected {
+                    match actual_decls.iter().find(|d| d.name == exp.name) {
+                        Some(act) => {
+                            if act.var_type != exp.var_type {
+                                return false;
+                            }
+                        }
+                        None => return false,
+                    }
+                }
+                for act in actual_decls {
+                    if act.default_value.is_none() && !expected.iter().any(|e| e.name == act.name) {
+                        return false;
+                    }
+                }
+                true
+            }
+        }
     }
 
     fn check_inner(&self, value: &Value, path: String) -> Result<(), TypeCheckError> {
@@ -139,7 +265,7 @@ impl VarType {
                 }
             }
             Self::List(fields) => Self::check_list(fields, value, path),
-            Self::Dict(fields) => Self::check_dict(fields, value, path),
+            Self::Struct(fields) => Self::check_dict(fields, value, path),
             Self::Enum(variants) => Self::check_enum(variants, value, path),
             Self::Tmpl(params) => Self::check_tmpl(params, value, path),
         }
@@ -161,10 +287,10 @@ impl VarType {
                     .check_inner(item, format!("{path}[{i}]"))?;
                 continue;
             }
-            let Value::Dict(map) = item else {
+            let Value::Struct(map) = item else {
                 return Err(TypeCheckError::new(
                     format!("{path}[{i}]"),
-                    crate::consts::TYPE_DICT,
+                    crate::consts::TYPE_STRUCT,
                     item,
                 ));
             };
@@ -190,10 +316,10 @@ impl VarType {
         Ok(())
     }
 
-    /// Validate a `Dict` type: all required keys must be present with matching types.
+    /// Validate a `Struct` type: all required keys must be present with matching types.
     fn check_dict(fields: &[VarDecl], value: &Value, path: String) -> Result<(), TypeCheckError> {
-        let Value::Dict(map) = value else {
-            return Err(TypeCheckError::new(path, crate::consts::TYPE_DICT, value));
+        let Value::Struct(map) = value else {
+            return Err(TypeCheckError::new(path, crate::consts::TYPE_STRUCT, value));
         };
         for decl in fields {
             let field_path = if path.is_empty() {
@@ -238,7 +364,7 @@ impl VarType {
                     })
                 }
             }
-            Value::Dict(map) => {
+            Value::Struct(map) => {
                 let tag_key = crate::consts::ENUM_TAG_KEY;
                 let Some(Value::Str(tag)) = map.get(tag_key) else {
                     return Err(TypeCheckError {
@@ -354,7 +480,7 @@ impl VarType {
 /// Structured error from [`VarType::check`] with the path to the mismatch.
 #[derive(Debug, Clone)]
 pub struct TypeCheckError {
-    /// Dotted path to the mismatched field (e.g. `"bugs[2].title"`).
+    /// Dotted path to the mismatched field (e.g. `"tasks[2].title"`).
     pub path: String,
     /// The expected type at that path.
     pub expected: String,
@@ -437,6 +563,46 @@ impl VarDecl {
     }
 }
 
+impl VarType {
+    /// Returns `true` if this type is the desugared form of `option<T>`,
+    /// i.e. `enum<Some(val = T), None>`.
+    #[must_use]
+    pub fn is_option(&self) -> bool {
+        matches!(self, VarType::Enum(v) if Self::detect_option_inner(v).is_some())
+    }
+
+    /// If this type is `option<T>`, returns the inner `T` type.
+    #[must_use]
+    pub fn option_inner_type(&self) -> Option<&VarType> {
+        match self {
+            VarType::Enum(variants) => Self::detect_option_inner(variants),
+            _ => None,
+        }
+    }
+
+    /// Detect the `option<T>` pattern: exactly two variants named `Some` and
+    /// `None`, where `Some` has exactly one field named `val` and `None` has
+    /// no fields.
+    fn detect_option_inner(variants: &[VariantDecl]) -> Option<&VarType> {
+        use crate::consts::{OPTION_NONE, OPTION_SOME, OPTION_VAL_FIELD};
+        if variants.len() != 2 {
+            return None;
+        }
+        let (some, none) = if variants[0].name == OPTION_SOME && variants[1].name == OPTION_NONE {
+            (&variants[0], &variants[1])
+        } else {
+            return None;
+        };
+        if !none.fields.is_empty() {
+            return None;
+        }
+        if some.fields.len() != 1 || some.fields[0].name != OPTION_VAL_FIELD {
+            return None;
+        }
+        Some(&some.fields[0].var_type)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Built-in type names
 // ---------------------------------------------------------------------------
@@ -448,9 +614,10 @@ pub const BUILTIN_TYPE_NAMES: &[&str] = &[
     crate::consts::TYPE_INT,
     crate::consts::TYPE_FLOAT,
     crate::consts::TYPE_LIST,
-    crate::consts::TYPE_DICT,
+    crate::consts::TYPE_STRUCT,
     crate::consts::TYPE_ENUM,
     crate::consts::TYPE_TMPL,
+    crate::consts::TYPE_OPTION,
 ];
 
 // ---------------------------------------------------------------------------
@@ -467,7 +634,7 @@ pub const BUILTIN_TYPE_NAMES: &[&str] = &[
 /// ```
 /// use prompt_templates::to_pascal_case;
 /// assert_eq!(to_pascal_case("code_review"), "CodeReview");
-/// assert_eq!(to_pascal_case("bug-report"), "BugReport");
+/// assert_eq!(to_pascal_case("task-report"), "TaskReport");
 /// ```
 #[must_use]
 pub fn to_pascal_case(s: &str) -> String {
@@ -492,10 +659,10 @@ pub fn to_pascal_case(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::sync::Arc;
 
     use super::*;
-    use crate::consts::ENUM_TAG_KEY;
+    use crate::{compat::HashMap, consts::ENUM_TAG_KEY};
 
     // -- Display --
 
@@ -525,13 +692,13 @@ mod tests {
     }
 
     #[test]
-    fn display_dict_with_fields() {
-        let var_type = VarType::Dict(vec![VarDecl {
+    fn display_struct_with_fields() {
+        let var_type = VarType::Struct(vec![VarDecl {
             name: "label".into(),
             var_type: VarType::Str,
             default_value: None,
         }]);
-        assert_eq!(var_type.to_string(), "dict<label = str>");
+        assert_eq!(var_type.to_string(), "struct<label = str>");
     }
 
     // -- matches --
@@ -563,8 +730,8 @@ mod tests {
 
     #[test]
     fn list_no_fields_matches_any_list() {
-        assert!(VarType::List(vec![]).matches(&Value::List(vec![])));
-        assert!(VarType::List(vec![]).matches(&Value::List(vec![Value::Int(1)])));
+        assert!(VarType::List(vec![]).matches(&Value::List(Arc::new(vec![]))));
+        assert!(VarType::List(vec![]).matches(&Value::List(Arc::new(vec![Value::Int(1)]))));
         assert!(!VarType::List(vec![]).matches(&Value::Str("x".into())));
     }
 
@@ -577,18 +744,21 @@ mod tests {
         }]);
 
         // Empty list passes (nothing to validate).
-        assert!(var_type.matches(&Value::List(vec![])));
+        assert!(var_type.matches(&Value::List(Arc::new(vec![]))));
 
         // Single valid item.
-        let valid_item = Value::Dict(HashMap::from([("name".into(), Value::Str("a".into()))]));
-        assert!(var_type.matches(&Value::List(vec![valid_item])));
+        let valid_item = Value::Struct(Arc::new(HashMap::from([(
+            "name".into(),
+            Value::Str("a".into()),
+        )])));
+        assert!(var_type.matches(&Value::List(Arc::new(vec![valid_item]))));
 
         // Missing key in first item.
-        let invalid_item = Value::Dict(HashMap::from([("id".into(), Value::Int(1))]));
-        assert!(!var_type.matches(&Value::List(vec![invalid_item])));
+        let invalid_item = Value::Struct(Arc::new(HashMap::from([("id".into(), Value::Int(1))])));
+        assert!(!var_type.matches(&Value::List(Arc::new(vec![invalid_item]))));
 
-        // First item is not a Dict.
-        assert!(!var_type.matches(&Value::List(vec![Value::Int(1)])));
+        // First item is not a Struct.
+        assert!(!var_type.matches(&Value::List(Arc::new(vec![Value::Int(1)]))));
     }
 
     #[test]
@@ -600,9 +770,9 @@ mod tests {
         }]);
 
         // Key present but wrong type (Int instead of Str).
-        let wrong_type = Value::Dict(HashMap::from([("name".into(), Value::Int(42))]));
+        let wrong_type = Value::Struct(Arc::new(HashMap::from([("name".into(), Value::Int(42))])));
         assert!(
-            !var_type.matches(&Value::List(vec![wrong_type])),
+            !var_type.matches(&Value::List(Arc::new(vec![wrong_type]))),
             "should reject list item where 'name' is int, not str"
         );
     }
@@ -615,22 +785,25 @@ mod tests {
             default_value: None,
         }]);
 
-        let good = Value::Dict(HashMap::from([("name".into(), Value::Str("ok".into()))]));
-        let bad = Value::Dict(HashMap::from([("name".into(), Value::Int(99))]));
+        let good = Value::Struct(Arc::new(HashMap::from([(
+            "name".into(),
+            Value::Str("ok".into()),
+        )])));
+        let bad = Value::Struct(Arc::new(HashMap::from([("name".into(), Value::Int(99))])));
 
         // First item good, second bad → reject.
         assert!(
-            !var_type.matches(&Value::List(vec![good.clone(), bad])),
+            !var_type.matches(&Value::List(Arc::new(vec![good.clone(), bad]))),
             "should validate ALL items, not just the first"
         );
 
         // Both good → accept.
-        assert!(var_type.matches(&Value::List(vec![good.clone(), good])));
+        assert!(var_type.matches(&Value::List(Arc::new(vec![good.clone(), good]))));
     }
 
     #[test]
-    fn dict_validates_required_keys_and_types() {
-        let var_type = VarType::Dict(vec![
+    fn struct_validates_required_keys_and_types() {
+        let var_type = VarType::Struct(vec![
             VarDecl {
                 name: "title".into(),
                 var_type: VarType::Str,
@@ -643,15 +816,17 @@ mod tests {
             },
         ]);
 
-        let valid = Value::Dict(HashMap::from([
+        let valid = Value::Struct(Arc::new(HashMap::from([
             ("title".into(), Value::Str("task".into())),
             ("count".into(), Value::Int(5)),
-        ]));
+        ])));
         assert!(var_type.matches(&valid));
 
         // Missing "count".
-        let missing_field =
-            Value::Dict(HashMap::from([("title".into(), Value::Str("task".into()))]));
+        let missing_field = Value::Struct(Arc::new(HashMap::from([(
+            "title".into(),
+            Value::Str("task".into()),
+        )])));
         assert!(!var_type.matches(&missing_field));
 
         // Not a dict at all.
@@ -659,27 +834,30 @@ mod tests {
     }
 
     #[test]
-    fn dict_rejects_wrong_field_type() {
-        let var_type = VarType::Dict(vec![VarDecl {
+    fn struct_rejects_wrong_field_type() {
+        let var_type = VarType::Struct(vec![VarDecl {
             name: "count".into(),
             var_type: VarType::Int,
             default_value: None,
         }]);
 
         // Key present but wrong type (Str instead of Int).
-        let wrong = Value::Dict(HashMap::from([("count".into(), Value::Str("five".into()))]));
+        let wrong = Value::Struct(Arc::new(HashMap::from([(
+            "count".into(),
+            Value::Str("five".into()),
+        )])));
         assert!(
             !var_type.matches(&wrong),
-            "should reject dict where 'count' is str, not int"
+            "should reject struct where 'count' is str, not int"
         );
     }
 
     #[test]
-    fn dict_nested_type_checking() {
-        // dict<meta = dict<version = int>>
-        let var_type = VarType::Dict(vec![VarDecl {
+    fn struct_nested_type_checking() {
+        // struct<meta = struct<version = int>>
+        let var_type = VarType::Struct(vec![VarDecl {
             name: "meta".into(),
-            var_type: VarType::Dict(vec![VarDecl {
+            var_type: VarType::Struct(vec![VarDecl {
                 name: "version".into(),
                 var_type: VarType::Int,
                 default_value: None,
@@ -687,27 +865,30 @@ mod tests {
             default_value: None,
         }]);
 
-        let valid = Value::Dict(HashMap::from([(
+        let valid = Value::Struct(Arc::new(HashMap::from([(
             "meta".into(),
-            Value::Dict(HashMap::from([("version".into(), Value::Int(3))])),
-        )]));
+            Value::Struct(Arc::new(HashMap::from([("version".into(), Value::Int(3))]))),
+        )])));
         assert!(var_type.matches(&valid));
 
         // Nested field wrong type.
-        let wrong = Value::Dict(HashMap::from([(
+        let wrong = Value::Struct(Arc::new(HashMap::from([(
             "meta".into(),
-            Value::Dict(HashMap::from([("version".into(), Value::Str("3".into()))])),
-        )]));
+            Value::Struct(Arc::new(HashMap::from([(
+                "version".into(),
+                Value::Str("3".into()),
+            )]))),
+        )])));
         assert!(
             !var_type.matches(&wrong),
-            "should recursively check nested dict field types"
+            "should recursively check nested struct field types"
         );
     }
 
     #[test]
-    fn dict_no_fields_matches_any_dict() {
-        assert!(VarType::Dict(vec![]).matches(&Value::Dict(HashMap::new())));
-        assert!(!VarType::Dict(vec![]).matches(&Value::List(vec![])));
+    fn struct_no_fields_matches_any_dict() {
+        assert!(VarType::Struct(vec![]).matches(&Value::Struct(Arc::new(HashMap::new()))));
+        assert!(!VarType::Struct(vec![]).matches(&Value::List(Arc::new(vec![]))));
     }
 
     #[test]
@@ -754,24 +935,24 @@ mod tests {
         assert!(!var_type.matches(&Value::Str("Confirmed".into())));
 
         // Internally tagged dict matching struct variant
-        let valid_dict = Value::Dict(HashMap::from([
+        let valid_dict = Value::Struct(Arc::new(HashMap::from([
             (ENUM_TAG_KEY.into(), Value::Str("Confirmed".into())),
             ("evidence".into(), Value::Str("some evidence".into())),
-        ]));
+        ])));
         assert!(var_type.matches(&valid_dict));
 
         // Missing required field
-        let missing_field = Value::Dict(HashMap::from([(
+        let missing_field = Value::Struct(Arc::new(HashMap::from([(
             ENUM_TAG_KEY.into(),
             Value::Str("Confirmed".into()),
-        )]));
+        )])));
         assert!(!var_type.matches(&missing_field));
 
         // Invalid variant name
-        let invalid_variant = Value::Dict(HashMap::from([(
+        let invalid_variant = Value::Struct(Arc::new(HashMap::from([(
             ENUM_TAG_KEY.into(),
             Value::Str("Unknown".into()),
-        )]));
+        )])));
         assert!(!var_type.matches(&invalid_variant));
     }
 
@@ -787,10 +968,10 @@ mod tests {
         }]);
 
         // Field present but wrong type (Int instead of Str).
-        let wrong = Value::Dict(HashMap::from([
+        let wrong = Value::Struct(Arc::new(HashMap::from([
             (ENUM_TAG_KEY.into(), Value::Str("Confirmed".into())),
             ("evidence".into(), Value::Int(42)),
-        ]));
+        ])));
         assert!(
             !var_type.matches(&wrong),
             "should reject enum variant where 'evidence' is int, not str"
@@ -818,10 +999,13 @@ mod tests {
             default_value: None,
         }]);
         // Second item has wrong type for score.
-        let items = Value::List(vec![
-            Value::Dict(HashMap::from([("score".into(), Value::Int(10))])),
-            Value::Dict(HashMap::from([("score".into(), Value::Str("bad".into()))])),
-        ]);
+        let items = Value::List(Arc::new(vec![
+            Value::Struct(Arc::new(HashMap::from([("score".into(), Value::Int(10))]))),
+            Value::Struct(Arc::new(HashMap::from([(
+                "score".into(),
+                Value::Str("bad".into()),
+            )]))),
+        ]));
         let err = var_type.check(&items).unwrap_err();
         assert_eq!(err.path, "[1].score", "should point to items[1].score");
         assert_eq!(err.expected, "int");
@@ -829,12 +1013,12 @@ mod tests {
 
     #[test]
     fn check_dict_missing_field_path() {
-        let var_type = VarType::Dict(vec![VarDecl {
+        let var_type = VarType::Struct(vec![VarDecl {
             name: "title".into(),
             var_type: VarType::Str,
             default_value: None,
         }]);
-        let value = Value::Dict(HashMap::new()); // missing 'title'
+        let value = Value::Struct(Arc::new(HashMap::new())); // missing 'title'
         let err = var_type.check(&value).unwrap_err();
         assert_eq!(err.path, "title");
         assert_eq!(err.actual, "missing");
@@ -842,19 +1026,22 @@ mod tests {
 
     #[test]
     fn check_nested_dict_path() {
-        let var_type = VarType::Dict(vec![VarDecl {
+        let var_type = VarType::Struct(vec![VarDecl {
             name: "meta".into(),
-            var_type: VarType::Dict(vec![VarDecl {
+            var_type: VarType::Struct(vec![VarDecl {
                 name: "version".into(),
                 var_type: VarType::Int,
                 default_value: None,
             }]),
             default_value: None,
         }]);
-        let value = Value::Dict(HashMap::from([(
+        let value = Value::Struct(Arc::new(HashMap::from([(
             "meta".into(),
-            Value::Dict(HashMap::from([("version".into(), Value::Str("3".into()))])),
-        )]));
+            Value::Struct(Arc::new(HashMap::from([(
+                "version".into(),
+                Value::Str("3".into()),
+            )]))),
+        )])));
         let err = var_type.check(&value).unwrap_err();
         assert_eq!(err.path, "meta.version", "should show nested path");
     }
@@ -865,10 +1052,10 @@ mod tests {
             name: "Confirmed".into(),
             fields: vec![],
         }]);
-        let value = Value::Dict(HashMap::from([(
+        let value = Value::Struct(Arc::new(HashMap::from([(
             ENUM_TAG_KEY.into(),
             Value::Str("Unknown".into()),
-        )]));
+        )])));
         let err = var_type.check(&value).unwrap_err();
         assert_eq!(err.path, format!(".{ENUM_TAG_KEY}"));
     }
@@ -876,14 +1063,14 @@ mod tests {
     #[test]
     fn check_display_with_path() {
         let err = TypeCheckError {
-            path: "bugs[2].title".into(),
+            path: "tasks[2].title".into(),
             expected: "str".into(),
             actual: "int".into(),
             actual_value: "42".into(),
         };
         assert_eq!(
             err.to_string(),
-            "at 'bugs[2].title': expected str, got int (42)"
+            "at 'tasks[2].title': expected str, got int (42)"
         );
     }
 
@@ -908,7 +1095,7 @@ mod tests {
 
     #[test]
     fn pascal_case_kebab_case() {
-        assert_eq!(super::to_pascal_case("bug-report"), "BugReport");
+        assert_eq!(super::to_pascal_case("task-report"), "TaskReport");
     }
 
     #[test]
@@ -940,7 +1127,9 @@ mod tests {
 
     #[test]
     fn builtin_type_names_contains_all_expected() {
-        for name in &["str", "bool", "int", "float", "list", "dict", "enum"] {
+        for name in &[
+            "str", "bool", "int", "float", "list", "struct", "enum", "option",
+        ] {
             assert!(
                 super::BUILTIN_TYPE_NAMES.contains(name),
                 "BUILTIN_TYPE_NAMES should contain '{name}'"

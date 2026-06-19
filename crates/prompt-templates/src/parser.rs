@@ -4,10 +4,12 @@
 //! detection with nesting support, else-block splitting, and expression
 //! evaluation with filter pipelines.
 
+use alloc::{string::ToString, vec::Vec};
+
 use crate::{
     Value,
     consts::{
-        COMMENT_END, COMMENT_START, EXPR_END, EXPR_START, KW_ELSE, KW_IN_SPACED, LEGACY_ENDIF,
+        CLOSE_IF, COMMENT_END, COMMENT_START, EXPR_END, EXPR_START, KW_ELSE, KW_IN_SPACED,
         STMT_END, STMT_START, TAG_ELIF_PREFIX, TAG_FOR_PREFIX, TAG_IF_PREFIX, TAG_INCLUDE_PREFIX,
         TAG_WITH_PREFIX, TAG_WITH_SPACED, TRIM_MARKER,
     },
@@ -20,7 +22,7 @@ use crate::{
 pub(crate) enum Tag<'a> {
     /// `{{ expr }}` — expression/substitution.
     Expr(&'a str),
-    /// `{% stmt %}` — statement (for, endfor, if, else, endif, raw, endraw, include).
+    /// `{% stmt %}` — statement (for, /for, if, else, /if, raw, /raw, include).
     Stmt(&'a str),
     /// `{# comment #}` — stripped from output, but scanned for variable refs.
     Comment(&'a str),
@@ -163,8 +165,8 @@ pub(crate) fn scan_next_tag(input: &str) -> Result<ScanResult<'_>, TemplateError
 /// Returns `(body, rest_after_close_tag)`. Strips a trailing newline from
 /// the close tag if it's standalone on a line.
 ///
-/// Recognises both plain (`{% endfor %}`) and whitespace-control variants
-/// (`{%- endfor %}`, `{% endfor -%}`, `{%- endfor -%}`).
+/// Recognises both plain (`{% /for %}`) and whitespace-control variants
+/// (`{%- /for %}`, `{% /for -%}`, `{%- /for -%}`).
 pub(crate) fn find_closing_block<'a>(
     input: &'a str,
     open_keyword: &str,
@@ -253,7 +255,7 @@ fn find_tag_start(haystack: &str, keyword: &str) -> Option<usize> {
     None
 }
 
-/// Find a closing block tag like `{% endfor %}` or any whitespace-control
+/// Find a closing block tag like `{% /for %}` or any whitespace-control
 /// variant. Returns `(offset, total_byte_length)` so the caller can skip
 /// past the whole tag.
 fn find_block_close(haystack: &str, close_keyword: &str) -> Option<(usize, usize)> {
@@ -315,7 +317,7 @@ pub(crate) fn split_elif_chain(body: &str) -> (Vec<(&str, &str)>, Option<&str>) 
     while search_from < body.len() {
         let next_if = find_tag_start(&body[search_from..], TAG_IF_PREFIX).map(|p| p + search_from);
         let next_close_if =
-            find_block_close(&body[search_from..], LEGACY_ENDIF).map(|(p, _)| p + search_from);
+            find_block_close(&body[search_from..], CLOSE_IF).map(|(p, _)| p + search_from);
         let next_elif = find_elif_tag(&body[search_from..]).map(|(p, _len, _cond)| p + search_from);
         let next_else =
             find_block_close(&body[search_from..], KW_ELSE).map(|(p, _)| p + search_from);
@@ -338,7 +340,7 @@ pub(crate) fn split_elif_chain(body: &str) -> (Vec<(&str, &str)>, Option<&str>) 
                     break;
                 }
                 depth -= 1;
-                let (_, len) = find_block_close(&body[pos..], LEGACY_ENDIF).expect("just found");
+                let (_, len) = find_block_close(&body[pos..], CLOSE_IF).expect("just found");
                 search_from = pos + len;
             }
             Some((pos, 'l')) if depth == 0 => {
@@ -476,11 +478,11 @@ pub(crate) fn eval_expr(expr: &str, scope: &Scope<'_>) -> Result<Value, Template
     let (path_part, filter_chain) = split_pipe_aware(expr);
     let path = path_part.trim();
 
-    // Try function calls first: idx(bug), len(items)
+    // Try function calls first: idx(item), len(items)
     let mut value = if let Some(result) = scope.try_call_function(path) {
         result?
     } else {
-        scope.resolve_path(path)?.clone()
+        scope.resolve_path_str(path)?.clone()
     };
 
     if !filter_chain.is_empty() {
@@ -661,7 +663,7 @@ mod tests {
             let next_if =
                 find_tag_start(&body[search_from..], TAG_IF_PREFIX).map(|p| p + search_from);
             let next_close_if =
-                find_block_close(&body[search_from..], LEGACY_ENDIF).map(|(p, _)| p + search_from);
+                find_block_close(&body[search_from..], CLOSE_IF).map(|(p, _)| p + search_from);
             let next_else =
                 find_block_close(&body[search_from..], KW_ELSE).map(|(p, _)| p + search_from);
 
@@ -682,8 +684,7 @@ mod tests {
                         break;
                     }
                     depth -= 1;
-                    let (_, len) =
-                        find_block_close(&body[pos..], LEGACY_ENDIF).expect("just found");
+                    let (_, len) = find_block_close(&body[pos..], CLOSE_IF).expect("just found");
                     search_from = pos + len;
                 }
                 Some((pos, 'e')) if depth == 0 => {
@@ -748,24 +749,23 @@ mod tests {
 
     #[test]
     fn find_closing_for_block() {
-        let input = "body text\n{% endfor %}\nafter";
-        let (body, rest) = find_closing_block(input, "for ", "endfor").unwrap();
+        let input = "body text\n{% /for %}\nafter";
+        let (body, rest) = find_closing_block(input, "for ", "/for").unwrap();
         assert_eq!(body, "body text\n");
         assert_eq!(rest, "after");
     }
 
     #[test]
     fn find_closing_block_nested() {
-        let input = "{% for x in xs %}inner{% endfor %}\nouter{% endfor %}\nafter";
-        let (body, rest) = find_closing_block(input, "for ", "endfor").unwrap();
+        let input = "{% for x in xs %}inner{% /for %}\nouter{% /for %}\nafter";
+        let (body, rest) = find_closing_block(input, "for ", "/for").unwrap();
         assert!(body.contains("{% for x in xs %}"));
         assert_eq!(rest, "after");
     }
 
     #[test]
     fn find_closing_block_missing() {
-        find_closing_block("body", "for ", "endfor")
-            .expect_err("missing closing block should fail");
+        find_closing_block("body", "for ", "/for").expect_err("missing closing block should fail");
     }
 
     #[test]
@@ -784,9 +784,9 @@ mod tests {
 
     #[test]
     fn split_else_nested_if() {
-        let body = "{% if x %}a{% else %}b{% endif %}{% else %}outer";
+        let body = "{% if x %}a{% else %}b{% /if %}{% else %}outer";
         let (then, else_part) = split_else_block(body);
-        assert!(then.contains("{% endif %}"));
+        assert!(then.contains("{% /if %}"));
         assert_eq!(else_part.unwrap(), "outer");
     }
 
@@ -849,12 +849,11 @@ mod tests {
 
     #[test]
     fn parse_include_markdown_link_with_vars() {
-        let d = parse_include_tag(
-            "include [repro_planning](reproduction_planning.tmpl.md) with bugs=bugs",
-        )
-        .unwrap();
-        assert_eq!(d.path, "reproduction_planning.tmpl.md");
-        assert_eq!(d.with_vars, vec![("bugs", "bugs")]);
+        let d =
+            parse_include_tag("include [task_planning](task_planning.tmpl.md) with tasks=tasks")
+                .unwrap();
+        assert_eq!(d.path, "task_planning.tmpl.md");
+        assert_eq!(d.with_vars, vec![("tasks", "tasks")]);
     }
 
     #[test]
@@ -1000,9 +999,9 @@ mod tests {
 
     #[test]
     fn find_closing_block_with_trim_variant() {
-        // Closing tag with whitespace control: `{%- endfor -%}`
-        let input = "body text\n{%- endfor -%}\nafter";
-        let (body, rest) = find_closing_block(input, "for ", "endfor").unwrap();
+        // Closing tag with whitespace control: `{%- /for -%}`
+        let input = "body text\n{%- /for -%}\nafter";
+        let (body, rest) = find_closing_block(input, "for ", "/for").unwrap();
         assert_eq!(body, "body text\n");
         assert_eq!(rest, "after");
     }
@@ -1010,8 +1009,8 @@ mod tests {
     #[test]
     fn find_closing_block_trim_open_close() {
         // Mixed plain open + trim close
-        let input = "body{% endfor -%}\nafter";
-        let (body, rest) = find_closing_block(input, "for ", "endfor").unwrap();
+        let input = "body{% /for -%}\nafter";
+        let (body, rest) = find_closing_block(input, "for ", "/for").unwrap();
         assert_eq!(body, "body");
         assert_eq!(rest, "after");
     }

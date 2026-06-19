@@ -15,13 +15,18 @@
 //! 5. **Scalar field access**: `x.field` on `str`/`int`/`bool`/`float` is an error.
 //! 6. **Undeclared variables**: any reference to an undeclared variable is an error.
 
-use std::{
+use alloc::{
     borrow::Cow,
-    collections::{HashMap, HashSet},
+    string::{String, ToString},
+    vec::Vec,
 };
 
 use super::{CompiledInclude, Condition, Segment};
-use crate::types::{VarDecl, VarType, VariantDecl};
+use crate::{
+    compat::{HashMap, HashSet},
+    scope::{CompiledExpr, CompiledPath, ConditionOperand},
+    types::{VarDecl, VarType, VariantDecl},
+};
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -73,7 +78,7 @@ struct TypeEnv<'a> {
     /// Key is the root variable name, value is the narrowed `VarType`.
     narrowed: HashMap<String, VarType>,
     /// Names that are valid roots but opaque to field-level type checking
-    /// (e.g. import stems for imported constants like `artist.NOTEBOOK_FILENAME`).
+    /// (e.g. import stems for imported constants like `config.NOTEBOOK_FILENAME`).
     opaque_roots: HashSet<&'a str>,
 }
 
@@ -137,22 +142,29 @@ fn walk_segment(
     match seg {
         Segment::Static(_) | Segment::Raw(_) | Segment::Comment(_) => {}
 
-        Segment::Expr { path, .. } => {
-            validate_path(path, env, errors);
-        }
+        Segment::Expr { expr, .. } => match expr {
+            CompiledExpr::Path(path)
+            | CompiledExpr::Len(path)
+            | CompiledExpr::Kind(path)
+            | CompiledExpr::Has(path) => {
+                validate_compiled_path(path, env, errors);
+            }
+            CompiledExpr::Idx(_) => {}
+        },
 
         Segment::ForLoop {
             binding,
             list_path,
             body,
+            else_body,
         } => {
-            validate_path(list_path, env, errors);
+            validate_compiled_path(list_path, env, errors);
             // Resolve the element type and validate it's a list.
-            let resolved = resolve_path_type(list_path, env).cloned();
+            let resolved = resolve_compiled_path_type(list_path, env).cloned();
             match resolved {
                 Some(VarType::List(ref fields)) => {
                     // Register the loop binding with element type.
-                    let elem_ty = VarType::Dict(fields.clone());
+                    let elem_ty = VarType::Struct(fields.clone());
                     let prev = env.narrow(binding, elem_ty);
                     walk_segments(body, env, errors, visited);
                     match prev {
@@ -166,7 +178,8 @@ fn walk_segment(
                 }
                 Some(other) => {
                     errors.push(format!(
-                        "for loop over '{list_path}': expected list, got {other}"
+                        "for loop over '{}': expected list, got {other}",
+                        list_path.as_str()
                     ));
                 }
                 None => {
@@ -174,6 +187,7 @@ fn walk_segment(
                     walk_segments(body, env, errors, visited);
                 }
             }
+            walk_segments(else_body, env, errors, visited);
         }
 
         Segment::If {
@@ -182,7 +196,23 @@ fn walk_segment(
         } => {
             for (condition, branch_body) in branches {
                 validate_condition(condition, env, errors);
-                walk_segments(branch_body, env, errors, visited);
+
+                // Flow-sensitive narrowing: {% if has(x) %} narrows x to Some.
+                let narrowing = extract_has_narrowing(condition, env);
+                if let Some((ref path_str, ref narrowed_type)) = narrowing {
+                    let prev = env.narrow(path_str, narrowed_type.clone());
+                    walk_segments(branch_body, env, errors, visited);
+                    match prev {
+                        Some(t) => {
+                            env.narrow(path_str, t);
+                        }
+                        None => {
+                            env.unnarrow(path_str);
+                        }
+                    }
+                } else {
+                    walk_segments(branch_body, env, errors, visited);
+                }
             }
             walk_segments(else_body, env, errors, visited);
         }
@@ -202,7 +232,7 @@ fn walk_segment(
 // ---------------------------------------------------------------------------
 
 fn validate_match(
-    expr: &str,
+    expr: &CompiledPath,
     arms: &[(Vec<Cow<'static, str>>, Vec<Segment>)],
     env: &mut TypeEnv<'_>,
     errors: &mut Vec<String>,
@@ -211,18 +241,19 @@ fn validate_match(
     // A match without any case is always wrong.
     if arms.is_empty() {
         errors.push(format!(
-            "match on '{expr}': no case arms — add at least one {{% case %}}"
+            "match on '{}': no case arms — add at least one {{% case %}}",
+            expr.as_str()
         ));
         return;
     }
 
-    // Resolve the full path type (e.g. `bug.vt` → enum, not just `bug` → dict).
-    let expr_type = resolve_path_type(expr, env).cloned();
+    // Resolve the full path type (e.g. `task.cat` → enum, not just `task` → dict).
+    let expr_type = resolve_compiled_path_type(expr, env).cloned();
 
     match expr_type {
         Some(VarType::Enum(ref declared)) => {
             // For narrowing, we need to track by the full expr path so that
-            // `bug.vt.label` resolves correctly inside the arm body.
+            // `task.cat.label` resolves correctly inside the arm body.
             // We narrow by the root variable name and replace its type with
             // one where the matched field is narrowed.
             validate_match_arms_with_narrowing(expr, declared, arms, env, errors, visited);
@@ -230,8 +261,9 @@ fn validate_match(
         Some(other_type) => {
             // Match on a non-enum type is a compile error.
             errors.push(format!(
-                "match on '{expr}': expected enum, got {other_type} — \
-                 use {{% if %}} with == for non-enum dispatch"
+                "match on '{}': expected enum, got {other_type} — \
+                 use {{% if %}} with == for non-enum dispatch",
+                expr.as_str()
             ));
             // Still walk arm bodies for other errors.
             for (_, arm_body) in arms {
@@ -239,9 +271,12 @@ fn validate_match(
             }
         }
         None => {
-            let root = extract_root(expr);
+            let root = &expr.parts()[0];
             if !env.is_opaque(root) {
-                errors.push(format!("match on '{expr}': undeclared variable '{root}'"));
+                errors.push(format!(
+                    "match on '{}': undeclared variable '{root}'",
+                    expr.as_str()
+                ));
             }
         }
     }
@@ -252,7 +287,7 @@ fn validate_match(
 /// Narrows the matched expression's type inside each arm so that field
 /// accesses are validated against the correct variant(s).
 fn validate_match_arms_with_narrowing(
-    expr: &str,
+    expr: &CompiledPath,
     declared: &[VariantDecl],
     arms: &[(Vec<Cow<'static, str>>, Vec<Segment>)],
     env: &mut TypeEnv<'_>,
@@ -280,14 +315,14 @@ fn validate_match_arms_with_narrowing(
                 walk_segments(arm_body, env, errors, visited);
             } else {
                 let narrowed_type = VarType::Enum(remaining_variants);
-                let prev = env.narrow(expr, narrowed_type);
+                let prev = env.narrow(expr.as_str(), narrowed_type);
                 walk_segments(arm_body, env, errors, visited);
                 match prev {
                     Some(t) => {
-                        env.narrow(expr, t);
+                        env.narrow(expr.as_str(), t);
                     }
                     None => {
-                        env.unnarrow(expr);
+                        env.unnarrow(expr.as_str());
                     }
                 }
             }
@@ -301,15 +336,16 @@ fn validate_match_arms_with_narrowing(
             } else {
                 let valid: Vec<&str> = declared.iter().map(|v| v.name.as_str()).collect();
                 errors.push(format!(
-                    "match on '{expr}': unknown variant '{case_name}' \
+                    "match on '{}': unknown variant '{case_name}' \
                      (declared variants: {})",
+                    expr.as_str(),
                     valid.join(", ")
                 ));
             }
         }
 
         // 2) Narrow the matched expression for this arm's body.
-        //    Key is the full expr path (e.g. "bug.vt"), not just the root.
+        //    Key is the full expr path (e.g. "task.cat"), not just the root.
         let narrowed_variants: Vec<VariantDecl> = declared
             .iter()
             .filter(|v| case_variants.iter().any(|c| c.as_ref() == v.name))
@@ -321,14 +357,14 @@ fn validate_match_arms_with_narrowing(
             walk_segments(arm_body, env, errors, visited);
         } else {
             let narrowed_type = VarType::Enum(narrowed_variants);
-            let prev = env.narrow(expr, narrowed_type);
+            let prev = env.narrow(expr.as_str(), narrowed_type);
             walk_segments(arm_body, env, errors, visited);
             match prev {
                 Some(t) => {
-                    env.narrow(expr, t);
+                    env.narrow(expr.as_str(), t);
                 }
                 None => {
-                    env.unnarrow(expr);
+                    env.unnarrow(expr.as_str());
                 }
             }
         }
@@ -345,7 +381,8 @@ fn validate_match_arms_with_narrowing(
             .collect();
         if !missing.is_empty() {
             errors.push(format!(
-                "match on '{expr}': non-exhaustive — missing variant(s): {}",
+                "match on '{}': non-exhaustive — missing variant(s): {}",
+                expr.as_str(),
                 missing.join(", ")
             ));
         }
@@ -370,11 +407,12 @@ fn validate_path(path: &str, env: &TypeEnv<'_>, errors: &mut Vec<String>) {
     if path.bytes().next().is_some_and(|b| b.is_ascii_digit()) {
         return;
     }
+    let compiled = CompiledPath::compile(path);
+    validate_compiled_path(&compiled, env, errors);
+}
 
-    let mut parts = path.split(crate::consts::PATH_SEP);
-    let Some(root) = parts.next() else {
-        return;
-    };
+fn validate_compiled_path(path: &CompiledPath, env: &TypeEnv<'_>, errors: &mut Vec<String>) {
+    let root = &path.parts()[0];
 
     let Some(root_type) = env.lookup(root) else {
         // Import stems and const names are opaque — valid but not typed.
@@ -385,15 +423,14 @@ fn validate_path(path: &str, env: &TypeEnv<'_>, errors: &mut Vec<String>) {
         return;
     };
 
-    // Walk remaining path segments against the type.
     let mut current_type = root_type;
-    let mut traversed = root.to_string();
+    let mut traversed = root.clone();
 
-    for field in parts {
+    for field in &path.parts()[1..] {
         traversed.push(crate::consts::PATH_SEP);
         traversed.push_str(field);
 
-        // Check narrowed overrides first (e.g. "bug.vt" narrowed by match).
+        // Check narrowed overrides first (e.g. "task.cat" narrowed by match).
         if let Some(narrowed) = env.narrowed.get(&traversed) {
             current_type = narrowed;
             continue;
@@ -431,7 +468,7 @@ fn resolve_field<'a>(ty: &'a VarType, field: &str) -> FieldResult<'a> {
     match ty {
         VarType::Enum(variants) => resolve_enum_field(variants, field),
 
-        VarType::Dict(fields) => {
+        VarType::Struct(fields) => {
             if fields.is_empty() {
                 // Untyped dict (no declared fields) — allow any field.
                 FieldResult::Terminal
@@ -537,30 +574,64 @@ fn resolve_enum_field<'a>(variants: &'a [VariantDecl], field: &str) -> FieldResu
 
 fn validate_condition(condition: &Condition, env: &TypeEnv<'_>, errors: &mut Vec<String>) {
     match condition {
-        Condition::Truthy(path) => validate_path(path, env, errors),
+        Condition::Truthy(operand) => validate_operand(operand, env, errors),
         Condition::Comparison { left, right, .. } => {
-            // Check if either side is an enum — comparisons on enums are
-            // not supported. Enums require {% match %} because == can't
-            // destructure struct variants.
             let left_is_enum =
-                resolve_path_type(left, env).is_some_and(|ty| matches!(ty, VarType::Enum(_)));
+                resolve_operand_type(left, env).is_some_and(|ty| matches!(ty, VarType::Enum(_)));
             let right_is_enum =
-                resolve_path_type(right, env).is_some_and(|ty| matches!(ty, VarType::Enum(_)));
+                resolve_operand_type(right, env).is_some_and(|ty| matches!(ty, VarType::Enum(_)));
 
             if left_is_enum || right_is_enum {
                 let enum_side = if left_is_enum { left } else { right };
                 errors.push(format!(
-                    "cannot compare enum '{enum_side}' with '==' — \
-                     use {{% match {enum_side} %}} instead"
+                    "cannot compare enum '{}' with '==' — use {{% match %}} instead",
+                    operand_to_str(enum_side)
                 ));
-                return; // Skip path validation — the other side may be a
-                // bare variant name that would produce a confusing
-                // "undeclared variable" error.
+                return;
             }
 
-            validate_path(left, env, errors);
-            validate_path(right, env, errors);
+            validate_operand(left, env, errors);
+            validate_operand(right, env, errors);
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// has() flow-sensitive narrowing
+// ---------------------------------------------------------------------------
+
+/// If the condition is `has(path)` and `path` resolves to an option type,
+/// return `(path_str, narrowed_type)` where `narrowed_type` is the enum
+/// restricted to just the `Some` variant.
+///
+/// This enables `{% if has(x) %} {{ x.val }} {% /if %}` to type-check.
+fn extract_has_narrowing(condition: &Condition, env: &TypeEnv<'_>) -> Option<(String, VarType)> {
+    let Condition::Truthy(ConditionOperand::Has(path)) = condition else {
+        return None;
+    };
+
+    let path_str = path.as_str();
+
+    // Resolve the type for this path.
+    let ty = resolve_compiled_path_type(path, env)?;
+
+    if !ty.is_option() {
+        return None;
+    }
+
+    // Extract just the Some variant from the option enum.
+    if let VarType::Enum(variants) = ty {
+        let some_only: Vec<VariantDecl> = variants
+            .iter()
+            .filter(|v| v.name == crate::consts::OPTION_SOME)
+            .cloned()
+            .collect();
+        if some_only.is_empty() {
+            return None;
+        }
+        Some((path_str.to_string(), VarType::Enum(some_only)))
+    } else {
+        None
     }
 }
 
@@ -608,13 +679,13 @@ fn validate_include(
     let identity_key = format!(
         "{}@{:p}",
         inc.path,
-        std::sync::Arc::as_ptr(&compiled.segments)
+        alloc::sync::Arc::as_ptr(&compiled.segments)
     );
     if visited.insert(identity_key.clone()) {
         // First visit: build child TypeEnv from included template's declarations.
         let mut child_env = TypeEnv::from_declarations(&compiled.declarations);
         // Propagate opaque roots — included templates may also reference
-        // imported constants (e.g. `artist.NOTEBOOK_FILENAME`) from their own imports.
+        // imported constants (e.g. `config.NOTEBOOK_FILENAME`) from their own imports.
         child_env.opaque_roots.clone_from(&env.opaque_roots);
         walk_segments(&compiled.segments, &mut child_env, errors, visited);
         visited.remove(&identity_key);
@@ -718,8 +789,10 @@ fn validate_include_type_match(
 
 /// Check if two types are compatible for include parameter passing.
 ///
-/// Types are compatible if they are structurally equal. Untyped containers
-/// (empty `list<>` or `dict<>`) are compatible with any same-kind type.
+/// Types are compatible if they are structurally equal. Containers with
+/// empty field lists (which may arise internally) are treated as compatible
+/// with any same-kind type. Note: untyped `list<>` and `struct<>` are
+/// rejected at parse time, so this case only applies to internal types.
 fn types_compatible(provided: &VarType, expected: &VarType) -> bool {
     match (provided, expected) {
         // Exact scalar match.
@@ -729,7 +802,7 @@ fn types_compatible(provided: &VarType, expected: &VarType) -> bool {
         | (VarType::Bool, VarType::Bool) => true,
 
         // Untyped containers are compatible with any same-kind type.
-        (VarType::List(a), VarType::List(b)) | (VarType::Dict(a), VarType::Dict(b)) => {
+        (VarType::List(a), VarType::List(b)) | (VarType::Struct(a), VarType::Struct(b)) => {
             a.is_empty() || b.is_empty() || a == b
         }
 
@@ -747,29 +820,29 @@ fn types_compatible(provided: &VarType, expected: &VarType) -> bool {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Extract the root variable name from a dotted path.
-///
-/// `"outcome.evidence"` → `"outcome"`, `"x"` → `"x"`.
-fn extract_root(path: &str) -> &str {
-    path.split(crate::consts::PATH_SEP).next().unwrap_or(path)
-}
-
 /// Resolve a dotted path to its declared type.
 ///
 /// Returns `None` if the root variable is unknown or if any field
 /// in the path doesn't resolve to a known type.
 ///
-/// Also checks narrowed overrides at each level, so `bug.vt` can be
-/// narrowed inside a match arm and `bug.vt.label` resolves correctly.
+/// Also checks narrowed overrides at each level, so `task.cat` can be
+/// narrowed inside a match arm and `task.cat.label` resolves correctly.
 fn resolve_path_type<'a>(path: &str, env: &'a TypeEnv<'_>) -> Option<&'a VarType> {
-    let mut parts = path.split(crate::consts::PATH_SEP);
-    let root = parts.next()?;
-    let mut current = env.lookup(root)?;
-    let mut traversed = root.to_string();
+    let compiled = CompiledPath::compile(path);
+    resolve_compiled_path_type(&compiled, env)
+}
 
-    for field in parts {
+fn resolve_compiled_path_type<'a>(
+    path: &CompiledPath,
+    env: &'a TypeEnv<'_>,
+) -> Option<&'a VarType> {
+    let root = &path.parts()[0];
+    let mut current = env.lookup(root)?;
+    let mut traversed = root.clone();
+
+    for field in &path.parts()[1..] {
         // Before resolving the field, check if the full path so far + field
-        // has a narrowed override (e.g. "bug.vt" narrowed inside a match).
+        // has a narrowed override (e.g. "task.cat" narrowed inside a match).
         traversed.push(crate::consts::PATH_SEP);
         traversed.push_str(field);
         if let Some(narrowed) = env.narrowed.get(&traversed) {
@@ -784,6 +857,43 @@ fn resolve_path_type<'a>(path: &str, env: &'a TypeEnv<'_>) -> Option<&'a VarType
     }
 
     Some(current)
+}
+
+fn resolve_operand_type<'a>(
+    operand: &ConditionOperand,
+    env: &'a TypeEnv<'_>,
+) -> Option<&'a VarType> {
+    match operand {
+        ConditionOperand::Literal(_) => None,
+        ConditionOperand::Path { path, .. }
+        | ConditionOperand::Len(path)
+        | ConditionOperand::Kind(path)
+        | ConditionOperand::Has(path) => resolve_compiled_path_type(path, env),
+        ConditionOperand::Idx(_) => Some(&VarType::Int),
+    }
+}
+
+fn operand_to_str(operand: &ConditionOperand) -> &str {
+    match operand {
+        ConditionOperand::Literal(_) => "literal",
+        ConditionOperand::Path { path, .. }
+        | ConditionOperand::Len(path)
+        | ConditionOperand::Kind(path)
+        | ConditionOperand::Has(path) => path.as_str(),
+        ConditionOperand::Idx(binding) => binding,
+    }
+}
+
+fn validate_operand(operand: &ConditionOperand, env: &TypeEnv<'_>, errors: &mut Vec<String>) {
+    match operand {
+        ConditionOperand::Literal(_) | ConditionOperand::Idx(_) => {}
+        ConditionOperand::Path { path, .. }
+        | ConditionOperand::Len(path)
+        | ConditionOperand::Kind(path)
+        | ConditionOperand::Has(path) => {
+            validate_compiled_path(path, env, errors);
+        }
+    }
 }
 
 #[cfg(test)]

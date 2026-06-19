@@ -6,10 +6,13 @@
 //! Uses `=` as the separator between alias name and type expression,
 //! consistent with `params:` and `consts:` blocks.
 
-use std::collections::HashMap;
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
 
 use super::params::{find_char_at_depth_zero, parse_type_annotation, split_at_depth_zero};
-use crate::{error::TemplateError, types::VarType};
+use crate::{compat::HashMap, error::TemplateError, types::VarType};
 
 /// Parse the value part after `types:` into a map of alias name → [`VarType`].
 ///
@@ -102,43 +105,43 @@ mod tests {
 
     #[test]
     fn list_type_alias() {
-        let aliases = parse_types_value("[BugList = list<title = str, score = int>]").unwrap();
-        assert!(aliases.contains_key("BugList"));
-        assert!(matches!(aliases["BugList"], VarType::List(_)));
+        let aliases = parse_types_value("[TaskList = list<title = str, score = int>]").unwrap();
+        assert!(aliases.contains_key("TaskList"));
+        assert!(matches!(aliases["TaskList"], VarType::List(_)));
     }
 
     #[test]
     fn dict_type_alias() {
-        let aliases = parse_types_value("[Config = dict<timeout = int, retries = int>]").unwrap();
+        let aliases = parse_types_value("[Config = struct<timeout = int, retries = int>]").unwrap();
         assert!(aliases.contains_key("Config"));
-        assert!(matches!(aliases["Config"], VarType::Dict(_)));
+        assert!(matches!(aliases["Config"], VarType::Struct(_)));
     }
 
     #[test]
     fn chained_alias_enum_inside_list() {
-        // Declare Severity enum first, then use it in BugReport list.
-        let input = "- Severity = enum<High, Medium, Low>\n  - BugReport = list<title = str, severity = Severity>";
+        // Declare Severity enum first, then use it in TaskReport list.
+        let input = "- Severity = enum<High, Medium, Low>\n  - TaskReport = list<title = str, severity = Severity>";
         let aliases = parse_types_value(input).unwrap();
         assert!(aliases.contains_key("Severity"));
-        assert!(aliases.contains_key("BugReport"));
-        if let VarType::List(fields) = &aliases["BugReport"] {
+        assert!(aliases.contains_key("TaskReport"));
+        if let VarType::List(fields) = &aliases["TaskReport"] {
             let sev_field = fields.iter().find(|f| f.name == "severity").unwrap();
             assert!(matches!(sev_field.var_type, VarType::Enum(_)));
         } else {
-            panic!("BugReport should be List");
+            panic!("TaskReport should be List");
         }
     }
 
     #[test]
     fn chained_alias_list_inside_dict() {
-        let input = "[Items = list<name = str>, Config = dict<items = Items, version = int>]";
+        let input = "[Items = list<name = str>, Config = struct<items = Items, version = int>]";
         let aliases = parse_types_value(input).unwrap();
         assert!(aliases.contains_key("Config"));
-        if let VarType::Dict(fields) = &aliases["Config"] {
+        if let VarType::Struct(fields) = &aliases["Config"] {
             let items_field = fields.iter().find(|f| f.name == "items").unwrap();
             assert!(matches!(items_field.var_type, VarType::List(_)));
         } else {
-            panic!("Config should be Dict");
+            panic!("Config should be Struct");
         }
     }
 

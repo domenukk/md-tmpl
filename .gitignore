@@ -1,4 +1,5 @@
 /target
+original_prompt.md
 Cargo.lock
 ORIGINAL_REQUEST.md
 PROJECT.md
@@ -18,3 +19,6 @@ dist/
 
 # Local tooling
 SKILL.md
+node_modules
+node_modules
+benchmarks/target

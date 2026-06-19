@@ -8,11 +8,11 @@
 //! `with key=expr` or `for binding in list`. Implicit scope inheritance is
 //! not allowed for declared variables.
 
-use std::{collections::HashMap, path::Path};
+use std::path::Path;
 
 use crate::{
-    compiled::CompiledInlineTemplate, error::TemplateError, parser::IncludeDirective, scope::Scope,
-    types::VarDecl, value::Value,
+    compat::HashMap, compiled::CompiledInlineTemplate, error::TemplateError,
+    parser::IncludeDirective, scope::Scope, types::VarDecl, value::Value,
 };
 
 /// Bundles the template-specific data needed when rendering an include.
@@ -109,10 +109,10 @@ fn resolve_include_inner_into(
 
     // 1b. Check if path is a variable resolving to a template (higher-order).
     // Try to resolve the path as an expression in the current scope.
-    if let Ok(Value::Tmpl(tmpl)) = scope.resolve_path(directive.path) {
+    if let Ok(Value::Tmpl(tmpl)) = scope.resolve_path_str(directive.path) {
         let tmpl = tmpl.clone();
         // Scope the template's constants and inline templates.
-        scope.push_inline_templates((*tmpl.inline_templates()).clone());
+        scope.push_inline_templates(tmpl.inline_templates().clone());
         scope.push_consts((*tmpl.consts()).clone(), (*tmpl.imported_consts()).clone());
 
         let result = validate_and_render_into(
@@ -167,7 +167,7 @@ fn resolve_include_inner_into(
     // visible only within that file's body.
     scope.push_inline_templates(included_inline_templates);
 
-    let mut include_consts = std::collections::HashMap::new();
+    let mut include_consts = HashMap::new();
     for d in &fm.consts {
         if let Some(v) = d.default_value.clone() {
             include_consts.insert(d.name.clone(), v);
@@ -218,97 +218,34 @@ fn validate_and_render_into(
 /// Validate that all variables declared by an included template are explicitly
 /// provided via `with` overrides or `for` bindings.
 ///
-/// Uses the shared `find_missing_include_params` from the type checker to
-/// avoid duplicating the contract-checking logic.
+/// Delegates to the shared implementation in `include_core`.
 fn validate_include_contract(
     declarations: &[VarDecl],
     directive: &IncludeDirective<'_>,
 ) -> Result<(), TemplateError> {
-    if declarations.is_empty() {
-        return Ok(());
-    }
-
-    let provided = directive
-        .with_vars
-        .iter()
-        .map(|&(key, _)| key)
-        .chain(directive.for_each.as_ref().map(|&(b, _)| b));
-
-    let missing = crate::compiled::type_check::find_missing_include_params(declarations, provided);
-    if missing.is_empty() {
-        return Ok(());
-    }
-
-    // Single-pass: collect descriptions and fix hints together.
-    let (descs, hints): (Vec<_>, Vec<_>) = missing
-        .iter()
-        .map(|d| {
-            (
-                format!("{}: {}", d.name, d.var_type),
-                format!("{}={}", d.name, d.name),
-            )
-        })
-        .unzip();
-
-    Err(TemplateError::syntax(format!(
-        "include '{}' requires explicit parameters: {}. \
-         Use 'with {}' to pass them",
-        directive.path,
-        descs.join(", "),
-        hints.join(", "),
-    )))
+    crate::include_core::validate_include_contract(declarations, directive)
 }
 
 /// Type-check resolved `with` override values against the included
 /// template's frontmatter declarations.
 ///
-/// Checks all variables that have both a declaration and a resolved value
-/// in `overrides`. For-each bindings are not checked here because their
-/// type depends on the list item structure.
+/// Delegates to the shared implementation in `include_core`.
 fn validate_include_types(
     declarations: &[VarDecl],
     overrides: &HashMap<String, Value>,
     directive: &IncludeDirective<'_>,
 ) -> Result<(), TemplateError> {
-    for decl in declarations {
-        if let Some(value) = overrides.get(&decl.name)
-            && let Err(e) = decl.var_type.check(value)
-        {
-            let detail = if e.path.is_empty() {
-                String::new()
-            } else {
-                format!(" (at .{})", e.path)
-            };
-            return Err(TemplateError::TypeMismatch {
-                name: format!(
-                    "include '{}' variable '{}'{}",
-                    directive.path, decl.name, detail
-                ),
-                expected: e.expected,
-                actual: e.actual,
-                actual_value: e.actual_value,
-            });
-        }
-    }
-    Ok(())
+    crate::include_core::validate_include_types(declarations, overrides, directive)
 }
 
 /// Build the override variable map from `with key=expr` clauses.
+///
+/// Delegates to the shared implementation in `include_core`.
 fn build_overrides(
     directive: &IncludeDirective<'_>,
     scope: &Scope<'_>,
 ) -> Result<HashMap<String, Value>, TemplateError> {
-    let mut overrides = HashMap::new();
-    for &(key, val_expr) in &directive.with_vars {
-        let value = if let Some(inner) = crate::consts::strip_string_literal(val_expr) {
-            Value::Str(inner.to_string())
-        } else {
-            // Evaluate as a full expression — supports paths, functions, filters.
-            crate::parser::eval_expr(val_expr, scope)?
-        };
-        overrides.insert(key.to_string(), value);
-    }
-    Ok(overrides)
+    crate::include_core::build_overrides(directive, scope)
 }
 
 /// Render an iterated include directly into `output`.
@@ -326,10 +263,10 @@ fn render_iterated_include_into(
         )));
     };
 
-    for (i, item) in items.into_iter().enumerate() {
+    for (i, item) in items.iter().enumerate() {
         {
             let layer = scope.push_layer();
-            layer.insert(binding.to_string(), item);
+            layer.insert(binding.to_string(), item.clone());
             for (k, v) in ctx.overrides {
                 layer.insert(k.clone(), v.clone());
             }
@@ -370,22 +307,20 @@ fn render_simple_include_into(
 
 /// Inject default values from declarations into a scope layer for any
 /// params that were not explicitly provided via `with` overrides.
+///
+/// Delegates to the shared implementation in `include_core`.
 fn inject_defaults_into_layer(
     layer: &mut HashMap<String, Value>,
     declarations: &[VarDecl],
     overrides: &HashMap<String, Value>,
 ) {
-    for decl in declarations {
-        if !overrides.contains_key(&decl.name) {
-            if let Some(ref default) = decl.default_value {
-                layer.insert(decl.name.clone(), default.clone());
-            }
-        }
-    }
+    crate::include_core::inject_defaults_into_layer(layer, declarations, overrides);
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::context::Context;
 
@@ -482,16 +417,16 @@ mod tests {
         let mut ctx = Context::new();
         ctx.set(
             "items",
-            Value::List(vec![
-                Value::Dict(std::collections::HashMap::from([(
+            Value::List(Arc::new(vec![
+                Value::Struct(Arc::new(HashMap::from([(
                     "label".into(),
                     Value::Str("first".into()),
-                )])),
-                Value::Dict(std::collections::HashMap::from([(
+                )]))),
+                Value::Struct(Arc::new(HashMap::from([(
                     "label".into(),
                     Value::Str("second".into()),
-                )])),
-            ]),
+                )]))),
+            ])),
         );
         let mut scope = Scope::new(&ctx);
         let result = resolve_include(&directive, &mut scope, Some(dir.path()), None).unwrap();
@@ -562,10 +497,10 @@ mod tests {
         let mut ctx = Context::new();
         ctx.set(
             "items",
-            Value::List(vec![Value::Dict(std::collections::HashMap::from([(
+            Value::List(Arc::new(vec![Value::Struct(Arc::new(HashMap::from([(
                 "label".into(),
                 Value::Str("test".into()),
-            )]))]),
+            )])))])),
         );
         let mut scope = Scope::new(&ctx);
         let result = resolve_include(&directive, &mut scope, Some(dir.path()), None).unwrap();
@@ -681,10 +616,10 @@ mod tests {
         let mut ctx = Context::new();
         ctx.set(
             "items",
-            Value::List(vec![Value::Dict(std::collections::HashMap::from([(
+            Value::List(Arc::new(vec![Value::Struct(Arc::new(HashMap::from([(
                 "label".into(),
                 Value::Str("alpha".into()),
-            )]))]),
+            )])))])),
         );
         let mut scope = Scope::new(&ctx);
         let result = resolve_include(&directive, &mut scope, Some(dir.path()), None).unwrap();

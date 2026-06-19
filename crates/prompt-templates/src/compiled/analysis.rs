@@ -4,10 +4,15 @@
 //! names that are referenced, excluding loop bindings and literals.
 //! Used for unused-variable detection.
 
-use std::collections::HashSet;
+use alloc::string::{String, ToString};
 
 use super::{ComparisonOp, Condition, Segment};
-use crate::consts::{BUILTIN_FUNCTIONS, LIT_FALSE, LIT_TRUE};
+use crate::{
+    compat::HashSet,
+    consts::{BUILTIN_FUNCTIONS, LIT_FALSE, LIT_TRUE},
+    error::TemplateError,
+    scope::{CompiledExpr, CompiledPath, ConditionOperand},
+};
 
 /// Collect all root parameter names referenced in a compiled segment tree.
 ///
@@ -38,23 +43,24 @@ fn collect_refs_inner(
                     vars.insert(r.to_string());
                 }
             }
-            Segment::Expr { path, .. } => {
-                if let Some(root) = extract_root_variable(path.as_ref(), loop_bindings) {
-                    vars.insert(root);
-                }
+            Segment::Expr { expr, .. } => {
+                extract_expr_variables(expr, vars, loop_bindings);
             }
             Segment::ForLoop {
                 binding,
                 list_path,
                 body,
+                else_body,
             } => {
-                if let Some(root) = extract_root_variable(list_path.as_ref(), loop_bindings) {
+                if let Some(root) = extract_path_variable(list_path, loop_bindings) {
                     vars.insert(root);
                 }
                 // The binding is local — exclude from "referenced" set.
                 loop_bindings.insert(binding.to_string());
                 collect_refs_inner(body, vars, loop_bindings);
                 loop_bindings.remove(binding.as_ref());
+                // else_body runs when the list is empty — the loop binding is NOT in scope.
+                collect_refs_inner(else_body, vars, loop_bindings);
             }
             Segment::If {
                 branches,
@@ -87,7 +93,7 @@ fn collect_refs_inner(
                 }
             }
             Segment::Match { expr, arms } => {
-                if let Some(root) = extract_root_variable(expr.as_ref(), loop_bindings) {
+                if let Some(root) = extract_path_variable(expr, loop_bindings) {
                     vars.insert(root);
                 }
                 for (_, arm_body) in arms {
@@ -181,18 +187,74 @@ const COMPARISON_OPS: &[(&str, ComparisonOp)] = &[
 ///
 /// Recognises:
 /// - `left op right` — comparison (`==`, `!=`, `<`, etc.)
-/// - `expr` — truthiness
-pub(super) fn parse_condition(condition: &str) -> Condition {
+/// - `func(arg)` — builtin function truthiness (e.g. `has(x)`)
+/// - `expr` — plain path truthiness
+///
+/// # Errors
+///
+/// Returns [`TemplateError`] if the condition operand cannot be parsed.
+pub(super) fn parse_condition(condition: &str) -> Result<Condition, TemplateError> {
     let condition = condition.trim();
 
     for &(op_str, op) in COMPARISON_OPS {
         if let Some(idx) = condition.find(op_str) {
-            let left = condition[..idx].trim().to_string().into();
-            let right = condition[idx + op_str.len()..].trim().to_string().into();
-            return Condition::Comparison { left, op, right };
+            let left_str = condition[..idx].trim();
+            let right_str = condition[idx + op_str.len()..].trim();
+            let left = ConditionOperand::compile(left_str)?;
+            let right = ConditionOperand::compile(right_str)?;
+            return Ok(Condition::Comparison { left, op, right });
         }
     }
-    Condition::Truthy(condition.to_string().into())
+
+    // Parse as a full ConditionOperand which handles function calls
+    // (e.g. `has(x)`, `len(items)`) as well as plain paths.
+    let operand = ConditionOperand::compile(condition)?;
+    Ok(Condition::Truthy(operand))
+}
+
+fn extract_path_variable(path: &CompiledPath, loop_bindings: &HashSet<String>) -> Option<String> {
+    let root = &path.parts()[0];
+    if loop_bindings.contains(root) {
+        None
+    } else {
+        Some(root.clone())
+    }
+}
+
+fn extract_expr_variables(
+    expr: &CompiledExpr,
+    vars: &mut HashSet<String>,
+    loop_bindings: &HashSet<String>,
+) {
+    match expr {
+        CompiledExpr::Path(path)
+        | CompiledExpr::Len(path)
+        | CompiledExpr::Kind(path)
+        | CompiledExpr::Has(path) => {
+            if let Some(root) = extract_path_variable(path, loop_bindings) {
+                vars.insert(root);
+            }
+        }
+        CompiledExpr::Idx(_) => {}
+    }
+}
+
+fn extract_operand_variables(
+    operand: &ConditionOperand,
+    vars: &mut HashSet<String>,
+    loop_bindings: &HashSet<String>,
+) {
+    match operand {
+        ConditionOperand::Literal(_) | ConditionOperand::Idx(_) => {}
+        ConditionOperand::Path { path, .. }
+        | ConditionOperand::Len(path)
+        | ConditionOperand::Kind(path)
+        | ConditionOperand::Has(path) => {
+            if let Some(root) = extract_path_variable(path, loop_bindings) {
+                vars.insert(root);
+            }
+        }
+    }
 }
 
 /// Extract variable references from a pre-parsed condition.
@@ -202,18 +264,12 @@ fn extract_condition_variables(
     loop_bindings: &HashSet<String>,
 ) {
     match condition {
-        Condition::Truthy(var) => {
-            if let Some(root) = extract_root_variable(var.as_ref(), loop_bindings) {
-                vars.insert(root);
-            }
+        Condition::Truthy(operand) => {
+            extract_operand_variables(operand, vars, loop_bindings);
         }
         Condition::Comparison { left, right, .. } => {
-            if let Some(root) = extract_root_variable(left.as_ref(), loop_bindings) {
-                vars.insert(root);
-            }
-            if let Some(root) = extract_root_variable(right.as_ref(), loop_bindings) {
-                vars.insert(root);
-            }
+            extract_operand_variables(left, vars, loop_bindings);
+            extract_operand_variables(right, vars, loop_bindings);
         }
     }
 }

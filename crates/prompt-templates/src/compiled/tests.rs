@@ -1,12 +1,12 @@
 //! Tests for the compiled template engine.
 
-use std::collections::HashMap;
+use std::sync::Arc;
 
 use super::{
     render::{estimate_output_capacity, render_segments},
     *,
 };
-use crate::{context::Context, scope::Scope, value::Value};
+use crate::{compat::HashMap, context::Context, scope::Scope, value::Value};
 
 /// Wrapper: compile with empty parent type aliases (no inline inheritance needed).
 fn compile(
@@ -57,7 +57,7 @@ fn compile_expr() {
     assert_eq!(segs.len(), 3);
     assert!(matches!(&segs[0], Segment::Static(s) if s == "Hello "));
     assert!(
-        matches!(&segs[1], Segment::Expr { path, filters } if path == "name" && filters.is_empty())
+        matches!(&segs[1], Segment::Expr { expr: CompiledExpr::Path(p), filters } if p.as_str() == "name" && filters.is_empty())
     );
     assert!(matches!(&segs[2], Segment::Static(s) if s == "!"));
 }
@@ -67,8 +67,11 @@ fn compile_expr_with_filters() {
     let (segs, _) = compile("{{ name | upper | trim }}").unwrap();
     assert_eq!(segs.len(), 1);
     match &segs[0] {
-        Segment::Expr { path, filters } => {
-            assert_eq!(path, "name");
+        Segment::Expr {
+            expr: CompiledExpr::Path(p),
+            filters,
+        } => {
+            assert_eq!(p.as_str(), "name");
             assert_eq!(filters.len(), 2);
             assert_eq!(filters[0].kind, FilterKind::Upper);
             assert_eq!(filters[1].kind, FilterKind::Trim);
@@ -86,10 +89,12 @@ fn compile_for_loop() {
             binding,
             list_path,
             body,
+            else_body,
         } => {
             assert_eq!(binding, "item");
-            assert_eq!(list_path, "items");
+            assert_eq!(list_path.as_str(), "items");
             assert_eq!(body.len(), 1);
+            assert!(else_body.is_empty());
         }
         other => panic!("expected ForLoop, got {other:?}"),
     }
@@ -105,7 +110,9 @@ fn compile_if_else() {
             else_body,
         } => {
             assert_eq!(branches.len(), 1);
-            assert!(matches!(&branches[0].0, Condition::Truthy(v) if v == "show"));
+            assert!(
+                matches!(&branches[0].0, Condition::Truthy(ConditionOperand::Path { path, .. }) if path.as_str() == "show")
+            );
             assert_eq!(branches[0].1.len(), 1);
             assert_eq!(else_body.len(), 1);
         }
@@ -243,16 +250,19 @@ fn parity_for_loop() {
     let mut ctx = Context::new();
     ctx.set(
         "items",
-        Value::List(vec![
-            Value::Dict(HashMap::from([(
+        Value::List(Arc::new(vec![
+            Value::Struct(Arc::new(HashMap::from([(
                 "label".into(),
                 Value::Str("alpha".into()),
-            )])),
-            Value::Dict(HashMap::from([("label".into(), Value::Str("beta".into()))])),
-        ]),
+            )]))),
+            Value::Struct(Arc::new(HashMap::from([(
+                "label".into(),
+                Value::Str("beta".into()),
+            )]))),
+        ])),
     );
     assert_same(
-        "> {% for item in items %}{{ idx(item) }}: {{ item.label }}\n> {% /for %}",
+        "> {% for item in items %}{{ idx(item) }}: {{ item.label }}\n\n> {% /for %}",
         &ctx,
     );
 }
@@ -262,20 +272,26 @@ fn parity_nested_for_loops() {
     let mut ctx = Context::new();
     ctx.set(
         "groups",
-        Value::List(vec![
-            Value::Dict(HashMap::from([("name".into(), Value::Str("G1".into()))])),
-            Value::Dict(HashMap::from([("name".into(), Value::Str("G2".into()))])),
-        ]),
+        Value::List(Arc::new(vec![
+            Value::Struct(Arc::new(HashMap::from([(
+                "name".into(),
+                Value::Str("G1".into()),
+            )]))),
+            Value::Struct(Arc::new(HashMap::from([(
+                "name".into(),
+                Value::Str("G2".into()),
+            )]))),
+        ])),
     );
     ctx.set(
         "tags",
-        Value::List(vec![Value::Dict(HashMap::from([(
+        Value::List(Arc::new(vec![Value::Struct(Arc::new(HashMap::from([(
             "t".into(),
             Value::Str("A".into()),
-        )]))]),
+        )])))])),
     );
     assert_same(
-        "> {% for g in groups %}[{{ g.name }}{% for t in tags %}:{{ t.t }}{% /for %}]\n> {% /for %}",
+        "> {% for g in groups %}[{{ g.name }}{% for t in tags %}:{{ t.t }}{% /for %}]\n\n> {% /for %}",
         &ctx,
     );
 }
@@ -324,13 +340,13 @@ fn parity_mixed_content() {
     ctx.set("show_footer", Value::Bool(true));
     ctx.set(
         "items",
-        Value::List(vec![Value::Dict(HashMap::from([(
+        Value::List(Arc::new(vec![Value::Struct(Arc::new(HashMap::from([(
             "name".into(),
             Value::Str("Item 1".into()),
-        )]))]),
+        )])))])),
     );
     assert_same(
-        "# {{ title }}\n> {% for item in items %}- {{ item.name }}\n> {% /for %}{% if show_footer %}---\nFooter{% /if %}",
+        "# {{ title }}\n> {% for item in items %}- {{ item.name }}\n\n> {% /for %}{% if show_footer %}---\nFooter{% /if %}",
         &ctx,
     );
 }
@@ -357,7 +373,10 @@ fn for_inside_if() {
     ctx.set("show", Value::Bool(true));
     ctx.set(
         "items",
-        Value::List(vec![Value::Str("a".into()), Value::Str("b".into())]),
+        Value::List(Arc::new(vec![
+            Value::Str("a".into()),
+            Value::Str("b".into()),
+        ])),
     );
     let result = compiled_render(
         "> {% if show %}{% for item in items %}[{{ item }}]{% /for %}{% /if %}",
@@ -372,16 +391,16 @@ fn if_inside_for() {
     let mut ctx = Context::new();
     ctx.set(
         "items",
-        Value::List(vec![
-            Value::Dict(HashMap::from([
+        Value::List(Arc::new(vec![
+            Value::Struct(Arc::new(HashMap::from([
                 ("name".into(), Value::Str("visible".into())),
                 ("show".into(), Value::Bool(true)),
-            ])),
-            Value::Dict(HashMap::from([
+            ]))),
+            Value::Struct(Arc::new(HashMap::from([
                 ("name".into(), Value::Str("hidden".into())),
                 ("show".into(), Value::Bool(false)),
-            ])),
-        ]),
+            ]))),
+        ])),
     );
     let result = compiled_render(
         "> {% for item in items %}{% if item.show %}{{ item.name }}{% /if %}{% /for %}",
@@ -396,13 +415,19 @@ fn deeply_nested_for_loops() {
     let mut ctx = Context::new();
     ctx.set(
         "a",
-        Value::List(vec![Value::Str("x".into()), Value::Str("y".into())]),
+        Value::List(Arc::new(vec![
+            Value::Str("x".into()),
+            Value::Str("y".into()),
+        ])),
     );
     ctx.set(
         "b",
-        Value::List(vec![Value::Str("1".into()), Value::Str("2".into())]),
+        Value::List(Arc::new(vec![
+            Value::Str("1".into()),
+            Value::Str("2".into()),
+        ])),
     );
-    ctx.set("c", Value::List(vec![Value::Str("!".into())]));
+    ctx.set("c", Value::List(Arc::new(vec![Value::Str("!".into())])));
     let result = compiled_render(
         "> {% for ai in a %}{% for bi in b %}{% for ci in c %}{{ ai }}{{ bi }}{{ ci }}{% /for %}{% /for %}{% /for %}",
         &ctx,
@@ -438,12 +463,32 @@ fn unexpected_closing_tag_errors() {
 }
 
 #[test]
-fn deprecated_endfor_rejected() {
+fn legacy_endfor_rejected() {
     let err = compile("> {% endfor %}").unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("/for"),
-        "error should suggest new syntax: {msg}"
+        msg.contains("unknown statement"),
+        "expected unknown statement error, got: {msg}"
+    );
+}
+
+#[test]
+fn legacy_endif_rejected() {
+    let err = compile("> {% endif %}").unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("unknown statement"),
+        "expected unknown statement error, got: {msg}"
+    );
+}
+
+#[test]
+fn legacy_endraw_rejected() {
+    let err = compile("> {% endraw %}").unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("unknown statement"),
+        "expected unknown statement error, got: {msg}"
     );
 }
 
@@ -460,11 +505,11 @@ fn idx_gives_zero_based_index() {
     let mut ctx = Context::new();
     ctx.set(
         "items",
-        Value::List(vec![
+        Value::List(Arc::new(vec![
             Value::Str("a".into()),
             Value::Str("b".into()),
             Value::Str("c".into()),
-        ]),
+        ])),
     );
     let result = compiled_render(
         "> {% for item in items %}{{ idx(item) }}:{{ item }} {% /for %}",
@@ -482,8 +527,9 @@ fn idx_not_available_outside_loop() {
     // to resolve_path which will fail on "idx(name)".
     let err = compiled_render("{{ idx(name) }}", &ctx).expect_err("idx() outside loop should fail");
     assert!(
-        err.to_string().contains("idx(name)") || err.to_string().contains("undefined"),
-        "should mention unresolvable idx call: {err}"
+        err.to_string()
+            .contains("requires active loop binding 'name'"),
+        "should mention active loop binding error: {err}"
     );
 }
 
@@ -492,11 +538,17 @@ fn nested_loops_independent_idx() {
     let mut ctx = Context::new();
     ctx.set(
         "outer",
-        Value::List(vec![Value::Str("A".into()), Value::Str("B".into())]),
+        Value::List(Arc::new(vec![
+            Value::Str("A".into()),
+            Value::Str("B".into()),
+        ])),
     );
     ctx.set(
         "inner",
-        Value::List(vec![Value::Str("x".into()), Value::Str("y".into())]),
+        Value::List(Arc::new(vec![
+            Value::Str("x".into()),
+            Value::Str("y".into()),
+        ])),
     );
     let result = compiled_render(
         "> {% for o in outer %}{% for i in inner %}{{ idx(i) }}{% /for %},{% /for %}",
@@ -510,17 +562,23 @@ fn nested_loops_independent_idx() {
 fn nested_loops_outer_idx_accessible_from_inner() {
     let mut ctx = Context::new();
     ctx.set(
-        "bugs",
-        Value::List(vec![Value::Str("bug1".into()), Value::Str("bug2".into())]),
+        "tasks",
+        Value::List(Arc::new(vec![
+            Value::Str("task1".into()),
+            Value::Str("task2".into()),
+        ])),
     );
     ctx.set(
         "tags",
-        Value::List(vec![Value::Str("t1".into()), Value::Str("t2".into())]),
+        Value::List(Arc::new(vec![
+            Value::Str("t1".into()),
+            Value::Str("t2".into()),
+        ])),
     );
-    // From inside the inner loop, idx(bug) should still resolve
+    // From inside the inner loop, idx(task) should still resolve
     // the OUTER loop's index — that's the whole point.
     let result = compiled_render(
-        "> {% for bug in bugs %}{% for tag in tags %}{{ idx(bug) }}.{{ idx(tag) }} {% /for %}{% /for %}",
+        "> {% for task in tasks %}{% for tag in tags %}{{ idx(task) }}.{{ idx(tag) }} {% /for %}{% /for %}",
         &ctx,
     )
     .unwrap();
@@ -532,11 +590,11 @@ fn len_function_on_list() {
     let mut ctx = Context::new();
     ctx.set(
         "items",
-        Value::List(vec![
+        Value::List(Arc::new(vec![
             Value::Str("a".into()),
             Value::Str("b".into()),
             Value::Str("c".into()),
-        ]),
+        ])),
     );
     let result = compiled_render("{{ len(items) }}", &ctx).unwrap();
     assert_eq!(result, "3");
@@ -545,13 +603,59 @@ fn len_function_on_list() {
 #[test]
 fn bare_index_not_available() {
     let mut ctx = Context::new();
-    ctx.set("items", Value::List(vec![Value::Str("a".into())]));
+    ctx.set("items", Value::List(Arc::new(vec![Value::Str("a".into())])));
     // Bare `index` should not resolve — use `{{ idx(item) }}`.
     let err = compiled_render("> {% for item in items %}{{ index }}{% /for %}", &ctx)
         .expect_err("bare 'index' should not resolve");
     assert!(
         err.to_string().contains("index") || err.to_string().contains("undefined"),
         "should mention unresolvable 'index': {err}"
+    );
+}
+
+#[test]
+fn len_function_on_string() {
+    let mut ctx = Context::new();
+    ctx.set("greeting", Value::Str("hello".into()));
+    let result = compiled_render("{{ len(greeting) }}", &ctx).unwrap();
+    assert_eq!(result, "5");
+}
+
+#[test]
+fn len_function_on_struct() {
+    let mut ctx = Context::new();
+    let mut map = HashMap::new();
+    map.insert("a".into(), Value::Int(1));
+    map.insert("b".into(), Value::Int(2));
+    map.insert("c".into(), Value::Int(3));
+    ctx.set("data", Value::Struct(Arc::new(map)));
+    let result = compiled_render("{{ len(data) }}", &ctx).unwrap();
+    assert_eq!(result, "3");
+}
+
+#[test]
+fn comment_stripped_from_output() {
+    let ctx = Context::new();
+    let result = compiled_render("before{# this is a comment #}after", &ctx).unwrap();
+    assert_eq!(result, "beforeafter");
+}
+
+#[test]
+fn struct_display_rejected_with_correct_type_name() {
+    let mut ctx = Context::new();
+    let mut map = HashMap::new();
+    map.insert("x".into(), Value::Int(1));
+    map.insert("y".into(), Value::Str("hello".into()));
+    ctx.set("obj", Value::Struct(Arc::new(map)));
+    let err = compiled_render("{{ obj }}", &ctx).expect_err("struct display should error");
+    // Verify the error message says 'struct' (user-facing name), not 'dict' (internal name).
+    assert!(
+        err.to_string().contains("struct"),
+        "error should mention 'struct': {err}"
+    );
+    assert!(
+        !err.to_string().contains("dict"),
+        "error should NOT mention 'dict': {err}"
     );
 }
 
@@ -759,11 +863,17 @@ fn match_multi_arm_unit_variant() {
     let template = "\
 > {% match status %}
 > {% case Active %}
+
 Running
+
 > {% case Paused %}
+
 Paused
+
 > {% case Stopped %}
+
 Stopped
+
 > {% /match %}";
     let mut ctx = Context::new();
     ctx.set("status", "Paused");
@@ -776,14 +886,18 @@ fn match_multi_arm_struct_variant() {
     let template = "\
 > {% match outcome %}
 > {% case Confirmed %}
+
 CONFIRMED: {{ outcome.evidence }}
+
 > {% case NotConfirmed %}
+
 NOT CONFIRMED
+
 > {% /match %}";
     let mut ctx = Context::new();
     ctx.set(
         "outcome",
-        Value::dict([
+        Value::new_struct([
             (crate::consts::ENUM_TAG_KEY, Value::from("Confirmed")),
             ("evidence", Value::from("crash log")),
         ]),
@@ -815,9 +929,13 @@ fn match_no_matching_arm_produces_no_output() {
     let template = "\
 > {% match status %}
 > {% case Active %}
+
 active
+
 > {% case Paused %}
+
 paused
+
 > {% /match %}";
     let mut ctx = Context::new();
     ctx.set("status", "Stopped");
@@ -828,15 +946,18 @@ paused
 #[test]
 fn match_inline_with_nested_if() {
     let template = "\
-> {% match vuln case Known %}
->   {% if vuln.label == \"test\" %}
+> {% match item case Known %}
+>   {% if item.label == \"test\" %}
+
 Found test!
+
 >   {% /if %}
+
 > {% /match %}";
     let mut ctx = Context::new();
     ctx.set(
-        "vuln",
-        Value::dict([
+        "item",
+        Value::new_struct([
             (crate::consts::ENUM_TAG_KEY, Value::from("Known")),
             ("label", Value::from("test")),
         ]),
@@ -848,15 +969,18 @@ Found test!
 #[test]
 fn match_inline_with_nested_if_no_match() {
     let template = "\
-> {% match vuln case Known %}
->   {% if vuln.label == \"test\" %}
+> {% match item case Known %}
+>   {% if item.label == \"test\" %}
+
 Found test!
+
 >   {% /if %}
+
 > {% /match %}";
     let mut ctx = Context::new();
     ctx.set(
-        "vuln",
-        Value::dict([
+        "item",
+        Value::new_struct([
             (crate::consts::ENUM_TAG_KEY, Value::from("Known")),
             ("label", Value::from("other")),
         ]),
@@ -883,9 +1007,13 @@ fn match_multi_variant_case_first_matches() {
     let template = "\
 > {% match outcome %}
 > {% case Confirmed | ConfirmedWithCaveats %}
+
 Evidence found.
+
 > {% case NotConfirmed %}
+
 No evidence.
+
 > {% /match %}";
     let mut ctx = Context::new();
     ctx.set("outcome", "Confirmed");
@@ -898,9 +1026,13 @@ fn match_multi_variant_case_second_matches() {
     let template = "\
 > {% match outcome %}
 > {% case Confirmed | ConfirmedWithCaveats %}
+
 Evidence found.
+
 > {% case NotConfirmed %}
+
 No evidence.
+
 > {% /match %}";
     let mut ctx = Context::new();
     ctx.set("outcome", "ConfirmedWithCaveats");
@@ -913,9 +1045,13 @@ fn match_multi_variant_case_no_match() {
     let template = "\
 > {% match outcome %}
 > {% case Confirmed | ConfirmedWithCaveats %}
+
 Evidence found.
+
 > {% case NotConfirmed %}
+
 No evidence.
+
 > {% /match %}";
     let mut ctx = Context::new();
     ctx.set("outcome", "Inconclusive");
@@ -1023,8 +1159,8 @@ fn inline_template_include_renders_test() {
         "---\n",
         "params: [who = str]\n",
         "---\n",
-        "Hello {{ who }}!\n",
-        "> {% /tmpl %}\n",
+        "Hello {{ who }}!\n\n",
+        "> {% /tmpl %}\n\n",
         "> {% include greeting with who=\"World\" %}",
     );
     let tmpl = crate::Template::from_source(src).unwrap();
@@ -1041,8 +1177,8 @@ fn inline_template_missing_params_errors() {
         "---\n",
         "params: [who = str]\n",
         "---\n",
-        "Hello {{ who }}!\n",
-        "> {% /tmpl %}\n",
+        "Hello {{ who }}!\n\n",
+        "> {% /tmpl %}\n\n",
         "> {% include greeting %}",
     );
     let tmpl = crate::Template::from_source(src).unwrap();
@@ -1073,8 +1209,8 @@ fn same_named_tmpl_in_different_files_render_independently() {
             "---\n",
             "params: []\n",
             "---\n",
-            "CHILD\n",
-            "> {% /tmpl %}\n",
+            "CHILD\n\n",
+            "> {% /tmpl %}\n\n",
             "> {% include helper %}",
         ),
     )
@@ -1087,9 +1223,9 @@ fn same_named_tmpl_in_different_files_render_independently() {
         "---\n",
         "params: []\n",
         "---\n",
-        "PARENT\n",
-        "> {% /tmpl %}\n",
-        "> {% include helper %}\n",
+        "PARENT\n\n",
+        "> {% /tmpl %}\n\n",
+        "> {% include helper %}\n\n",
         "---\n",
     );
 
@@ -1108,12 +1244,12 @@ fn included_file_uses_own_inline_templates() {
     std::fs::write(
         dir.path().join("child.tmpl.md"),
         "---\nparams:\n  - name = str\n---\n\
-         > {% tmpl row %}\n\
+         > {% tmpl row %}\n\n\
          ---\n\
          params:\n  - label = str\n\
          ---\n\
-         - {{ label }}\n\
-         > {% /tmpl %}\n\
+         - {{ label }}\n\n\
+         > {% /tmpl %}\n\n\
          > {% include row with label=name %}",
     )
     .unwrap();
@@ -1149,12 +1285,12 @@ fn parent_tmpl_does_not_leak_to_included_file() {
     std::fs::write(
         dir.path().join("parent.tmpl.md"),
         "---\nparams: []\n---\n\
-         > {% tmpl secret %}\n\
+         > {% tmpl secret %}\n\n\
          ---\n\
          params: []\n\
          ---\n\
-         SECRET\n\
-         > {% /tmpl %}\n\
+         SECRET\n\n\
+         > {% /tmpl %}\n\n\
          > {% include [child](child.tmpl.md) %}",
     )
     .unwrap();
@@ -1182,12 +1318,12 @@ fn same_named_tmpl_in_parent_and_child_are_independent() {
     std::fs::write(
         dir.path().join("child.tmpl.md"),
         "---\nparams: []\n---\n\
-         > {% tmpl greeting %}\n\
+         > {% tmpl greeting %}\n\n\
          ---\n\
          params: []\n\
          ---\n\
-         CHILD_GREETING\n\
-         > {% /tmpl %}\n\
+         CHILD_GREETING\n\n\
+         > {% /tmpl %}\n\n\
          > {% include greeting %}",
     )
     .unwrap();
@@ -1195,13 +1331,13 @@ fn same_named_tmpl_in_parent_and_child_are_independent() {
     std::fs::write(
         dir.path().join("parent.tmpl.md"),
         "---\nparams: []\n---\n\
-         > {% tmpl greeting %}\n\
+         > {% tmpl greeting %}\n\n\
          ---\n\
          params: []\n\
          ---\n\
-         PARENT_GREETING\n\
-         > {% /tmpl %}\n\
-         > {% include greeting %}\n\
+         PARENT_GREETING\n\n\
+         > {% /tmpl %}\n\n\
+         > {% include greeting %}\n\n\
          > {% include [child](child.tmpl.md) %}",
     )
     .unwrap();
@@ -1220,12 +1356,12 @@ fn two_included_files_same_tmpl_name_different_content() {
     std::fs::write(
         dir.path().join("alpha.tmpl.md"),
         "---\nparams: []\n---\n\
-         > {% tmpl row %}\n\
+         > {% tmpl row %}\n\n\
          ---\n\
          params: []\n\
          ---\n\
-         ALPHA_ROW\n\
-         > {% /tmpl %}\n\
+         ALPHA_ROW\n\n\
+         > {% /tmpl %}\n\n\
          > {% include row %}",
     )
     .unwrap();
@@ -1233,12 +1369,12 @@ fn two_included_files_same_tmpl_name_different_content() {
     std::fs::write(
         dir.path().join("beta.tmpl.md"),
         "---\nparams: []\n---\n\
-         > {% tmpl row %}\n\
+         > {% tmpl row %}\n\n\
          ---\n\
          params: []\n\
          ---\n\
-         BETA_ROW\n\
-         > {% /tmpl %}\n\
+         BETA_ROW\n\n\
+         > {% /tmpl %}\n\n\
          > {% include row %}",
     )
     .unwrap();
@@ -1246,7 +1382,7 @@ fn two_included_files_same_tmpl_name_different_content() {
     std::fs::write(
         dir.path().join("parent.tmpl.md"),
         "---\nparams: []\n---\n\
-         > {% include [alpha](alpha.tmpl.md) %}\n\
+         > {% include [alpha](alpha.tmpl.md) %}\n\n\
          > {% include [beta](beta.tmpl.md) %}",
     )
     .unwrap();
@@ -1280,7 +1416,7 @@ fn same_display_name_different_files_work() {
     std::fs::write(
         dir.path().join("parent.tmpl.md"),
         "---\nparams:\n  - name = str\n---\n\
-         > {% include [greeting](en/greeting.tmpl.md) with name=name %}\n\
+         > {% include [greeting](en/greeting.tmpl.md) with name=name %}\n\n\
          > {% include [greeting](de/greeting.tmpl.md) with name=name %}",
     )
     .unwrap();
@@ -1306,7 +1442,7 @@ fn nested_include_chain_a_b_c() {
     std::fs::write(
         dir.path().join("b.tmpl.md"),
         "---\nparams:\n  - msg = str\n---\n\
-         [B:{{ msg }}]\n\
+         [B:{{ msg }}]\n\n\
          > {% include [c](c.tmpl.md) with msg=msg %}",
     )
     .unwrap();
@@ -1314,7 +1450,7 @@ fn nested_include_chain_a_b_c() {
     std::fs::write(
         dir.path().join("a.tmpl.md"),
         "---\nparams:\n  - msg = str\n---\n\
-         [A:{{ msg }}]\n\
+         [A:{{ msg }}]\n\n\
          > {% include [b](b.tmpl.md) with msg=msg %}",
     )
     .unwrap();
@@ -1341,7 +1477,7 @@ fn diamond_include_deduplicates_correctly() {
     std::fs::write(
         dir.path().join("b.tmpl.md"),
         "---\nparams:\n  - val = str\n---\n\
-         [B]\n\
+         [B]\n\n\
          > {% include [d](d.tmpl.md) with label=val %}",
     )
     .unwrap();
@@ -1349,7 +1485,7 @@ fn diamond_include_deduplicates_correctly() {
     std::fs::write(
         dir.path().join("c.tmpl.md"),
         "---\nparams:\n  - val = str\n---\n\
-         [C]\n\
+         [C]\n\n\
          > {% include [d](d.tmpl.md) with label=val %}",
     )
     .unwrap();
@@ -1357,7 +1493,7 @@ fn diamond_include_deduplicates_correctly() {
     std::fs::write(
         dir.path().join("a.tmpl.md"),
         "---\nparams:\n  - x = str\n  - y = str\n---\n\
-         > {% include [b](b.tmpl.md) with val=x %}\n\
+         > {% include [b](b.tmpl.md) with val=x %}\n\n\
          > {% include [c](c.tmpl.md) with val=y %}",
     )
     .unwrap();
@@ -1368,4 +1504,94 @@ fn diamond_include_deduplicates_correctly() {
     ctx.set("y", "from_c");
     let result = tmpl.render(&ctx).unwrap();
     assert_eq!(result, "[B]\n[D:from_b][C]\n[D:from_c]");
+}
+
+// -- for...else tests --
+
+#[test]
+fn for_else_empty_list() {
+    let mut ctx = Context::new();
+    ctx.set("items", Value::List(Arc::new(vec![])));
+    let result = compiled_render(
+        "> {% for item in items %}{{ item }}{% else %}No items{% /for %}",
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result, "No items");
+}
+
+#[test]
+fn for_else_non_empty_list() {
+    let mut ctx = Context::new();
+    ctx.set(
+        "items",
+        Value::List(Arc::new(vec![
+            Value::Str("Alice".into()),
+            Value::Str("Bob".into()),
+        ])),
+    );
+    let result = compiled_render(
+        "> {% for item in items %}{{ item }}{% else %}No items{% /for %}",
+        &ctx,
+    )
+    .unwrap();
+    assert!(result.contains("Alice"));
+    assert!(result.contains("Bob"));
+    assert!(!result.contains("No items"));
+}
+
+#[test]
+fn for_else_nested_outer_empty() {
+    let mut ctx = Context::new();
+    ctx.set("outer", Value::List(Arc::new(vec![])));
+    ctx.set("inner", Value::List(Arc::new(vec![Value::Str("x".into())])));
+    let result = compiled_render(
+        "> {% for o in outer %}{% for i in inner %}{{ i }}{% else %}no inner{% /for %}{% else %}no outer{% /for %}",
+        &ctx,
+    )
+    .unwrap();
+    assert!(result.contains("no outer"));
+    assert!(!result.contains("no inner"));
+}
+
+#[test]
+fn for_else_nested_inner_empty() {
+    let mut ctx = Context::new();
+    ctx.set("outer", Value::List(Arc::new(vec![Value::Str("A".into())])));
+    ctx.set("inner", Value::List(Arc::new(vec![])));
+    let result = compiled_render(
+        "> {% for o in outer %}{% for i in inner %}{{ i }}{% else %}no inner{% /for %}{% else %}no outer{% /for %}",
+        &ctx,
+    )
+    .unwrap();
+    assert!(result.contains("no inner"));
+    assert!(!result.contains("no outer"));
+}
+
+#[test]
+fn for_else_with_if_nesting() {
+    // {% else %} inside {% if %} should NOT be confused with for-else.
+    let mut ctx = Context::new();
+    ctx.set("items", Value::List(Arc::new(vec![])));
+    ctx.set("show", Value::Bool(true));
+    let result = compiled_render(
+        "> {% for item in items %}{% if show %}{{ item }}{% else %}hidden{% /if %}{% else %}No items{% /for %}",
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result, "No items");
+}
+
+#[test]
+fn for_without_else_still_works() {
+    let mut ctx = Context::new();
+    ctx.set(
+        "items",
+        Value::List(Arc::new(vec![
+            Value::Str("a".into()),
+            Value::Str("b".into()),
+        ])),
+    );
+    let result = compiled_render("> {% for item in items %}[{{ item }}]{% /for %}", &ctx).unwrap();
+    assert_eq!(result, "[a][b]");
 }

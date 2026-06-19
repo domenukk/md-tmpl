@@ -1,8 +1,6 @@
-use std::{
-    collections::{HashMap, HashSet},
-    hash::{Hash, Hasher},
-    path::PathBuf,
-};
+use std::path::PathBuf;
+
+use hashbrown::{HashMap, HashSet};
 
 /// Extract the file stem from a template path, stripping `.tmpl.md` or
 /// `.tmpl` suffixes.
@@ -23,9 +21,7 @@ pub(crate) fn stem_from_path(path: &str) -> String {
 }
 
 pub(crate) fn hash_source(source: &str) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    source.hash(&mut hasher);
-    hasher.finish()
+    prompt_templates::__private::fnv1a_hash(source.as_bytes())
 }
 
 /// Result of compiling a template at macro expansion time.
@@ -64,18 +60,17 @@ pub(crate) fn compile_template_to_ast(
 
     // Static analysis: Enforce that all parameters referenced in the body are declared.
     let referenced = prompt_templates::compiled::collect_referenced_params(&segments);
-    let mut declared: std::collections::HashSet<&str> =
-        fm.params.iter().map(String::as_str).collect();
+    let mut declared: HashSet<String> = fm.params.iter().cloned().collect();
     for c in &fm.consts {
-        declared.insert(&c.name);
+        declared.insert(c.name.clone());
     }
     for import in &fm.imports {
-        declared.insert(&import.stem);
+        declared.insert(import.stem.clone());
     }
     // Inline template names ({% tmpl NAME %}) are valid targets for
     // {% include NAME %} and should not be flagged as undeclared variables.
     for inline_name in inline_templates.keys() {
-        declared.insert(inline_name);
+        declared.insert(inline_name.clone());
     }
     let undeclared: Vec<&String> = referenced
         .iter()
@@ -93,11 +88,11 @@ pub(crate) fn compile_template_to_ast(
     // Recursively resolve includes at compile time.
     // Collect declared tmpl<> parameter names — these are dynamic includes
     // resolved at runtime, not compile-time file lookups.
-    let tmpl_params: HashSet<&str> = fm
+    let tmpl_params: HashSet<String> = fm
         .declarations
         .iter()
         .filter(|d| matches!(d.var_type, prompt_templates::VarType::Tmpl(_)))
-        .map(|d| d.name.as_str())
+        .map(|d| d.name.clone())
         .collect();
     let mut visited_paths = HashSet::new();
     resolve_includes_recursive(
@@ -112,20 +107,24 @@ pub(crate) fn compile_template_to_ast(
     // Flow-sensitive type check: validate variant names and field access.
     // Import stems and const names are opaque to field-level type checking —
     // their structure is resolved at runtime, not at compile time.
-    let mut opaque_roots: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    for import in &fm.imports {
-        opaque_roots.insert(&import.stem);
-    }
-    for c in &fm.consts {
-        opaque_roots.insert(&c.name);
-    }
-    let type_errors = prompt_templates::compiled::validate_field_accesses_with_opaque(
-        &segments,
-        &fm.declarations,
-        &opaque_roots,
-    );
-    if !type_errors.is_empty() {
-        return Err(type_errors.join("\n"));
+    // Block scope ensures `opaque_roots` (which borrows `&str` from `fm`)
+    // is dropped before `fm` is moved into the return struct.
+    {
+        let mut opaque_roots: HashSet<&str> = HashSet::new();
+        for import in &fm.imports {
+            opaque_roots.insert(&import.stem);
+        }
+        for c in &fm.consts {
+            opaque_roots.insert(&c.name);
+        }
+        let type_errors = prompt_templates::compiled::validate_field_accesses_with_opaque(
+            &segments,
+            &fm.declarations,
+            &opaque_roots,
+        );
+        if !type_errors.is_empty() {
+            return Err(type_errors.join("\n"));
+        }
     }
 
     Ok(CompiledTemplateAst {
@@ -153,7 +152,7 @@ pub(crate) fn resolve_includes_recursive(
     base_dir: &std::path::Path,
     visited_paths: &mut HashSet<PathBuf>,
     inline_templates: &HashMap<String, prompt_templates::compiled::CompiledInlineTemplate>,
-    tmpl_params: &HashSet<&str>,
+    tmpl_params: &HashSet<String>,
     depth: usize,
 ) -> Result<(), String> {
     let max_depth = max_compile_include_depth();
@@ -315,20 +314,24 @@ pub(crate) fn resolve_single_include(
 
     let child_base_dir = include_path.parent().unwrap_or(base_dir);
     // Use the INCLUDED FILE'S own inline templates, not the parent's.
-    let child_tmpl_params: HashSet<&str> = included_fm
-        .declarations
-        .iter()
-        .filter(|d| matches!(d.var_type, prompt_templates::VarType::Tmpl(_)))
-        .map(|d| d.name.as_str())
-        .collect();
-    resolve_includes_recursive(
-        &mut included_segments,
-        child_base_dir,
-        visited_paths,
-        &included_inline_templates,
-        &child_tmpl_params,
-        depth,
-    )?;
+    // Block scope ensures `child_tmpl_params` is dropped before
+    // `included_fm.declarations` is moved into an Arc.
+    {
+        let child_tmpl_params: HashSet<String> = included_fm
+            .declarations
+            .iter()
+            .filter(|d| matches!(d.var_type, prompt_templates::VarType::Tmpl(_)))
+            .map(|d| d.name.clone())
+            .collect();
+        resolve_includes_recursive(
+            &mut included_segments,
+            child_base_dir,
+            visited_paths,
+            &included_inline_templates,
+            &child_tmpl_params,
+            depth,
+        )?;
+    }
 
     inc.inline_compiled = Some(prompt_templates::compiled::CompiledInlineTemplate {
         segments: std::sync::Arc::from(included_segments),

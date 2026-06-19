@@ -1,6 +1,6 @@
 [package]
 name = "prompt-templates"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Lightweight template engine for .tmpl.md prompt files with typed frontmatter"
@@ -11,18 +11,30 @@ keywords = ["template", "prompt", "markdown", "llm", "agent"]
 categories = ["template-engine", "text-processing"]
 
 [features]
-default = ["serde", "typed-builder"]
-serde = ["dep:serde"]
+default = ["std", "serde", "typed-builder"]
+std = ["hashbrown/default", "thiserror/std"]
+serde = ["dep:serde", "dep:flexbuffers", "dep:ciborium", "hashbrown/serde"]
 # typed-builder is not used directly by core source code. It is re-exported
 # as a feature flag so that `prompt-templates-macros` generated code (e.g.
 # `#[derive(TypedBuilder)]`) can activate it via this crate's feature.
 typed-builder = ["dep:typed-builder"]
 
 [dependencies]
-thiserror = "1"
-const-str = "0.5"
-serde = { version = "1", features = ["derive"], optional = true }
+thiserror = { version = "2", default-features = false }
+const-str = "1.1"
+hashbrown = { version = "0.17", default-features = false, features = [
+  "allocator-api2",
+  "default-hasher",
+] }
+itoa = { version = "1", default-features = false }
+serde = { version = "1", default-features = false, features = [
+  "derive",
+  "alloc",
+], optional = true }
+flexbuffers = { version = "25.12", optional = true }
 typed-builder = { workspace = true, optional = true }
+spin = { version = "0.12", default-features = false, features = ["lazy"] }
+ciborium = { version = "0.2.2", optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -30,9 +42,11 @@ serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 prompt-templates-macros = { path = "../prompt-templates-macros", features = [
   "serde",
+  "typed-builder",
 ] }
 typed-builder = { workspace = true }
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.7", features = ["html_reports"] }
+flexbuffers = "25.12"
 
 [[bench]]
 name = "template_bench"

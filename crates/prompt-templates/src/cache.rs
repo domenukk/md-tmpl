@@ -17,13 +17,13 @@
 //! prevents unbounded memory growth in long-running processes.
 
 use std::{
-    collections::HashMap,
     path::{Path, PathBuf},
     sync::{Arc, RwLock},
     time::{Instant, SystemTime},
 };
 
 use crate::{
+    compat::HashMap,
     compiled::{self, CompiledInlineTemplate, Segment},
     error::TemplateError,
     frontmatter::{self, Frontmatter},
@@ -43,13 +43,11 @@ pub(crate) struct CachedInclude {
 
 /// Content-hash of a source string.
 ///
-/// Used for change-detection in hot-reload scenarios: same source →
-/// same hash, different source → (very likely) different hash.
+/// Uses the shared FNV-1a implementation for deterministic, cross-version
+/// stable hashing.  Same source → same hash, different source → (very
+/// likely) different hash.
 pub(crate) fn hash_source(source: &str) -> u64 {
-    use std::hash::{BuildHasher, BuildHasherDefault};
-    // Deterministic: BuildHasherDefault<DefaultHasher> always uses the same
-    // seed, unlike RandomState which re-seeds per instance.
-    BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default().hash_one(source)
+    crate::__private::fnv1a_hash(source.as_bytes())
 }
 
 /// A cache entry for a compiled template.
@@ -275,9 +273,11 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
         path: &Path,
     ) -> Result<(crate::Template, Frontmatter), TemplateError> {
         let (tmpl, fm) = self.load_inner(path, true)?;
-        // SAFETY: `load_inner(_, true)` always populates `fm`.
-        debug_assert!(fm.is_some(), "load_inner(_, true) must return Some(fm)");
-        Ok((tmpl, fm.unwrap_or_default()))
+        // `load_inner(_, true)` always returns `Some(fm)`.
+        let fm = fm.ok_or_else(|| {
+            TemplateError::syntax("internal error: frontmatter not returned by load_inner")
+        })?;
+        Ok((tmpl, fm))
     }
 
     /// Shared implementation: stat → mtime check → (read → hash) → cache → compile → store.
@@ -360,7 +360,7 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
         let body_str = body.to_string();
         let (segments, inline_templates) = compiled::compile(&body_str, &fm.type_aliases)?;
 
-        let consts: std::collections::HashMap<String, crate::value::Value> = fm
+        let consts: HashMap<String, crate::value::Value> = fm
             .consts
             .iter()
             .filter_map(|d| d.default_value.clone().map(|v| (d.name.clone(), v)))
@@ -637,7 +637,7 @@ mod tests {
         let main_path = dir.path().join("main.tmpl.md");
         std::fs::write(
             &main_path,
-            "---\nparams: [title = str]\n---\n> {% include [header](header.tmpl.md) with title=title %}\nBody",
+            "---\nparams: [title = str]\n---\n> {% include [header](header.tmpl.md) with title=title %}\n\nBody",
         )
         .unwrap();
 
@@ -648,13 +648,17 @@ mod tests {
         ctx.set("title", "Hello");
 
         // First render — compiles include from disk.
-        let output1 = tmpl.render_cached(&ctx, &cache).unwrap();
+        let output1 = tmpl
+            .render_cached_with(&ctx, &cache, crate::RenderOptions::default())
+            .unwrap();
         assert!(output1.contains("# Hello"));
         assert!(output1.contains("Body"));
         assert_eq!(cache.include_count(), 1);
 
         // Second render — include resolved from cache.
-        let output2 = tmpl.render_cached(&ctx, &cache).unwrap();
+        let output2 = tmpl
+            .render_cached_with(&ctx, &cache, crate::RenderOptions::default())
+            .unwrap();
         assert_eq!(output1, output2);
         assert_eq!(cache.include_count(), 1); // same entry, no new compilation
     }
@@ -714,5 +718,145 @@ mod tests {
             cache.load(&path).unwrap();
         }
         assert_eq!(cache.template_count(), 10);
+    }
+
+    /// Stress-test `TemplateCache` under concurrent access.
+    ///
+    /// Spawns 8 threads that simultaneously `load`, `render_cached`,
+    /// `clear`, and query `template_count` / `include_count` in a tight
+    /// loop. The test verifies:
+    ///
+    /// - No panics (locks are never poisoned).
+    /// - No deadlocks (all threads join within the timeout).
+    /// - Rendered output is correct when rendering succeeds.
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn concurrent_load_render_clear() {
+        use std::sync::{
+            Arc, Barrier,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        const NUM_THREADS: usize = 8;
+        const ROUNDS_PER_THREAD: usize = 50;
+
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create several template files that threads will load concurrently.
+        let mut paths = Vec::new();
+        for i in 0..4 {
+            let path = dir.path().join(format!("t{i}.tmpl.md"));
+            std::fs::write(
+                &path,
+                format!("---\nparams: [x = str]\n---\ntemplate{i}: {{{{ x }}}}"),
+            )
+            .unwrap();
+            paths.push(path);
+        }
+
+        let cache = Arc::new(TemplateCache::new());
+        let paths = Arc::new(paths);
+        let barrier = Arc::new(Barrier::new(NUM_THREADS));
+        let successful_loads = Arc::new(AtomicUsize::new(0));
+        let successful_renders = Arc::new(AtomicUsize::new(0));
+
+        let handles: Vec<_> = (0..NUM_THREADS)
+            .map(|thread_id| {
+                let cache = Arc::clone(&cache);
+                let paths = Arc::clone(&paths);
+                let barrier = Arc::clone(&barrier);
+                let successful_loads = Arc::clone(&successful_loads);
+                let successful_renders = Arc::clone(&successful_renders);
+                std::thread::spawn(move || {
+                    // All threads start simultaneously.
+                    barrier.wait();
+
+                    for round in 0..ROUNDS_PER_THREAD {
+                        let path = &paths[round % paths.len()];
+                        let expected_idx = round % paths.len();
+
+                        match thread_id % 4 {
+                            // Loader threads: load templates and verify they parse.
+                            0 => {
+                                if let Ok(tmpl) = cache.load(path) {
+                                    // Verify the loaded template is functional.
+                                    assert!(
+                                        !tmpl.declarations().is_empty(),
+                                        "loaded template must have declarations"
+                                    );
+                                    successful_loads.fetch_add(1, Ordering::Relaxed);
+                                }
+                                // Err is acceptable — clear() may have raced.
+                            }
+                            // Renderer threads: load + render through cache.
+                            1 => {
+                                if let Ok(tmpl) = cache.load(path) {
+                                    let mut ctx = crate::Context::new();
+                                    ctx.set("x", "hello");
+                                    if let Ok(output) = tmpl.render_cached_with(
+                                        &ctx,
+                                        &cache,
+                                        crate::RenderOptions::default(),
+                                    ) {
+                                        assert!(
+                                            output.contains("hello"),
+                                            "rendered output must contain 'hello', got: {output}"
+                                        );
+                                        assert!(
+                                            output.contains(&format!("template{expected_idx}")),
+                                            "rendered output must contain template index, got: {output}"
+                                        );
+                                        successful_renders.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                }
+                            }
+                            // Clear threads: periodically clear the cache.
+                            2 => {
+                                if round % 5 == 0 {
+                                    cache.clear();
+                                }
+                                // Load after clear to verify cache rebuilds correctly.
+                                if let Ok(tmpl) = cache.load(path) {
+                                    assert!(
+                                        !tmpl.declarations().is_empty(),
+                                        "reloaded template must have declarations"
+                                    );
+                                    successful_loads.fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
+                            // Reader threads: query cache counts + load.
+                            _ => {
+                                // Counts must be non-negative and bounded.
+                                let tc = cache.template_count();
+                                let ic = cache.include_count();
+                                assert!(tc <= paths.len(), "template count {tc} exceeds file count");
+                                assert!(ic <= 100, "include count {ic} unexpectedly large");
+                                if let Ok(tmpl) = cache.load(path) {
+                                    assert!(
+                                        !tmpl.declarations().is_empty(),
+                                        "loaded template must have declarations"
+                                    );
+                                    successful_loads.fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
+                        }
+                    }
+                })
+            })
+            .collect();
+
+        // Join all threads — a hang here would indicate a deadlock.
+        for handle in handles {
+            handle.join().expect("thread must not panic");
+        }
+
+        // At least some loads and renders must have succeeded.
+        let loads = successful_loads.load(Ordering::Relaxed);
+        let renders = successful_renders.load(Ordering::Relaxed);
+        assert!(loads > 0, "no loads succeeded across {NUM_THREADS} threads");
+        assert!(
+            renders > 0,
+            "no renders succeeded across {NUM_THREADS} threads"
+        );
     }
 }
