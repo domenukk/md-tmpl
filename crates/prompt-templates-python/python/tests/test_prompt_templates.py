@@ -1741,38 +1741,37 @@ class TestTemplateAsParam:
 class TestNoneHandling:
     """Tests for None value behavior.
 
-    Python None maps to the engine's "None" string, which is the unit variant
-    name for option<T> types (desugared to ``enum<Some(val=T), None>``).
-
-    For non-option params, None silently becomes the string "None".
+    Python None maps to the engine's transparent ``Value::None``,
+    representing an absent value. Passing None for a non-optional
+    parameter is a type error — only ``option<T>`` params accept None.
     """
 
-    def test_none_value_becomes_none_string(self) -> None:
-        """None on a non-option str param renders as the literal string 'None'."""
+    def test_none_value_raises_type_error(self) -> None:
+        """None on a non-option str param raises TypeMismatchError."""
         tmpl = Template.from_source(textwrap.dedent("""\
             ---
             params: [name = str]
             ---
             {{ name }}"""))
-        result = tmpl.render(name=None)
-        assert result == "None"
+        with pytest.raises(Exception, match="type mismatch"):
+            tmpl.render(name=None)
 
-    def test_none_in_list_becomes_none_string(self) -> None:
-        """None inside a list element becomes the string 'None'."""
+    def test_none_in_list_raises_type_error(self) -> None:
+        """None inside a list element raises TypeError."""
         tmpl = Template.from_source(
             "---\nparams:\n  - items = list<name = str>\n---\n"
             "> {% for item in items %}\n\n{{ item.name }}\n\n> {% /for %}"
         )
-        with pytest.raises(TypeError, match="None"):
+        with pytest.raises(Exception):
             tmpl.render(items=[None])
 
-    def test_none_in_struct_value_becomes_none_string(self) -> None:
-        """None inside a struct field becomes the string 'None'."""
+    def test_none_in_struct_value_raises_type_error(self) -> None:
+        """None inside a struct field raises TypeMismatchError."""
         tmpl = Template.from_source(
             "---\nparams:\n  - config = struct<host = str>\n---\n{{ config.host }}"
         )
-        result = tmpl.render(config={"host": None})
-        assert result == "None"
+        with pytest.raises(Exception, match="type mismatch"):
+            tmpl.render(config={"host": None})
 
 
 # ---------------------------------------------------------------------------
@@ -3259,7 +3258,7 @@ class TestOptionType:
             "---\nparams:\n  - label = option<str>\n---\n"
             "> {% match label %}\n"
             "> {% case Some %}\n\n"
-            "got: {{ label.val }}\n\n"
+            "got: {{ label }}\n\n"
             "> {% case None %}\n\n"
             "empty\n\n"
             "> {% /match %}"
@@ -3273,12 +3272,12 @@ class TestOptionType:
             "---\nparams:\n  - label = option<str>\n---\n"
             "> {% match label %}\n"
             "> {% case Some %}\n\n"
-            "got: {{ label.val }}\n\n"
+            "got: {{ label }}\n\n"
             "> {% case None %}\n\n"
             "empty\n\n"
             "> {% /match %}"
         )
-        result = tmpl.render(label={"__kind__": "Some", "val": "hello"})
+        result = tmpl.render(label="hello")
         assert "got: hello" in result
 
     def test_option_none_via_has(self) -> None:
@@ -3286,7 +3285,7 @@ class TestOptionType:
         tmpl = Template.from_source(
             "---\nparams:\n  - label = option<str>\n---\n"
             "> {% if has(label) %}\n\n"
-            "got: {{ label.val }}\n\n"
+            "got: {{ label }}\n\n"
             "> {% else %}\n\n"
             "empty\n\n"
             "> {% /if %}"
@@ -3299,12 +3298,12 @@ class TestOptionType:
         tmpl = Template.from_source(
             "---\nparams:\n  - label = option<str>\n---\n"
             "> {% if has(label) %}\n\n"
-            "got: {{ label.val }}\n\n"
+            "got: {{ label }}\n\n"
             "> {% else %}\n\n"
             "empty\n\n"
             "> {% /if %}"
         )
-        result = tmpl.render(label={"__kind__": "Some", "val": "world"})
+        result = tmpl.render(label="world")
         assert "got: world" in result
 
     def test_option_int_none(self) -> None:
@@ -3312,7 +3311,7 @@ class TestOptionType:
         tmpl = Template.from_source(
             "---\nparams:\n  - count = option<int>\n---\n"
             "> {% if has(count) %}\n\n"
-            "count={{ count.val }}\n\n"
+            "count={{ count }}\n\n"
             "> {% else %}\n\n"
             "no-count\n\n"
             "> {% /if %}"
@@ -3325,12 +3324,12 @@ class TestOptionType:
         tmpl = Template.from_source(
             "---\nparams:\n  - count = option<int>\n---\n"
             "> {% if has(count) %}\n\n"
-            "count={{ count.val }}\n\n"
+            "count={{ count }}\n\n"
             "> {% else %}\n\n"
             "no-count\n\n"
             "> {% /if %}"
         )
-        result = tmpl.render(count={"__kind__": "Some", "val": 42})
+        result = tmpl.render(count=42)
         assert "count=42" in result
 
     def test_option_default_none(self) -> None:
@@ -3338,13 +3337,146 @@ class TestOptionType:
         tmpl = Template.from_source(
             "---\nparams:\n  - label = option<str> := None\n---\n"
             "> {% if has(label) %}\n\n"
-            "{{ label.val }}\n\n"
+            "{{ label }}\n\n"
             "> {% else %}\n\n"
             "default\n\n"
             "> {% /if %}"
         )
         result = tmpl.render()
         assert result.strip() == "default"
+
+
+# -- option<T> regression tests -------------------------------------------
+
+
+class TestOptionTypeRegression:
+    """Regression tests for transparent option<T>.
+
+    Options are TRANSPARENT:
+    - Python None → absent (has() false, renders empty)
+    - Python plain value (e.g., "hello") → present (has() true, renders directly)
+    - NO .val access needed! The value is used directly.
+    """
+
+    def test_option_none_is_python_none(self) -> None:
+        """Passing Python None for option<str> → has() false, renders else."""
+        tmpl = Template.from_source(
+            "---\nparams:\n  - name = option<str>\n---\n"
+            "> {% if has(name) %}\n\n"
+            "Hello {{ name }}\n\n"
+            "> {% else %}\n\n"
+            "No name\n\n"
+            "> {% /if %}"
+        )
+        result = tmpl.render(name=None)
+        assert "Hello" not in result
+        assert result.strip() == "No name"
+
+    def test_option_some_is_plain_value(self) -> None:
+        """Passing a plain string for option<str> → has() true, renders value."""
+        tmpl = Template.from_source(
+            "---\nparams:\n  - name = option<str>\n---\n"
+            "> {% if has(name) %}\n\n"
+            "Hello {{ name }}\n\n"
+            "> {% else %}\n\n"
+            "No name\n\n"
+            "> {% /if %}"
+        )
+        result = tmpl.render(name="Alice")
+        assert "Hello Alice" in result
+        assert "No name" not in result
+
+    def test_option_none_in_struct(self) -> None:
+        """A struct field typed as option<str> accepts None."""
+        tmpl = Template.from_source(
+            "---\n"
+            "params:\n"
+            "  - user = struct<name = str, bio = option<str>>\n"
+            "---\n"
+            "Name: {{ user.name }}\n\n"
+            "> {% if has(user.bio) %}\n\n"
+            "Bio: {{ user.bio }}\n\n"
+            "> {% else %}\n\n"
+            "No bio\n\n"
+            "> {% /if %}"
+        )
+        # None field
+        result = tmpl.render(user={"name": "Bob", "bio": None})
+        assert "Name: Bob" in result
+        assert "No bio" in result
+        assert "Bio:" not in result
+
+        # Present field (plain value, not __kind__ dict!)
+        result_some = tmpl.render(user={"name": "Bob", "bio": "hacker"})
+        assert "Name: Bob" in result_some
+        assert "Bio: hacker" in result_some
+        assert "No bio" not in result_some
+
+    def test_option_none_in_list(self) -> None:
+        """A list<option<str>> can contain None elements."""
+        tmpl = Template.from_source(
+            "---\n"
+            "params:\n"
+            "  - items = list<option<str>>\n"
+            "---\n"
+            "> {% for item in items %}\n"
+            "> {% if has(item) %}\n\n"
+            "val={{ item }}\n\n"
+            "> {% else %}\n\n"
+            "missing\n\n"
+            "> {% /if %}\n"
+            "> {% /for %}"
+        )
+        result = tmpl.render(items=["hello", None, "world"])
+        assert "val=hello" in result
+        assert "missing" in result
+        assert "val=world" in result
+
+    def test_option_defaults_to_none(self) -> None:
+        """option<str> with := None default → omitting the param yields empty."""
+        tmpl = Template.from_source(
+            "---\nparams:\n  - title = option<str> := None\n---\n"
+            "> {% if has(title) %}\n\n"
+            "Title: {{ title }}\n\n"
+            "> {% else %}\n\n"
+            "untitled\n\n"
+            "> {% /if %}"
+        )
+        # Omit the param entirely — should use the None default
+        result = tmpl.render()
+        assert result.strip() == "untitled"
+        # Explicitly passing a value should override the default
+        result_with = tmpl.render(title="My Doc")
+        assert "Title: My Doc" in result_with
+
+    def test_option_match_some_none(self) -> None:
+        """{% match %} with {% case Some %} and {% case None %} branches."""
+        tmpl = Template.from_source(
+            "---\nparams:\n  - tag = option<str>\n---\n"
+            "> {% match tag %}\n"
+            "> {% case Some %}\n\n"
+            "tagged={{ tag }}\n\n"
+            "> {% case None %}\n\n"
+            "untagged\n\n"
+            "> {% /match %}"
+        )
+        # None path
+        result_none = tmpl.render(tag=None)
+        assert result_none.strip() == "untagged"
+        # Some path (plain value, no __kind__ needed!)
+        result_some = tmpl.render(tag="v1.0")
+        assert "tagged=v1.0" in result_some
+
+    def test_option_transparent_no_val(self) -> None:
+        """Options are transparent — access the value directly, no .val needed."""
+        tmpl = Template.from_source(
+            "---\nparams:\n  - name = option<str>\n---\n"
+            "> {% if has(name) %}\n\n"
+            "{{ name }}\n\n"
+            "> {% /if %}"
+        )
+        result = tmpl.render(name="direct")
+        assert result.strip() == "direct"
 
 
 # -- for...else support ----------------------------------------------------
@@ -3361,7 +3493,11 @@ class TestForElse:
         """Empty list renders the else body."""
         tmpl = Template.from_source(
             "---\nparams:\n  - items = list<name = str>\n---\n"
-            "{% for item in items %}{{ item.name }}{% else %}No items{% /for %}"
+            "> {% for item in items %}\n\n"
+            "{{ item.name }}\n\n"
+            "> {% else %}\n\n"
+            "No items\n\n"
+            "> {% /for %}"
         )
         result = tmpl.render(items=[])
         assert result.strip() == "No items"
@@ -3370,7 +3506,11 @@ class TestForElse:
         """Non-empty list renders the loop body, not else."""
         tmpl = Template.from_source(
             "---\nparams:\n  - items = list<name = str>\n---\n"
-            "{% for item in items %}{{ item.name }}{% else %}No items{% /for %}"
+            "> {% for item in items %}\n\n"
+            "{{ item.name }}\n\n"
+            "> {% else %}\n\n"
+            "No items\n\n"
+            "> {% /for %}"
         )
         result = tmpl.render(items=[{"name": "Alice"}])
         assert "Alice" in result
@@ -3380,7 +3520,297 @@ class TestForElse:
         """Basic for-loop without else continues to work."""
         tmpl = Template.from_source(
             "---\nparams:\n  - items = list<name = str>\n---\n"
-            "{% for item in items %}{{ item.name }}{% /for %}"
+            "> {% for item in items %}\n\n"
+            "{{ item.name }}\n\n"
+            "> {% /for %}"
         )
         result = tmpl.render(items=[{"name": "Bob"}])
         assert result.strip() == "Bob"
+
+
+# ---------------------------------------------------------------------------
+# generate_types_source — static type generation for mypy/pyright
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateTypesSource:
+    """Tests for generate_types_source() — Python source code generation."""
+
+    def test_basic_source_generation(self, simple_template_path: Path) -> None:
+        """Generated source contains required imports and dataclass."""
+        from prompt_templates import generate_types_source
+
+        source = generate_types_source(simple_template_path)
+        assert "from __future__ import annotations" in source
+        assert "from dataclasses import dataclass" in source
+        assert "from prompt_templates import Template, Variants" in source
+        assert "@dataclass" in source
+        assert "class Greeting:" in source
+        assert "    name: str" in source
+
+    def test_source_has_render_method(self, simple_template_path: Path) -> None:
+        """Generated params class has a typed render() method."""
+        from prompt_templates import generate_types_source
+
+        source = generate_types_source(simple_template_path)
+        assert "def render(self, template: Template | None = None) -> str:" in source
+        assert "render_dict(dataclasses.asdict(self))" in source
+
+    def test_source_is_valid_python(self, simple_template_path: Path) -> None:
+        """Generated source compiles without syntax errors."""
+        from prompt_templates import generate_types_source
+
+        source = generate_types_source(simple_template_path)
+        compile(source, "<test>", "exec")  # Raises SyntaxError if invalid.
+
+    def test_source_has_docstring(self, simple_template_path: Path) -> None:
+        """Generated source has a module-level docstring."""
+        from prompt_templates import generate_types_source
+
+        source = generate_types_source(simple_template_path)
+        assert "Auto-generated typed stubs" in source
+        assert "Do not edit" in source
+
+    def test_source_has_all(self, simple_template_path: Path) -> None:
+        """Generated source has __all__ export list."""
+        from prompt_templates import generate_types_source
+
+        source = generate_types_source(simple_template_path)
+        assert '__all__ = ["Greeting"]' in source
+
+    def test_source_with_defaults(self, default_template_path: Path) -> None:
+        """Params with defaults use field(default=...)."""
+        from prompt_templates import generate_types_source
+
+        source = generate_types_source(default_template_path)
+        assert "from dataclasses import dataclass, field" in source
+        assert 'name: str = field(default="World")' in source
+        assert "count: int = field(default=1)" in source
+
+    def test_source_with_enum(self, enum_template_path: Path) -> None:
+        """Enum types generate Variants subclasses."""
+        from prompt_templates import generate_types_source
+
+        source = generate_types_source(enum_template_path)
+        assert "class Outcome(Variants):" in source
+        assert "Rejected = ()" in source
+        assert "NeedsWork = ()" in source
+        # Struct variant with fields.
+        assert 'Confirmed = {"evidence": str}' in source
+
+    def test_source_with_struct(self, struct_template_path: Path) -> None:
+        """Struct types generate @dataclass model classes."""
+        from prompt_templates import generate_types_source
+
+        source = generate_types_source(struct_template_path)
+        assert "@dataclass" in source
+        assert "class Config:" in source
+        assert "    host: str" in source
+        assert "    port: int" in source
+
+    def test_source_with_list_of_structs(self, list_template_path: Path) -> None:
+        """List<struct> generates an Item model class."""
+        from prompt_templates import generate_types_source
+
+        source = generate_types_source(list_template_path)
+        assert "Item" in source  # Should generate a ...Item class
+        assert "title: str" in source
+        assert "priority: str" in source
+
+    def test_source_all_includes_nested_types(self, enum_template_path: Path) -> None:
+        """__all__ includes both the params class and nested types."""
+        from prompt_templates import generate_types_source
+
+        source = generate_types_source(enum_template_path)
+        assert '"Status"' in source or '"Outcome"' in source
+
+    def test_source_exec_and_render(self, simple_template_path: Path) -> None:
+        """Generated source can be exec'd and the render() method works."""
+        from prompt_templates import generate_types_source
+
+        source = generate_types_source(simple_template_path)
+        namespace: dict[str, Any] = {}
+        exec(source, namespace)  # noqa: S102
+
+        Greeting = namespace["Greeting"]
+        params = Greeting(name="ExecTest")
+
+        # The render method should work (loads from file).
+        result = params.render()
+        assert result == "Hello ExecTest!"
+
+    def test_source_exec_with_defaults(self, default_template_path: Path) -> None:
+        """Generated source with defaults can be exec'd with default values."""
+        from prompt_templates import generate_types_source
+
+        source = generate_types_source(default_template_path)
+        namespace: dict[str, Any] = {}
+        exec(source, namespace)  # noqa: S102
+
+        Defaults = namespace["Defaults"]
+
+        # Construct with defaults only.
+        params = Defaults()
+        result = params.render()
+        assert result == "Hello World, count=1!"
+
+        # Override defaults.
+        params2 = Defaults(name="Custom", count=99)
+        result2 = params2.render()
+        assert result2 == "Hello Custom, count=99!"
+
+    def test_source_exec_with_explicit_template(
+        self, simple_template_path: Path
+    ) -> None:
+        """render() accepts an explicit Template argument."""
+        from prompt_templates import Template, generate_types_source
+
+        source = generate_types_source(simple_template_path)
+        namespace: dict[str, Any] = {}
+        exec(source, namespace)  # noqa: S102
+
+        tmpl = Template.from_file(str(simple_template_path))
+        Greeting = namespace["Greeting"]
+        result = Greeting(name="Explicit").render(template=tmpl)
+        assert result == "Hello Explicit!"
+
+    def test_source_exec_enum_rendering(self, enum_template_path: Path) -> None:
+        """Generated enum type can be used with render()."""
+        from prompt_templates import generate_types_source
+
+        source = generate_types_source(enum_template_path)
+        namespace: dict[str, Any] = {}
+        exec(source, namespace)  # noqa: S102
+
+        Status = namespace["Status"]
+        # Unit variant.
+        params = Status(outcome="Rejected")
+        result = params.render()
+        assert result == "NO\n"
+
+    def test_source_with_optional_type(self, tmp_path: Path) -> None:
+        """Optional types get Optional[T] annotation and Optional import."""
+        tmpl_path = tmp_path / "optional.tmpl.md"
+        tmpl_path.write_text(textwrap.dedent("""\
+            ---
+            params:
+              - name = str
+              - title = option<str>
+            ---
+            Hello {{ name }} {{ title }}"""))
+
+        from prompt_templates import generate_types_source
+
+        source = generate_types_source(tmpl_path)
+        assert "from typing import Any, Optional" in source
+        assert "title: Optional[str]" in source
+        assert "name: str" in source
+
+    def test_source_empty_params(self, tmp_path: Path) -> None:
+        """Template with no params still generates a class with render()."""
+        tmpl_path = tmp_path / "empty.tmpl.md"
+        tmpl_path.write_text(textwrap.dedent("""\
+            ---
+            params: []
+            ---
+            Static content"""))
+
+        from prompt_templates import generate_types_source
+
+        source = generate_types_source(tmpl_path)
+        assert "class Empty:" in source
+        assert "def render(self" in source
+
+        # And it should actually render.
+        namespace: dict[str, Any] = {}
+        exec(source, namespace)  # noqa: S102
+        result = namespace["Empty"]().render()
+        assert result == "Static content"
+
+    def test_source_multiple_types(self, tmp_path: Path) -> None:
+        """All scalar types get correct annotations."""
+        tmpl_path = tmp_path / "multi.tmpl.md"
+        tmpl_path.write_text(textwrap.dedent("""\
+            ---
+            params:
+              - name = str
+              - count = int
+              - score = float
+              - active = bool
+            ---
+            {{ name }} {{ count }} {{ score }} {{ active }}"""))
+
+        from prompt_templates import generate_types_source
+
+        source = generate_types_source(tmpl_path)
+        assert "name: str" in source
+        assert "count: int" in source
+        assert "score: float" in source
+        assert "active: bool" in source
+
+    def test_source_write_to_file_and_import(self, tmp_path: Path) -> None:
+        """Generated source can be written and imported as a module."""
+        import importlib.util
+
+        tmpl_path = tmp_path / "greet.tmpl.md"
+        tmpl_path.write_text(textwrap.dedent("""\
+            ---
+            params:
+              - name = str
+            ---
+            Hi {{ name }}!"""))
+
+        from prompt_templates import generate_types_source
+
+        source = generate_types_source(tmpl_path)
+        py_path = tmp_path / "greet_types.py"
+        py_path.write_text(source)
+
+        # Import the generated module.
+        spec = importlib.util.spec_from_file_location("greet_types", str(py_path))
+        assert spec is not None
+        assert spec.loader is not None
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules["greet_types"] = mod  # Required for @dataclass + PEP 563.
+        try:
+            spec.loader.exec_module(mod)
+
+            # Use the imported class.
+            params = mod.Greet(name="Module")
+            result = params.render()
+            assert result == "Hi Module!"
+        finally:
+            sys.modules.pop("greet_types", None)
+
+
+# ---------------------------------------------------------------------------
+# render_empty
+# ---------------------------------------------------------------------------
+
+
+class TestRenderEmpty:
+    """Tests for Template.render_empty()."""
+
+    def test_render_empty_no_params(self) -> None:
+        tmpl = Template.from_source("Hello world!")
+        assert tmpl.render_empty() == "Hello world!"
+
+    def test_render_empty_all_defaults(self) -> None:
+        tmpl = Template.from_source(
+            '---\nparams:\n  - greeting = str := "Hi"\n  - count = int := 5\n---\n{{ greeting }} {{ count }}'
+        )
+        assert tmpl.render_empty() == "Hi 5"
+
+    def test_render_empty_required_params_raises(self) -> None:
+        tmpl = Template.from_source(
+            "---\nparams:\n  - name = str\n---\nHello {{ name }}!"
+        )
+        with pytest.raises(ValueError, match="name"):
+            tmpl.render_empty()
+
+    def test_render_empty_mixed_defaults_required_raises(self) -> None:
+        tmpl = Template.from_source(
+            '---\nparams:\n  - greeting = str := "Hi"\n  - name = str\n---\n{{ greeting }} {{ name }}!'
+        )
+        with pytest.raises(ValueError, match="name"):
+            tmpl.render_empty()

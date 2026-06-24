@@ -1,0 +1,97 @@
+{
+  "tests": [
+    {
+      "name": "include_correct_types_pass",
+      "description": "Passing the correct type to a file-based include should succeed",
+      "files": {
+        "typed.tmpl.md": [
+          "---",
+          "params: [count = int]",
+          "---",
+          "{{ count }}"
+        ]
+      },
+      "parent_template_lines": [
+        "---",
+        "params: [num = int]",
+        "---",
+        "> {% include [typed](typed.tmpl.md) with count=num %}"
+      ],
+      "params": {
+        "num": 42
+      },
+      "expected_output": "42"
+    },
+    {
+      "name": "include_with_defaults",
+      "description": "File-based include where a parameter has a default value and is not explicitly passed",
+      "files": {
+        "greet.tmpl.md": [
+          "---",
+          "params:",
+          "  - name = str",
+          "  - greeting = str := \"Hi\"",
+          "---",
+          "{{ greeting }} {{ name }}!"
+        ]
+      },
+      "parent_template_lines": [
+        "---",
+        "params: [name = str]",
+        "---",
+        "> {% include [greet](greet.tmpl.md) with name=name %}"
+      ],
+      "params": {
+        "name": "World"
+      },
+      "expected_output": "Hi World!"
+    },
+    {
+      "name": "include_override_takes_precedence",
+      "description": "Explicitly passing a parameter overrides its default value",
+      "files": {
+        "greet.tmpl.md": [
+          "---",
+          "params:",
+          "  - name = str",
+          "  - greeting = str := \"Hi\"",
+          "---",
+          "{{ greeting }} {{ name }}!"
+        ]
+      },
+      "parent_template_lines": [
+        "---",
+        "params:",
+        "  - name = str",
+        "  - greeting = str",
+        "---",
+        "> {% include [greet](greet.tmpl.md) with name=name, greeting=greeting %}"
+      ],
+      "params": {
+        "name": "World",
+        "greeting": "Hey"
+      },
+      "expected_output": "Hey World!"
+    },
+    {
+      "name": "contract_rejects_missing_params",
+      "description": "Including a template without providing required parameters should produce an error",
+      "files": {
+        "needs_vars.tmpl.md": [
+          "---",
+          "params: [title = str, count = int]",
+          "---",
+          "{{ title }} ({{ count }})"
+        ]
+      },
+      "parent_template_lines": [
+        "---",
+        "params: []",
+        "---",
+        "> {% include [needs_vars](needs_vars.tmpl.md) %}"
+      ],
+      "params": {},
+      "expected_error": "title"
+    }
+  ]
+}

@@ -213,15 +213,15 @@ fn bench_render(c: &mut Criterion) {
     let mut group = c.benchmark_group("render");
 
     group.bench_function("small", |b| {
-        b.iter(|| small.render(black_box(&small_ctx)).unwrap());
+        b.iter(|| small.render_ctx(black_box(&small_ctx)).unwrap());
     });
 
     group.bench_function("medium", |b| {
-        b.iter(|| medium.render(black_box(&medium_ctx)).unwrap());
+        b.iter(|| medium.render_ctx(black_box(&medium_ctx)).unwrap());
     });
 
     group.bench_function("large", |b| {
-        b.iter(|| large.render(black_box(&large_ctx)).unwrap());
+        b.iter(|| large.render_ctx(black_box(&large_ctx)).unwrap());
     });
 
     group.finish();
@@ -237,21 +237,21 @@ fn bench_round_trip(c: &mut Criterion) {
     group.bench_function("small", |b| {
         b.iter(|| {
             let tmpl = Template::from_source(black_box(SMALL_TEMPLATE)).unwrap();
-            tmpl.render(black_box(&small_ctx)).unwrap()
+            tmpl.render_ctx(black_box(&small_ctx)).unwrap()
         });
     });
 
     group.bench_function("medium", |b| {
         b.iter(|| {
             let tmpl = Template::from_source(black_box(MEDIUM_TEMPLATE)).unwrap();
-            tmpl.render(black_box(&medium_ctx)).unwrap()
+            tmpl.render_ctx(black_box(&medium_ctx)).unwrap()
         });
     });
 
     group.bench_function("large", |b| {
         b.iter(|| {
             let tmpl = Template::from_source(black_box(LARGE_TEMPLATE)).unwrap();
-            tmpl.render(black_box(&large_ctx)).unwrap()
+            tmpl.render_ctx(black_box(&large_ctx)).unwrap()
         });
     });
 
@@ -271,7 +271,7 @@ params: [val = str]
         )
         .unwrap();
         let ctx = ctx! { val: "hello world benchmark string" };
-        b.iter(|| tmpl.render(black_box(&ctx)).unwrap());
+        b.iter(|| tmpl.render_ctx(black_box(&ctx)).unwrap());
     });
 
     // Lower filter
@@ -284,7 +284,7 @@ params: [val = str]
         )
         .unwrap();
         let ctx = ctx! { val: "HELLO WORLD BENCHMARK STRING" };
-        b.iter(|| tmpl.render(black_box(&ctx)).unwrap());
+        b.iter(|| tmpl.render_ctx(black_box(&ctx)).unwrap());
     });
 
     // Trim filter
@@ -297,7 +297,7 @@ params: [val = str]
         )
         .unwrap();
         let ctx = ctx! { val: "   lots of whitespace   " };
-        b.iter(|| tmpl.render(black_box(&ctx)).unwrap());
+        b.iter(|| tmpl.render_ctx(black_box(&ctx)).unwrap());
     });
 
     // Fixed filter
@@ -310,7 +310,7 @@ params: [val = float]
         )
         .unwrap();
         let ctx = ctx! { val: 3.15_f64 };
-        b.iter(|| tmpl.render(black_box(&ctx)).unwrap());
+        b.iter(|| tmpl.render_ctx(black_box(&ctx)).unwrap());
     });
 
     // Chained filters
@@ -323,7 +323,7 @@ params: [val = str]
         )
         .unwrap();
         let ctx = ctx! { val: "  mixed Case Input  " };
-        b.iter(|| tmpl.render(black_box(&ctx)).unwrap());
+        b.iter(|| tmpl.render_ctx(black_box(&ctx)).unwrap());
     });
 
     group.finish();
@@ -350,7 +350,7 @@ no
         )
         .unwrap();
         let ctx = ctx! { flag: true };
-        b.iter(|| tmpl.render(black_box(&ctx)).unwrap());
+        b.iter(|| tmpl.render_ctx(black_box(&ctx)).unwrap());
     });
 
     // String equality comparison
@@ -371,7 +371,7 @@ off
         )
         .unwrap();
         let ctx = ctx! { status: "active" };
-        b.iter(|| tmpl.render(black_box(&ctx)).unwrap());
+        b.iter(|| tmpl.render_ctx(black_box(&ctx)).unwrap());
     });
 
     // Numeric comparison
@@ -392,7 +392,7 @@ few
         )
         .unwrap();
         let ctx = ctx! { count: 10_i64 };
-        b.iter(|| tmpl.render(black_box(&ctx)).unwrap());
+        b.iter(|| tmpl.render_ctx(black_box(&ctx)).unwrap());
     });
 
     // elif chain
@@ -422,7 +422,7 @@ L
         .unwrap();
         // Hit the last elif branch to exercise full scan
         let ctx = ctx! { level: "low" };
-        b.iter(|| tmpl.render(black_box(&ctx)).unwrap());
+        b.iter(|| tmpl.render_ctx(black_box(&ctx)).unwrap());
     });
 
     group.finish();
@@ -443,7 +443,9 @@ fn bench_render_into(c: &mut Criterion) {
         let mut buf = String::with_capacity(256);
         b.iter(|| {
             buf.clear();
-            small.render_into(black_box(&small_ctx), &mut buf).unwrap();
+            small
+                .render_ctx_into(black_box(&small_ctx), &mut buf)
+                .unwrap();
             black_box(&buf);
         });
     });
@@ -453,7 +455,7 @@ fn bench_render_into(c: &mut Criterion) {
         b.iter(|| {
             buf.clear();
             medium
-                .render_into(black_box(&medium_ctx), &mut buf)
+                .render_ctx_into(black_box(&medium_ctx), &mut buf)
                 .unwrap();
             black_box(&buf);
         });
@@ -463,7 +465,9 @@ fn bench_render_into(c: &mut Criterion) {
         let mut buf = String::with_capacity(4096);
         b.iter(|| {
             buf.clear();
-            large.render_into(black_box(&large_ctx), &mut buf).unwrap();
+            large
+                .render_ctx_into(black_box(&large_ctx), &mut buf)
+                .unwrap();
             black_box(&buf);
         });
     });
@@ -550,14 +554,14 @@ fn bench_flexbuffers(c: &mut Criterion) {
     group.bench_function("render_small_from_flexbuffers", |b| {
         b.iter(|| {
             let ctx = prompt_templates::Context::from_flexbuffers(black_box(&small_fb)).unwrap();
-            small.render(black_box(&ctx)).unwrap()
+            small.render_ctx(black_box(&ctx)).unwrap()
         });
     });
 
     group.bench_function("render_medium_from_flexbuffers", |b| {
         b.iter(|| {
             let ctx = prompt_templates::Context::from_flexbuffers(black_box(&medium_fb)).unwrap();
-            medium.render(black_box(&ctx)).unwrap()
+            medium.render_ctx(black_box(&ctx)).unwrap()
         });
     });
 

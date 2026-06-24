@@ -74,9 +74,9 @@ pub struct ImportedNamespace {
 #[derive(Debug, Clone, Default)]
 pub struct Frontmatter {
     /// Template name (matches SKILL.md `name:` convention).
-    pub name: String,
+    pub name: Option<String>,
     /// Description of the template's purpose.
-    pub description: String,
+    pub description: Option<String>,
     /// List of expected variable declarations (name + type + optional default).
     pub declarations: Vec<VarDecl>,
     /// Convenience: parameter names only (derived from `declarations`).
@@ -164,9 +164,9 @@ pub fn parse_frontmatter(source: &str) -> Result<(Frontmatter, &str), TemplateEr
     for line in &logical_lines {
         let line = line.trim();
         if let Some(rest) = line.strip_prefix(FM_NAME_PREFIX) {
-            fm.name = rest.trim().to_string();
+            fm.name = Some(rest.trim().to_string());
         } else if let Some(rest) = line.strip_prefix(FM_DESC_PREFIX) {
-            fm.description = rest.trim().to_string();
+            fm.description = Some(rest.trim().to_string());
         } else if let Some(rest) = line.strip_prefix(FM_TYPES_PREFIX) {
             fm.type_aliases = parse_types_value(rest)?;
         } else if let Some(rest) = line.strip_prefix(FM_IMPORTS_PREFIX) {
@@ -180,16 +180,34 @@ pub fn parse_frontmatter(source: &str) -> Result<(Frontmatter, &str), TemplateEr
         }
     }
 
-    // --- Pass 2: Parse params/consts with type aliases available ---
+    // --- Pass 2: Parse consts first, then params with const values available ---
     let resolved_imports = HashMap::new();
+    let empty_consts = HashMap::new();
+    if let Some(raw) = consts_raw {
+        fm.consts = parse_declarations(
+            &raw,
+            &fm.type_aliases,
+            &resolved_imports,
+            true,
+            &empty_consts,
+        )?;
+    }
+
+    // Build available_consts from parsed const declarations so params can
+    // reference const names as default values.
+    let available_consts = build_available_consts(&fm.consts, &fm.imported_consts);
+
     if let Some(raw) = params_raw {
-        let decls = parse_declarations(&raw, &fm.type_aliases, &resolved_imports, false)?;
+        let decls = parse_declarations(
+            &raw,
+            &fm.type_aliases,
+            &resolved_imports,
+            false,
+            &available_consts,
+        )?;
         fm.params = decls.iter().map(|d| d.name.clone()).collect();
         fm.declarations = decls;
         fm.has_params = true;
-    }
-    if let Some(raw) = consts_raw {
-        fm.consts = parse_declarations(&raw, &fm.type_aliases, &resolved_imports, true)?;
     }
 
     validate_collision_rules(&fm)?;
@@ -249,9 +267,9 @@ pub fn parse_frontmatter_with_base_dir<'a>(
     for line in &logical_lines {
         let line = line.trim();
         if let Some(rest) = line.strip_prefix(FM_NAME_PREFIX) {
-            fm.name = rest.trim().to_string();
+            fm.name = Some(rest.trim().to_string());
         } else if let Some(rest) = line.strip_prefix(FM_DESC_PREFIX) {
-            fm.description = rest.trim().to_string();
+            fm.description = Some(rest.trim().to_string());
         } else if let Some(rest) = line.strip_prefix(FM_TYPES_PREFIX) {
             fm.type_aliases = parse_types_value(rest)?;
         } else if let Some(rest) = line.strip_prefix(FM_IMPORTS_PREFIX) {
@@ -274,14 +292,32 @@ pub fn parse_frontmatter_with_base_dir<'a>(
 
     inject_imported_consts(&mut fm, &resolved_imports);
 
+    let empty_consts = HashMap::new();
+    if let Some(raw) = consts_raw {
+        fm.consts = parse_declarations(
+            &raw,
+            &fm.type_aliases,
+            &resolved_imports,
+            true,
+            &empty_consts,
+        )?;
+    }
+
+    // Build available_consts from parsed const declarations and imported consts
+    // so params can reference const names as default values.
+    let available_consts = build_available_consts(&fm.consts, &fm.imported_consts);
+
     if let Some(raw) = params_raw {
-        let decls = parse_declarations(&raw, &fm.type_aliases, &resolved_imports, false)?;
+        let decls = parse_declarations(
+            &raw,
+            &fm.type_aliases,
+            &resolved_imports,
+            false,
+            &available_consts,
+        )?;
         fm.params = decls.iter().map(|d| d.name.clone()).collect();
         fm.declarations = decls;
         fm.has_params = true;
-    }
-    if let Some(raw) = consts_raw {
-        fm.consts = parse_declarations(&raw, &fm.type_aliases, &resolved_imports, true)?;
     }
 
     validate_collision_rules(&fm)?;
@@ -338,9 +374,9 @@ pub fn parse_frontmatter_with_parent_scope<'a>(
     for line in &logical_lines {
         let line = line.trim();
         if let Some(rest) = line.strip_prefix(FM_NAME_PREFIX) {
-            fm.name = rest.trim().to_string();
+            fm.name = Some(rest.trim().to_string());
         } else if let Some(rest) = line.strip_prefix(FM_DESC_PREFIX) {
-            fm.description = rest.trim().to_string();
+            fm.description = Some(rest.trim().to_string());
         } else if let Some(rest) = line.strip_prefix(FM_TYPES_PREFIX) {
             fm.type_aliases = parse_types_value(rest)?;
         } else if let Some(rest) = line.strip_prefix(FM_IMPORTS_PREFIX) {
@@ -354,26 +390,39 @@ pub fn parse_frontmatter_with_parent_scope<'a>(
         }
     }
 
-    // --- Pass 2: Parse params with merged type aliases (own → parent) ---
+    // --- Pass 2: Parse consts first, then params with const values available ---
+    // Build merged alias map: parent first, then own (own shadows parent).
+    let mut merged_aliases = parent_type_aliases.clone();
+    for (k, v) in &fm.type_aliases {
+        merged_aliases.insert(k.clone(), v.clone());
+    }
+    let resolved_imports = HashMap::new();
+    let empty_consts = HashMap::new();
+    if let Some(raw) = consts_raw {
+        fm.consts = parse_declarations(
+            &raw,
+            &merged_aliases,
+            &resolved_imports,
+            true,
+            &empty_consts,
+        )?;
+    }
+
+    // Build available_consts from parsed const declarations so params can
+    // reference const names as default values.
+    let available_consts = build_available_consts(&fm.consts, &fm.imported_consts);
+
     if let Some(raw) = params_raw {
-        // Build merged alias map: parent first, then own (own shadows parent).
-        let mut merged_aliases = parent_type_aliases.clone();
-        for (k, v) in &fm.type_aliases {
-            merged_aliases.insert(k.clone(), v.clone());
-        }
-        let resolved_imports = HashMap::new();
-        let decls = parse_declarations(&raw, &merged_aliases, &resolved_imports, false)?;
+        let decls = parse_declarations(
+            &raw,
+            &merged_aliases,
+            &resolved_imports,
+            false,
+            &available_consts,
+        )?;
         fm.params = decls.iter().map(|d| d.name.clone()).collect();
         fm.declarations = decls;
         fm.has_params = true;
-    }
-    if let Some(raw) = consts_raw {
-        let mut merged_aliases = parent_type_aliases.clone();
-        for (k, v) in &fm.type_aliases {
-            merged_aliases.insert(k.clone(), v.clone());
-        }
-        let resolved_imports = HashMap::new();
-        fm.consts = parse_declarations(&raw, &merged_aliases, &resolved_imports, true)?;
     }
 
     validate_collision_rules(&fm)?;
@@ -436,6 +485,30 @@ fn inject_imported_consts(
     }
 }
 
+/// Build a lookup map of available constants for use as param default values.
+///
+/// Merges local constants (from `consts:` declarations) with imported constants
+/// (from `imports:`) into a single flat map. Local consts are keyed by their
+/// bare name (e.g. `MAX`), imported consts are already keyed by `stem.NAME`
+/// (e.g. `lib.LIMIT`).
+fn build_available_consts(
+    consts: &[crate::types::VarDecl],
+    imported_consts: &HashMap<String, crate::value::Value>,
+) -> HashMap<String, crate::value::Value> {
+    let mut available = HashMap::with_capacity(consts.len() + imported_consts.len());
+    // Add local consts.
+    for d in consts {
+        if let Some(ref v) = d.default_value {
+            available.insert(d.name.clone(), v.clone());
+        }
+    }
+    // Add imported consts (stem.NAME keys).
+    for (k, v) in imported_consts {
+        available.insert(k.clone(), v.clone());
+    }
+    available
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,7 +525,8 @@ mod tests {
     fn parse_params_value(rest: &str) -> Result<Vec<VarDecl>, TemplateError> {
         let empty_aliases = HashMap::new();
         let empty_imports = HashMap::new();
-        super::parse_declarations(rest, &empty_aliases, &empty_imports, false)
+        let empty_consts = HashMap::new();
+        super::parse_declarations(rest, &empty_aliases, &empty_imports, false, &empty_consts)
     }
 
     #[test]
@@ -476,10 +550,15 @@ mod tests {
 
     #[test]
     fn parse_basic_frontmatter() {
-        let source = "---\nname: greeting\ndescription: A greeting template\nparams: [name = str, count = int]\n---\nHello {{ name }}!";
+        let source = r"---
+name: greeting
+description: A greeting template
+params: [name = str, count = int]
+---
+Hello {{ name }}!";
         let (fm, body) = parse_frontmatter(source).unwrap();
-        assert_eq!(fm.name, "greeting");
-        assert_eq!(fm.description, "A greeting template");
+        assert_eq!(fm.name, Some("greeting".to_string()));
+        assert_eq!(fm.description, Some("A greeting template".to_string()));
         assert_eq!(fm.params, vec!["name", "count"]);
         assert_eq!(fm.declarations.len(), 2);
         assert_eq!(fm.declarations[0].name, "name");
@@ -491,14 +570,23 @@ mod tests {
 
     #[test]
     fn reject_untyped_params() {
-        let source = "---\nparams: [a, b, c]\n---\nbody";
+        let source = r"---
+params: [a, b, c]
+---
+body";
         let err = parse_frontmatter(source).unwrap_err();
         assert!(err.to_string().contains("missing a type annotation"));
     }
 
     #[test]
     fn parse_multiline_block_format() {
-        let source = "---\nname: test\nparams:\n  - a = str\n  - b = int\n---\n{{ a }} {{ b }}";
+        let source = r"---
+name: test
+params:
+  - a = str
+  - b = int
+---
+{{ a }} {{ b }}";
         let (fm, body) = parse_frontmatter(source).unwrap();
         assert_eq!(fm.params, vec!["a", "b"]);
         assert_eq!(fm.declarations[0].var_type, VarType::Str);
@@ -508,7 +596,10 @@ mod tests {
 
     #[test]
     fn parse_list_with_fields() {
-        let source = "---\nparams: [items = list<title = str, score = float>]\n---\nbody";
+        let source = r"---
+params: [items = list<title = str, score = float>]
+---
+body";
         let (fm, _) = parse_frontmatter(source).unwrap();
         assert_eq!(fm.declarations.len(), 1);
         assert_eq!(fm.declarations[0].name, "items");
@@ -526,7 +617,10 @@ mod tests {
 
     #[test]
     fn parse_struct_type() {
-        let source = "---\nparams: [config = struct<key = str, enabled = bool>]\n---\nbody";
+        let source = r"---
+params: [config = struct<key = str, enabled = bool>]
+---
+body";
         let (fm, _) = parse_frontmatter(source).unwrap();
         assert_eq!(fm.declarations.len(), 1);
         match &fm.declarations[0].var_type {
@@ -543,42 +637,60 @@ mod tests {
 
     #[test]
     fn reject_bare_list_type() {
-        let source = "---\nparams: [items = list]\n---\nbody";
+        let source = r"---
+params: [items = list]
+---
+body";
         let err = parse_frontmatter(source).unwrap_err();
         assert!(err.to_string().contains("unknown type"));
     }
 
     #[test]
     fn parse_float_type() {
-        let source = "---\nparams: [score = float]\n---\nbody";
+        let source = r"---
+params: [score = float]
+---
+body";
         let (fm, _) = parse_frontmatter(source).unwrap();
         assert_eq!(fm.declarations[0].var_type, VarType::Float);
     }
 
     #[test]
     fn parse_bool_type() {
-        let source = "---\nparams: [active = bool]\n---\nbody";
+        let source = r"---
+params: [active = bool]
+---
+body";
         let (fm, _) = parse_frontmatter(source).unwrap();
         assert_eq!(fm.declarations[0].var_type, VarType::Bool);
     }
 
     #[test]
     fn reject_unknown_type() {
-        let source = "---\nparams: [x = unknown_type]\n---\nbody";
+        let source = r"---
+params: [x = unknown_type]
+---
+body";
         let err = parse_frontmatter(source).unwrap_err();
         assert!(err.to_string().contains("unknown type 'unknown_type'"));
     }
 
     #[test]
     fn reject_mixed_typed_and_untyped() {
-        let source = "---\nparams: [name = str, label, count = int]\n---\nbody";
+        let source = r"---
+params: [name = str, label, count = int]
+---
+body";
         let err = parse_frontmatter(source).unwrap_err();
         assert!(err.to_string().contains("missing a type annotation"));
     }
 
     #[test]
     fn parse_empty_params_list() {
-        let source = "---\nparams: []\n---\nbody";
+        let source = r"---
+params: []
+---
+body";
         let (fm, _) = parse_frontmatter(source).unwrap();
         assert!(fm.declarations.is_empty());
         assert!(fm.params.is_empty());
@@ -586,10 +698,14 @@ mod tests {
 
     #[test]
     fn types_only_template_no_params_block() {
-        let source =
-            "---\nname: types\ntypes:\n  - Priority = enum<High, Medium, Low>\n---\n{# no body #}";
+        let source = r"---
+name: types
+types:
+  - Priority = enum<High, Medium, Low>
+---
+{# no body #}";
         let (fm, body) = parse_frontmatter(source).unwrap();
-        assert_eq!(fm.name, "types");
+        assert_eq!(fm.name, Some("types".to_string()));
         assert!(fm.declarations.is_empty());
         assert!(fm.params.is_empty());
         assert!(!fm.has_params);
@@ -609,7 +725,9 @@ mod tests {
 
     #[test]
     fn frontmatter_without_closing_delimiter() {
-        let source = "---\nname: test\nno closing delimiter";
+        let source = r"---
+name: test
+no closing delimiter";
         let err = parse_frontmatter(source).unwrap_err();
         assert!(err.to_string().contains("unclosed YAML frontmatter block"));
     }
@@ -684,7 +802,10 @@ mod tests {
 
     #[test]
     fn parse_string_default() {
-        let source = "---\nparams: [name = str := \"hello world\"]\n---\nbody";
+        let source = r#"---
+params: [name = str := "hello world"]
+---
+body"#;
         let (fm, _) = parse_frontmatter(source).unwrap();
         assert_eq!(fm.declarations[0].name, "name");
         assert_eq!(fm.declarations[0].var_type, VarType::Str);
@@ -696,7 +817,10 @@ mod tests {
 
     #[test]
     fn parse_int_default() {
-        let source = "---\nparams: [count = int := 42]\n---\nbody";
+        let source = r"---
+params: [count = int := 42]
+---
+body";
         let (fm, _) = parse_frontmatter(source).unwrap();
         assert_eq!(fm.declarations[0].var_type, VarType::Int);
         assert_eq!(fm.declarations[0].default_value, Some(Value::Int(42)));
@@ -704,7 +828,10 @@ mod tests {
 
     #[test]
     fn parse_bool_default() {
-        let source = "---\nparams: [active = bool := true]\n---\nbody";
+        let source = r"---
+params: [active = bool := true]
+---
+body";
         let (fm, _) = parse_frontmatter(source).unwrap();
         assert_eq!(fm.declarations[0].var_type, VarType::Bool);
         assert_eq!(fm.declarations[0].default_value, Some(Value::Bool(true)));
@@ -712,7 +839,10 @@ mod tests {
 
     #[test]
     fn parse_float_default() {
-        let source = "---\nparams: [score = float := 3.15]\n---\nbody";
+        let source = r"---
+params: [score = float := 3.15]
+---
+body";
         let (fm, _) = parse_frontmatter(source).unwrap();
         assert_eq!(fm.declarations[0].var_type, VarType::Float);
         assert_eq!(fm.declarations[0].default_value, Some(Value::Float(3.15)));
@@ -720,7 +850,10 @@ mod tests {
 
     #[test]
     fn parse_mixed_defaults_and_required() {
-        let source = "---\nparams: [name = str, count = int := 10]\n---\nbody";
+        let source = r"---
+params: [name = str, count = int := 10]
+---
+body";
         let (fm, _) = parse_frontmatter(source).unwrap();
         assert_eq!(fm.declarations[0].default_value, None);
         assert_eq!(fm.declarations[1].default_value, Some(Value::Int(10)));
@@ -730,7 +863,10 @@ mod tests {
     fn default_does_not_confuse_with_inner_colons() {
         // The `:=` inside `<>` should not be treated as a default separator.
         // This is handled by find_assign_default_at_depth_zero.
-        let source = "---\nparams: [tasks = list<title = str>]\n---\nbody";
+        let source = r"---
+params: [tasks = list<title = str>]
+---
+body";
         let (fm, _) = parse_frontmatter(source).unwrap();
         assert_eq!(fm.declarations[0].default_value, None);
         match &fm.declarations[0].var_type {
@@ -762,7 +898,13 @@ mod tests {
 
     #[test]
     fn parse_block_format_with_defaults() {
-        let source = "---\nparams:\n  - name = str\n  - count = int := 5\n  - label = str := \"default\"\n---\nbody";
+        let source = r#"---
+params:
+  - name = str
+  - count = int := 5
+  - label = str := "default"
+---
+body"#;
         let (fm, _) = parse_frontmatter(source).unwrap();
         assert_eq!(fm.declarations.len(), 3);
         assert_eq!(fm.declarations[0].default_value, None);
@@ -775,7 +917,10 @@ mod tests {
 
     #[test]
     fn parse_nested_types() {
-        let source = "---\nparams: [data = list<item = struct<name = str, tags = list<label = str>>>]\n---\nbody";
+        let source = r"---
+params: [data = list<item = struct<name = str, tags = list<label = str>>>]
+---
+body";
         let (fm, _) = parse_frontmatter(source).unwrap();
         match &fm.declarations[0].var_type {
             VarType::List(fields) => {
@@ -820,7 +965,10 @@ mod tests {
 
     #[test]
     fn reject_int_default_for_str_type() {
-        let source = "---\nparams: [name = str := 42]\n---\nbody";
+        let source = r"---
+params: [name = str := 42]
+---
+body";
         let err = parse_frontmatter(source).unwrap_err();
         assert!(
             err.to_string().contains("value has type"),
@@ -830,7 +978,10 @@ mod tests {
 
     #[test]
     fn reject_str_default_for_int_type() {
-        let source = "---\nparams: [count = int := \"hello\"]\n---\nbody";
+        let source = r#"---
+params: [count = int := "hello"]
+---
+body"#;
         let err = parse_frontmatter(source).unwrap_err();
         assert!(
             err.to_string().contains("value has type"),
@@ -840,7 +991,10 @@ mod tests {
 
     #[test]
     fn reject_bool_default_for_float_type() {
-        let source = "---\nparams: [score = float := true]\n---\nbody";
+        let source = r"---
+params: [score = float := true]
+---
+body";
         let err = parse_frontmatter(source).unwrap_err();
         assert!(
             err.to_string().contains("value has type"),
@@ -850,7 +1004,10 @@ mod tests {
 
     #[test]
     fn reject_float_default_for_bool_type() {
-        let source = "---\nparams: [active = bool := 3.15]\n---\nbody";
+        let source = r"---
+params: [active = bool := 3.15]
+---
+body";
         let err = parse_frontmatter(source).unwrap_err();
         assert!(
             err.to_string().contains("value has type"),
@@ -860,14 +1017,20 @@ mod tests {
 
     #[test]
     fn accept_matching_int_default() {
-        let source = "---\nparams: [count = int := 0]\n---\n{{ count }}";
+        let source = r"---
+params: [count = int := 0]
+---
+{{ count }}";
         let (fm, _) = parse_frontmatter(source).unwrap();
         assert_eq!(fm.declarations[0].default_value, Some(Value::Int(0)));
     }
 
     #[test]
     fn accept_matching_str_default() {
-        let source = "---\nparams: [name = str := \"hi\"]\n---\n{{ name }}";
+        let source = r#"---
+params: [name = str := "hi"]
+---
+{{ name }}"#;
         let (fm, _) = parse_frontmatter(source).unwrap();
         assert_eq!(
             fm.declarations[0].default_value,
@@ -877,21 +1040,30 @@ mod tests {
 
     #[test]
     fn accept_matching_bool_default() {
-        let source = "---\nparams: [active = bool := false]\n---\n{{ active }}";
+        let source = r"---
+params: [active = bool := false]
+---
+{{ active }}";
         let (fm, _) = parse_frontmatter(source).unwrap();
         assert_eq!(fm.declarations[0].default_value, Some(Value::Bool(false)));
     }
 
     #[test]
     fn accept_matching_float_default() {
-        let source = "---\nparams: [score = float := -1.5]\n---\n{{ score }}";
+        let source = r"---
+params: [score = float := -1.5]
+---
+{{ score }}";
         let (fm, _) = parse_frontmatter(source).unwrap();
         assert_eq!(fm.declarations[0].default_value, Some(Value::Float(-1.5)));
     }
 
     #[test]
     fn reject_negative_int_for_str() {
-        let source = "---\nparams: [label = str := -99]\n---\nbody";
+        let source = r"---
+params: [label = str := -99]
+---
+body";
         let err = parse_frontmatter(source).unwrap_err();
         assert!(err.to_string().contains("value has type"));
     }

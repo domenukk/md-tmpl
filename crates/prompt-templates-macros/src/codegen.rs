@@ -1,22 +1,23 @@
 use quote::{format_ident, quote};
 
-use crate::type_gen::string_to_variant_ident;
+use crate::{crate_path, type_gen::string_to_variant_ident};
 
 pub(crate) fn codegen_segment(
     seg: &prompt_templates::compiled::Segment,
 ) -> proc_macro2::TokenStream {
     use prompt_templates::compiled::Segment;
+    let cp = crate_path();
     match seg {
         Segment::Static(s) => quote! {
-            ::prompt_templates::compiled::Segment::Static(::prompt_templates::__private::Cow::Borrowed(#s))
+            #cp::compiled::Segment::Static(#cp::__private::Cow::Borrowed(#s))
         },
         Segment::Expr { expr, filters } => {
             let filters_tokens = filters.iter().map(codegen_parsed_filter);
             let expr_tokens = codegen_compiled_expr(expr);
             quote! {
-                ::prompt_templates::compiled::Segment::Expr {
+                #cp::compiled::Segment::Expr {
                     expr: #expr_tokens,
-                    filters: ::prompt_templates::__private::vec![#(#filters_tokens),*],
+                    filters: #cp::__private::vec![#(#filters_tokens),*],
                 }
             }
         }
@@ -30,11 +31,11 @@ pub(crate) fn codegen_segment(
             let else_body_tokens = else_body.iter().map(codegen_segment);
             let list_path_tokens = codegen_compiled_path(list_path);
             quote! {
-                ::prompt_templates::compiled::Segment::ForLoop {
-                    binding: ::prompt_templates::__private::Cow::Borrowed(#binding),
+                #cp::compiled::Segment::ForLoop {
+                    binding: #cp::__private::Cow::Borrowed(#binding),
                     list_path: #list_path_tokens,
-                    body: ::prompt_templates::__private::vec![#(#body_tokens),*],
-                    else_body: ::prompt_templates::__private::vec![#(#else_body_tokens),*],
+                    body: #cp::__private::vec![#(#body_tokens),*],
+                    else_body: #cp::__private::vec![#(#else_body_tokens),*],
                 }
             }
         }
@@ -46,40 +47,45 @@ pub(crate) fn codegen_segment(
                 let cond_tokens = codegen_condition(cond);
                 let body_tokens = body.iter().map(codegen_segment);
                 quote! {
-                    (#cond_tokens, ::prompt_templates::__private::vec![#(#body_tokens),*])
+                    (#cond_tokens, #cp::__private::vec![#(#body_tokens),*])
                 }
             });
             let else_tokens = else_body.iter().map(codegen_segment);
             quote! {
-                ::prompt_templates::compiled::Segment::If {
-                    branches: ::prompt_templates::__private::vec![#(#branch_tokens),*],
-                    else_body: ::prompt_templates::__private::vec![#(#else_tokens),*],
+                #cp::compiled::Segment::If {
+                    branches: #cp::__private::vec![#(#branch_tokens),*],
+                    else_body: #cp::__private::vec![#(#else_tokens),*],
                 }
             }
         }
         Segment::Raw(s) => quote! {
-            ::prompt_templates::compiled::Segment::Raw(::prompt_templates::__private::Cow::Borrowed(#s))
+            #cp::compiled::Segment::Raw(#cp::__private::Cow::Borrowed(#s))
         },
         Segment::Comment(refs) => {
             quote! {
-                ::prompt_templates::compiled::Segment::Comment(::prompt_templates::__private::vec![#(::prompt_templates::__private::Cow::Borrowed(#refs)),*])
+                #cp::compiled::Segment::Comment(#cp::__private::vec![#(#cp::__private::Cow::Borrowed(#refs)),*])
             }
         }
         Segment::Include(inc) => codegen_segment_include(inc),
-        Segment::Match { expr, arms } => codegen_segment_match(expr, arms),
+        Segment::Match {
+            expr,
+            arms,
+            is_option,
+        } => codegen_segment_match(expr, arms, *is_option),
     }
 }
 
 fn codegen_segment_include(
     inc: &prompt_templates::compiled::CompiledInclude,
 ) -> proc_macro2::TokenStream {
+    let cp = crate_path();
     let path = &inc.path;
     let with_vars = inc.with_vars.iter().map(|(k, v)| {
-        quote! { (::prompt_templates::__private::Cow::Borrowed(#k), ::prompt_templates::__private::Cow::Borrowed(#v)) }
+        quote! { (#cp::__private::Cow::Borrowed(#k), #cp::__private::Cow::Borrowed(#v)) }
     });
     let for_each = inc.for_each.as_ref().map_or_else(
         || quote! { ::core::option::Option::None },
-        |(b, l)| quote! { ::core::option::Option::Some((::prompt_templates::__private::Cow::Borrowed(#b), ::prompt_templates::__private::Cow::Borrowed(#l))) },
+        |(b, l)| quote! { ::core::option::Option::Some((#cp::__private::Cow::Borrowed(#b), #cp::__private::Cow::Borrowed(#l))) },
     );
     let inline_compiled = inc.inline_compiled.as_ref().map_or_else(
         || quote! { ::core::option::Option::None },
@@ -89,10 +95,10 @@ fn codegen_segment_include(
         },
     );
     quote! {
-        ::prompt_templates::compiled::Segment::Include(
-            ::prompt_templates::compiled::CompiledInclude {
-                path: ::prompt_templates::__private::Cow::Borrowed(#path),
-                with_vars: ::prompt_templates::__private::vec![#(#with_vars),*],
+        #cp::compiled::Segment::Include(
+            #cp::compiled::CompiledInclude {
+                path: #cp::__private::Cow::Borrowed(#path),
+                with_vars: #cp::__private::vec![#(#with_vars),*],
                 for_each: #for_each,
                 inline_compiled: #inline_compiled,
             }
@@ -106,21 +112,24 @@ fn codegen_segment_match(
         Vec<std::borrow::Cow<'static, str>>,
         Vec<prompt_templates::compiled::Segment>,
     )],
+    is_option: bool,
 ) -> proc_macro2::TokenStream {
+    let cp = crate_path();
     let arm_tokens = arms.iter().map(|(variants, body)| {
         let body_tokens = body.iter().map(codegen_segment);
         let variant_tokens = variants.iter().map(|v| {
-            quote! { ::prompt_templates::__private::Cow::Borrowed(#v) }
+            quote! { #cp::__private::Cow::Borrowed(#v) }
         });
         quote! {
-            (::prompt_templates::__private::vec![#(#variant_tokens),*], ::prompt_templates::__private::vec![#(#body_tokens),*])
+            (#cp::__private::vec![#(#variant_tokens),*], #cp::__private::vec![#(#body_tokens),*])
         }
     });
     let expr_tokens = codegen_compiled_path(expr);
     quote! {
-        ::prompt_templates::compiled::Segment::Match {
+        #cp::compiled::Segment::Match {
             expr: #expr_tokens,
-            arms: ::prompt_templates::__private::vec![#(#arm_tokens),*],
+            arms: #cp::__private::vec![#(#arm_tokens),*],
+            is_option: #is_option,
         }
     }
 }
@@ -128,15 +137,21 @@ fn codegen_segment_match(
 pub(crate) fn codegen_parsed_filter(
     f: &prompt_templates::compiled::ParsedFilter,
 ) -> proc_macro2::TokenStream {
+    let cp = crate_path();
     let kind = codegen_filter_kind(f.kind);
     let args = f.args.as_ref().map_or_else(
         || quote! { ::core::option::Option::None },
-        |a| quote! { ::core::option::Option::Some(::prompt_templates::__private::Cow::Borrowed(#a)) },
+        |a| quote! { ::core::option::Option::Some(#cp::__private::Cow::Borrowed(#a)) },
+    );
+    let parsed_num = f.parsed_num.map_or_else(
+        || quote! { ::core::option::Option::None },
+        |n| quote! { ::core::option::Option::Some(#n) },
     );
     quote! {
-        ::prompt_templates::compiled::ParsedFilter {
+        #cp::compiled::ParsedFilter {
             kind: #kind,
             args: #args,
+            parsed_num: #parsed_num,
         }
     }
 }
@@ -145,15 +160,16 @@ pub(crate) fn codegen_filter_kind(
     k: prompt_templates::compiled::FilterKind,
 ) -> proc_macro2::TokenStream {
     use prompt_templates::compiled::FilterKind;
+    let cp = crate_path();
     match k {
-        FilterKind::Upper => quote! { ::prompt_templates::compiled::FilterKind::Upper },
-        FilterKind::Lower => quote! { ::prompt_templates::compiled::FilterKind::Lower },
-        FilterKind::Trim => quote! { ::prompt_templates::compiled::FilterKind::Trim },
-        FilterKind::Fixed => quote! { ::prompt_templates::compiled::FilterKind::Fixed },
-        FilterKind::Join => quote! { ::prompt_templates::compiled::FilterKind::Join },
-        FilterKind::Limit => quote! { ::prompt_templates::compiled::FilterKind::Limit },
-        FilterKind::Add => quote! { ::prompt_templates::compiled::FilterKind::Add },
-        FilterKind::Sub => quote! { ::prompt_templates::compiled::FilterKind::Sub },
+        FilterKind::Upper => quote! { #cp::compiled::FilterKind::Upper },
+        FilterKind::Lower => quote! { #cp::compiled::FilterKind::Lower },
+        FilterKind::Trim => quote! { #cp::compiled::FilterKind::Trim },
+        FilterKind::Fixed => quote! { #cp::compiled::FilterKind::Fixed },
+        FilterKind::Join => quote! { #cp::compiled::FilterKind::Join },
+        FilterKind::Limit => quote! { #cp::compiled::FilterKind::Limit },
+        FilterKind::Add => quote! { #cp::compiled::FilterKind::Add },
+        FilterKind::Sub => quote! { #cp::compiled::FilterKind::Sub },
     }
 }
 
@@ -161,11 +177,12 @@ pub(crate) fn codegen_condition(
     c: &prompt_templates::compiled::Condition,
 ) -> proc_macro2::TokenStream {
     use prompt_templates::compiled::Condition;
+    let cp = crate_path();
     match c {
         Condition::Truthy(v) => {
             let operand_tokens = codegen_condition_operand(v);
             quote! {
-                ::prompt_templates::compiled::Condition::Truthy(#operand_tokens)
+                #cp::compiled::Condition::Truthy(#operand_tokens)
             }
         }
         Condition::Comparison { left, op, right } => {
@@ -173,7 +190,7 @@ pub(crate) fn codegen_condition(
             let left_tokens = codegen_condition_operand(left);
             let right_tokens = codegen_condition_operand(right);
             quote! {
-                ::prompt_templates::compiled::Condition::Comparison {
+                #cp::compiled::Condition::Comparison {
                     left: #left_tokens,
                     op: #op_tokens,
                     right: #right_tokens,
@@ -186,33 +203,37 @@ pub(crate) fn codegen_condition(
 fn codegen_compiled_path(
     path: &prompt_templates::compiled::CompiledPath,
 ) -> proc_macro2::TokenStream {
+    let cp = crate_path();
     let raw = path.as_str();
-    quote! { ::prompt_templates::compiled::CompiledPath::compile(#raw) }
+    let parts: Vec<&str> = path.parts().iter().map(String::as_str).collect();
+    quote! { #cp::compiled::CompiledPath::from_static(#raw, &[#(#parts),*]) }
 }
 
 fn codegen_compiled_expr(
     expr: &prompt_templates::compiled::CompiledExpr,
 ) -> proc_macro2::TokenStream {
     use prompt_templates::compiled::CompiledExpr;
+    let cp = crate_path();
     match expr {
         CompiledExpr::Path(path) => {
             let path_tokens = codegen_compiled_path(path);
-            quote! { ::prompt_templates::compiled::CompiledExpr::Path(#path_tokens) }
+            quote! { #cp::compiled::CompiledExpr::Path(#path_tokens) }
         }
         CompiledExpr::Idx(binding) => {
-            quote! { ::prompt_templates::compiled::CompiledExpr::Idx(::prompt_templates::__private::String::from(#binding)) }
+            let binding = binding.as_ref();
+            quote! { #cp::compiled::CompiledExpr::Idx(#cp::__private::Cow::Borrowed(#binding)) }
         }
         CompiledExpr::Len(path) => {
             let path_tokens = codegen_compiled_path(path);
-            quote! { ::prompt_templates::compiled::CompiledExpr::Len(#path_tokens) }
+            quote! { #cp::compiled::CompiledExpr::Len(#path_tokens) }
         }
         CompiledExpr::Kind(path) => {
             let path_tokens = codegen_compiled_path(path);
-            quote! { ::prompt_templates::compiled::CompiledExpr::Kind(#path_tokens) }
+            quote! { #cp::compiled::CompiledExpr::Kind(#path_tokens) }
         }
         CompiledExpr::Has(path) => {
             let path_tokens = codegen_compiled_path(path);
-            quote! { ::prompt_templates::compiled::CompiledExpr::Has(#path_tokens) }
+            quote! { #cp::compiled::CompiledExpr::Has(#path_tokens) }
         }
     }
 }
@@ -221,35 +242,37 @@ fn codegen_condition_operand(
     op: &prompt_templates::compiled::ConditionOperand,
 ) -> proc_macro2::TokenStream {
     use prompt_templates::compiled::ConditionOperand;
+    let cp = crate_path();
     match op {
         ConditionOperand::Literal(val) => {
             let val_tokens = codegen_value(val);
-            quote! { ::prompt_templates::compiled::ConditionOperand::Literal(#val_tokens) }
+            quote! { #cp::compiled::ConditionOperand::Literal(#val_tokens) }
         }
         ConditionOperand::Path { path, filters } => {
             let path_tokens = codegen_compiled_path(path);
             let filters_tokens = filters.iter().map(codegen_parsed_filter);
             quote! {
-                ::prompt_templates::compiled::ConditionOperand::Path {
+                #cp::compiled::ConditionOperand::Path {
                     path: #path_tokens,
-                    filters: ::prompt_templates::__private::vec![#(#filters_tokens),*],
+                    filters: #cp::__private::vec![#(#filters_tokens),*],
                 }
             }
         }
         ConditionOperand::Idx(binding) => {
-            quote! { ::prompt_templates::compiled::ConditionOperand::Idx(::prompt_templates::__private::String::from(#binding)) }
+            let binding = binding.as_ref();
+            quote! { #cp::compiled::ConditionOperand::Idx(#cp::__private::Cow::Borrowed(#binding)) }
         }
         ConditionOperand::Len(path) => {
             let path_tokens = codegen_compiled_path(path);
-            quote! { ::prompt_templates::compiled::ConditionOperand::Len(#path_tokens) }
+            quote! { #cp::compiled::ConditionOperand::Len(#path_tokens) }
         }
         ConditionOperand::Kind(path) => {
             let path_tokens = codegen_compiled_path(path);
-            quote! { ::prompt_templates::compiled::ConditionOperand::Kind(#path_tokens) }
+            quote! { #cp::compiled::ConditionOperand::Kind(#path_tokens) }
         }
         ConditionOperand::Has(path) => {
             let path_tokens = codegen_compiled_path(path);
-            quote! { ::prompt_templates::compiled::ConditionOperand::Has(#path_tokens) }
+            quote! { #cp::compiled::ConditionOperand::Has(#path_tokens) }
         }
     }
 }
@@ -258,30 +281,43 @@ pub(crate) fn codegen_comparison_op(
     op: prompt_templates::compiled::ComparisonOp,
 ) -> proc_macro2::TokenStream {
     use prompt_templates::compiled::ComparisonOp;
+    let cp = crate_path();
     match op {
-        ComparisonOp::Eq => quote! { ::prompt_templates::compiled::ComparisonOp::Eq },
-        ComparisonOp::Ne => quote! { ::prompt_templates::compiled::ComparisonOp::Ne },
-        ComparisonOp::Le => quote! { ::prompt_templates::compiled::ComparisonOp::Le },
-        ComparisonOp::Ge => quote! { ::prompt_templates::compiled::ComparisonOp::Ge },
-        ComparisonOp::Lt => quote! { ::prompt_templates::compiled::ComparisonOp::Lt },
-        ComparisonOp::Gt => quote! { ::prompt_templates::compiled::ComparisonOp::Gt },
+        ComparisonOp::Eq => quote! { #cp::compiled::ComparisonOp::Eq },
+        ComparisonOp::Ne => quote! { #cp::compiled::ComparisonOp::Ne },
+        ComparisonOp::Le => quote! { #cp::compiled::ComparisonOp::Le },
+        ComparisonOp::Ge => quote! { #cp::compiled::ComparisonOp::Ge },
+        ComparisonOp::Lt => quote! { #cp::compiled::ComparisonOp::Lt },
+        ComparisonOp::Gt => quote! { #cp::compiled::ComparisonOp::Gt },
     }
 }
 
 pub(crate) fn codegen_compiled_inline_template(
     t: &prompt_templates::compiled::CompiledInlineTemplate,
 ) -> proc_macro2::TokenStream {
+    let cp = crate_path();
     let segments_tokens = t.segments.iter().map(codegen_segment);
     let decls_tokens = t.declarations.iter().map(codegen_var_decl);
+    let const_entries = t.consts.iter().map(|(k, v)| {
+        let v_tokens = codegen_value(v);
+        quote! { (#cp::__private::String::from(#k), #v_tokens) }
+    });
+    let imported_const_entries = t.imported_consts.iter().map(|(k, v)| {
+        let v_tokens = codegen_value(v);
+        quote! { (#cp::__private::String::from(#k), #v_tokens) }
+    });
     quote! {
-        ::prompt_templates::compiled::CompiledInlineTemplate {
-            segments: ::prompt_templates::__private::Arc::from([#(#segments_tokens),*]),
-            declarations: ::prompt_templates::__private::Arc::from([#(#decls_tokens),*]),
+        #cp::compiled::CompiledInlineTemplate {
+            segments: #cp::__private::Arc::from([#(#segments_tokens),*]),
+            declarations: #cp::__private::Arc::from([#(#decls_tokens),*]),
+            consts: #cp::__private::Arc::new([#(#const_entries),*].into_iter().collect()),
+            imported_consts: #cp::__private::Arc::new([#(#imported_const_entries),*].into_iter().collect()),
         }
     }
 }
 
 pub(crate) fn codegen_var_decl(d: &prompt_templates::VarDecl) -> proc_macro2::TokenStream {
+    let cp = crate_path();
     let name = &d.name;
     let type_tokens = codegen_var_type(&d.var_type);
     let default_tokens = if let Some(v) = &d.default_value {
@@ -291,8 +327,8 @@ pub(crate) fn codegen_var_decl(d: &prompt_templates::VarDecl) -> proc_macro2::To
         quote! { ::core::option::Option::None }
     };
     quote! {
-        ::prompt_templates::VarDecl {
-            name: ::prompt_templates::__private::String::from(#name),
+        #cp::VarDecl {
+            name: #cp::__private::String::from(#name),
             var_type: #type_tokens,
             default_value: #default_tokens,
         }
@@ -301,25 +337,26 @@ pub(crate) fn codegen_var_decl(d: &prompt_templates::VarDecl) -> proc_macro2::To
 
 pub(crate) fn codegen_value(v: &prompt_templates::Value) -> proc_macro2::TokenStream {
     use prompt_templates::Value;
+    let cp = crate_path();
     match v {
         Value::Str(s) => {
-            quote! { ::prompt_templates::Value::Str(::prompt_templates::__private::String::from(#s)) }
+            quote! { #cp::Value::Str(#cp::__private::String::from(#s)) }
         }
-        Value::Int(i) => quote! { ::prompt_templates::Value::Int(#i) },
-        Value::Float(f) => quote! { ::prompt_templates::Value::Float(#f) },
-        Value::Bool(b) => quote! { ::prompt_templates::Value::Bool(#b) },
+        Value::Int(i) => quote! { #cp::Value::Int(#i) },
+        Value::Float(f) => quote! { #cp::Value::Float(#f) },
+        Value::Bool(b) => quote! { #cp::Value::Bool(#b) },
         Value::List(l) => {
             let items = l.iter().map(codegen_value);
-            quote! { ::prompt_templates::Value::List(::prompt_templates::__private::Arc::new(::prompt_templates::__private::vec![#(#items),*])) }
+            quote! { #cp::Value::List(#cp::__private::Arc::new(#cp::__private::vec![#(#items),*])) }
         }
         Value::Struct(d) => {
             let entries = d.iter().map(|(k, v)| {
                 let v_tokens = codegen_value(v);
-                quote! { (::prompt_templates::__private::String::from(#k), #v_tokens) }
+                quote! { (#cp::__private::String::from(#k), #v_tokens) }
             });
             quote! {
-                ::prompt_templates::Value::Struct(
-                    ::prompt_templates::__private::Arc::new([#(#entries),*].into_iter().collect())
+                #cp::Value::Struct(
+                    #cp::__private::Arc::new([#(#entries),*].into_iter().collect())
                 )
             }
         }
@@ -328,42 +365,49 @@ pub(crate) fn codegen_value(v: &prompt_templates::Value) -> proc_macro2::TokenSt
                 compile_error!("Value::Tmpl cannot be used as a compile-time constant literal")
             }
         }
+        Value::None => quote! { #cp::Value::None },
     }
 }
 
 pub(crate) fn codegen_var_type(t: &prompt_templates::VarType) -> proc_macro2::TokenStream {
     use prompt_templates::VarType;
+    let cp = crate_path();
     match t {
-        VarType::Str => quote! { ::prompt_templates::VarType::Str },
-        VarType::Bool => quote! { ::prompt_templates::VarType::Bool },
-        VarType::Int => quote! { ::prompt_templates::VarType::Int },
-        VarType::Float => quote! { ::prompt_templates::VarType::Float },
+        VarType::Str => quote! { #cp::VarType::Str },
+        VarType::Bool => quote! { #cp::VarType::Bool },
+        VarType::Int => quote! { #cp::VarType::Int },
+        VarType::Float => quote! { #cp::VarType::Float },
         VarType::List(fields) => {
             let fields_tokens = fields.iter().map(codegen_var_decl);
-            quote! { ::prompt_templates::VarType::List(::prompt_templates::__private::vec![#(#fields_tokens),*]) }
+            quote! { #cp::VarType::List(#cp::__private::vec![#(#fields_tokens),*]) }
         }
         VarType::Struct(fields) => {
             let fields_tokens = fields.iter().map(codegen_var_decl);
-            quote! { ::prompt_templates::VarType::Struct(::prompt_templates::__private::vec![#(#fields_tokens),*]) }
+            quote! { #cp::VarType::Struct(#cp::__private::vec![#(#fields_tokens),*]) }
         }
         VarType::Enum(variants) => {
             let variants_tokens = variants.iter().map(codegen_variant_decl);
-            quote! { ::prompt_templates::VarType::Enum(::prompt_templates::__private::vec![#(#variants_tokens),*]) }
+            quote! { #cp::VarType::Enum(#cp::__private::vec![#(#variants_tokens),*]) }
         }
         VarType::Tmpl(fields) => {
             let fields_tokens = fields.iter().map(codegen_var_decl);
-            quote! { ::prompt_templates::VarType::Tmpl(::prompt_templates::__private::vec![#(#fields_tokens),*]) }
+            quote! { #cp::VarType::Tmpl(#cp::__private::vec![#(#fields_tokens),*]) }
+        }
+        VarType::Option(inner) => {
+            let inner_tokens = codegen_var_type(inner);
+            quote! { #cp::VarType::Option(#cp::__private::Box::new(#inner_tokens)) }
         }
     }
 }
 
 pub(crate) fn codegen_variant_decl(v: &prompt_templates::VariantDecl) -> proc_macro2::TokenStream {
+    let cp = crate_path();
     let name = &v.name;
     let fields_tokens = v.fields.iter().map(codegen_var_decl);
     quote! {
-        ::prompt_templates::VariantDecl {
-            name: ::prompt_templates::__private::String::from(#name),
-            fields: ::prompt_templates::__private::vec![#(#fields_tokens),*],
+        #cp::VariantDecl {
+            name: #cp::__private::String::from(#name),
+            fields: #cp::__private::vec![#(#fields_tokens),*],
         }
     }
 }
@@ -386,12 +430,13 @@ pub(crate) fn codegen_list_literal(
     field_name: &str,
 ) -> proc_macro2::TokenStream {
     use prompt_templates::Value;
+    let cp = crate_path();
 
     if fields.len() == 1 && fields[0].name.is_empty() {
         let item_tokens = items.iter().map(|item| {
             codegen_value_as_rust_literal(item, &fields[0].var_type, parent_struct, field_name)
         });
-        quote! { ::prompt_templates::__private::vec![#(#item_tokens),*] }
+        quote! { #cp::__private::vec![#(#item_tokens),*] }
     } else {
         let capitalized = prompt_templates::to_pascal_case(field_name);
         let item_struct_name = format_ident!("{parent_struct}{capitalized}Item");
@@ -421,7 +466,7 @@ pub(crate) fn codegen_list_literal(
                 quote! { compile_error!(#msg) }
             }
         });
-        quote! { ::prompt_templates::__private::vec![#(#item_tokens),*] }
+        quote! { #cp::__private::vec![#(#item_tokens),*] }
     }
 }
 
@@ -432,9 +477,10 @@ pub(crate) fn codegen_value_as_rust_literal(
     field_name: &str,
 ) -> proc_macro2::TokenStream {
     use prompt_templates::{Value, VarType};
+    let cp = crate_path();
 
     match (v, t) {
-        (Value::Str(s), VarType::Str) => quote! { ::prompt_templates::__private::String::from(#s) },
+        (Value::Str(s), VarType::Str) => quote! { #cp::__private::String::from(#s) },
         (Value::Int(i), VarType::Int) => quote! { #i },
         (Value::Float(f), VarType::Float) => quote! { #f },
         (Value::Bool(b), VarType::Bool) => quote! { #b },

@@ -540,7 +540,7 @@ it is A
 
 > {% case B %}
 
-B={{ s.val }}
+B={{ s }}
 
 > {% /match %}`,
   { s: { __kind__: "B", val: "hello" } },
@@ -740,9 +740,9 @@ params:
   { name: "world" },
 );
 
-// 46. Match default arm
+// 46. Match else arm
 testContent(
-  "46. Match default arm",
+  "46. Match else arm",
   `---
 params:
   - s = enum<A, B, C>
@@ -752,7 +752,7 @@ params:
 
 alpha
 
-> {% default %}
+> {% else %}
 
 other
 
@@ -760,9 +760,9 @@ other
   { s: "B" },
 );
 
-// 47. Match default arm — explicit case hit
+// 47. Match else arm — explicit case hit
 testContent(
-  "47. Match default arm (explicit case)",
+  "47. Match else arm (explicit case)",
   `---
 params:
   - s = enum<A, B, C>
@@ -772,7 +772,7 @@ params:
 
 alpha
 
-> {% default %}
+> {% else %}
 
 other
 
@@ -1050,10 +1050,10 @@ testExact(
   "64. Constants with struct type",
   `---
 consts:
-  - PHASES = struct<EXPLORE = str, TRIAGE = str> := {EXPLORE = "Explore", TRIAGE = "Triage"}
+  - STAGES = struct<DESIGN = str, BUILD = str> := {DESIGN = "Design", BUILD = "Build"}
 params: []
 ---
-Phase: {{ PHASES.EXPLORE }}, {{ PHASES.TRIAGE }}`,
+Stage: {{ STAGES.DESIGN }}, {{ STAGES.BUILD }}`,
   {},
 );
 

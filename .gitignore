@@ -20,5 +20,4 @@ dist/
 # Local tooling
 SKILL.md
 node_modules
-node_modules
 benchmarks/target

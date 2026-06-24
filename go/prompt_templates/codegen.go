@@ -243,6 +243,20 @@ func (c *codegenContext) resolveType(fieldName string, node typeNode) string {
 		c.emitEnum(enumName, node.variants)
 		return enumName
 
+	case typeOption:
+		if node.innerType == nil {
+			return "any"
+		}
+		inner := c.resolveType(fieldName, *node.innerType)
+		return "*" + inner
+
+	case typeScalarList:
+		if node.innerType == nil {
+			return "[]any"
+		}
+		inner := c.resolveType(fieldName, *node.innerType)
+		return "[]" + inner
+
 	case typeAlias:
 		return "any"
 
@@ -365,14 +379,17 @@ const (
 	typeList
 	typeStruct
 	typeEnum
-	typeAlias // Unresolved type alias — maps to any.
+	typeOption     // option<T> — nullable wrapper.
+	typeScalarList // scalar_list<T> — homogeneous typed list.
+	typeAlias      // Unresolved type alias — maps to any.
 )
 
 // typeNode is a parsed type specification.
 type typeNode struct {
-	kind     typeKind
-	fields   []fieldNode   // For list and struct.
-	variants []variantNode // For enum.
+	kind      typeKind
+	fields    []fieldNode   // For list and struct.
+	variants  []variantNode // For enum.
+	innerType *typeNode     // For option and scalar_list.
 }
 
 // fieldNode is a name-type pair inside a list/struct/variant.
@@ -427,6 +444,10 @@ func (p *typeParser) parseType() (typeNode, error) {
 		return p.parseCompound(typeStruct)
 	case "enum":
 		return p.parseEnum()
+	case "option":
+		return p.parseWrapped(typeOption)
+	case "scalar_list":
+		return p.parseWrapped(typeScalarList)
 	default:
 		// Type alias or unknown type — use any. The engine resolves
 		// aliases at runtime; codegen cannot expand them without the
@@ -435,11 +456,53 @@ func (p *typeParser) parseType() (typeNode, error) {
 	}
 }
 
+// parseWrapped handles option<T> and scalar_list<T> — types wrapping a single inner type.
+func (p *typeParser) parseWrapped(kind typeKind) (typeNode, error) {
+	p.skipWhitespace()
+	if !p.consume('<') {
+		return typeNode{}, fmt.Errorf("expected '<' after type keyword at position %d in %q", p.pos, p.input)
+	}
+	p.skipWhitespace()
+
+	inner, err := p.parseType()
+	if err != nil {
+		return typeNode{}, fmt.Errorf("parsing inner type: %w", err)
+	}
+
+	p.skipWhitespace()
+	if !p.consume('>') {
+		return typeNode{}, fmt.Errorf("expected '>' at position %d in %q", p.pos, p.input)
+	}
+
+	return typeNode{kind: kind, innerType: &inner}, nil
+}
+
 func (p *typeParser) parseCompound(kind typeKind) (typeNode, error) {
 	p.skipWhitespace()
 	if !p.consume('<') {
 		// Bare list/struct without fields.
 		return typeNode{kind: kind}, nil
+	}
+
+	// For list types, check if this is a scalar list (e.g., list<str>)
+	// by peeking ahead: if the first token is a type keyword not followed
+	// by '=', it's a scalar list.
+	if kind == typeList {
+		saved := p.pos
+		p.skipWhitespace()
+		ident := p.readIdent()
+		p.skipWhitespace()
+		if ident != "" && p.peek() == '>' {
+			// It's a scalar list like list<str>.
+			p.pos++ // consume '>'
+			innerNode, err := parseTypeSpec(ident)
+			if err != nil {
+				return typeNode{}, fmt.Errorf("parsing scalar list element type: %w", err)
+			}
+			return typeNode{kind: typeScalarList, innerType: &innerNode}, nil
+		}
+		// Not a scalar list — restore position and parse as normal fields.
+		p.pos = saved
 	}
 
 	fields, err := p.parseFields('>')

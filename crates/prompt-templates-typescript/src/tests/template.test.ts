@@ -52,6 +52,7 @@ import {
   stripFrontmatter,
 } from "../frontmatter.js";
 import { generateTypes, inferTypes } from "../codegen.js";
+import { toPascalCase } from "../validation.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -300,6 +301,51 @@ params: [count = int]
     assert.throws(
       () => tmpl.renderDict({ count: "not an int" }),
       (err: Error) => err.message.includes("type mismatch"),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// renderEmpty
+// ---------------------------------------------------------------------------
+
+describe("renderEmpty", () => {
+  it("renders no-param template", () => {
+    const tmpl = Template.fromSource("---\n---\nHello world!");
+    assert.strictEqual(tmpl.renderEmpty(), "Hello world!");
+  });
+
+  it("renders with all-default params", () => {
+    const tmpl = Template.fromSource(
+      '---\nparams:\n  - greeting = str := "Hi"\n  - count = int := 5\n---\n{{ greeting }} {{ count }}',
+    );
+    assert.strictEqual(tmpl.renderEmpty(), "Hi 5");
+  });
+
+  it("renders with consts only", () => {
+    const tmpl = Template.fromSource(
+      '---\nconsts:\n  - VERSION = str := "1.0"\nparams: []\n---\nv{{ VERSION }}',
+    );
+    assert.strictEqual(tmpl.renderEmpty(), "v1.0");
+  });
+
+  it("throws for required params", () => {
+    const tmpl = Template.fromSource(
+      "---\nparams:\n  - name = str\n---\nHello {{ name }}!",
+    );
+    assert.throws(
+      () => tmpl.renderEmpty(),
+      (err: Error) => err.message.includes("name"),
+    );
+  });
+
+  it("throws for mixed defaults and required", () => {
+    const tmpl = Template.fromSource(
+      '---\nparams:\n  - greeting = str := "Hi"\n  - name = str\n---\n{{ greeting }} {{ name }}!',
+    );
+    assert.throws(
+      () => tmpl.renderEmpty(),
+      (err: Error) => err.message.includes("name"),
     );
   });
 });
@@ -2221,28 +2267,18 @@ params: [x = str]
     assert.strictEqual(tmpl.render({ x: "done" }), "1 two true done");
   });
 
-  it("renderUnchecked limit filter on arrays", () => {
-    // Use a simple string list so join shows the values
-    const tmpl = Template.fromSourceAllowingUnused(
-      `---
+  it("{{ list }} is a compile error", () => {
+    // Bare {{ items }} should fail to compile when items is a list type.
+    assert.throws(
+      () =>
+        Template.fromSourceAllowingUnused(
+          `---
 params:
   - items = list<name = str>
 ---
-{{ items | limit(2) }}`,
-    );
-    const items = [{ name: "a" }, { name: "b" }, { name: "c" }];
-    // The checked renderer applies limit to list (slices to 2 items)
-    const checked = tmpl.render({ items });
-    // list display shows [<list of N>] — check length indication
-    assert.ok(
-      checked.includes("2"),
-      `checked output should indicate 2 items: ${checked}`,
-    );
-    // The unchecked renderer should also slice the array
-    const unchecked = tmpl.renderUnchecked({ items });
-    assert.ok(
-      unchecked.includes("2"),
-      `unchecked output should indicate 2 items: ${unchecked}`,
+{{ items }}`,
+        ),
+      /cannot display.*list/,
     );
   });
 
@@ -3435,7 +3471,21 @@ params: [val = float]
     assert.strictEqual(tmpl.render({ val: 3.14159 }), "3.14");
   });
 
-  it("join filter on list", () => {
+  it("join filter on list of strings", () => {
+    const tmpl = Template.fromSourceAllowingUnused(
+      `---
+params:
+  - items = list<str>
+---
+{{ items | join(", ") }}`,
+    );
+    const result = tmpl.render({ items: ["a", "b", "c"] });
+    assert.strictEqual(result, "a, b, c");
+  });
+
+  it("join filter on list of structs throws at render", () => {
+    // join() is valid at compile time (transforms list→str), but
+    // at render time display() on each struct item throws.
     const tmpl = Template.fromSourceAllowingUnused(
       `---
 params:
@@ -3443,13 +3493,18 @@ params:
 ---
 {{ items | join(", ") }}`,
     );
-    const result = tmpl.render({
-      items: [{ name: "a" }, { name: "b" }, { name: "c" }],
-    });
-    assert.ok(result.length > 0);
+    assert.throws(
+      () =>
+        tmpl.render({
+          items: [{ name: "a" }, { name: "b" }],
+        }),
+      /cannot display struct/,
+    );
   });
 
-  it("limit filter on list", () => {
+  it("limit filter on list throws at render", () => {
+    // {{ items | limit(2) }} passes compile-time check (filtered expressions
+    // are skipped). At render time, limit() returns a list, display() rejects.
     const tmpl = Template.fromSourceAllowingUnused(
       `---
 params:
@@ -3457,11 +3512,13 @@ params:
 ---
 {{ items | limit(2) }}`,
     );
-    const result = tmpl.render({
-      items: [{ name: "a" }, { name: "b" }, { name: "c" }],
-    });
-    // Should show 2 items, not 3
-    assert.ok(result.includes("2"), `expected '2' in: ${result}`);
+    assert.throws(
+      () =>
+        tmpl.render({
+          items: [{ name: "a" }, { name: "b" }, { name: "c" }],
+        }),
+      /cannot display list/,
+    );
   });
 
   it("add filter on int", () => {
@@ -3772,10 +3829,10 @@ params: [x = str]
 });
 
 // ---------------------------------------------------------------------------
-// SPEC.md coverage — match default arm
+// SPEC.md coverage — match else arm
 // ---------------------------------------------------------------------------
 
-describe("Match default arm", () => {
+describe("Match else arm", () => {
   const src = [
     `---`,
     "params:",
@@ -3787,7 +3844,7 @@ describe("Match default arm", () => {
     "alpha",
 
     "",
-    "> {% default %}",
+    "> {% else %}",
     "",
     "other",
 
@@ -3799,11 +3856,11 @@ describe("Match default arm", () => {
     assert.strictEqual(Template.fromSource(src).render({ s: "A" }), "alpha\n");
   });
 
-  it("renders default for non-matching variant", () => {
+  it("renders else for non-matching variant", () => {
     assert.strictEqual(Template.fromSource(src).render({ s: "B" }), "other\n");
   });
 
-  it("renders default for another non-matching variant", () => {
+  it("renders else for another non-matching variant", () => {
     assert.strictEqual(Template.fromSource(src).render({ s: "C" }), "other\n");
   });
 });
@@ -4495,7 +4552,7 @@ bye`,
   );
 
   parityCheck(
-    "match default arm",
+    "match else arm",
     [
       `---`,
       "params:",
@@ -4507,7 +4564,7 @@ bye`,
       "alpha",
 
       "",
-      "> {% default %}",
+      "> {% else %}",
       "",
       "other",
 
@@ -4829,15 +4886,15 @@ describe("Context API", () => {
 // ---------------------------------------------------------------------------
 
 describe("Value module", () => {
-  it("fromJs converts null to empty string", () => {
+  it("fromJs converts null to none", () => {
     const val = fromJs(null);
-    assert.strictEqual(val.type, "str");
+    assert.strictEqual(val.type, "none");
     assert.strictEqual(display(val), "");
   });
 
-  it("fromJs converts undefined to empty string", () => {
+  it("fromJs converts undefined to none", () => {
     const val = fromJs(undefined);
-    assert.strictEqual(val.type, "str");
+    assert.strictEqual(val.type, "none");
     assert.strictEqual(display(val), "");
   });
 
@@ -6342,38 +6399,32 @@ params:
   // ── toPascalCase helper ─────────────────────────────────────────────
 
   describe("toPascalCase", () => {
-    // We need a dynamic import for the validation module
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const mod = require("../validation.js") as {
-      toPascalCase: (s: string) => string;
-    };
-
     it("converts snake_case", () => {
-      assert.strictEqual(mod.toPascalCase("code_review"), "CodeReview");
-      assert.strictEqual(mod.toPascalCase("simple_greeting"), "SimpleGreeting");
+      assert.strictEqual(toPascalCase("code_review"), "CodeReview");
+      assert.strictEqual(toPascalCase("simple_greeting"), "SimpleGreeting");
     });
 
     it("converts kebab-case", () => {
-      assert.strictEqual(mod.toPascalCase("task-report"), "TaskReport");
+      assert.strictEqual(toPascalCase("task-report"), "TaskReport");
     });
 
     it("converts single word", () => {
-      assert.strictEqual(mod.toPascalCase("single"), "Single");
+      assert.strictEqual(toPascalCase("single"), "Single");
     });
 
     it("handles empty string", () => {
-      assert.strictEqual(mod.toPascalCase(""), "");
+      assert.strictEqual(toPascalCase(""), "");
     });
 
     it("handles leading/trailing separators", () => {
-      assert.strictEqual(mod.toPascalCase("_leading"), "Leading");
-      assert.strictEqual(mod.toPascalCase("trailing_"), "Trailing");
-      assert.strictEqual(mod.toPascalCase("__double__"), "Double");
+      assert.strictEqual(toPascalCase("_leading"), "Leading");
+      assert.strictEqual(toPascalCase("trailing_"), "Trailing");
+      assert.strictEqual(toPascalCase("__double__"), "Double");
     });
 
     it("preserves existing caps in segments", () => {
       assert.strictEqual(
-        mod.toPascalCase("already_PascalCase"),
+        toPascalCase("already_PascalCase"),
         "AlreadyPascalCase",
       );
     });
@@ -6720,7 +6771,7 @@ describe("Enum default validation", () => {
 params:
   - status = enum<Active, Paused> := Active
 ---
-{{ status }}`,
+{{ kind(status) }}`,
     );
     assert.strictEqual(tmpl.render(), "Active");
   });
@@ -6731,7 +6782,7 @@ params:
 params:
   - outcome = enum<Confirmed(evidence = str), Rejected> := Rejected
 ---
-{{ outcome }}`,
+{{ kind(outcome) }}`,
     );
     assert.strictEqual(tmpl.render(), "Rejected");
   });
@@ -6743,6 +6794,7 @@ params:
   - outcome = enum<Confirmed(evidence = str), Rejected> := Confirmed(evidence = "found it")
 ---
 > {% match outcome %}
+
 > {% case Confirmed %}
 
 {{ outcome.evidence }}
@@ -6763,6 +6815,7 @@ params:
   - result = enum<Success(msg = str, code = int), Failure> := Success(msg = "ok", code = 200)
 ---
 > {% match result %}
+
 > {% case Success %}
 
 {{ result.msg }}:{{ result.code }}
@@ -6783,6 +6836,7 @@ consts:
   - DEFAULT = enum<Success(msg = str), Failure> := Success(msg = "done")
 ---
 > {% match DEFAULT %}
+
 > {% case Success %}
 
 {{ DEFAULT.msg }}
@@ -6896,36 +6950,36 @@ params:
 // ---------------------------------------------------------------------------
 
 describe("Enum literal expressions", () => {
-  it("{{ Phase.Explore }} is rejected as bare enum literal", () => {
+  it("{{ Stage.Design }} is rejected as bare enum literal", () => {
     assert.throws(
       () =>
         Template.fromSource(
           `---
 types:
-  - Phase = enum<Explore, Build, Test>
+  - Stage = enum<Design, Build, Test>
 params: [name = str]
 ---
-Phase: {{ Phase.Explore }}, name: {{ name }}`,
+Stage: {{ Stage.Design }}, name: {{ name }}`,
         ),
       (err: Error) =>
         err.message.includes("bare enum literal") &&
-        err.message.includes("Phase.Explore") &&
-        err.message.includes("kind(Phase.Explore)"),
+        err.message.includes("Stage.Design") &&
+        err.message.includes("kind(Stage.Design)"),
     );
   });
 
-  it("{{ kind(Phase.Explore) }} renders as Explore", () => {
+  it("{{ kind(Stage.Design) }} renders as Design", () => {
     const tmpl = Template.fromSource(
       `---
 types:
-  - Phase = enum<Explore, Build, Test>
+  - Stage = enum<Design, Build, Test>
 params: [name = str]
 ---
-Kind: {{ kind(Phase.Explore) }}, name: {{ name }}`,
+Kind: {{ kind(Stage.Design) }}, name: {{ name }}`,
     );
     assert.strictEqual(
       tmpl.render({ name: "hello" }),
-      "Kind: Explore, name: hello",
+      "Kind: Design, name: hello",
     );
   });
 
@@ -6960,26 +7014,26 @@ params: [x = str]
     const tmpl = Template.fromSource(
       `---
 types:
-  - Phase = enum<Explore, Build>
+  - Stage = enum<Design, Build>
 consts:
-  - Phase = str := "custom"
+  - Stage = str := "custom"
 params: [x = str]
 ---
-{{ Phase }}: {{ x }}`,
+{{ Stage }}: {{ x }}`,
     );
     assert.strictEqual(tmpl.render({ x: "hi" }), "custom: hi");
   });
 
-  it("kind(Phase.Explore) works with renderUnchecked", () => {
+  it("kind(Stage.Design) works with renderUnchecked", () => {
     const tmpl = Template.fromSource(
       `---
 types:
-  - Phase = enum<Explore, Build, Test>
+  - Stage = enum<Design, Build, Test>
 params: [name = str]
 ---
-{{ kind(Phase.Explore) }}: {{ name }}`,
+{{ kind(Stage.Design) }}: {{ name }}`,
     );
-    assert.strictEqual(tmpl.renderUnchecked({ name: "fast" }), "Explore: fast");
+    assert.strictEqual(tmpl.renderUnchecked({ name: "fast" }), "Design: fast");
   });
 
   it("bare enum with filter is also rejected", () => {
@@ -6988,14 +7042,14 @@ params: [name = str]
         Template.fromSource(
           `---
 types:
-  - Phase = enum<Explore, Build>
+  - Stage = enum<Design, Build>
 params: [x = str]
 ---
-{{ Phase.Explore | upper }}: {{ x }}`,
+{{ Stage.Design | upper }}: {{ x }}`,
         ),
       (err: Error) =>
         err.message.includes("bare enum literal") &&
-        err.message.includes("Phase.Explore"),
+        err.message.includes("Stage.Design"),
     );
   });
 });
@@ -7005,29 +7059,19 @@ params: [x = str]
 // ---------------------------------------------------------------------------
 
 describe("option<T> parsing", () => {
-  it("parses option<int> as desugared enum", () => {
+  it("parses option<int> as dedicated option type", () => {
     const vt = parseVarType("option<int>");
-    assert.strictEqual(vt.kind, "enum");
-    if (vt.kind === "enum") {
-      assert.strictEqual(vt.isOption, true);
-      assert.strictEqual(vt.variants.length, 2);
-      assert.strictEqual(vt.variants[0]!.name, "Some");
-      assert.strictEqual(vt.variants[0]!.fields.length, 1);
-      assert.strictEqual(vt.variants[0]!.fields[0]!.name, "val");
-      assert.deepStrictEqual(vt.variants[0]!.fields[0]!.varType, {
-        kind: "int",
-      });
-      assert.strictEqual(vt.variants[1]!.name, "None");
-      assert.strictEqual(vt.variants[1]!.fields.length, 0);
+    assert.strictEqual(vt.kind, "option");
+    if (vt.kind === "option") {
+      assert.deepStrictEqual(vt.innerType, { kind: "int" });
     }
   });
 
   it("parses option<str>", () => {
     const vt = parseVarType("option<str>");
-    assert.strictEqual(vt.kind, "enum");
-    if (vt.kind === "enum") {
-      assert.strictEqual(vt.isOption, true);
-      assert.strictEqual(vt.variants[0]!.fields[0]!.varType.kind, "str");
+    assert.strictEqual(vt.kind, "option");
+    if (vt.kind === "option") {
+      assert.deepStrictEqual(vt.innerType, { kind: "str" });
     }
   });
 
@@ -7113,7 +7157,11 @@ absent
 params:
   - x = option<str> := "hello"
 ---
-{{ x }}`);
+> {% if has(x) %}
+
+{{ x }}
+
+> {% /if %}`);
     assert.strictEqual(tmpl.render().trim(), "hello");
   });
 
@@ -7146,13 +7194,131 @@ params:
   });
 });
 
+describe("option<T> required vs optional", () => {
+  it("option without default is required — missing param throws", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<int>
+---
+> {% if has(x) %}
+
+{{ x }}
+
+> {% /if %}`);
+    assert.throws(
+      () => tmpl.render({}),
+      (err: Error) =>
+        err.message.includes("missing") && err.message.includes("x"),
+    );
+  });
+
+  it("option without default — providing value works", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<int>
+---
+> {% if has(x) %}
+
+{{ x }}
+
+> {% /if %}`);
+    assert.ok(tmpl.render({ x: 42 }).includes("42"));
+  });
+
+  it("option without default — providing null works", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<int>
+---
+> {% if has(x) %}
+
+present
+
+> {% else %}
+
+absent
+
+> {% /if %}`);
+    assert.ok(tmpl.render({ x: null }).includes("absent"));
+  });
+
+  it("option with := None default — omitting param is OK", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<int> := None
+---
+> {% if has(x) %}
+
+present
+
+> {% else %}
+
+absent
+
+> {% /if %}`);
+    // No error: default None is applied
+    assert.ok(tmpl.render().includes("absent"));
+  });
+
+  it("option with := None default — can override with value", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<int> := None
+---
+> {% if has(x) %}
+
+{{ x }}
+
+> {% else %}
+
+absent
+
+> {% /if %}`);
+    assert.ok(tmpl.render({ x: 99 }).includes("99"));
+  });
+
+  it("defaults() does not include option without default", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<int>
+  - y = option<str> := None
+  - z = option<str> := "hi"
+---
+> {% if has(x) %}
+
+{{ x }}
+
+> {% /if %}
+
+> {% if has(y) %}
+
+{{ y }}
+
+> {% /if %}
+
+> {% if has(z) %}
+
+{{ z }}
+
+> {% /if %}`);
+    const defs = tmpl.defaults();
+    assert.ok(!("x" in defs), "x should not have a default");
+    assert.strictEqual(defs.y, null, "y should default to null (None)");
+    assert.strictEqual(defs.z, "hi", "z should default to 'hi'");
+  });
+});
+
 describe("option<T> rendering with auto-unwrap", () => {
   it("auto-unwraps Some(val=42) to 42 in {{ x }}", () => {
     const tmpl = Template.fromSource(`---
 params:
   - x = option<int>
 ---
-{{ x }}`);
+> {% if has(x) %}
+
+{{ x }}
+
+> {% /if %}`);
     assert.strictEqual(tmpl.render({ x: 42 }).trim(), "42");
   });
 
@@ -7161,7 +7327,11 @@ params:
 params:
   - x = option<str>
 ---
-{{ x }}`);
+> {% if has(x) %}
+
+{{ x }}
+
+> {% /if %}`);
     assert.strictEqual(tmpl.render({ x: "hello" }).trim(), "hello");
   });
 
@@ -7240,6 +7410,7 @@ params:
   - x = option<int>
 ---
 > {% match x %}
+
 > {% case Some %}
 
 found: {{ x }}
@@ -7258,6 +7429,7 @@ params:
   - x = option<int>
 ---
 > {% match x %}
+
 > {% case Some %}
 
 found
@@ -7419,13 +7591,17 @@ params:
 });
 
 describe("option<T> renderUnchecked", () => {
-  it("auto-unwraps Some in unchecked mode", () => {
+  it("renders option value directly in unchecked mode", () => {
     const tmpl = Template.fromSource(`---
 params:
   - x = option<int>
 ---
-{{ x }}`);
-    const output = tmpl.renderUnchecked({ x: { __kind__: "Some", val: 42 } });
+> {% if has(x) %}
+
+{{ x }}
+
+> {% /if %}`);
+    const output = tmpl.renderUnchecked({ x: 42 });
     assert.strictEqual(output.trim(), "42");
   });
 
@@ -7443,12 +7619,8 @@ yes
 no
 
 > {% /if %}`);
-    assert.ok(tmpl.renderUnchecked({ x: "None" }).includes("no"));
-    assert.ok(
-      tmpl
-        .renderUnchecked({ x: { __kind__: "Some", val: 42 } })
-        .includes("yes"),
-    );
+    assert.ok(tmpl.renderUnchecked({ x: null }).includes("no"));
+    assert.ok(tmpl.renderUnchecked({ x: 42 }).includes("yes"));
   });
 });
 
@@ -7458,7 +7630,11 @@ describe("option<T> error cases", () => {
 params:
   - x = option<int>
 ---
-{{ x }}`);
+> {% if has(x) %}
+
+{{ x }}
+
+> {% /if %}`);
     assert.throws(
       () => tmpl.render({ x: "not a number" }),
       (err: Error) => err.message.includes("type mismatch"),
@@ -7596,5 +7772,2478 @@ params:
     );
     const output = tmpl.render({ items: [{ name: "Bob" }] });
     assert.strictEqual(output.trim(), "Bob");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Duplicate type alias detection
+// ---------------------------------------------------------------------------
+
+describe("Duplicate type alias detection", () => {
+  it("throws on duplicate type alias", () => {
+    assert.throws(
+      () =>
+        Template.fromSource(`---
+types:
+  - Greeting = str
+  - Greeting = int
+params:
+  - msg = Greeting
+---
+{{ msg }}`),
+      (err: Error) => {
+        assert.ok(err instanceof TemplateSyntaxError);
+        assert.ok(err.message.includes("duplicate type alias"));
+        assert.ok(err.message.includes("Greeting"));
+        return true;
+      },
+    );
+  });
+
+  it("accepts distinct type aliases", () => {
+    const tmpl = Template.fromSource(`---
+types:
+  - Greeting = str
+  - Count = int
+params:
+  - msg = Greeting
+  - n = Count
+---
+{{ msg }} {{ n }}`);
+    assert.strictEqual(tmpl.render({ msg: "hello", n: 5 }).trim(), "hello 5");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Enforcement — missing params, type mismatches, extra params
+// ---------------------------------------------------------------------------
+
+describe("Enforcement gaps", () => {
+  it("rejects missing required param", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - name = str
+  - age = int
+---
+{{ name }} {{ age }}`);
+    assert.throws(
+      () => tmpl.render({ name: "Alice" }),
+      (err: Error) => {
+        assert.ok(err instanceof MissingParamsError);
+        return true;
+      },
+    );
+  });
+
+  it("rejects wrong type for int param", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - count = int
+---
+{{ count }}`);
+    assert.throws(
+      () => tmpl.render({ count: "not a number" }),
+      (err: Error) => {
+        assert.ok(err instanceof TypeMismatchError);
+        return true;
+      },
+    );
+  });
+
+  it("rejects wrong type for bool param", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - flag = bool
+---
+{% if flag %}yes{% else %}no{% /if %}`);
+    assert.throws(
+      () => tmpl.render({ flag: "true" }),
+      (err: Error) => {
+        assert.ok(err instanceof TypeMismatchError);
+        return true;
+      },
+    );
+  });
+
+  it("rejects wrong type for list param", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - items = list<str>
+---
+{% for item in items %}{{ item }}{% /for %}`);
+    assert.throws(
+      () => tmpl.render({ items: "not a list" }),
+      (err: Error) => {
+        assert.ok(err instanceof TypeMismatchError);
+        return true;
+      },
+    );
+  });
+
+  it("rejects extra params by default", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - name = str
+---
+{{ name }}`);
+    assert.throws(
+      () => tmpl.render({ name: "Alice", extra: "bad" }),
+      (err: Error) => {
+        assert.ok(err instanceof ExtraParamsError);
+        return true;
+      },
+    );
+  });
+
+  it("allows extra params with allowExtra option", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - name = str
+---
+{{ name }}`);
+    const result = tmpl.render(
+      { name: "Alice", extra: "ok" },
+      { allowExtra: true },
+    );
+    assert.strictEqual(result.trim(), "Alice");
+  });
+
+  it("rejects wrong struct field type", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - person = struct<name = str, age = int>
+---
+{{ person.name }} is {{ person.age }}`);
+    assert.throws(
+      () => tmpl.render({ person: { name: "Alice", age: "thirty" } }),
+      (err: Error) => {
+        assert.ok(err instanceof TypeMismatchError);
+        return true;
+      },
+    );
+  });
+
+  it("rejects missing struct field", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - person = struct<name = str, age = int>
+---
+{{ person.name }} is {{ person.age }}`);
+    assert.throws(
+      () => tmpl.render({ person: { name: "Alice" } }),
+      (err: Error) => {
+        assert.ok(
+          err instanceof MissingParamsError || err instanceof TypeMismatchError,
+          `expected MissingParamsError or TypeMismatchError, got ${err.constructor.name}: ${err.message}`,
+        );
+        return true;
+      },
+    );
+  });
+
+  it("rejects wrong list element type", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - nums = list<int>
+---
+{% for n in nums %}{{ n }}{% /for %}`);
+    assert.throws(
+      () => tmpl.render({ nums: [1, "two", 3] }),
+      (err: Error) => {
+        assert.ok(err instanceof TypeMismatchError);
+        return true;
+      },
+    );
+  });
+
+  it("rejects unknown enum variant", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - color = enum<Red, Green, Blue>
+---
+{{ kind(color) }}`);
+    assert.throws(
+      () => tmpl.render({ color: "Yellow" }),
+      (err: Error) => {
+        assert.ok(err instanceof TypeMismatchError);
+        return true;
+      },
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Filter comprehensive tests
+// ---------------------------------------------------------------------------
+
+describe("Filter comprehensive tests", () => {
+  it("upper filter", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - name = str
+---
+{{ name | upper }}`);
+    assert.strictEqual(tmpl.render({ name: "hello" }).trim(), "HELLO");
+  });
+
+  it("lower filter", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - name = str
+---
+{{ name | lower }}`);
+    assert.strictEqual(tmpl.render({ name: "HELLO" }).trim(), "hello");
+  });
+
+  it("trim filter", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - name = str
+---
+{{ name | trim }}`);
+    assert.strictEqual(tmpl.render({ name: "  hello  " }).trim(), "hello");
+  });
+
+  it("join filter", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - items = list<str>
+---
+{{ items | join(", ") }}`);
+    assert.strictEqual(
+      tmpl.render({ items: ["a", "b", "c"] }).trim(),
+      "a, b, c",
+    );
+  });
+
+  it("join filter with empty list", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - items = list<str>
+---
+{{ items | join(", ") }}`);
+    assert.strictEqual(tmpl.render({ items: [] }).trim(), "");
+  });
+
+  it("limit filter truncates long list", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - items = list<str>
+---
+{{ items | limit(2) | join(", ") }}`);
+    assert.strictEqual(
+      tmpl.render({ items: ["a", "b", "c", "d"] }).trim(),
+      "a, b",
+    );
+  });
+
+  it("limit filter keeps short list unchanged", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - items = list<str>
+---
+{{ items | limit(50) | join(", ") }}`);
+    assert.strictEqual(tmpl.render({ items: ["a", "b"] }).trim(), "a, b");
+  });
+
+  it("add filter on int", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - n = int
+---
+{{ n | add(5) }}`);
+    assert.strictEqual(tmpl.render({ n: 10 }).trim(), "15");
+  });
+
+  it("sub filter on int", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - n = int
+---
+{{ n | sub(3) }}`);
+    assert.strictEqual(tmpl.render({ n: 10 }).trim(), "7");
+  });
+
+  it("fixed filter on float", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - val = float
+---
+{{ val | fixed(2) }}`);
+    assert.strictEqual(tmpl.render({ val: 3.14159 }).trim(), "3.14");
+  });
+
+  it("filter chain: upper then join", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - items = list<str>
+---
+{{ items | join(", ") | upper }}`);
+    assert.strictEqual(
+      tmpl.render({ items: ["hello", "world"] }).trim(),
+      "HELLO, WORLD",
+    );
+  });
+
+  it("filter chain: trim then lower", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - text = str
+---
+{{ text | trim | lower }}`);
+    assert.strictEqual(tmpl.render({ text: "  HELLO  " }).trim(), "hello");
+  });
+
+  it("unknown filter throws UnknownFilterError", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - text = str
+---
+{{ text | nonexistent }}`);
+    assert.throws(
+      () => tmpl.render({ text: "hello" }),
+      (err: Error) => {
+        assert.ok(err instanceof UnknownFilterError);
+        return true;
+      },
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Comparison operators comprehensive tests
+// ---------------------------------------------------------------------------
+
+describe("Comparison operators comprehensive", () => {
+  it("== with equal ints", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = int
+---
+{% if x == 5 %}yes{% else %}no{% /if %}`);
+    assert.strictEqual(tmpl.render({ x: 5 }).trim(), "yes");
+  });
+
+  it("== with unequal ints", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = int
+---
+{% if x == 5 %}yes{% else %}no{% /if %}`);
+    assert.strictEqual(tmpl.render({ x: 3 }).trim(), "no");
+  });
+
+  it("!= with unequal ints", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = int
+---
+{% if x != 5 %}yes{% else %}no{% /if %}`);
+    assert.strictEqual(tmpl.render({ x: 3 }).trim(), "yes");
+  });
+
+  it("!= with equal ints", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = int
+---
+{% if x != 5 %}yes{% else %}no{% /if %}`);
+    assert.strictEqual(tmpl.render({ x: 5 }).trim(), "no");
+  });
+
+  it("< comparison", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = int
+---
+{% if x < 5 %}less{% else %}not{% /if %}`);
+    assert.strictEqual(tmpl.render({ x: 3 }).trim(), "less");
+    assert.strictEqual(tmpl.render({ x: 5 }).trim(), "not");
+  });
+
+  it("> comparison", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = int
+---
+{% if x > 5 %}more{% else %}not{% /if %}`);
+    assert.strictEqual(tmpl.render({ x: 7 }).trim(), "more");
+    assert.strictEqual(tmpl.render({ x: 5 }).trim(), "not");
+  });
+
+  it("<= comparison", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = int
+---
+{% if x <= 5 %}yes{% else %}no{% /if %}`);
+    assert.strictEqual(tmpl.render({ x: 5 }).trim(), "yes");
+    assert.strictEqual(tmpl.render({ x: 6 }).trim(), "no");
+  });
+
+  it(">= comparison", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = int
+---
+{% if x >= 5 %}yes{% else %}no{% /if %}`);
+    assert.strictEqual(tmpl.render({ x: 5 }).trim(), "yes");
+    assert.strictEqual(tmpl.render({ x: 4 }).trim(), "no");
+  });
+
+  it("string == comparison", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - mode = str
+---
+{% if mode == "debug" %}debugging{% else %}normal{% /if %}`);
+    assert.strictEqual(tmpl.render({ mode: "debug" }).trim(), "debugging");
+    assert.strictEqual(tmpl.render({ mode: "release" }).trim(), "normal");
+  });
+
+  it("bool == comparison", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - flag = bool
+---
+{% if flag == true %}on{% else %}off{% /if %}`);
+    assert.strictEqual(tmpl.render({ flag: true }).trim(), "on");
+    assert.strictEqual(tmpl.render({ flag: false }).trim(), "off");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Truthiness comprehensive tests
+// ---------------------------------------------------------------------------
+
+describe("Truthiness comprehensive", () => {
+  it("empty string is falsy", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - text = str
+---
+{% if text %}truthy{% else %}falsy{% /if %}`);
+    assert.strictEqual(tmpl.render({ text: "" }).trim(), "falsy");
+  });
+
+  it("non-empty string is truthy", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - text = str
+---
+{% if text %}truthy{% else %}falsy{% /if %}`);
+    assert.strictEqual(tmpl.render({ text: "hello" }).trim(), "truthy");
+  });
+
+  it("zero int is falsy", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - n = int
+---
+{% if n %}truthy{% else %}falsy{% /if %}`);
+    assert.strictEqual(tmpl.render({ n: 0 }).trim(), "falsy");
+  });
+
+  it("non-zero int is truthy", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - n = int
+---
+{% if n %}truthy{% else %}falsy{% /if %}`);
+    assert.strictEqual(tmpl.render({ n: 42 }).trim(), "truthy");
+  });
+
+  it("negative int is truthy", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - n = int
+---
+{% if n %}truthy{% else %}falsy{% /if %}`);
+    assert.strictEqual(tmpl.render({ n: -1 }).trim(), "truthy");
+  });
+
+  it("zero float is falsy", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = float
+---
+{% if x %}truthy{% else %}falsy{% /if %}`);
+    assert.strictEqual(tmpl.render({ x: 0.0 }).trim(), "falsy");
+  });
+
+  it("non-zero float is truthy", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = float
+---
+{% if x %}truthy{% else %}falsy{% /if %}`);
+    assert.strictEqual(tmpl.render({ x: 0.001 }).trim(), "truthy");
+  });
+
+  it("true bool is truthy", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - flag = bool
+---
+{% if flag %}truthy{% else %}falsy{% /if %}`);
+    assert.strictEqual(tmpl.render({ flag: true }).trim(), "truthy");
+  });
+
+  it("false bool is falsy", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - flag = bool
+---
+{% if flag %}truthy{% else %}falsy{% /if %}`);
+    assert.strictEqual(tmpl.render({ flag: false }).trim(), "falsy");
+  });
+
+  it("empty list is falsy", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - items = list<str>
+---
+{% if items %}truthy{% else %}falsy{% /if %}`);
+    assert.strictEqual(tmpl.render({ items: [] }).trim(), "falsy");
+  });
+
+  it("non-empty list is truthy", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - items = list<str>
+---
+{% if items %}truthy{% else %}falsy{% /if %}`);
+    assert.strictEqual(tmpl.render({ items: ["a"] }).trim(), "truthy");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Whitespace control comprehensive
+// ---------------------------------------------------------------------------
+
+describe("Whitespace control comprehensive", () => {
+  it("for loop with compact output", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - items = list<str>
+---
+[{% for item in items %}{{ item }}{% /for %}]`);
+    const result = tmpl.render({ items: ["a", "b", "c"] });
+    assert.strictEqual(result.trim(), "[abc]");
+  });
+
+  it("if/else with compact output", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = bool
+---
+[{% if x %}yes{% else %}no{% /if %}]`);
+    assert.strictEqual(tmpl.render({ x: true }).trim(), "[yes]");
+    assert.strictEqual(tmpl.render({ x: false }).trim(), "[no]");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Option handling with transparent access
+// ---------------------------------------------------------------------------
+
+describe("Option transparent access comprehensive", () => {
+  it("accesses option value directly (transparent)", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<str>
+---
+> {% if has(x) %}
+
+{{ x }}
+
+> {% /if %}`);
+    assert.strictEqual(tmpl.render({ x: "hello" }).trim(), "hello");
+  });
+
+  it("kind() returns Some for present option", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<int>
+---
+{{ kind(x) }}`);
+    assert.strictEqual(tmpl.render({ x: 42 }).trim(), "Some");
+  });
+
+  it("kind() returns None for absent option", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<int>
+---
+{{ kind(x) }}`);
+    assert.strictEqual(tmpl.render({ x: null }).trim(), "None");
+  });
+
+  it("has() returns true for present option", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<str>
+---
+{% if has(x) %}present{% else %}absent{% /if %}`);
+    assert.strictEqual(tmpl.render({ x: "hi" }).trim(), "present");
+  });
+
+  it("has() returns false for absent option", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<str>
+---
+{% if has(x) %}present{% else %}absent{% /if %}`);
+    assert.strictEqual(tmpl.render({ x: null }).trim(), "absent");
+  });
+
+  it("match/case on option Some", () => {
+    const tmpl = Template.fromSource(
+      [
+        "---",
+        "params:",
+        "  - x = option<int>",
+        "---",
+        "> {% match x %}",
+        "",
+        "> {% case Some %}",
+        "",
+        "got {{ x }}",
+        "",
+        "> {% case None %}",
+        "",
+        "nothing",
+        "",
+        "> {% /match %}",
+      ].join("\n"),
+    );
+    const result = tmpl.render({ x: 42 });
+    assert.ok(result.includes("got 42"));
+  });
+
+  it("match/case on option None", () => {
+    const tmpl = Template.fromSource(
+      [
+        "---",
+        "params:",
+        "  - x = option<int>",
+        "---",
+        "> {% match x %}",
+        "",
+        "> {% case Some %}",
+        "",
+        "got {{ x }}",
+        "",
+        "> {% case None %}",
+        "",
+        "nothing",
+        "",
+        "> {% /match %}",
+      ].join("\n"),
+    );
+    const result = tmpl.render({ x: null });
+    assert.ok(result.includes("nothing"));
+  });
+
+  it("option with default None renders correctly", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<str> := None
+---
+{% if has(x) %}{{ x }}{% else %}default{% /if %}`);
+    assert.strictEqual(tmpl.render({}).trim(), "default");
+  });
+
+  it("option with default Some value", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<str> := "hello"
+---
+{% if has(x) %}{{ x }}{% else %}default{% /if %}`);
+    assert.strictEqual(tmpl.render({}).trim(), "hello");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Match/case with {% else %} keyword
+// ---------------------------------------------------------------------------
+
+describe("Match with {% else %} keyword", () => {
+  it("else arm catches unmatched variant", () => {
+    const tmpl = Template.fromSource(
+      [
+        "---",
+        "params:",
+        "  - status = enum<Ok, Err, Pending>",
+        "---",
+        "> {% match status %}",
+        "",
+        "> {% case Ok %}",
+        "",
+        "success",
+        "",
+        "> {% else %}",
+        "",
+        "other",
+        "",
+        "> {% /match %}",
+      ].join("\n"),
+    );
+    assert.ok(tmpl.render({ status: "Ok" }).includes("success"));
+    assert.ok(tmpl.render({ status: "Err" }).includes("other"));
+    assert.ok(tmpl.render({ status: "Pending" }).includes("other"));
+  });
+
+  it("{% else %} works as catch-all in match", () => {
+    const tmpl = Template.fromSource(
+      [
+        "---",
+        "params:",
+        "  - status = enum<Ok, Err, Pending>",
+        "---",
+        "> {% match status %}",
+        "",
+        "> {% case Ok %}",
+        "",
+        "success",
+        "",
+        "> {% else %}",
+        "",
+        "other",
+        "",
+        "> {% /match %}",
+      ].join("\n"),
+    );
+    assert.ok(tmpl.render({ status: "Ok" }).includes("success"));
+    assert.ok(tmpl.render({ status: "Err" }).includes("other"));
+  });
+
+  it("match with multiple cases and else", () => {
+    const tmpl = Template.fromSource(
+      [
+        "---",
+        "params:",
+        "  - color = enum<Red, Green, Blue, Yellow>",
+        "---",
+        "> {% match color %}",
+        "",
+        "> {% case Red %}",
+        "",
+        "hot",
+        "",
+        "> {% case Blue %}",
+        "",
+        "cool",
+        "",
+        "> {% else %}",
+        "",
+        "neutral",
+        "",
+        "> {% /match %}",
+      ].join("\n"),
+    );
+    assert.ok(tmpl.render({ color: "Red" }).includes("hot"));
+    assert.ok(tmpl.render({ color: "Blue" }).includes("cool"));
+    assert.ok(tmpl.render({ color: "Green" }).includes("neutral"));
+    assert.ok(tmpl.render({ color: "Yellow" }).includes("neutral"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Built-in functions edge cases
+// ---------------------------------------------------------------------------
+
+describe("Built-in function edge cases", () => {
+  it("idx() starts at 0", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - items = list<str>
+---
+{% for item in items %}{{ idx(item) }}{% /for %}`);
+    assert.strictEqual(tmpl.render({ items: ["a", "b", "c"] }).trim(), "012");
+  });
+
+  it("len() on string", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - text = str
+---
+{{ len(text) }}`);
+    assert.strictEqual(tmpl.render({ text: "hello" }).trim(), "5");
+  });
+
+  it("len() on empty string", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - text = str
+---
+{{ len(text) }}`);
+    assert.strictEqual(tmpl.render({ text: "" }).trim(), "0");
+  });
+
+  it("len() on list", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - items = list<str>
+---
+{{ len(items) }}`);
+    assert.strictEqual(tmpl.render({ items: ["a", "b"] }).trim(), "2");
+  });
+
+  it("len() on empty list", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - items = list<str>
+---
+{{ len(items) }}`);
+    assert.strictEqual(tmpl.render({ items: [] }).trim(), "0");
+  });
+
+  it("len() on struct", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - obj = struct<a = str, b = int>
+---
+{{ len(obj) }}`);
+    assert.strictEqual(tmpl.render({ obj: { a: "x", b: 1 } }).trim(), "2");
+  });
+
+  it("kind() on unit enum variant", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - color = enum<Red, Green, Blue>
+---
+{{ kind(color) }}`);
+    assert.strictEqual(tmpl.render({ color: "Red" }).trim(), "Red");
+  });
+
+  it("idx() throws on non-loop binding", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = str
+---
+{{ idx(x) }}`);
+    assert.throws(() => tmpl.render({ x: "hi" }), TemplateSyntaxError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// for...else edge cases (additional)
+// ---------------------------------------------------------------------------
+
+describe("for...else edge cases (additional)", () => {
+  it("for...else with single item list", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - items = list<str>
+---
+{% for item in items %}{{ item }}{% else %}empty{% /for %}`);
+    assert.strictEqual(tmpl.render({ items: ["only"] }).trim(), "only");
+  });
+
+  it("for...else with many items", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - items = list<int>
+---
+{% for item in items %}{{ item }},{% else %}empty{% /for %}`);
+    const result = tmpl.render({ items: [1, 2, 3, 4, 5] }).trim();
+    assert.ok(result.includes("1,"));
+    assert.ok(result.includes("5,"));
+    assert.ok(!result.includes("empty"));
+  });
+
+  it("multiple for loops with independent else", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - a = list<str>
+  - b = list<str>
+---
+{% for x in a %}{{ x }}{% else %}noA{% /for %}|{% for y in b %}{{ y }}{% else %}noB{% /for %}`);
+    assert.strictEqual(tmpl.render({ a: [], b: ["hi"] }).trim(), "noA|hi");
+    assert.strictEqual(tmpl.render({ a: ["hi"], b: [] }).trim(), "hi|noB");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Constants comprehensive
+// ---------------------------------------------------------------------------
+
+describe("Constants comprehensive (additional)", () => {
+  it("const str parsed in frontmatter", () => {
+    const tmpl = Template.fromSource(`---
+consts:
+  - GREETING = str := "Hello"
+params:
+  - name = str
+---
+{{ name }}`);
+    assert.strictEqual(tmpl.consts().GREETING, "Hello");
+  });
+
+  it("const int parsed in frontmatter", () => {
+    const tmpl = Template.fromSource(`---
+consts:
+  - MAX = int := 100
+params:
+  - n = int
+---
+{{ n }}`);
+    assert.strictEqual(tmpl.consts().MAX, 100);
+  });
+
+  it("const bool parsed in frontmatter", () => {
+    const tmpl = Template.fromSource(`---
+consts:
+  - ENABLED = bool := true
+params:
+  - name = str
+---
+{{ name }}`);
+    assert.strictEqual(tmpl.consts().ENABLED, true);
+  });
+
+  it("multiple consts parsed", () => {
+    const tmpl = Template.fromSource(`---
+consts:
+  - A = str := "alpha"
+  - B = int := 42
+params:
+  - name = str
+---
+{{ name }}`);
+    assert.strictEqual(tmpl.consts().A, "alpha");
+    assert.strictEqual(tmpl.consts().B, 42);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// If/elif/else comprehensive
+// ---------------------------------------------------------------------------
+
+describe("If/elif/else comprehensive (additional)", () => {
+  it("simple if-true", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = bool
+---
+{% if x %}yes{% /if %}`);
+    assert.strictEqual(tmpl.render({ x: true }).trim(), "yes");
+  });
+
+  it("simple if-false produces empty", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = bool
+---
+{% if x %}yes{% /if %}`);
+    assert.strictEqual(tmpl.render({ x: false }).trim(), "");
+  });
+
+  it("if-elif-else selects correct branch", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = int
+---
+{% if x == 1 %}one{% elif x == 2 %}two{% else %}other{% /if %}`);
+    assert.strictEqual(tmpl.render({ x: 1 }).trim(), "one");
+    assert.strictEqual(tmpl.render({ x: 2 }).trim(), "two");
+    assert.strictEqual(tmpl.render({ x: 3 }).trim(), "other");
+  });
+
+  it("multiple elif chains", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = int
+---
+{% if x == 1 %}one{% elif x == 2 %}two{% elif x == 3 %}three{% elif x == 4 %}four{% else %}other{% /if %}`);
+    assert.strictEqual(tmpl.render({ x: 1 }).trim(), "one");
+    assert.strictEqual(tmpl.render({ x: 4 }).trim(), "four");
+    assert.strictEqual(tmpl.render({ x: 5 }).trim(), "other");
+  });
+
+  it("nested if blocks", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = bool
+  - y = bool
+---
+{% if x %}{% if y %}both{% else %}x only{% /if %}{% else %}{% if y %}y only{% else %}neither{% /if %}{% /if %}`);
+    assert.strictEqual(tmpl.render({ x: true, y: true }).trim(), "both");
+    assert.strictEqual(tmpl.render({ x: true, y: false }).trim(), "x only");
+    assert.strictEqual(tmpl.render({ x: false, y: true }).trim(), "y only");
+    assert.strictEqual(tmpl.render({ x: false, y: false }).trim(), "neither");
+  });
+
+  it("not keyword is not supported — use else branch instead", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = bool
+---
+{% if not x %}negated{% else %}normal{% /if %}`);
+    // "not x" is treated as a variable name, which doesn't exist
+    assert.throws(() => tmpl.render({ x: true }));
+  });
+
+  it("negation via else branch works correctly", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = bool
+---
+{% if x %}normal{% else %}negated{% /if %}`);
+    assert.strictEqual(tmpl.render({ x: true }).trim(), "normal");
+    assert.strictEqual(tmpl.render({ x: false }).trim(), "negated");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Undefined variable errors
+// ---------------------------------------------------------------------------
+
+describe("Undefined variable errors (additional)", () => {
+  it("throws on undefined variable in expression", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = str
+---
+{{ x }} {{ y }}`);
+    assert.throws(
+      () => tmpl.render({ x: "hi" }),
+      (err: Error) => {
+        assert.ok(err instanceof UndefinedVariableError);
+        return true;
+      },
+    );
+  });
+
+  it("throws on undefined nested field", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - obj = struct<name = str>
+---
+{{ obj.nonexistent }}`);
+    assert.throws(
+      () => tmpl.render({ obj: { name: "hi" } }),
+      UndefinedVariableError,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Raw blocks comprehensive
+// ---------------------------------------------------------------------------
+
+describe("Raw block comprehensive (additional)", () => {
+  it("raw block preserves template syntax literally", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = str
+---
+{% raw %}{{ x }}{% /raw %}`);
+    assert.strictEqual(tmpl.render({ x: "hello" }).trim(), "{{ x }}");
+  });
+
+  it("raw block preserves statements literally", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = str
+---
+{% raw %}{% if x %}yes{% /if %}{% /raw %}`);
+    assert.strictEqual(
+      tmpl.render({ x: "hello" }).trim(),
+      "{% if x %}yes{% /if %}",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Comments comprehensive
+// ---------------------------------------------------------------------------
+
+describe("Comment comprehensive (additional)", () => {
+  it("comment block is omitted from output", () => {
+    const tmpl = Template.fromSource(`---
+params:
+---
+before{# this is a comment #}after`);
+    const result = tmpl.render({});
+    assert.ok(result.includes("before"));
+    assert.ok(result.includes("after"));
+    assert.ok(!result.includes("this is a comment"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Value module comprehensive
+// ---------------------------------------------------------------------------
+
+describe("Value module comprehensive (additional)", () => {
+  it("fromJs converts null to none", () => {
+    const val = fromJs(null);
+    assert.strictEqual(val.type, "none");
+    assert.strictEqual(display(val), "");
+  });
+
+  it("fromJs converts undefined to none", () => {
+    const val = fromJs(undefined);
+    assert.strictEqual(val.type, "none");
+    assert.strictEqual(display(val), "");
+  });
+
+  it("fromJs converts string", () => {
+    const val = fromJs("hello");
+    assert.strictEqual(val.type, "str");
+    assert.strictEqual(display(val), "hello");
+  });
+
+  it("fromJs converts integer", () => {
+    const val = fromJs(42);
+    assert.strictEqual(val.type, "int");
+    assert.strictEqual(display(val), "42");
+  });
+
+  it("fromJs converts float", () => {
+    const val = fromJs(3.14);
+    assert.strictEqual(val.type, "float");
+    assert.strictEqual(display(val), "3.14");
+  });
+
+  it("fromJs converts boolean true", () => {
+    const val = fromJs(true);
+    assert.strictEqual(val.type, "bool");
+    assert.strictEqual(isTruthy(val), true);
+  });
+
+  it("fromJs converts boolean false", () => {
+    const val = fromJs(false);
+    assert.strictEqual(val.type, "bool");
+    assert.strictEqual(isTruthy(val), false);
+  });
+
+  it("fromJs converts array to list", () => {
+    const val = fromJs([1, 2, 3]);
+    assert.strictEqual(val.type, "list");
+    if (val.type === "list") {
+      assert.strictEqual(val.items.length, 3);
+    }
+  });
+
+  it("fromJs converts object to dict", () => {
+    const val = fromJs({ a: 1, b: "two" });
+    assert.strictEqual(val.type, "dict");
+    if (val.type === "dict") {
+      assert.strictEqual(val.fields.size, 2);
+    }
+  });
+
+  it("display of list throws", () => {
+    const val = fromJs([1, 2, 3]);
+    assert.throws(() => display(val), /cannot display list/);
+  });
+
+  it("display of dict throws", () => {
+    const val = fromJs({ a: 1, b: 2 });
+    assert.throws(() => display(val), /cannot display struct/);
+  });
+
+  it("isTruthy: empty dict is falsy", () => {
+    const val = fromJs({});
+    assert.strictEqual(isTruthy(val), false);
+  });
+
+  it("isTruthy: non-empty dict is truthy", () => {
+    const val = fromJs({ a: 1 });
+    assert.strictEqual(isTruthy(val), true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Transparent option<T> comprehensive tests
+// ---------------------------------------------------------------------------
+
+describe("Transparent option<T>", () => {
+  it("null renders as empty string for option<str>", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<str>
+---
+[{% if has(x) %}{{ x }}{% /if %}]`);
+    assert.strictEqual(tmpl.render({ x: null }).trim(), "[]");
+  });
+
+  it("undefined renders as empty string for option<str>", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<str>
+---
+[{% if has(x) %}{{ x }}{% /if %}]`);
+    assert.strictEqual(tmpl.render({ x: undefined }).trim(), "[]");
+  });
+
+  it("value renders directly for option<str>", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<str>
+---
+[{% if has(x) %}{{ x }}{% /if %}]`);
+    assert.strictEqual(tmpl.render({ x: "hello" }).trim(), "[hello]");
+  });
+
+  it("has() returns false for null option", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<str>
+---
+> {% if has(x) %}
+
+yes
+
+> {% else %}
+
+no
+
+> {% /if %}`);
+    assert.strictEqual(tmpl.render({ x: null }).trim(), "no");
+  });
+
+  it("has() returns true for present option", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<str>
+---
+> {% if has(x) %}
+
+yes
+
+> {% else %}
+
+no
+
+> {% /if %}`);
+    assert.strictEqual(tmpl.render({ x: "hello" }).trim(), "yes");
+  });
+
+  it("has() returns true for option value that is the string 'None'", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<str>
+---
+> {% if has(x) %}
+
+{{ x }}
+
+> {% else %}
+
+absent
+
+> {% /if %}`);
+    // The string "None" is a valid string value, not the None variant
+    const output = tmpl.render({ x: "None" }).trim();
+    assert.strictEqual(output, "None");
+  });
+
+  it("kind() returns None for null option", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<str>
+---
+{{ kind(x) }}`);
+    assert.strictEqual(tmpl.render({ x: null }).trim(), "None");
+  });
+
+  it("kind() returns Some for present option", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<int>
+---
+{{ kind(x) }}`);
+    assert.strictEqual(tmpl.render({ x: 42 }).trim(), "Some");
+  });
+
+  it("match works with option None", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<int>
+---
+> {% match x %}
+
+> {% case Some %}
+
+value: {{ x }}
+
+> {% case None %}
+
+absent
+
+> {% /match %}`);
+    assert.strictEqual(tmpl.render({ x: null }).trim(), "absent");
+  });
+
+  it("match works with option Some", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<int>
+---
+> {% match x %}
+
+> {% case Some %}
+
+value: {{ x }}
+
+> {% case None %}
+
+absent
+
+> {% /match %}`);
+    assert.strictEqual(tmpl.render({ x: 42 }).trim(), "value: 42");
+  });
+
+  it("option<int> accepts number values", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<int>
+---
+> {% if has(x) %}
+
+{{ x }}
+
+> {% /if %}`);
+    assert.strictEqual(tmpl.render({ x: 7 }).trim(), "7");
+  });
+
+  it("option<int> accepts null", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<int>
+---
+[{% if has(x) %}{{ x }}{% /if %}]`);
+    assert.strictEqual(tmpl.render({ x: null }).trim(), "[]");
+  });
+
+  it("option<float> accepts number values", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<float>
+---
+> {% if has(x) %}
+
+{{ x }}
+
+> {% /if %}`);
+    assert.strictEqual(tmpl.render({ x: 3.14 }).trim(), "3.14");
+  });
+
+  it("option<bool> accepts boolean values", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<bool>
+---
+> {% if has(x) %}
+
+{{ x }}
+
+> {% /if %}`);
+    assert.strictEqual(tmpl.render({ x: true }).trim(), "true");
+  });
+
+  it("option<bool> null renders empty", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<bool>
+---
+[{% if has(x) %}{{ x }}{% /if %}]`);
+    assert.strictEqual(tmpl.render({ x: null }).trim(), "[]");
+  });
+
+  it("option in struct field — null", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - person = struct<name = str, email = option<str>>
+---
+> {% if has(person.email) %}
+
+email: {{ person.email }}
+
+> {% else %}
+
+no email
+
+> {% /if %}`);
+    assert.strictEqual(
+      tmpl.render({ person: { name: "Alice", email: null } }).trim(),
+      "no email",
+    );
+  });
+
+  it("option in struct field — present", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - person = struct<name = str, email = option<str>>
+---
+> {% if has(person.email) %}
+
+email: {{ person.email }}
+
+> {% else %}
+
+no email
+
+> {% /if %}`);
+    assert.strictEqual(
+      tmpl.render({ person: { name: "Alice", email: "a@b.com" } }).trim(),
+      "email: a@b.com",
+    );
+  });
+
+  it("option in list items", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - items = list<name = str, note = option<str>>
+---
+> {% for item in items %}
+> {% if has(item.note) %}
+
+{{ item.name }}: {{ item.note }}
+
+> {% else %}
+
+{{ item.name }}: (no note)
+
+> {% /if %}
+> {% /for %}`);
+    const output = tmpl
+      .render({
+        items: [
+          { name: "a", note: "hello" },
+          { name: "b", note: null },
+        ],
+      })
+      .trim();
+    assert.ok(output.includes("a: hello"));
+    assert.ok(output.includes("b: (no note)"));
+  });
+
+  it("default None creates null in defaults()", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<str> := None
+---
+> {% if has(x) %}
+
+{{ x }}
+
+> {% /if %}`);
+    const defs = tmpl.defaults();
+    assert.strictEqual(defs.x, null);
+  });
+
+  it("default value creates the value in defaults()", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<str> := "hello"
+---
+> {% if has(x) %}
+
+{{ x }}
+
+> {% /if %}`);
+    const defs = tmpl.defaults();
+    assert.strictEqual(defs.x, "hello");
+  });
+
+  it("option<int> default renders correctly", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<int> := 42
+---
+> {% if has(x) %}
+
+{{ x }}
+
+> {% /if %}`);
+    assert.strictEqual(tmpl.render().trim(), "42");
+  });
+
+  it("option<int> default None renders empty", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<int> := None
+---
+[{% if has(x) %}{{ x }}{% /if %}]`);
+    assert.strictEqual(tmpl.render().trim(), "[]");
+  });
+
+  it("type checking rejects wrong type for option inner", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<int>
+---
+> {% if has(x) %}
+
+{{ x }}
+
+> {% /if %}`);
+    assert.throws(
+      () => tmpl.render({ x: "not a number" }),
+      (err: Error) => {
+        assert.ok(err instanceof TypeMismatchError);
+        return true;
+      },
+    );
+  });
+
+  it("type checking accepts null for option<int>", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<int>
+---
+> {% if has(x) %}
+
+{{ x }}
+
+> {% /if %}`);
+    assert.doesNotThrow(() => tmpl.render({ x: null }));
+  });
+
+  it("option roundtrip: declarations show option<T>", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<str>
+---
+> {% if has(x) %}
+
+{{ x }}
+
+> {% /if %}`);
+    const decls = tmpl.declarations();
+    assert.strictEqual(decls.length, 1);
+    assert.strictEqual(decls[0]![0], "x");
+    assert.strictEqual(decls[0]![1], "option<str>");
+  });
+
+  it("inline match with option Some", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<int>
+---
+> {% match x %}
+
+> {% case Some %}
+
+got: {{ x }}
+
+> {% case None %}
+
+> {% /match %}`);
+    assert.strictEqual(tmpl.render({ x: 42 }).trim(), "got: 42");
+    assert.strictEqual(tmpl.render({ x: null }).trim(), "");
+  });
+
+  it("match with else arm", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<int>
+---
+> {% match x %}
+
+> {% case Some %}
+
+{{ x }}
+
+> {% else %}
+
+default
+
+> {% /match %}`);
+    assert.strictEqual(tmpl.render({ x: null }).trim(), "default");
+    assert.strictEqual(tmpl.render({ x: 99 }).trim(), "99");
+  });
+
+  it("isTruthy: none is falsy", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<str>
+---
+> {% if x %}
+
+yes
+
+> {% else %}
+
+no
+
+> {% /if %}`);
+    assert.strictEqual(tmpl.render({ x: null }).trim(), "no");
+    assert.strictEqual(tmpl.render({ x: "hi" }).trim(), "yes");
+  });
+
+  it("option renderUnchecked with null", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<str>
+---
+> {% if has(x) %}
+
+{{ x }}
+
+> {% else %}
+
+none
+
+> {% /if %}`);
+    assert.strictEqual(tmpl.renderUnchecked({ x: null }).trim(), "none");
+  });
+
+  it("option renderUnchecked with value", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - x = option<str>
+---
+> {% if has(x) %}
+
+{{ x }}
+
+> {% else %}
+
+none
+
+> {% /if %}`);
+    assert.strictEqual(tmpl.renderUnchecked({ x: "hi" }).trim(), "hi");
+  });
+});
+
+// ===========================================================================
+// Flow-sensitive narrowing tests
+// ===========================================================================
+
+describe("Flow-sensitive narrowing", () => {
+  describe("has() narrows option<T> to T", () => {
+    it("option<str> inside has() guard compiles and renders", () => {
+      const tmpl = Template.fromSource(
+        `---
+params:
+  - x = option<str>
+---
+{% if has(x) %}{{ x }}{% /if %}`,
+      );
+      assert.strictEqual(tmpl.render({ x: "hello" }).trim(), "hello");
+    });
+
+    it("option<int> inside has() guard compiles and renders", () => {
+      const tmpl = Template.fromSource(
+        `---
+params:
+  - x = option<int>
+---
+{% if has(x) %}{{ x }}{% /if %}`,
+      );
+      assert.strictEqual(tmpl.render({ x: 42 }).trim(), "42");
+    });
+
+    it("option<str> without has() guard is compile error", () => {
+      assert.throws(
+        () =>
+          Template.fromSource(
+            `---
+params:
+  - x = option<str>
+---
+{{ x }}`,
+          ),
+        /cannot display.*option/,
+      );
+    });
+
+    it("option<int> without has() guard is compile error", () => {
+      assert.throws(
+        () =>
+          Template.fromSource(
+            `---
+params:
+  - x = option<int>
+---
+{{ x }}`,
+          ),
+        /cannot display.*option/,
+      );
+    });
+
+    it("else branch does NOT narrow option", () => {
+      // In the else branch of has(x), x is still option — not narrowed
+      assert.throws(
+        () =>
+          Template.fromSource(
+            `---
+params:
+  - x = option<str>
+---
+{% if has(x) %}present{% else %}{{ x }}{% /if %}`,
+          ),
+        /cannot display.*option/,
+      );
+    });
+
+    it("nested has() narrowing works", () => {
+      const tmpl = Template.fromSource(
+        `---
+params:
+  - a = option<str>
+  - b = option<int>
+---
+{% if has(a) %}{% if has(b) %}{{ a }}-{{ b }}{% /if %}{% /if %}`,
+      );
+      assert.strictEqual(tmpl.render({ a: "x", b: 5 }).trim(), "x-5");
+    });
+  });
+
+  describe("match narrows enum to matched variant", () => {
+    it("enum field access inside match arm compiles", () => {
+      const tmpl = Template.fromSource(
+        `---
+params:
+  - outcome = enum<Confirmed(evidence = str), Rejected>
+---
+> {% match outcome %}
+> {% case Confirmed %}
+
+{{ outcome.evidence }}
+
+> {% case Rejected %}
+
+rejected
+
+> {% /match %}`,
+      );
+      const result = tmpl.render({
+        outcome: { __kind__: "Confirmed", evidence: "proof" },
+      });
+      assert.ok(result.includes("proof"), `got: ${result}`);
+    });
+
+    it("bare enum without match is compile error", () => {
+      assert.throws(
+        () =>
+          Template.fromSource(
+            `---
+params:
+  - status = enum<Active, Inactive>
+---
+{{ status }}`,
+          ),
+        /cannot display.*enum/,
+      );
+    });
+
+    it("kind() on enum is allowed without narrowing", () => {
+      const tmpl = Template.fromSource(
+        `---
+params:
+  - status = enum<Active, Inactive>
+---
+{{ kind(status) }}`,
+      );
+      assert.ok(tmpl);
+    });
+  });
+
+  describe("for-loop introduces element binding", () => {
+    it("for-loop binding allows scalar element display", () => {
+      const tmpl = Template.fromSource(
+        `---
+params:
+  - items = list<str>
+---
+{% for item in items %}{{ item }} {% /for %}`,
+      );
+      const result = tmpl.render({ items: ["a", "b", "c"] });
+      assert.ok(result.includes("a"), `got: ${result}`);
+    });
+
+    it("for-loop binding allows struct field access", () => {
+      const tmpl = Template.fromSource(
+        `---
+params:
+  - items = list<name = str, score = int>
+---
+{% for item in items %}{{ item.name }}: {{ item.score }} {% /for %}`,
+      );
+      const result = tmpl.render({ items: [{ name: "Alice", score: 95 }] });
+      assert.ok(result.includes("Alice"), `got: ${result}`);
+      assert.ok(result.includes("95"), `got: ${result}`);
+    });
+
+    it("bare list without for-loop is compile error", () => {
+      assert.throws(
+        () =>
+          Template.fromSource(
+            `---
+params:
+  - items = list<name = str>
+---
+{{ items }}`,
+          ),
+        /cannot display.*list/,
+      );
+    });
+  });
+
+  describe("struct displayability", () => {
+    it("bare struct is compile error", () => {
+      assert.throws(
+        () =>
+          Template.fromSource(
+            `---
+params:
+  - config = struct<timeout = int, name = str>
+---
+{{ config }}`,
+          ),
+        /cannot display.*struct/,
+      );
+    });
+
+    it("struct field access is allowed", () => {
+      const tmpl = Template.fromSource(
+        `---
+params:
+  - config = struct<timeout = int, name = str>
+---
+{{ config.timeout }} {{ config.name }}`,
+      );
+      const result = tmpl.render({ config: { timeout: 30, name: "test" } });
+      assert.ok(result.includes("30"), `got: ${result}`);
+      assert.ok(result.includes("test"), `got: ${result}`);
+    });
+  });
+
+  describe("filters skip displayability check", () => {
+    it("list | join() passes compile-time check", () => {
+      const tmpl = Template.fromSource(
+        `---
+params:
+  - items = list<str>
+---
+{{ items | join(", ") }}`,
+      );
+      assert.strictEqual(
+        tmpl.render({ items: ["a", "b", "c"] }).trim(),
+        "a, b, c",
+      );
+    });
+
+    it("str | upper passes compile-time check", () => {
+      const tmpl = Template.fromSource(
+        `---
+params:
+  - name = str
+---
+{{ name | upper }}`,
+      );
+      assert.strictEqual(tmpl.render({ name: "hello" }).trim(), "HELLO");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Collision and scope tests
+// ---------------------------------------------------------------------------
+
+describe("Collision and scope tests", () => {
+  // ── 1. Const as param default ──────────────────────────────────────────
+
+  describe("Const as param default", () => {
+    it("local const as param default", () => {
+      const tmpl = Template.fromSource(`---
+consts:
+  - MAX = int := 10
+params:
+  - count = int := MAX
+---
+{{ count }}`);
+      // Without providing count, it should use the const default
+      assert.strictEqual(tmpl.render().trim(), "10");
+      // Providing count overrides the default
+      assert.strictEqual(tmpl.render({ count: 42 }).trim(), "42");
+    });
+
+    it("imported const as param default", () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pt-impconst-"));
+      try {
+        const childContent = `---
+consts:
+  - LIMIT = int := 100
+params: [x = str]
+---
+{{ x }}`;
+        fs.writeFileSync(path.join(dir, "Config.tmpl.md"), childContent);
+
+        const tmpl = Template.fromSourceWithBaseDir(
+          `---
+imports:
+  - "[Config](Config.tmpl.md)"
+params:
+  - max_items = int := Config.LIMIT
+---
+{{ max_items }}`,
+          dir,
+        );
+        assert.strictEqual(tmpl.render().trim(), "100");
+        assert.strictEqual(tmpl.render({ max_items: 5 }).trim(), "5");
+      } finally {
+        fs.rmSync(dir, { recursive: true });
+      }
+    });
+
+    it("rejects const default with type mismatch", () => {
+      assert.throws(
+        () =>
+          Template.fromSource(`---
+consts:
+  - NAME = str := "hello"
+params:
+  - count = int := NAME
+---
+{{ count }}`),
+        (err: Error) =>
+          err.message.includes("type") && err.message.includes("str"),
+      );
+    });
+  });
+
+  // ── 2. Param name shadows import stem (REJECTED) ─────────────────────
+
+  describe("Param name shadows import stem", () => {
+    it("rejects param whose PascalCase matches import stem", () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pt-shadow-imp-"));
+      try {
+        const childContent = `---
+params: [x = str]
+---
+{{ x }}`;
+        fs.writeFileSync(path.join(dir, "Helper.tmpl.md"), childContent);
+
+        assert.throws(
+          () =>
+            Template.fromSourceWithBaseDir(
+              `---
+imports:
+  - "[Helper](Helper.tmpl.md)"
+params:
+  - helper = str
+---
+{{ helper }}`,
+              dir,
+            ),
+          (err: Error) => err.message.includes("shadows import"),
+        );
+      } finally {
+        fs.rmSync(dir, { recursive: true });
+      }
+    });
+
+    it("rejects const whose PascalCase matches import stem", () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pt-shadow-cimp-"));
+      try {
+        const childContent = `---
+params: [x = str]
+---
+{{ x }}`;
+        fs.writeFileSync(path.join(dir, "Config.tmpl.md"), childContent);
+
+        assert.throws(
+          () =>
+            Template.fromSourceWithBaseDir(
+              `---
+imports:
+  - "[Config](Config.tmpl.md)"
+consts:
+  - config = str := "val"
+---
+{{ config }}`,
+              dir,
+            ),
+          (err: Error) => err.message.includes("shadows import"),
+        );
+      } finally {
+        fs.rmSync(dir, { recursive: true });
+      }
+    });
+  });
+
+  // ── 3. Param name shadows type alias (REJECTED unless type matches) ──
+
+  describe("Param name shadows type alias", () => {
+    it("rejects param PascalCase matching type alias with different type", () => {
+      assert.throws(
+        () =>
+          Template.fromSource(`---
+types:
+  - TaskList = list<title = str>
+params:
+  - task_list = str
+---
+{{ task_list }}`),
+        (err: Error) => err.message.includes("conflicts with type alias"),
+      );
+    });
+
+    it("rejects const PascalCase matching type alias with different type", () => {
+      assert.throws(
+        () =>
+          Template.fromSource(
+            [
+              `---`,
+              "types:",
+              "  - MyItem = list<x = int>",
+              "consts:",
+              '  - my_item = str := "hello"',
+              `---`,
+              "{{ my_item }}",
+            ].join("\n"),
+          ),
+        (err: Error) => err.message.includes("conflicts with type alias"),
+      );
+    });
+
+    it("allows param PascalCase matching type alias with SAME type", () => {
+      const tmpl = Template.fromSource(`---
+types:
+  - CodeReview = list<title = str>
+params:
+  - code_review = CodeReview
+---
+> {% for item in code_review %}
+
+{{ item.title }}
+
+> {% /for %}`);
+      const output = tmpl.render({
+        code_review: [{ title: "PR #1" }],
+      });
+      assert.ok(output.includes("PR #1"));
+    });
+  });
+
+  // ── 4. Param name shadows const name (REJECTED) ──────────────────────
+
+  describe("Param name shadows const name", () => {
+    it("rejects param and const with same name", () => {
+      assert.throws(
+        () =>
+          Template.fromSource(`---
+consts:
+  - limit = int := 5
+params:
+  - limit = int
+---
+{{ limit }}`),
+        (err: Error) =>
+          err.message.includes("conflicts with constant") ||
+          err.message.includes("declared as both"),
+      );
+    });
+  });
+
+  // ── 5. Import stem shadows type alias (REJECTED) ─────────────────────
+
+  describe("Import stem shadows type alias", () => {
+    it("rejects type alias with same name as import stem", () => {
+      assert.throws(
+        () =>
+          Template.fromSource(
+            [
+              `---`,
+              "imports:",
+              '  - "[Shared](shared.tmpl.md)"',
+              "types:",
+              "  - Shared = list<x = str>",
+              "params:",
+              "  - data = Shared",
+              `---`,
+              "> {% for item in data %}",
+              "",
+              "{{ item.x }}",
+              "",
+              "> {% /for %}",
+            ].join("\n"),
+          ),
+        (err: Error) => err.message.includes("shadows"),
+      );
+    });
+  });
+
+  // ── 6. Inline tmpl name shadows param/const (REJECTED) ───────────────
+
+  describe("Inline tmpl name shadows param or const", () => {
+    it("rejects inline template name colliding with param name", () => {
+      assert.throws(
+        () =>
+          Template.fromSource(
+            [
+              `---`,
+              "params:",
+              "  - greeting = str",
+              `---`,
+              "> {% tmpl greeting %}",
+              "",
+              `---`,
+              "",
+              "params:",
+              "",
+              "- text = str",
+              "",
+              `---`,
+              "",
+              "{{ text }}",
+              "",
+              "> {% /tmpl %}",
+              "",
+              "{{ greeting }}",
+            ].join("\n"),
+          ),
+        (err: Error) => err.message.includes("inline template name conflicts"),
+      );
+    });
+
+    it("rejects inline template name colliding with const name", () => {
+      assert.throws(
+        () =>
+          Template.fromSource(
+            [
+              `---`,
+              "consts:",
+              '  - footer = str := "bye"',
+              `---`,
+              "> {% tmpl footer %}",
+              "",
+              `---`,
+              "",
+              "params:",
+              "",
+              "- text = str",
+              "",
+              `---`,
+              "",
+              "{{ text }}",
+              "",
+              "> {% /tmpl %}",
+              "",
+              "{{ footer }}",
+            ].join("\n"),
+          ),
+        (err: Error) => err.message.includes("inline template name conflicts"),
+      );
+    });
+  });
+
+  // ── 7. Inline tmpl name shadows import stem (REJECTED) ───────────────
+
+  describe("Inline tmpl name shadows import stem", () => {
+    it("rejects inline template name matching import stem", () => {
+      assert.throws(
+        () =>
+          Template.fromSource(
+            [
+              `---`,
+              "imports:",
+              '  - "[Utils](utils.tmpl.md)"',
+              "params:",
+              "  - x = str",
+              `---`,
+              "> {% tmpl Utils %}",
+              "",
+              `---`,
+              "",
+              "params:",
+              "",
+              "- y = str",
+              "",
+              `---`,
+              "",
+              "{{ y }}",
+              "",
+              "> {% /tmpl %}",
+              "",
+              "{{ x }}",
+            ].join("\n"),
+          ),
+        (err: Error) =>
+          err.message.includes("inline template name conflicts with import"),
+      );
+    });
+  });
+
+  // ── 8. For-loop binding shadows declared name (REJECTED) ─────────────
+
+  describe("For-loop binding shadows declared name", () => {
+    it("rejects for binding that shadows a param", () => {
+      assert.throws(
+        () =>
+          Template.fromSource(`---
+params:
+  - item = str
+  - items = list<str>
+---
+> {% for item in items %}
+
+{{ item }}
+
+> {% /for %}`),
+        (err: Error) => err.message.includes("shadows"),
+      );
+    });
+
+    it("rejects for binding that shadows a const", () => {
+      assert.throws(
+        () =>
+          Template.fromSource(`---
+consts:
+  - x = int := 1
+params:
+  - items = list<str>
+---
+> {% for x in items %}
+
+{{ x }}
+
+> {% /for %}`),
+        (err: Error) => err.message.includes("shadows"),
+      );
+    });
+
+    it("rejects for binding that shadows an import stem", () => {
+      assert.throws(
+        () =>
+          Template.fromSource(
+            [
+              `---`,
+              "imports:",
+              '  - "[item](item.tmpl.md)"',
+              "params:",
+              "  - items = list<str>",
+              `---`,
+              "> {% for item in items %}",
+              "",
+              "{{ item }}",
+              "",
+              "> {% /for %}",
+            ].join("\n"),
+          ),
+        (err: Error) => err.message.includes("shadows"),
+      );
+    });
+  });
+
+  // ── 9. Nested tmpl scope isolation ───────────────────────────────────
+
+  describe("Nested tmpl scope isolation", () => {
+    it("child tmpl with its own types works independently", () => {
+      const src = [
+        `---`,
+        "params:",
+        "  - items = list<name = str>",
+        `---`,
+        "> {% tmpl row %}",
+        "",
+        `---`,
+        "",
+        "params:",
+        "",
+        "- label = str",
+        "",
+        `---`,
+        "",
+        "[{{ label }}]",
+        "",
+        "> {% /tmpl %}",
+        "> {% for item in items %}",
+        "> {% include row with label=item.name %}",
+        "> {% /for %}",
+      ].join("\n");
+
+      const tmpl = Template.fromSource(src);
+      const result = tmpl.render({
+        items: [{ name: "alpha" }, { name: "beta" }],
+      });
+      assert.ok(result.includes("[alpha]"), `expected [alpha] in: ${result}`);
+      assert.ok(result.includes("[beta]"), `expected [beta] in: ${result}`);
+    });
+
+    it("parent type alias is NOT inherited by child tmpl", () => {
+      // Parent declares a type alias. The child inline tmpl has its own
+      // scope with only its own params — proving scope isolation.
+      // We pass a variable (label) from the parent scope to the child.
+      const src = [
+        `---`,
+        "types:",
+        "  - Priority = enum<High, Low>",
+        "params:",
+        "  - p = Priority",
+        "  - label = str",
+        `---`,
+        "> {% tmpl detail %}",
+        "",
+        `---`,
+        "",
+        "params:",
+        "",
+        "- msg = str",
+        "",
+        `---`,
+        "",
+        "Detail: {{ msg }}",
+        "",
+        "> {% /tmpl %}",
+        "> {% match p %}",
+        "> {% case High %}",
+        "",
+        "> {% include detail with msg=label %}",
+        "",
+        "> {% case Low %}",
+        "",
+        "> {% include detail with msg=label %}",
+        "",
+        "> {% /match %}",
+      ].join("\n");
+
+      const tmpl = Template.fromSource(src);
+      const result = tmpl.render({ p: "High", label: "urgent" });
+      assert.ok(
+        result.includes("Detail: urgent"),
+        `expected Detail: urgent in: ${result}`,
+      );
+    });
+
+    it("inline tmpl with own consts can access them", () => {
+      const src = [
+        `---`,
+        "params:",
+        "  - name = str",
+        `---`,
+        "> {% tmpl greeting %}",
+        "",
+        `---`,
+        "",
+        "consts:",
+        "",
+        '  - PREFIX = str := "Hello"',
+        "",
+        "params:",
+        "",
+        "- who = str",
+        "",
+        `---`,
+        "",
+        "{{ PREFIX }}, {{ who }}!",
+        "",
+        "> {% /tmpl %}",
+        "> {% include greeting with who=name %}",
+      ].join("\n");
+
+      const tmpl = Template.fromSource(src);
+      const result = tmpl.render({ name: "world" });
+      assert.ok(
+        result.includes("Hello, world!"),
+        `expected 'Hello, world!' in: ${result}`,
+      );
+    });
+
+    it("inline tmpl consts shadow parent values", () => {
+      const src = [
+        `---`,
+        "consts:",
+        '  - LABEL = str := "outer"',
+        "params:",
+        "  - x = str",
+        `---`,
+        "> {% tmpl inner %}",
+        "",
+        `---`,
+        "",
+        "consts:",
+        "",
+        '  - LABEL = str := "inner"',
+        "",
+        "params:",
+        "",
+        "- val = str",
+        "",
+        `---`,
+        "",
+        "{{ LABEL }}:{{ val }}",
+        "",
+        "> {% /tmpl %}",
+        "",
+        "{{ LABEL }}",
+        "",
+        "> {% include inner with val=x %}",
+      ].join("\n");
+
+      const tmpl = Template.fromSource(src);
+      const result = tmpl.render({ x: "test" });
+      assert.ok(
+        result.includes("outer"),
+        `expected 'outer' from parent scope in: ${result}`,
+      );
+      assert.ok(
+        result.includes("inner:test"),
+        `expected 'inner:test' from child scope in: ${result}`,
+      );
+    });
+  });
+
+  // ── 10. Duplicate const names (REJECTED) ─────────────────────────────
+
+  describe("Duplicate const names", () => {
+    it("rejects duplicate constant names", () => {
+      assert.throws(
+        () =>
+          Template.fromSource(`---
+consts:
+  - MAX = int := 10
+  - MAX = int := 20
+params:
+  - x = str
+---
+{{ x }}`),
+        (err: Error) => err.message.includes("duplicate"),
+      );
+    });
+  });
+
+  // ── 11. Const name conflicts with type alias ─────────────────────────
+
+  describe("Const name conflicts with type alias", () => {
+    it("rejects const whose PascalCase matches a non-enum type alias", () => {
+      assert.throws(
+        () =>
+          Template.fromSource(
+            [
+              `---`,
+              "types:",
+              "  - MaxSize = list<x = int>",
+              "consts:",
+              '  - max_size = str := "big"',
+              `---`,
+              "{{ max_size }}",
+            ].join("\n"),
+          ),
+        (err: Error) => err.message.includes("conflicts with type alias"),
+      );
+    });
+
+    it("allows const matching enum type alias (enum auto-inject)", () => {
+      // Enum type aliases are auto-injected as constants; a user-defined
+      // constant with the same name just takes priority — not a conflict.
+      const tmpl = Template.fromSource(`---
+types:
+  - Stage = enum<Design, Build>
+consts:
+  - Stage = str := "override"
+---
+{{ Stage }}`);
+      const result = tmpl.render();
+      assert.strictEqual(result, "override");
+    });
   });
 });

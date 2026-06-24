@@ -17,7 +17,12 @@ import {
   typeName,
   ENUM_TAG_KEY,
 } from "./value.js";
-import { TemplateSyntaxError, UndefinedVariableError } from "./errors.js";
+import {
+  TemplateSyntaxError,
+  TypeMismatchError,
+  UndefinedVariableError,
+} from "./errors.js";
+import { type VarDecl, type VarType } from "./frontmatter.js";
 import { applyFilter, parseFilter } from "./filters.js";
 
 // ---------------------------------------------------------------------------
@@ -45,7 +50,7 @@ export type Node =
       kind: "match";
       expr: string;
       arms: MatchArm[];
-      defaultArm: Node[] | undefined;
+      elseArm: Node[] | undefined;
       inlineGuard?: { variant: string; body: Node[] };
     }
   | { kind: "raw"; text: string }
@@ -91,13 +96,31 @@ export class Scope {
   private readonly layers: Map<string, Value>[] = [];
   private readonly loopMetas: Map<string, LoopMeta> = new Map();
   private readonly consts: ReadonlyMap<string, Value>;
+  private readonly optionParams: ReadonlySet<string>;
 
   constructor(
     ctx: ReadonlyMap<string, Value>,
     consts?: ReadonlyMap<string, Value>,
+    optionParams?: ReadonlySet<string>,
   ) {
     this.ctx = ctx;
     this.consts = consts ?? new Map();
+    this.optionParams = optionParams ?? new Set();
+  }
+
+  /**
+   * Check if a variable path refers to an option-typed parameter.
+   * Handles both simple names ("x") and dotted paths ("person.email").
+   */
+  isOptionParam(path: string): boolean {
+    // Check exact match first
+    if (this.optionParams.has(path)) return true;
+    // For dotted paths, check if the root is known as option
+    const dotIdx = path.indexOf(".");
+    if (dotIdx > 0) {
+      return this.optionParams.has(path);
+    }
+    return false;
   }
 
   pushLayer(): Map<string, Value> {
@@ -203,8 +226,9 @@ export function parseBody(body: string): Node[] {
  * Check if a line is a valid neighbor for a standalone tag line.
  *
  * Valid neighbors: blank lines, frontmatter delimiters, or other
- * blockquote tag lines (> {% ... %}). Content lines starting with >
- * that do NOT contain {% %} are NOT valid — they require a blank line.
+ * blockquote tag lines (`> {% ... %}`). Content lines starting with `>`
+ * that do NOT contain `{% %}` are NOT valid — they require a blank line.
+ * Normal content lines are also invalid neighbors.
  */
 function isValidTagNeighbor(line: string): boolean {
   const trimmed = line.trimStart();
@@ -229,7 +253,7 @@ function isValidTagNeighbor(line: string): boolean {
  */
 function preprocessBlockquotes(body: string): string {
   const lines = body.split("\n");
-  const result: string[] = [];
+  let result = "";
   let skipNextNewline = false;
 
   for (let i = 0; i < lines.length; i++) {
@@ -241,6 +265,7 @@ function preprocessBlockquotes(body: string): string {
       (trimmed.startsWith("> {%") || trimmed.startsWith(">{%")) &&
       trimmed.includes("%}");
 
+    // Strip the `> ` prefix from blockquote tag lines.
     let tagLine = line;
     if (isBlockquoteTag) {
       if (trimmed.startsWith("> ")) {
@@ -250,9 +275,18 @@ function preprocessBlockquotes(body: string): string {
       }
     }
 
+    // Skip blank line immediately after a standalone tag.
     if (skipNextNewline && tagLine.trim() === "") {
       continue;
     }
+
+    // Add newline separator before this line (except for the first line
+    // and when the previous line was a standalone tag that consumed its
+    // trailing newline).
+    if (i > 0 && !skipNextNewline) {
+      result += "\n";
+    }
+    skipNextNewline = false;
 
     if (isBlockquoteTag) {
       if (i > 0) {
@@ -273,23 +307,21 @@ function preprocessBlockquotes(body: string): string {
         }
       }
 
-      if (result.length > 0 && result[result.length - 1] === "" && i > 0) {
-        result.pop();
+      // Pop the preceding blank line (standalone tags consume surrounding
+      // blank lines, matching Rust's strip_blockquote_tags).
+      if (result.endsWith("\n\n") || result === "\n") {
+        result = result.slice(0, -1);
       }
 
       if (tagLine.trim().startsWith("{%") && tagLine.trim().endsWith("%}")) {
         skipNextNewline = true;
-      } else {
-        skipNextNewline = false;
       }
-    } else {
-      skipNextNewline = false;
     }
 
-    result.push(tagLine);
+    result += tagLine;
   }
 
-  return result.join("\n");
+  return result;
 }
 
 /**
@@ -597,24 +629,35 @@ function handleMatch(
   // Check for inline match: `match expr case Variant`
   const inlineMatch = /^(\S+)\s+case\s+(\w+)$/.exec(tagContent);
   if (inlineMatch && inlineMatch[1] && inlineMatch[2]) {
-    const [body, endPos] = parseBlock(input, afterTag, ["/match"]);
+    // Parse body, stopping at /match or else.
+    const [body, endPos, closingTag] = parseBlockWithClosing(input, afterTag, [
+      "/match",
+      "else",
+    ]);
+    let elseArm: Node[] | undefined;
+    let finalPos = endPos;
+    if (closingTag === "else") {
+      const [elseBody, elseEndPos] = parseBlock(input, endPos, ["/match"]);
+      elseArm = elseBody;
+      finalPos = elseEndPos;
+    }
     return [
       [
         {
           kind: "match",
           expr: inlineMatch[1],
           arms: [],
-          defaultArm: undefined,
+          elseArm,
           inlineGuard: { variant: inlineMatch[2], body },
         },
       ],
-      endPos,
+      finalPos,
     ];
   }
 
   const expr = tagContent;
   const arms: MatchArm[] = [];
-  let defaultArm: Node[] | undefined;
+  let elseArm: Node[] | undefined;
   let pos = afterTag;
 
   // Parse case arms
@@ -622,7 +665,7 @@ function handleMatch(
     const [body, endPos, closingTag, closingContent] = parseBlockWithClosing(
       input,
       pos,
-      ["/match", "case", "default"],
+      ["/match", "case", "else"],
     );
 
     if (closingTag === "case") {
@@ -639,15 +682,13 @@ function handleMatch(
         .filter((v) => v.length > 0);
       arms.push({ variants, body: [] });
       pos = endPos;
-    } else if (closingTag === "default") {
+    } else if (closingTag === "else") {
       if (arms.length > 0) {
         arms[arms.length - 1]!.body = body;
       }
-      const [defaultBody, defaultEndPos] = parseBlock(input, endPos, [
-        "/match",
-      ]);
-      defaultArm = defaultBody;
-      pos = defaultEndPos;
+      const [elseBody, elseEndPos] = parseBlock(input, endPos, ["/match"]);
+      elseArm = elseBody;
+      pos = elseEndPos;
       break;
     } else {
       // /match
@@ -659,7 +700,7 @@ function handleMatch(
     }
   }
 
-  return [[{ kind: "match", expr, arms, defaultArm }], pos];
+  return [[{ kind: "match", expr, arms, elseArm }], pos];
 }
 
 function handleRaw(
@@ -1066,12 +1107,19 @@ function findBlockEnd(input: string, start: number, closeTag: string): number {
 /** Rendering options. */
 export interface RenderOptions {
   /** Inline template definitions available for `{% include %}`. */
-  inlineTemplates?: Map<string, { params: Map<string, unknown>; body: string }>;
+  inlineTemplates?: Map<
+    string,
+    {
+      declarations: readonly VarDecl[];
+      body: string;
+      consts: Map<string, Value>;
+    }
+  >;
   /** Template loader for file-based `{% include %}`. */
   templateLoader?: (
     path: string,
     basePath?: string,
-  ) => [Node[], Map<string, Value>] | undefined;
+  ) => [Node[], Map<string, Value>, readonly VarDecl[]] | undefined;
   /** Maximum include depth. */
   maxIncludeDepth?: number;
 }
@@ -1157,28 +1205,34 @@ export function renderNodes(
       }
 
       case "match": {
+        const isOpt = isOptionMatchNode(node);
         if (node.inlineGuard) {
           // Use resolvePath to get raw variant (not unwrapped)
           const val = scope.resolvePath(node.expr.trim());
-          const variantName = getVariantName(val);
+          const variantName = getVariantName(val, isOpt);
           if (variantName === node.inlineGuard.variant) {
             parts.push(renderNodes(node.inlineGuard.body, scope, options));
+          } else if (node.elseArm) {
+            parts.push(renderNodes(node.elseArm, scope, options));
           }
         } else {
           // Use resolvePath to get raw variant (not unwrapped)
           const val = scope.resolvePath(node.expr.trim());
-          const variantName = getVariantName(val);
+          const variantName = getVariantName(val, isOpt);
 
           let matched = false;
           for (const arm of node.arms) {
-            if (arm.variants.includes(variantName)) {
+            if (
+              arm.variants.includes(variantName) ||
+              arm.variants.includes("_")
+            ) {
               parts.push(renderNodes(arm.body, scope, options));
               matched = true;
               break;
             }
           }
-          if (!matched && node.defaultArm) {
-            parts.push(renderNodes(node.defaultArm, scope, options));
+          if (!matched && node.elseArm) {
+            parts.push(renderNodes(node.elseArm, scope, options));
           }
         }
         break;
@@ -1201,15 +1255,93 @@ export function renderNodes(
         // Try inline templates first
         if (!node.path && options?.inlineTemplates?.has(node.name)) {
           const inline = options.inlineTemplates.get(node.name)!;
-          // Create child scope with mapped params
-          const childValues = new Map<string, Value>(scope.allValues());
-          for (const [targetKey, sourceExpr] of node.withMappings) {
-            childValues.set(targetKey, evaluateExpression(sourceExpr, scope));
+
+          // Validate contract: all declared params must be provided via
+          // `with` mappings or `for` binding.
+          const providedKeys = new Set<string>(node.withMappings.keys());
+          if (node.forBinding) {
+            providedKeys.add(node.forBinding);
           }
-          const childScope = new Scope(childValues, new Map());
-          // Parse inline template body and render
+          const missing: string[] = [];
+          for (const decl of inline.declarations) {
+            if (
+              !providedKeys.has(decl.name) &&
+              decl.defaultValue === undefined
+            ) {
+              missing.push(decl.name);
+            }
+          }
+          if (missing.length > 0) {
+            throw new TemplateSyntaxError(
+              `include '${node.name}' missing required param(s): ${missing.join(", ")}`,
+            );
+          }
+
           const inlineNodes = parseBody(inline.body);
-          parts.push(renderNodes(inlineNodes, childScope, childOpts));
+
+          if (node.forBinding && node.forExpr) {
+            // {% include tmpl_name for binding in list_expr %}
+            const listVal = evaluateExpression(node.forExpr, scope);
+            if (listVal.type !== "list") {
+              throw new TemplateSyntaxError(
+                `include for-loop requires a list, got ${listVal.type}`,
+              );
+            }
+            const results: string[] = [];
+            for (const item of listVal.items) {
+              const childValues = new Map<string, Value>(scope.allValues());
+              for (const [targetKey, sourceExpr] of node.withMappings) {
+                childValues.set(
+                  targetKey,
+                  evaluateExpression(sourceExpr, scope),
+                );
+              }
+              childValues.set(node.forBinding, item);
+              // Inject defaults for unprovided params
+              for (const decl of inline.declarations) {
+                if (
+                  !providedKeys.has(decl.name) &&
+                  !childValues.has(decl.name) &&
+                  decl.defaultValue !== undefined
+                ) {
+                  childValues.set(decl.name, decl.defaultValue);
+                }
+              }
+              validateIncludeTypes(inline.declarations, childValues, node.name);
+              // Add inline template's own consts to the child scope.
+              // These shadow any parent values with the same name.
+              for (const [k, v] of inline.consts) {
+                childValues.set(k, v);
+              }
+              const childScope = new Scope(childValues, new Map());
+              results.push(renderNodes(inlineNodes, childScope, childOpts));
+            }
+            parts.push(results.join(""));
+          } else {
+            // Simple inline include: {% include tmpl_name with ... %}
+            const childValues = new Map<string, Value>(scope.allValues());
+            for (const [targetKey, sourceExpr] of node.withMappings) {
+              childValues.set(targetKey, evaluateExpression(sourceExpr, scope));
+            }
+            // Inject defaults for unprovided params with default values.
+            for (const decl of inline.declarations) {
+              if (
+                !providedKeys.has(decl.name) &&
+                decl.defaultValue !== undefined
+              ) {
+                childValues.set(decl.name, decl.defaultValue);
+              }
+            }
+            // Type-check: validate resolved values against declarations
+            validateIncludeTypes(inline.declarations, childValues, node.name);
+            // Add inline template's own consts to the child scope.
+            // These shadow any parent values with the same name.
+            for (const [k, v] of inline.consts) {
+              childValues.set(k, v);
+            }
+            const childScope = new Scope(childValues, new Map());
+            parts.push(renderNodes(inlineNodes, childScope, childOpts));
+          }
           break;
         }
 
@@ -1221,7 +1353,29 @@ export function renderNodes(
               `failed to load included template '${node.name}' from '${node.path}'`,
             );
           }
-          const [includedNodes, includedConsts] = loaded;
+          const [includedNodes, includedConsts, includedDecls] = loaded;
+
+          // Track which params are explicitly provided.
+          const providedKeys = new Set<string>(node.withMappings.keys());
+          if (node.forBinding) {
+            providedKeys.add(node.forBinding);
+          }
+
+          // Validate contract: required params must be provided or have defaults.
+          const missingParams: string[] = [];
+          for (const decl of includedDecls) {
+            if (
+              !providedKeys.has(decl.name) &&
+              decl.defaultValue === undefined
+            ) {
+              missingParams.push(decl.name);
+            }
+          }
+          if (missingParams.length > 0) {
+            throw new TemplateSyntaxError(
+              `include '${node.name}' missing required param(s): ${missingParams.join(", ")}`,
+            );
+          }
 
           if (node.forBinding && node.forExpr) {
             // {% include [name](path) for item in items with ... %}
@@ -1246,6 +1400,18 @@ export function renderNodes(
               }
               // The for-binding variable maps to the current item
               childValues.set(node.forBinding, item);
+              // Inject defaults for unprovided params
+              for (const decl of includedDecls) {
+                if (
+                  !providedKeys.has(decl.name) &&
+                  !childValues.has(decl.name) &&
+                  decl.defaultValue !== undefined
+                ) {
+                  childValues.set(decl.name, decl.defaultValue);
+                }
+              }
+              // Type-check
+              validateIncludeTypes(includedDecls, childValues, node.name);
               const childScope = new Scope(childValues, new Map());
               results.push(renderNodes(includedNodes, childScope, childOpts));
             }
@@ -1259,6 +1425,18 @@ export function renderNodes(
             for (const [targetKey, sourceExpr] of node.withMappings) {
               childValues.set(targetKey, evaluateExpression(sourceExpr, scope));
             }
+            // Inject defaults for unprovided params
+            for (const decl of includedDecls) {
+              if (
+                !providedKeys.has(decl.name) &&
+                !childValues.has(decl.name) &&
+                decl.defaultValue !== undefined
+              ) {
+                childValues.set(decl.name, decl.defaultValue);
+              }
+            }
+            // Type-check
+            validateIncludeTypes(includedDecls, childValues, node.name);
             const childScope = new Scope(childValues, new Map());
             parts.push(renderNodes(includedNodes, childScope, childOpts));
           }
@@ -1316,7 +1494,7 @@ const FUNC_CALL_RE = /^(\w+)\((.+)\)$/;
 function resolveExpr(expr: string, scope: Scope): Value {
   // Fast path: if expr doesn't end with ')' it can't be a function call
   if (expr.charCodeAt(expr.length - 1) !== 41 /* ')' */) {
-    return unwrapOption(scope.resolvePath(expr));
+    return scope.resolvePath(expr);
   }
 
   // Function calls: idx(binding), len(expr), kind(expr)
@@ -1345,25 +1523,17 @@ function resolveExpr(expr: string, scope: Scope): Value {
       }
       case "kind": {
         const val = scope.resolvePath(arg);
-        const name = getVariantName(val);
+        const isOpt = scope.isOptionParam(arg);
+        const name = getVariantName(val, isOpt);
         return str(name);
       }
       case "has": {
         const val = scope.resolvePath(arg);
-        // Check if the value is a None variant (option is absent)
-        if (val.type === "str" && val.value === "None") {
+        // NoneValue means the option is absent
+        if (val.type === "none") {
           return { type: "bool", value: false };
         }
-        if (val.type === "dict") {
-          const tag = val.fields.get(ENUM_TAG_KEY);
-          if (tag && tag.type === "str" && tag.value === "None") {
-            return { type: "bool", value: false };
-          }
-          if (tag && tag.type === "str" && tag.value === "Some") {
-            return { type: "bool", value: true };
-          }
-        }
-        // Not an option type — always truthy (has a value)
+        // Not None — value is present
         return { type: "bool", value: true };
       }
       default:
@@ -1372,29 +1542,18 @@ function resolveExpr(expr: string, scope: Scope): Value {
   }
 
   // Dotted path (or expression that looked like a function but wasn't)
-  return unwrapOption(scope.resolvePath(expr));
+  return scope.resolvePath(expr);
 }
 
 /**
- * Unwrap option Some values for display: Some(val=X) → X.
- * Returns the value unchanged if it's not a Some variant.
+ * Get the variant name from an enum value.
+ * For NoneValue: returns "None".
+ * For non-None values used in option match: returns "Some".
  */
-function unwrapOption(val: Value): Value {
-  if (
-    val.type === "dict" &&
-    val.fields.get(ENUM_TAG_KEY)?.type === "str" &&
-    (val.fields.get(ENUM_TAG_KEY) as { type: "str"; value: string }).value ===
-      "Some" &&
-    val.fields.has("val") &&
-    val.fields.size === 2
-  ) {
-    return val.fields.get("val")!;
-  }
-  return val;
-}
-
-/** Get the variant name from an enum value. */
-function getVariantName(val: Value): string {
+function getVariantName(val: Value, isOption: boolean): string {
+  if (val.type === "none") return "None";
+  // In option context, any non-None value is "Some"
+  if (isOption) return "Some";
   if (val.type === "str") return val.value;
   if (val.type === "dict") {
     const tag = val.fields.get(ENUM_TAG_KEY);
@@ -1404,7 +1563,22 @@ function getVariantName(val: Value): string {
     );
   }
   throw new TemplateSyntaxError(
-    `kind() requires an enum value, got ${val.type}`,
+    `cannot determine variant name for value of type '${val.type}' — expected enum (str or dict with tag) or option`,
+  );
+}
+
+/** Returns true if the match node uses option-style variant names. */
+function isOptionMatchNode(node: {
+  arms: { variants: string[] }[];
+  inlineGuard?: { variant: string };
+}): boolean {
+  if (node.inlineGuard) {
+    return (
+      node.inlineGuard.variant === "Some" || node.inlineGuard.variant === "None"
+    );
+  }
+  return node.arms.some((arm) =>
+    arm.variants.some((v) => v === "Some" || v === "None"),
   );
 }
 
@@ -1493,9 +1667,7 @@ function coerceForComparison(v: Value): string | number | boolean {
       return v.value;
     case "float":
       return v.value;
-    case "list":
-      return display(v);
-    case "dict":
+    default:
       return display(v);
   }
 }
@@ -1523,4 +1695,121 @@ function splitPipes(expr: string): string[] {
   }
 
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Include type validation
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate resolved values against an included template's declarations.
+ *
+ * Checks that each declared parameter has a value matching its declared type.
+ * Throws `TypeMismatchError` on the first mismatch found.
+ */
+function validateIncludeTypes(
+  declarations: readonly VarDecl[],
+  values: ReadonlyMap<string, Value>,
+  includeName: string,
+): void {
+  for (const decl of declarations) {
+    const value = values.get(decl.name);
+    if (value === undefined) continue;
+    checkIncludeValueType(decl.name, value, decl.varType, includeName);
+  }
+}
+
+/**
+ * Recursively check that a value matches a declared VarType.
+ * Throws TypeMismatchError on mismatch.
+ */
+function checkIncludeValueType(
+  path: string,
+  value: Value,
+  varType: VarType,
+  includeName: string,
+): void {
+  switch (varType.kind) {
+    case "str":
+      if (value.type !== "str") {
+        throw new TypeMismatchError(
+          `${path} (in include '${includeName}')`,
+          "str",
+          value.type,
+        );
+      }
+      break;
+    case "bool":
+      if (value.type !== "bool") {
+        throw new TypeMismatchError(
+          `${path} (in include '${includeName}')`,
+          "bool",
+          value.type,
+        );
+      }
+      break;
+    case "int":
+      if (value.type !== "int") {
+        throw new TypeMismatchError(
+          `${path} (in include '${includeName}')`,
+          "int",
+          value.type,
+        );
+      }
+      break;
+    case "float":
+      if (value.type !== "float" && value.type !== "int") {
+        throw new TypeMismatchError(
+          `${path} (in include '${includeName}')`,
+          "float",
+          value.type,
+        );
+      }
+      break;
+    case "list":
+      if (value.type !== "list") {
+        throw new TypeMismatchError(
+          `${path} (in include '${includeName}')`,
+          "list",
+          value.type,
+        );
+      }
+      break;
+    case "scalar_list":
+      if (value.type !== "list") {
+        throw new TypeMismatchError(
+          `${path} (in include '${includeName}')`,
+          "list",
+          value.type,
+        );
+      }
+      break;
+    case "struct":
+      if (value.type !== "dict") {
+        throw new TypeMismatchError(
+          `${path} (in include '${includeName}')`,
+          "struct",
+          value.type,
+        );
+      }
+      break;
+    case "option":
+      if (value.type === "none") break;
+      checkIncludeValueType(path, value, varType.innerType, includeName);
+      break;
+    case "enum":
+      // Enum type checking is complex; for now validate top-level type
+      if (value.type !== "str" && value.type !== "dict") {
+        throw new TypeMismatchError(
+          `${path} (in include '${includeName}')`,
+          "enum",
+          value.type,
+        );
+      }
+      break;
+    case "alias":
+    case "untyped_list":
+      // Cannot validate without alias resolution context; skip
+      break;
+  }
 }

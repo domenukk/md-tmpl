@@ -2,6 +2,7 @@ use quote::{format_ident, quote};
 
 use crate::{
     codegen::{codegen_value_as_rust_literal, is_scalar},
+    crate_path,
     type_gen::{typed_dict_codegen, typed_enum_codegen, typed_list_codegen, typed_option_codegen},
 };
 
@@ -14,7 +15,7 @@ pub(crate) enum StructGenSource<'a> {
     /// Struct lives inside a module that has a `template()` accessor.
     ///
     /// `render()` takes no template argument and calls `super::template()`
-    /// internally. A separate `render_with(tmpl)` method is emitted for
+    /// internally. A separate `render_reloaded(tmpl)` method is emitted for
     /// hot-reload use cases.
     ///
     /// Dep tracking is handled by the enclosing module — `generate_struct_tokens`
@@ -25,23 +26,25 @@ pub(crate) enum StructGenSource<'a> {
     },
 }
 
-/// Generate the `render` / `render_with` method tokens for the impl block.
+/// Generate the `render` / `render_reloaded` method tokens for the impl block.
 fn render_method_tokens() -> proc_macro2::TokenStream {
+    let cp = crate_path();
     quote! {
         /// Render using the embedded compile-time template.
         ///
         /// This calls the sibling [`template()`] function internally.
         /// For hot-reload scenarios where you load a template from disk
-        /// at runtime, use [`render_with()`](Self::render_with) instead.
+        /// at runtime, use [`render_reloaded()`](Self::render_reloaded)
+        /// instead.
         ///
         /// # Errors
         ///
         /// Returns [`TemplateError`] if rendering fails.
-        pub fn render(&self) -> ::core::result::Result<::prompt_templates::__private::String, ::prompt_templates::TemplateError> {
-            self.render_with(template())
+        pub fn render(&self) -> ::core::result::Result<#cp::__private::String, #cp::TemplateError> {
+            self.render_reloaded(template())
         }
 
-        /// Validate an external template and render with this struct's fields.
+        /// Validate a reloaded template and render with this struct's fields.
         ///
         /// Use this when hot-reloading a template from disk to ensure the
         /// reloaded version is still compatible with this compiled struct.
@@ -49,10 +52,10 @@ fn render_method_tokens() -> proc_macro2::TokenStream {
         /// # Errors
         ///
         /// Returns [`TemplateError`] if validation or rendering fails.
-        pub fn render_with(&self, tmpl: &::prompt_templates::Template) -> ::core::result::Result<::prompt_templates::__private::String, ::prompt_templates::TemplateError> {
+        pub fn render_reloaded(&self, tmpl: &#cp::Template) -> ::core::result::Result<#cp::__private::String, #cp::TemplateError> {
             Self::validate_template(tmpl)?;
             let ctx = self.to_context();
-            tmpl.render(&ctx)
+            tmpl.render_ctx(&ctx)
         }
     }
 }
@@ -102,6 +105,7 @@ pub(crate) fn generate_struct_tokens(
     let derive_attrs = struct_derive_attrs(has_tmpl_fields);
 
     let render_methods = render_method_tokens();
+    let cp = crate_path();
 
     quote! {
 
@@ -133,24 +137,24 @@ pub(crate) fn generate_struct_tokens(
             /// Returns [`TemplateError::DeclarationsMutated`] if the
             /// template's declared variable names don't match the expected
             /// set.
-            pub fn validate_template(tmpl: &::prompt_templates::Template) -> ::core::result::Result<(), ::prompt_templates::TemplateError> {
-                let mut decl_names: ::prompt_templates::__private::Vec<&str> = tmpl
+            pub fn validate_template(tmpl: &#cp::Template) -> ::core::result::Result<(), #cp::TemplateError> {
+                let mut decl_names: #cp::__private::Vec<&str> = tmpl
                     .declarations()
                     .iter()
                     .map(|d| d.name.as_str())
                     .collect();
                 decl_names.sort_unstable();
-                let mut expected: ::prompt_templates::__private::Vec<&str> = Self::EXPECTED_VARS
+                let mut expected: #cp::__private::Vec<&str> = Self::EXPECTED_VARS
                     .iter()
                     .copied()
                     .collect();
                 expected.sort_unstable();
 
                 if decl_names != expected {
-                    let missing: ::prompt_templates::__private::Vec<&&str> = expected.iter().filter(|v| !decl_names.contains(v)).collect();
-                    let extra: ::prompt_templates::__private::Vec<&&str> = decl_names.iter().filter(|v| !expected.contains(v)).collect();
-                    return ::core::result::Result::Err(::prompt_templates::TemplateError::DeclarationsMutated {
-                        details: ::prompt_templates::__private::format!(
+                    let missing: #cp::__private::Vec<&&str> = expected.iter().filter(|v| !decl_names.contains(v)).collect();
+                    let extra: #cp::__private::Vec<&&str> = decl_names.iter().filter(|v| !expected.contains(v)).collect();
+                    return ::core::result::Result::Err(#cp::TemplateError::DeclarationsMutated {
+                        details: #cp::__private::format!(
                             "removed {:?}, added {:?}. \
                              You may edit the template body, but the \
                              frontmatter `params:` block must stay \
@@ -164,8 +168,8 @@ pub(crate) fn generate_struct_tokens(
 
             /// Convert this struct into a [`Context`](::prompt_templates::Context).
             #[must_use]
-            pub fn to_context(&self) -> ::prompt_templates::Context {
-                let mut ctx = ::prompt_templates::Context::new();
+            pub fn to_context(&self) -> #cp::Context {
+                let mut ctx = #cp::Context::new();
                 #(#set_stmts)*
                 ctx
             }
@@ -181,6 +185,7 @@ pub(crate) fn generate_const_decl_tokens(
     struct_name_str: &str,
     sub_structs: &mut Vec<proc_macro2::TokenStream>,
 ) -> Vec<proc_macro2::TokenStream> {
+    let cp = crate_path();
     let mut const_decls = Vec::new();
     for decl in consts {
         let const_name = decl.name.to_uppercase();
@@ -211,7 +216,7 @@ pub(crate) fn generate_const_decl_tokens(
                 let val_tokens =
                     codegen_value_as_rust_literal(v, &decl.var_type, struct_name_str, &decl.name);
                 const_decls.push(quote! {
-                    pub static #const_ident: ::prompt_templates::__private::Lazy<#rust_type> = ::prompt_templates::__private::Lazy::new(|| #val_tokens);
+                    pub static #const_ident: #cp::__private::LazyLock<#rust_type> = #cp::__private::LazyLock::new(|| #val_tokens);
                 });
             }
         }
@@ -224,15 +229,13 @@ pub(crate) fn build_struct_docs(
     frontmatter: &prompt_templates::Frontmatter,
     path_raw: &str,
 ) -> Vec<proc_macro2::TokenStream> {
-    let tmpl_name = if frontmatter.name.is_empty() {
-        path_raw.to_string()
-    } else {
-        frontmatter.name.clone()
+    let tmpl_name = match frontmatter.name.as_deref() {
+        Some(name) if !name.is_empty() => name.to_string(),
+        _ => path_raw.to_string(),
     };
-    let description = if frontmatter.description.is_empty() {
-        String::from("(no description)")
-    } else {
-        frontmatter.description.clone()
+    let description = match frontmatter.description.as_deref() {
+        Some(desc) if !desc.is_empty() => desc.to_string(),
+        _ => String::from("(no description)"),
     };
 
     let mut doc_lines = vec![
@@ -324,6 +327,7 @@ pub(crate) fn var_type_to_rust(
     sub_structs: &mut Vec<proc_macro2::TokenStream>,
 ) -> (proc_macro2::TokenStream, SetterFn) {
     use prompt_templates::VarType;
+    let cp = crate_path();
 
     match var_type {
         VarType::Str => (quote! { String }, simple_setter("as_str()")),
@@ -334,17 +338,19 @@ pub(crate) fn var_type_to_rust(
             if fields.len() == 1 && fields[0].name.is_empty() {
                 let (inner_type, inner_set) =
                     var_type_to_rust(&fields[0].var_type, parent_struct, field_name, sub_structs);
+                let cp2 = cp.clone();
                 (
-                    quote! { ::prompt_templates::__private::Vec<#inner_type> },
+                    quote! { #cp::__private::Vec<#inner_type> },
                     Box::new(move |val, name| {
                         let name_lit = name.to_string();
                         let stmts = inner_set(quote! { item }, "item");
+                        let cp = &cp2;
                         quote! {
-                            ctx.set(#name_lit, ::prompt_templates::Value::List(::prompt_templates::__private::Arc::new(
+                            ctx.set(#name_lit, #cp::Value::List(#cp::__private::Arc::new(
                                 #val.iter().map(|item| {
-                                    let mut inner_ctx = ::prompt_templates::Context::new();
+                                    let mut inner_ctx = #cp::Context::new();
                                     #stmts
-                                    inner_ctx.get("item").cloned().unwrap_or(::prompt_templates::Value::Str(::prompt_templates::__private::String::new()))
+                                    inner_ctx.get("item").cloned().unwrap_or(#cp::Value::Str(#cp::__private::String::new()))
                                 }).collect()
                             )));
                         }
@@ -354,36 +360,48 @@ pub(crate) fn var_type_to_rust(
                 typed_list_codegen(fields, parent_struct, field_name, sub_structs)
             }
         }
-        VarType::List(_) => (
-            quote! { Vec<::prompt_templates::Value> },
-            Box::new(|val, name| {
+        VarType::List(_) => (quote! { Vec<#cp::Value> }, {
+            let cp2 = cp.clone();
+            Box::new(move |val, name| {
                 let name_lit = name.to_string();
-                quote! { ctx.set(#name_lit, ::prompt_templates::Value::List(::prompt_templates::__private::Arc::new(#val.clone()))); }
-            }),
-        ),
+                let cp = &cp2;
+                quote! { ctx.set(#name_lit, #cp::Value::List(#cp::__private::Arc::new(#val.clone()))); }
+            })
+        }),
         VarType::Struct(fields) if !fields.is_empty() => {
             typed_dict_codegen(fields, parent_struct, field_name, sub_structs)
         }
-        VarType::Struct(_) => (
-            quote! { ::prompt_templates::Value },
-            Box::new(|val, name| {
+        VarType::Struct(_) => (quote! { #cp::Value }, {
+            let cp2 = cp.clone();
+            Box::new(move |val, name| {
                 let name_lit = name.to_string();
+                let _cp = &cp2;
                 quote! { ctx.set(#name_lit, #val.clone()); }
-            }),
-        ),
+            })
+        }),
         VarType::Enum(_) if var_type.is_option() => {
             typed_option_codegen(var_type, parent_struct, field_name, sub_structs)
         }
         VarType::Enum(variants) => {
             typed_enum_codegen(variants, parent_struct, field_name, sub_structs)
         }
-        VarType::Tmpl(_) => (
-            quote! { ::prompt_templates::__private::Arc<::prompt_templates::Template> },
-            Box::new(|val, name| {
+        VarType::Tmpl(_) => (quote! { #cp::__private::Arc<#cp::Template> }, {
+            let cp2 = cp.clone();
+            Box::new(move |val, name| {
                 let name_lit = name.to_string();
-                quote! { ctx.set(#name_lit, ::prompt_templates::Value::Tmpl(#val.clone())); }
-            }),
-        ),
+                let cp = &cp2;
+                quote! { ctx.set(#name_lit, #cp::Value::Tmpl(#val.clone())); }
+            })
+        }),
+        VarType::Option(inner) => {
+            // Desugar to enum-style option codegen
+            typed_option_codegen(
+                &VarType::Option(inner.clone()),
+                parent_struct,
+                field_name,
+                sub_structs,
+            )
+        }
     }
 }
 

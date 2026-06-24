@@ -3,9 +3,7 @@
 use std::sync::Arc;
 
 use hashbrown::HashMap;
-use prompt_templates::{
-    CompileOptions, Context, Frontmatter, RenderOptions, Template, TemplateCache, VarType,
-};
+use prompt_templates::{CompileOptions, Context, Frontmatter, Template, TemplateCache, VarType};
 use pyo3::{Py, prelude::*, types::PyDict};
 
 use crate::convert::py_to_value;
@@ -131,9 +129,15 @@ impl PyTemplate {
     #[pyo3(signature = (*, allow_extra=false, **kwargs))]
     fn render(&self, allow_extra: bool, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<String> {
         let ctx = build_context(kwargs)?;
-        self.inner
-            .render_with(&ctx, RenderOptions::default().allow_extra(allow_extra))
-            .map_err(|e| crate::errors::template_error_to_py(&e))
+        if allow_extra {
+            self.inner
+                .render_ctx_allowing_extra(&ctx)
+                .map_err(|e| crate::errors::template_error_to_py(&e))
+        } else {
+            self.inner
+                .render_ctx(&ctx)
+                .map_err(|e| crate::errors::template_error_to_py(&e))
+        }
     }
 
     /// Render the template from a dict of parameters.
@@ -153,9 +157,15 @@ impl PyTemplate {
     #[pyo3(signature = (params, *, allow_extra=false))]
     fn render_dict(&self, params: &Bound<'_, PyDict>, allow_extra: bool) -> PyResult<String> {
         let ctx = build_context(Some(params))?;
-        self.inner
-            .render_with(&ctx, RenderOptions::default().allow_extra(allow_extra))
-            .map_err(|e| crate::errors::template_error_to_py(&e))
+        if allow_extra {
+            self.inner
+                .render_ctx_allowing_extra(&ctx)
+                .map_err(|e| crate::errors::template_error_to_py(&e))
+        } else {
+            self.inner
+                .render_ctx(&ctx)
+                .map_err(|e| crate::errors::template_error_to_py(&e))
+        }
     }
 
     /// Render the template using a cache for include resolution.
@@ -184,13 +194,15 @@ impl PyTemplate {
         kwargs: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<String> {
         let ctx = build_context(kwargs)?;
-        self.inner
-            .render_cached_with(
-                &ctx,
-                &*cache.inner,
-                RenderOptions::default().allow_extra(allow_extra),
-            )
-            .map_err(|e| crate::errors::template_error_to_py(&e))
+        if allow_extra {
+            self.inner
+                .render_ctx_cached_allowing_extra(&ctx, &*cache.inner)
+                .map_err(|e| crate::errors::template_error_to_py(&e))
+        } else {
+            self.inner
+                .render_ctx_cached(&ctx, &*cache.inner)
+                .map_err(|e| crate::errors::template_error_to_py(&e))
+        }
     }
 
     /// Render the template from a dict, using a cache for includes.
@@ -212,13 +224,15 @@ impl PyTemplate {
         allow_extra: bool,
     ) -> PyResult<String> {
         let ctx = build_context(Some(params))?;
-        self.inner
-            .render_cached_with(
-                &ctx,
-                &*cache.inner,
-                RenderOptions::default().allow_extra(allow_extra),
-            )
-            .map_err(|e| crate::errors::template_error_to_py(&e))
+        if allow_extra {
+            self.inner
+                .render_ctx_cached_allowing_extra(&ctx, &*cache.inner)
+                .map_err(|e| crate::errors::template_error_to_py(&e))
+        } else {
+            self.inner
+                .render_ctx_cached(&ctx, &*cache.inner)
+                .map_err(|e| crate::errors::template_error_to_py(&e))
+        }
     }
 
     /// Render the template from a `FlexBuffers` binary buffer.
@@ -233,12 +247,15 @@ impl PyTemplate {
     fn render_flexbuffers(&self, buffer: &[u8], allow_extra: bool) -> PyResult<String> {
         let ctx = prompt_templates::Context::from_flexbuffers(buffer)
             .map_err(|e| crate::errors::template_error_to_py(&e))?;
-        self.inner
-            .render_with(
-                &ctx,
-                prompt_templates::RenderOptions::default().allow_extra(allow_extra),
-            )
-            .map_err(|e| crate::errors::template_error_to_py(&e))
+        if allow_extra {
+            self.inner
+                .render_ctx_allowing_extra(&ctx)
+                .map_err(|e| crate::errors::template_error_to_py(&e))
+        } else {
+            self.inner
+                .render_ctx(&ctx)
+                .map_err(|e| crate::errors::template_error_to_py(&e))
+        }
     }
 
     /// Render the template from a `FlexBuffers` binary buffer, using a cache for includes.
@@ -259,13 +276,15 @@ impl PyTemplate {
     ) -> PyResult<String> {
         let ctx = prompt_templates::Context::from_flexbuffers(buffer)
             .map_err(|e| crate::errors::template_error_to_py(&e))?;
-        self.inner
-            .render_cached_with(
-                &ctx,
-                &*cache.inner,
-                prompt_templates::RenderOptions::default().allow_extra(allow_extra),
-            )
-            .map_err(|e| crate::errors::template_error_to_py(&e))
+        if allow_extra {
+            self.inner
+                .render_ctx_cached_allowing_extra(&ctx, &*cache.inner)
+                .map_err(|e| crate::errors::template_error_to_py(&e))
+        } else {
+            self.inner
+                .render_ctx_cached(&ctx, &*cache.inner)
+                .map_err(|e| crate::errors::template_error_to_py(&e))
+        }
     }
 
     /// Render the template from a JSON string.
@@ -304,9 +323,15 @@ impl PyTemplate {
     #[pyo3(signature = (json_str, *, allow_extra=false))]
     fn render_json(&self, json_str: &str, allow_extra: bool) -> PyResult<String> {
         let ctx = json_str_to_context(json_str)?;
-        self.inner
-            .render_with(&ctx, RenderOptions::default().allow_extra(allow_extra))
-            .map_err(|e| crate::errors::template_error_to_py(&e))
+        if allow_extra {
+            self.inner
+                .render_ctx_allowing_extra(&ctx)
+                .map_err(|e| crate::errors::template_error_to_py(&e))
+        } else {
+            self.inner
+                .render_ctx(&ctx)
+                .map_err(|e| crate::errors::template_error_to_py(&e))
+        }
     }
 
     /// Render the template from a JSON string, using a cache for includes.
@@ -328,12 +353,44 @@ impl PyTemplate {
         allow_extra: bool,
     ) -> PyResult<String> {
         let ctx = json_str_to_context(json_str)?;
+        if allow_extra {
+            self.inner
+                .render_ctx_cached_allowing_extra(&ctx, &*cache.inner)
+                .map_err(|e| crate::errors::template_error_to_py(&e))
+        } else {
+            self.inner
+                .render_ctx_cached(&ctx, &*cache.inner)
+                .map_err(|e| crate::errors::template_error_to_py(&e))
+        }
+    }
+
+    /// Render a template that takes no user-provided parameters.
+    ///
+    /// If the template declares parameters, those must all have defaults.
+    /// Calling ``render_empty()`` on a template with required (no-default)
+    /// parameters raises ``ValueError``.
+    ///
+    /// More efficient than ``render()`` with no kwargs — skips context
+    /// building entirely.
+    ///
+    /// Returns:
+    ///     str: The rendered output.
+    ///
+    /// Raises:
+    ///     ``ValueError``: If any declared parameter lacks a default value.
+    ///
+    /// Examples:
+    ///
+    /// ```python
+    /// tmpl = Template.from_source("Hello world!")
+    /// tmpl.render_empty()  # => 'Hello world!'
+    ///
+    /// tmpl = Template.from_source("---\nparams:\n  - name = str := \"world\"\n---\nHello {{ name }}!")
+    /// tmpl.render_empty()  # => 'Hello world!'
+    /// ```
+    fn render_empty(&self) -> PyResult<String> {
         self.inner
-            .render_cached_with(
-                &ctx,
-                &*cache.inner,
-                RenderOptions::default().allow_extra(allow_extra),
-            )
+            .render_empty()
             .map_err(|e| crate::errors::template_error_to_py(&e))
     }
 

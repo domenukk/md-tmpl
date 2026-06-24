@@ -95,11 +95,21 @@ pub fn extract_inline_templates(
                 frontmatter::parse_frontmatter_with_parent_scope(body, parent_type_aliases)?;
             let segments = compile_body(tmpl_body)?;
 
+            // Build const values map from inline template's own consts.
+            let mut inline_consts = HashMap::new();
+            for d in &fm.consts {
+                if let Some(ref v) = d.default_value {
+                    inline_consts.insert(d.name.clone(), v.clone());
+                }
+            }
+
             templates.insert(
                 name,
                 CompiledInlineTemplate {
                     segments: Arc::from(segments),
                     declarations: Arc::from(fm.declarations),
+                    consts: Arc::new(inline_consts),
+                    imported_consts: Arc::new(fm.imported_consts),
                 },
             );
             remaining = after_close;

@@ -10,12 +10,12 @@ Hello {{ name }}!
 
 > {% if has(nickname) %}
 
-Nickname: {{ nickname.val }}
+Nickname: {{ nickname }}
 
 > {% /if %}
 
 > {% if has(age) %}
 
-Age: {{ age.val }}
+Age: {{ age }}
 
 > {% /if %}

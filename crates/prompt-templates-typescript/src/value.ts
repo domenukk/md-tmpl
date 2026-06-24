@@ -46,6 +46,11 @@ export interface DictValue {
   readonly fields: ReadonlyMap<string, Value>;
 }
 
+/** None value — represents an absent option value. */
+export interface NoneValue {
+  readonly type: "none";
+}
+
 /** Discriminated union of all template value types. */
 export type Value =
   | StrValue
@@ -53,7 +58,8 @@ export type Value =
   | IntValue
   | FloatValue
   | ListValue
-  | DictValue;
+  | DictValue
+  | NoneValue;
 
 // ---------------------------------------------------------------------------
 // Constructors
@@ -89,6 +95,9 @@ export function dict(entries: Iterable<readonly [string, Value]>): DictValue {
   return { type: "dict", fields: new Map(entries) };
 }
 
+/** Singleton None value. */
+export const NONE: NoneValue = { type: "none" };
+
 // ---------------------------------------------------------------------------
 // Namespaced constructors (preferred — avoids shadowing JS builtins)
 // ---------------------------------------------------------------------------
@@ -114,6 +123,7 @@ export const V = {
   float,
   list,
   dict,
+  NONE,
   typeName,
   isTruthy,
   display,
@@ -129,12 +139,15 @@ export const V = {
 export function typeName(v: Value): string {
   // The internal discriminator is "dict" but the user-facing name is "struct".
   if (v.type === "dict") return "struct";
+  if (v.type === "none") return "none";
   return v.type;
 }
 
 /** Returns `true` if the value is considered "truthy". */
 export function isTruthy(v: Value): boolean {
   switch (v.type) {
+    case "none":
+      return false;
     case "str":
       return v.value.length > 0;
     case "bool":
@@ -153,6 +166,8 @@ export function isTruthy(v: Value): boolean {
 /** Display a value as a string (for `{{ expr }}` output). */
 export function display(v: Value): string {
   switch (v.type) {
+    case "none":
+      return "";
     case "str":
       return v.value;
     case "bool":
@@ -162,9 +177,20 @@ export function display(v: Value): string {
     case "float":
       return String(v.value);
     case "list":
-      return `[<list of ${v.items.length}>]`;
-    case "dict":
-      return `{<struct of ${v.fields.size}>}`;
+      throw new Error(
+        "cannot display list value directly — iterate with '{% for item in list %}' instead",
+      );
+    case "dict": {
+      const kind = v.fields.get(ENUM_TAG_KEY);
+      if (kind !== undefined) {
+        throw new Error(
+          "cannot display enum value directly — use '{% match expr %}' to handle variants",
+        );
+      }
+      throw new Error(
+        "cannot display struct value directly — access individual fields (e.g. '{{ value.field }}') instead",
+      );
+    }
   }
 }
 
@@ -192,13 +218,11 @@ export function getField(v: Value, key: string): Value | undefined {
  * Throws `TypeError` for unconvertible values (functions, symbols, etc.).
  */
 export function fromJs(value: unknown): Value {
-  // null / undefined → empty string.  This is intentional for template
-  // ergonomics: missing or optional dict fields resolve to the empty
-  // string during rendering rather than throwing, which matches the
-  // Rust backend's behavior and avoids surprising errors when a caller
-  // omits an optional parameter.
+  // null / undefined → NONE (absent value).  This enables transparent
+  // option<T> representation: null/undefined values map to the NONE
+  // sentinel, which displays as empty string and is falsy.
   if (value === null || value === undefined) {
-    return str("");
+    return NONE;
   }
   if (typeof value === "string") {
     return str(value);

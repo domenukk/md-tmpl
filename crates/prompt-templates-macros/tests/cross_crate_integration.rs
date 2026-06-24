@@ -31,7 +31,7 @@ fn test_include_template_with_complex_types() {
         ]
     };
 
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
 
     assert_eq!(
         output,
@@ -204,7 +204,7 @@ fn test_ctx_macro_with_include_template() {
         ]
     };
 
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
 
     assert_eq!(
         output,
@@ -234,7 +234,7 @@ fn test_to_context_interop() {
 
     // Render with the context to verify it's valid.
     let tmpl = cross_crate_complex::template();
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(
         output,
         "\nUser: frank\nRole: Editor\nScore: 88\nActive: false\n\nTags:\n"
@@ -261,17 +261,17 @@ fn test_value_dict_rendering() {
         )])])),
     );
 
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(
         output,
         "\nUser: grace\nRole: Admin\nScore: 100\nActive: true\n\nTags:\n- perf\n"
     );
 }
 
-// ── Test 11: render_with for hot-reload ─────────────────────────────────
+// ── Test 11: render_reloaded for hot-reload ─────────────────────────────
 
 #[test]
-fn test_render_with_hot_reload() {
+fn test_render_reloaded_hot_reload() {
     let params = cross_crate_complex::Params {
         username: "hot_reload".into(),
         role: cross_crate_complex::ParamsRole::Admin,
@@ -284,8 +284,8 @@ fn test_render_with_hot_reload() {
     let disk_tmpl =
         Template::from_file(std::path::Path::new("prompts/cross_crate_complex.tmpl.md")).unwrap();
 
-    // render_with() validates then renders.
-    let output = params.render_with(&disk_tmpl).unwrap();
+    // render_reloaded() validates then renders.
+    let output = params.render_reloaded(&disk_tmpl).unwrap();
     assert_eq!(
         output,
         "\nUser: hot_reload\nRole: Admin\nScore: 50\nActive: true\n\nTags:\n"

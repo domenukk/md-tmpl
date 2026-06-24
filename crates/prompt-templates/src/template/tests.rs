@@ -14,7 +14,7 @@ Hello {{ name }}!",
     .unwrap();
     let mut ctx = Context::new();
     ctx.set("name", "world");
-    assert_eq!(tmpl.render(&ctx).unwrap(), "Hello world!");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Hello world!");
 }
 
 #[test]
@@ -28,11 +28,11 @@ params: [a = str]
         CompileOptions::default(),
     )
     .unwrap();
-    assert_eq!(fm.name, "demo");
+    assert_eq!(fm.name, Some("demo".to_string()));
     assert_eq!(fm.declarations[0].name, "a");
     let mut ctx = Context::new();
     ctx.set("a", "val");
-    assert_eq!(tmpl.render(&ctx).unwrap(), "val");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "val");
 }
 
 // -- defaults --
@@ -97,7 +97,7 @@ params:
     .unwrap();
     let mut ctx = tmpl.defaults_context();
     ctx.set("name", "Alice");
-    assert_eq!(tmpl.render(&ctx).unwrap(), "Alice (5)");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Alice (5)");
 }
 
 #[test]
@@ -114,7 +114,7 @@ params:
     let mut ctx = tmpl.defaults_context();
     ctx.set("name", "Bob");
     ctx.set("count", 99_i64);
-    assert_eq!(tmpl.render(&ctx).unwrap(), "Bob (99)");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Bob (99)");
 }
 
 #[test]
@@ -150,7 +150,7 @@ params: [name = str, count = int]
     let mut ctx = Context::new();
     ctx.set("name", "Alice");
     // count is missing
-    let err = tmpl.render(&ctx).unwrap_err();
+    let err = tmpl.render_ctx(&ctx).unwrap_err();
     assert!(matches!(err, TemplateError::MissingParams(_)));
 }
 
@@ -165,7 +165,7 @@ params: [flag = bool]
     .unwrap();
     let mut ctx = Context::new();
     ctx.set("flag", "not a bool"); // str, not bool
-    let err = tmpl.render(&ctx).unwrap_err();
+    let err = tmpl.render_ctx(&ctx).unwrap_err();
     assert!(matches!(err, TemplateError::TypeMismatch { .. }));
 }
 
@@ -185,7 +185,7 @@ Content {{ x }}",
     let tmpl = Template::from_file(&path).unwrap();
     let mut ctx = Context::new();
     ctx.set("x", "here");
-    assert_eq!(tmpl.render(&ctx).unwrap(), "Content here");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Content here");
 }
 
 #[test]
@@ -203,7 +203,7 @@ Hello {{ name }}!",
     let tmpl = load_template(dir.path(), "greeting").unwrap();
     let mut ctx = Context::new();
     ctx.set("name", "world");
-    assert_eq!(tmpl.render(&ctx).unwrap(), "Hello world!");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Hello world!");
 }
 
 #[test]
@@ -232,8 +232,8 @@ params: [x = str, y = str]
     )
     .unwrap();
     let (_tmpl, fm) = Template::compile_file(&path, CompileOptions::default()).unwrap();
-    assert_eq!(fm.name, "fm");
-    assert_eq!(fm.description, "Desc");
+    assert_eq!(fm.name, Some("fm".to_string()));
+    assert_eq!(fm.description, Some("Desc".to_string()));
     assert_eq!(fm.params, vec!["x", "y"]);
 }
 
@@ -250,7 +250,7 @@ Hello {{ name }}!",
     .unwrap();
     let mut ctx = Context::new();
     ctx.set("name", "test");
-    assert_eq!(tmpl.render(&ctx).unwrap(), "Hello test!");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Hello test!");
 }
 
 #[test]
@@ -273,7 +273,7 @@ Ok",
     )
     .unwrap();
     let ctx = Context::new();
-    assert_eq!(tmpl.render(&ctx).unwrap(), "Ok");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Ok");
 }
 
 #[test]
@@ -287,7 +287,7 @@ params: [flag = bool]
     .unwrap();
     let mut ctx = Context::new();
     ctx.set("flag", Value::Bool(true));
-    assert_eq!(tmpl.render(&ctx).unwrap(), "yes");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "yes");
 }
 
 // -- validate_declarations -------------------------------------------------
@@ -482,7 +482,7 @@ Hello {{ name }}!
     let mut ctx = Context::new();
     ctx.set("name", "world");
     ctx.set("extra", "unused");
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(output, "Hello world!\n");
 }
 
@@ -576,7 +576,7 @@ Hello {{ name }}!",
     let mut ctx = Context::new();
     ctx.set("name", "world");
     ctx.set("extra", "unused");
-    assert_eq!(tmpl.render(&ctx).unwrap(), "Hello world!");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Hello world!");
 }
 
 #[test]
@@ -608,7 +608,7 @@ Hello {{ name }}!",
     let mut ctx = Context::new();
     ctx.set("name", "world");
     ctx.set("extra", "unused");
-    assert_eq!(tmpl.render(&ctx).unwrap(), "Hello world!");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Hello world!");
 }
 
 #[test]
@@ -719,7 +719,7 @@ params: []
 Hello",
     )
     .unwrap();
-    assert_eq!(tmpl.render(&Context::new()).unwrap(), "Hello");
+    assert_eq!(tmpl.render_ctx(&Context::new()).unwrap(), "Hello");
 }
 
 #[test]
@@ -825,7 +825,7 @@ params: [tasks = list<title = str, priority = int>]
             ]),
         ))],
     );
-    let err = tmpl.render(&ctx).unwrap_err();
+    let err = tmpl.render_ctx(&ctx).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("priority") || msg.contains("[0]"),
@@ -869,7 +869,7 @@ params: [a = str, b = int]
 {{ a }} {{ b }}",
     )
     .unwrap();
-    let err = tmpl.render(&Context::new()).unwrap_err();
+    let err = tmpl.render_ctx(&Context::new()).unwrap_err();
     if let TemplateError::MissingParams(params) = &err {
         assert!(params.contains(&"a".to_string()));
         assert!(params.contains(&"b".to_string()));
@@ -879,7 +879,7 @@ params: [a = str, b = int]
     }
 }
 
-// -- render_serde ----------------------------------------------------------
+// -- render (serde) ----------------------------------------------------------
 
 #[cfg(feature = "serde")]
 mod serde_tests {
@@ -898,7 +898,7 @@ mod serde_tests {
     }
 
     #[test]
-    fn render_serde_happy_path() {
+    fn render_happy_path() {
         let tmpl = Template::from_source(
             "---
 params: [name = str, count = int]
@@ -910,12 +910,12 @@ params: [name = str, count = int]
             name: "Alice".into(),
             count: 3,
         };
-        let result = tmpl.render_serde(&data).unwrap();
+        let result = tmpl.render(&data).unwrap();
         assert_eq!(result, "Alice has 3");
     }
 
     #[test]
-    fn render_serde_missing_field_errors() {
+    fn render_missing_field_errors() {
         // Template declares `count: int` but `PartialData` has no `count`.
         let tmpl = Template::from_source(
             "---
@@ -927,7 +927,7 @@ params: [name = str, count = int]
         let data = PartialData {
             name: "Alice".into(),
         };
-        let err = tmpl.render_serde(&data).unwrap_err();
+        let err = tmpl.render(&data).unwrap_err();
         assert!(
             matches!(err, TemplateError::MissingParams(_)),
             "expected MissingParams, got: {err}"
@@ -940,7 +940,7 @@ params: [name = str, count = int]
     }
 
     #[test]
-    fn render_serde_no_declarations_missing_field_still_errors() {
+    fn render_no_declarations_missing_field_still_errors() {
         // Under mandatory validation, parsing without frontmatter or with undeclared variables errors out.
         Template::from_source("{{ name }} has {{ count }}")
             .expect_err("template without frontmatter should fail");
@@ -974,7 +974,7 @@ Hello {{ name }}!",
 
         let mut ctx = Context::new();
         ctx.set("name", "World");
-        assert_eq!(original.render(&ctx).unwrap(), "Hello World!");
+        assert_eq!(original.render_ctx(&ctx).unwrap(), "Hello World!");
 
         // Modify ONLY the body on disk (vars unchanged).
         fs::write(
@@ -991,7 +991,7 @@ Goodbye {{ name }}!",
         reloaded.validate_declarations(&expected_decls).unwrap();
 
         // Renders the NEW body.
-        assert_eq!(reloaded.render(&ctx).unwrap(), "Goodbye World!");
+        assert_eq!(reloaded.render_ctx(&ctx).unwrap(), "Goodbye World!");
     }
 
     #[test]
@@ -1124,8 +1124,8 @@ Hello {{ name }}!";
         let mut ctx = Context::new();
         ctx.set("name", "test");
 
-        let file_output = from_file.render(&ctx).unwrap();
-        let source_output = from_source.render(&ctx).unwrap();
+        let file_output = from_file.render_ctx(&ctx).unwrap();
+        let source_output = from_source.render_ctx(&ctx).unwrap();
         assert_eq!(
             file_output, source_output,
             "from_file and from_source should produce identical output"
@@ -1160,7 +1160,7 @@ params: [items = list<name = str, active = bool>]
             ])),
         );
 
-        let output = tmpl.render(&ctx).unwrap();
+        let output = tmpl.render_ctx(&ctx).unwrap();
         assert_eq!(
             output,
             "0. [✓] ALPHA
@@ -1263,7 +1263,10 @@ LOW
         .unwrap();
         let mut ctx = Context::new();
         ctx.set("severity", val);
-        assert_eq!(tmpl.render(&ctx).unwrap(), "CRITICAL: deadline missed\n");
+        assert_eq!(
+            tmpl.render_ctx(&ctx).unwrap(),
+            "CRITICAL: deadline missed\n"
+        );
     }
 
     #[test]
@@ -1272,7 +1275,7 @@ LOW
         let val = crate::to_value(&Severity::High).unwrap();
         let mut ctx = Context::new();
         ctx.set("severity", val);
-        assert_eq!(tmpl.render(&ctx).unwrap(), "HIGH\n");
+        assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "HIGH\n");
     }
 
     #[test]
@@ -1280,7 +1283,7 @@ LOW
         let tmpl = Template::from_source(ENUM_TEMPLATE).unwrap();
         let mut ctx = Context::new();
         ctx.set("severity", crate::to_value(&Severity::Low).unwrap());
-        assert_eq!(tmpl.render(&ctx).unwrap(), "LOW\n");
+        assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "LOW\n");
     }
 
     #[test]
@@ -1289,14 +1292,14 @@ LOW
         let ctx = crate::ctx! {
             severity: { __kind__: "Critical", reason: "system outage" }
         };
-        assert_eq!(tmpl.render(&ctx).unwrap(), "CRITICAL: system outage\n");
+        assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "CRITICAL: system outage\n");
     }
 
     #[test]
     fn ctx_macro_with_string_for_unit_variant() {
         let tmpl = Template::from_source(ENUM_TEMPLATE).unwrap();
         let ctx = crate::ctx! { severity: "High" };
-        assert_eq!(tmpl.render(&ctx).unwrap(), "HIGH\n");
+        assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "HIGH\n");
     }
 
     #[test]
@@ -1304,7 +1307,7 @@ LOW
         let tmpl = Template::from_source(ENUM_TEMPLATE).unwrap();
         let mut ctx = Context::new();
         ctx.set("severity", "Low");
-        assert_eq!(tmpl.render(&ctx).unwrap(), "LOW\n");
+        assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "LOW\n");
     }
 
     #[test]
@@ -1318,7 +1321,10 @@ LOW
                 ("reason", Value::Str("data corruption".into())),
             ]),
         );
-        assert_eq!(tmpl.render(&ctx).unwrap(), "CRITICAL: data corruption\n");
+        assert_eq!(
+            tmpl.render_ctx(&ctx).unwrap(),
+            "CRITICAL: data corruption\n"
+        );
     }
 
     #[test]
@@ -1341,13 +1347,13 @@ LOW
         .unwrap();
         let mut ctx = Context::new();
         ctx.set("severity", val);
-        assert_eq!(tmpl.render(&ctx).unwrap(), "CRITICAL: critical issue\n");
+        assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "CRITICAL: critical issue\n");
 
         // Unit variant with #[serde(tag)] produces {"__kind__": "High"} dict
         let val = crate::to_value(&TaggedSeverity::High).unwrap();
         let mut ctx = Context::new();
         ctx.set("severity", val);
-        assert_eq!(tmpl.render(&ctx).unwrap(), "HIGH\n");
+        assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "HIGH\n");
     }
 
     #[test]
@@ -1384,13 +1390,13 @@ ERROR
         .unwrap();
         let mut ctx = Context::new();
         ctx.set("r", val);
-        assert_eq!(tmpl.render(&ctx).unwrap(), "success (200)\n");
+        assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "success (200)\n");
 
         // Also exercise the Err variant so it's genuinely used.
         let err_val = crate::to_value(&Result::Err).unwrap();
         let mut err_ctx = Context::new();
         err_ctx.set("r", err_val);
-        assert_eq!(tmpl.render(&err_ctx).unwrap(), "ERROR\n");
+        assert_eq!(tmpl.render_ctx(&err_ctx).unwrap(), "ERROR\n");
     }
 }
 
@@ -1531,7 +1537,7 @@ consts:
     .unwrap();
     let mut ctx = Context::new();
     ctx.set("x", "hello");
-    assert_eq!(tmpl.render(&ctx).unwrap(), "hello 42");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "hello 42");
 }
 
 // -- Rule 13: for-loop binding must not shadow declared names -------------
@@ -1674,7 +1680,7 @@ allow_unused: true
     let ctx = crate::ctx! {
         items: [{ name: "a" }, { name: "b" }]
     };
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(
         output,
         "a
@@ -1700,7 +1706,7 @@ allow_unused: true
     )
     .unwrap();
     let ctx = crate::ctx! { items: [{ name: "hello" }] };
-    assert_eq!(tmpl.render(&ctx).unwrap(), "hello\n");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "hello\n");
 }
 
 #[test]
@@ -1719,7 +1725,7 @@ allow_unused: true
     let ctx = crate::ctx! {
         items: [{ children: [{ name: "leaf" }] }]
     };
-    assert_eq!(tmpl.render(&ctx).unwrap(), "  leaf\n  ");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "  leaf\n  ");
 }
 
 // -- Blockquote prefix enforcement ----------------------------------------
@@ -1812,7 +1818,7 @@ params: [name = str]
     .unwrap();
     let mut ctx = Context::new();
     ctx.set("name", "hello");
-    assert_eq!(tmpl.render(&ctx).unwrap(), "hello");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "hello");
 }
 
 #[test]
@@ -1834,13 +1840,13 @@ no
     .unwrap();
     let mut ctx = Context::new();
     ctx.set("x", true);
-    assert_eq!(tmpl.render(&ctx).unwrap(), "yes\n");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "yes\n");
 }
 
-// -- render_into --
+// -- render_ctx_into --
 
 #[test]
-fn render_into_matches_render() {
+fn render_ctx_into_matches_render() {
     let tmpl = Template::from_source(
         "---
 params: [name = str, count = int]
@@ -1852,15 +1858,15 @@ Hello {{ name }}! Count: {{ count }}",
     ctx.set("name", "world");
     ctx.set("count", 42_i64);
 
-    let expected = tmpl.render(&ctx).unwrap();
+    let expected = tmpl.render_ctx(&ctx).unwrap();
 
     let mut output = String::new();
-    tmpl.render_into(&ctx, &mut output).unwrap();
+    tmpl.render_ctx_into(&ctx, &mut output).unwrap();
     assert_eq!(output, expected);
 }
 
 #[test]
-fn render_into_appends_to_existing() {
+fn render_ctx_into_appends_to_existing() {
     let tmpl = Template::from_source(
         "---
 params: [x = str]
@@ -1872,12 +1878,12 @@ params: [x = str]
     ctx.set("x", "world");
 
     let mut output = String::from("Hello, ");
-    tmpl.render_into(&ctx, &mut output).unwrap();
+    tmpl.render_ctx_into(&ctx, &mut output).unwrap();
     assert_eq!(output, "Hello, world");
 }
 
 #[test]
-fn render_into_allowing_extra_works() {
+fn render_ctx_into_allowing_extra_works() {
     let tmpl = Template::from_source(
         "---
 params: [x = str]
@@ -1890,17 +1896,13 @@ params: [x = str]
     ctx.set("extra", "ignored");
 
     let mut output = String::new();
-    tmpl.render_into_with(
-        &ctx,
-        &mut output,
-        RenderOptions::default().allow_extra(true),
-    )
-    .unwrap();
+    tmpl.render_ctx_into_allowing_extra(&ctx, &mut output)
+        .unwrap();
     assert_eq!(output, "hello");
 }
 
 #[test]
-fn render_into_validates_context() {
+fn render_ctx_into_validates_context() {
     let tmpl = Template::from_source(
         "---
 params: [x = str]
@@ -1911,12 +1913,12 @@ params: [x = str]
     let ctx = Context::new(); // missing x
 
     let mut output = String::new();
-    assert!(tmpl.render_into(&ctx, &mut output).is_err());
+    assert!(tmpl.render_ctx_into(&ctx, &mut output).is_err());
 }
 
 #[cfg(feature = "serde")]
 #[test]
-fn render_serde_into_works() {
+fn render_into_works() {
     use serde::Serialize;
     #[derive(Serialize)]
     struct Params {
@@ -1933,7 +1935,7 @@ Hi {{ name }}",
         name: "Charlie".into(),
     };
     let mut buf = String::new();
-    tmpl.render_serde_into(&params, &mut buf).unwrap();
+    tmpl.render_into(&params, &mut buf).unwrap();
     assert_eq!(buf, "Hi Charlie");
 }
 
@@ -2013,4 +2015,224 @@ params: [name = str, role_type = str, agent_name = str]
     let referenced = compiled::collect_referenced_params(&tmpl.segments);
     assert!(referenced.contains("role_type"));
     assert!(referenced.contains("agent_name"));
+}
+
+// -- option<T> required vs optional ----------------------------------------
+
+#[test]
+fn option_without_default_is_required_missing_param_errors() {
+    let tmpl = Template::from_source(
+        "---
+params:
+  - x = option<int>
+---
+> {% if has(x) %}
+
+{{ x }}
+
+> {% /if %}",
+    )
+    .unwrap();
+    let ctx = Context::new();
+    let err = tmpl.render_ctx(&ctx).unwrap_err();
+    assert!(
+        matches!(err, TemplateError::MissingParams(_)),
+        "option without default should be required: {err}"
+    );
+    let msg = err.to_string();
+    assert!(
+        msg.contains('x'),
+        "error should mention the missing param 'x': {msg}"
+    );
+}
+
+#[test]
+fn option_without_default_providing_value_works() {
+    let tmpl = Template::from_source(
+        "---
+params:
+  - x = option<int>
+---
+> {% if has(x) %}
+
+{{ x }}
+
+> {% /if %}",
+    )
+    .unwrap();
+    let mut ctx = Context::new();
+    ctx.set("x", 42_i64);
+    let output = tmpl.render_ctx(&ctx).unwrap();
+    assert!(
+        output.contains("42"),
+        "should render the value, got: {output}"
+    );
+}
+
+#[test]
+fn option_without_default_providing_none_works() {
+    let tmpl = Template::from_source(
+        "---
+params:
+  - x = option<int>
+---
+> {% if has(x) %}
+
+present
+
+> {% else %}
+
+absent
+
+> {% /if %}",
+    )
+    .unwrap();
+    let mut ctx = Context::new();
+    ctx.set("x", Value::None);
+    let output = tmpl.render_ctx(&ctx).unwrap();
+    assert!(
+        output.contains("absent"),
+        "Value::None should trigger else branch, got: {output}"
+    );
+}
+
+#[test]
+fn option_with_none_default_omitting_param_is_ok() {
+    let tmpl = Template::from_source(
+        "---
+params:
+  - x = option<int> := None
+---
+> {% if has(x) %}
+
+present
+
+> {% else %}
+
+absent
+
+> {% /if %}",
+    )
+    .unwrap();
+    let ctx = Context::new();
+    // Default None applied — no MissingParams error
+    let output = tmpl.render_ctx(&ctx).unwrap();
+    assert!(
+        output.contains("absent"),
+        "default None should render absent, got: {output}"
+    );
+}
+
+#[test]
+fn option_with_none_default_can_override_with_value() {
+    let tmpl = Template::from_source(
+        "---
+params:
+  - x = option<int> := None
+---
+> {% if has(x) %}
+
+{{ x }}
+
+> {% else %}
+
+absent
+
+> {% /if %}",
+    )
+    .unwrap();
+    let mut ctx = Context::new();
+    ctx.set("x", 99_i64);
+    let output = tmpl.render_ctx(&ctx).unwrap();
+    assert!(
+        output.contains("99"),
+        "overriding None default should work, got: {output}"
+    );
+}
+
+#[test]
+fn defaults_does_not_include_option_without_default() {
+    let tmpl = Template::from_source(
+        r#"---
+params:
+  - x = option<int>
+  - y = option<str> := None
+  - z = option<str> := "hi"
+---
+> {% if has(x) %}
+
+{{ x }}
+
+> {% /if %}{{ y }}{{ z }}"#,
+    )
+    .unwrap();
+    let defaults = tmpl.defaults();
+    assert!(
+        !defaults.contains_key("x"),
+        "x should not have a default: {defaults:?}"
+    );
+    assert_eq!(
+        defaults.get("y"),
+        Some(&Value::None),
+        "y should default to None"
+    );
+    assert_eq!(
+        defaults.get("z"),
+        Some(&Value::Str("hi".into())),
+        "z should default to 'hi'"
+    );
+}
+
+// -- render_empty ----------------------------------------------------------
+
+#[test]
+fn render_empty_no_params() {
+    let tmpl = Template::from_source(
+        "---\nparams: []\n---\nHello world!",
+    ).unwrap();
+    assert_eq!(tmpl.render_empty().unwrap(), "Hello world!");
+}
+
+#[test]
+fn render_empty_all_defaults() {
+    let tmpl = Template::from_source(
+        "---\nparams:\n  - greeting = str := \"Hi\"\n  - count = int := 5\n---\n{{ greeting }} {{ count }}",
+    ).unwrap();
+    assert_eq!(tmpl.render_empty().unwrap(), "Hi 5");
+}
+
+#[test]
+fn render_empty_with_consts() {
+    let tmpl = Template::from_source(
+        "---\nconsts:\n  - VERSION = str := \"1.0\"\nparams: []\n---\nv{{ VERSION }}",
+    ).unwrap();
+    assert_eq!(tmpl.render_empty().unwrap(), "v1.0");
+}
+
+#[test]
+fn render_empty_required_params_fails() {
+    let tmpl = Template::from_source(
+        "---\nparams:\n  - name = str\n---\nHello {{ name }}!",
+    ).unwrap();
+    let err = tmpl.render_empty().unwrap_err();
+    assert!(err.to_string().contains("name"), "error should mention the missing param: {err}");
+}
+
+#[test]
+fn render_empty_mixed_defaults_and_required_fails() {
+    let tmpl = Template::from_source(
+        "---\nparams:\n  - greeting = str := \"Hi\"\n  - name = str\n---\n{{ greeting }} {{ name }}!",
+    ).unwrap();
+    let err = tmpl.render_empty().unwrap_err();
+    assert!(err.to_string().contains("name"), "error should mention the missing param: {err}");
+}
+
+#[test]
+fn render_empty_into_works() {
+    let tmpl = Template::from_source(
+        "---\nparams: []\n---\nHello!",
+    ).unwrap();
+    let mut buf = String::from("prefix: ");
+    tmpl.render_empty_into(&mut buf).unwrap();
+    assert_eq!(buf, "prefix: Hello!");
 }

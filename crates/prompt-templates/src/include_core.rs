@@ -125,7 +125,7 @@ pub(crate) fn inject_defaults_into_layer(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
     use crate::{

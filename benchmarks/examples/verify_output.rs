@@ -5,7 +5,12 @@ use std::sync::Arc;
 fn main() {
     // ===== SIMPLE =====
     println!("═══ SIMPLE ═══");
-    let pt = Template::from_source("---\nparams:\n  - name = str\n  - place = str\n---\nHello {{ name }}, welcome to {{ place }}!").unwrap();
+    let pt = Template::from_source(r#"---
+params:
+  - name = str
+  - place = str
+---
+Hello {{ name }}, welcome to {{ place }}!"#).unwrap();
     let pt_out = pt.render(&ctx! { name: "Alice", place: "Wonderland" }).unwrap();
     println!("PT:   {pt_out:?}");
 

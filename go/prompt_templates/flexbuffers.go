@@ -10,27 +10,27 @@ import (
 	"sync"
 )
 
-type BitWidth int
+type bitWidth int
 
 const (
-	W8  BitWidth = 0
-	W16 BitWidth = 1
-	W32 BitWidth = 2
-	W64 BitWidth = 3
+	w8  bitWidth = 0
+	w16 bitWidth = 1
+	w32 bitWidth = 2
+	w64 bitWidth = 3
 )
 
-func widthU(v uint64) BitWidth {
+func widthU(v uint64) bitWidth {
 	if v < 1<<8 {
-		return W8
+		return w8
 	} else if v < 1<<16 {
-		return W16
+		return w16
 	} else if v < 1<<32 {
-		return W32
+		return w32
 	}
-	return W64
+	return w64
 }
 
-func widthI(v int64) BitWidth {
+func widthI(v int64) bitWidth {
 	uv := uint64(v) * 2
 	if v < 0 {
 		uv = uint64(^v) * 2
@@ -38,50 +38,50 @@ func widthI(v int64) BitWidth {
 	return widthU(uv)
 }
 
-func widthF(v float64) BitWidth {
+func widthF(v float64) bitWidth {
 	if float64(float32(v)) == v {
-		return W32
+		return w32
 	}
-	return W64
+	return w64
 }
 
-type Type int
+type flexType int
 
 const (
-	TypeNull          Type = 0
-	TypeInt           Type = 1
-	TypeUInt          Type = 2
-	TypeFloat         Type = 3
-	TypeKey           Type = 4
-	TypeString        Type = 5
-	TypeIndirectInt   Type = 6
-	TypeIndirectUInt  Type = 7
-	TypeIndirectFloat Type = 8
-	TypeMap           Type = 9
-	TypeVector        Type = 10
-	TypeBlob          Type = 25
-	TypeBool          Type = 26
+	typeNull          flexType = 0
+	typeInt           flexType = 1
+	typeUInt          flexType = 2
+	typeFloat         flexType = 3
+	typeKey           flexType = 4
+	typeString        flexType = 5
+	typeIndirectInt   flexType = 6
+	typeIndirectUInt  flexType = 7
+	typeIndirectFloat flexType = 8
+	typeMap           flexType = 9
+	typeVector        flexType = 10
+	typeBlob          flexType = 25
+	typeBool          flexType = 26
 )
 
-func isInline(t Type) bool {
-	return t <= TypeFloat || t == TypeBool
+func isInline(t flexType) bool {
+	return t <= typeFloat || t == typeBool
 }
 
-func packType(t Type, bw BitWidth) byte {
+func packType(t flexType, bw bitWidth) byte {
 	return byte((int(t) << 2) | int(bw))
 }
 
 type flexValue struct {
 	val         int64
-	typ         Type
-	minBitWidth BitWidth
+	typ         flexType
+	minBitWidth bitWidth
 }
 
-func (v flexValue) elemWidth(bufSize int, elemIndex int) BitWidth {
+func (v flexValue) elemWidth(bufSize int, elemIndex int) bitWidth {
 	if isInline(v.typ) {
 		return v.minBitWidth
 	}
-	for _, bw := range []BitWidth{W8, W16, W32, W64} {
+	for _, bw := range []bitWidth{w8, w16, w32, w64} {
 		byteWidth := 1 << bw
 		padding := (-bufSize) & (byteWidth - 1)
 		offsetLoc := bufSize + padding + elemIndex*byteWidth
@@ -90,10 +90,10 @@ func (v flexValue) elemWidth(bufSize int, elemIndex int) BitWidth {
 			return bw
 		}
 	}
-	return W64
+	return w64
 }
 
-func (v flexValue) storedWidth(parentBitWidth BitWidth) BitWidth {
+func (v flexValue) storedWidth(parentBitWidth bitWidth) bitWidth {
 	if isInline(v.typ) {
 		if v.minBitWidth > parentBitWidth {
 			return v.minBitWidth
@@ -125,7 +125,7 @@ var builderPool = sync.Pool{
 	},
 }
 
-func (b *flexBuilder) align(alignment BitWidth) int {
+func (b *flexBuilder) align(alignment bitWidth) int {
 	byteWidth := 1 << alignment
 	padding := (-len(b.buf)) & (byteWidth - 1)
 	for i := 0; i < padding; i++ {
@@ -172,9 +172,9 @@ func (b *flexBuilder) writeOffset(offset int, byteWidth int) {
 
 func (b *flexBuilder) writeAny(v flexValue, byteWidth int) {
 	switch v.typ {
-	case TypeNull, TypeBool, TypeInt, TypeUInt:
+	case typeNull, typeBool, typeInt, typeUInt:
 		b.writeInt(v.val, byteWidth)
-	case TypeFloat:
+	case typeFloat:
 		b.writeFloat(math.Float64frombits(uint64(v.val)), byteWidth)
 	default:
 		b.writeOffset(int(v.val), byteWidth)
@@ -182,7 +182,7 @@ func (b *flexBuilder) writeAny(v flexValue, byteWidth int) {
 }
 
 func (b *flexBuilder) addNull() {
-	b.stack = append(b.stack, flexValue{val: 0, typ: TypeNull, minBitWidth: W8})
+	b.stack = append(b.stack, flexValue{val: 0, typ: typeNull, minBitWidth: w8})
 }
 
 func (b *flexBuilder) addBool(v bool) {
@@ -190,26 +190,26 @@ func (b *flexBuilder) addBool(v bool) {
 	if v {
 		val = 1
 	}
-	b.stack = append(b.stack, flexValue{val: val, typ: TypeBool, minBitWidth: W8})
+	b.stack = append(b.stack, flexValue{val: val, typ: typeBool, minBitWidth: w8})
 }
 
 func (b *flexBuilder) addInt(v int64) {
-	b.stack = append(b.stack, flexValue{val: v, typ: TypeInt, minBitWidth: widthI(v)})
+	b.stack = append(b.stack, flexValue{val: v, typ: typeInt, minBitWidth: widthI(v)})
 }
 
 func (b *flexBuilder) addUInt(v uint64) {
-	b.stack = append(b.stack, flexValue{val: int64(v), typ: TypeUInt, minBitWidth: widthU(v)})
+	b.stack = append(b.stack, flexValue{val: int64(v), typ: typeUInt, minBitWidth: widthU(v)})
 }
 
 func (b *flexBuilder) addFloat(v float64) {
-	b.stack = append(b.stack, flexValue{val: int64(math.Float64bits(v)), typ: TypeFloat, minBitWidth: widthF(v)})
+	b.stack = append(b.stack, flexValue{val: int64(math.Float64bits(v)), typ: typeFloat, minBitWidth: widthF(v)})
 }
 
 func (b *flexBuilder) addKey(key string) {
 	loc := len(b.buf)
 	b.buf = append(b.buf, []byte(key)...)
 	b.buf = append(b.buf, 0)
-	b.stack = append(b.stack, flexValue{val: int64(loc), typ: TypeKey, minBitWidth: W8})
+	b.stack = append(b.stack, flexValue{val: int64(loc), typ: typeKey, minBitWidth: w8})
 }
 
 func (b *flexBuilder) addString(s string) {
@@ -220,7 +220,7 @@ func (b *flexBuilder) addString(s string) {
 	loc := len(b.buf)
 	b.buf = append(b.buf, data...)
 	b.buf = append(b.buf, 0)
-	b.stack = append(b.stack, flexValue{val: int64(loc), typ: TypeString, minBitWidth: bw})
+	b.stack = append(b.stack, flexValue{val: int64(loc), typ: typeString, minBitWidth: bw})
 }
 
 func (b *flexBuilder) createVector(elements []flexValue, typed bool, keys *flexValue) flexValue {
@@ -254,9 +254,9 @@ func (b *flexBuilder) createVector(elements []flexValue, typed bool, keys *flexV
 			b.buf = append(b.buf, packType(e.typ, e.storedWidth(bw)))
 		}
 	}
-	typ := TypeVector
+	typ := typeVector
 	if keys != nil {
-		typ = TypeMap
+		typ = typeMap
 	}
 	return flexValue{val: int64(loc), typ: typ, minBitWidth: bw}
 }
@@ -309,7 +309,7 @@ func (b *flexBuilder) finish() ([]byte, error) {
 	root := b.stack[0]
 	byteWidth := b.align(root.elemWidth(len(b.buf), 0))
 	b.writeAny(root, byteWidth)
-	b.buf = append(b.buf, packType(root.typ, root.storedWidth(W8)))
+	b.buf = append(b.buf, packType(root.typ, root.storedWidth(w8)))
 	b.buf = append(b.buf, byte(byteWidth))
 	return b.buf, nil
 }

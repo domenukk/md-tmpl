@@ -4,6 +4,7 @@
 //! (`- name = str`) formats, including default values and nested types.
 
 use alloc::{
+    boxed::Box,
     string::{String, ToString},
     sync::Arc,
     vec::Vec,
@@ -47,6 +48,7 @@ pub(crate) fn parse_declarations(
     type_aliases: &HashMap<String, VarType>,
     resolved_imports: &HashMap<String, ImportedNamespace>,
     is_constant: bool,
+    available_consts: &HashMap<String, Value>,
 ) -> Result<Vec<VarDecl>, TemplateError> {
     let rest = rest.trim();
     if rest.is_empty() {
@@ -133,11 +135,13 @@ pub(crate) fn parse_declarations(
             .map_err(|e| TemplateError::syntax(format!("declaration '{name}': {e}")))?;
 
         let default_value = if let Some(dp) = default_part {
-            let default = parse_default_value_with_type(dp, &var_type).ok_or_else(|| {
-                TemplateError::syntax(format!(
-                    "invalid default value '{dp}' for declaration '{name}' (strings must be quoted)"
-                ))
-            })?;
+            let default = parse_default_value_with_type(dp, &var_type)
+                .or_else(|| resolve_const_default(dp, available_consts))
+                .ok_or_else(|| {
+                    TemplateError::syntax(format!(
+                        "invalid default value '{dp}' for declaration '{name}' (strings must be quoted)"
+                    ))
+                })?;
             Some(default)
         } else {
             None
@@ -428,16 +432,13 @@ fn parse_tmpl_type(
     Ok(VarType::Tmpl(fields))
 }
 
-/// Parse `option<T>` as syntactic sugar for `enum<Some(val = T), None>`.
+/// Parse `option<T>` into [`VarType::Option`].
 fn parse_option_type(
     s: &str,
     type_aliases: &HashMap<String, VarType>,
     resolved_imports: &HashMap<String, ImportedNamespace>,
 ) -> Result<VarType, String> {
-    use crate::{
-        consts::{OPTION_NONE, OPTION_SOME, OPTION_VAL_FIELD, TYPE_OPTION},
-        types::VariantDecl,
-    };
+    use crate::consts::TYPE_OPTION;
 
     let rest = s.strip_prefix(TYPE_OPTION).unwrap_or("").trim();
     let Some(inner) = rest.strip_prefix('<').and_then(|r| r.strip_suffix('>')) else {
@@ -448,20 +449,7 @@ fn parse_option_type(
         return Err("option<> requires an inner type (e.g. option<str>)".to_string());
     }
     let inner_type = parse_type_annotation(inner, type_aliases, resolved_imports)?;
-    Ok(VarType::Enum(vec![
-        VariantDecl {
-            name: OPTION_SOME.to_string(),
-            fields: vec![VarDecl {
-                name: OPTION_VAL_FIELD.to_string(),
-                var_type: inner_type,
-                default_value: None,
-            }],
-        },
-        VariantDecl {
-            name: OPTION_NONE.to_string(),
-            fields: vec![],
-        },
-    ]))
+    Ok(VarType::Option(Box::new(inner_type)))
 }
 
 /// Parse field declarations like `name = str, count = int` into [`VarDecl`]s.
@@ -518,6 +506,19 @@ fn parse_struct_default(inner: &str, fields: &[VarDecl]) -> Value {
         }
     }
     Value::Struct(Arc::new(map))
+}
+
+/// Resolve a const name used as a default value.
+///
+/// Looks up `name` in the available constants map, supporting both local
+/// const names (e.g. `MAX`) and imported const names (e.g. `lib.LIMIT`).
+/// Returns a clone of the const value if found.
+fn resolve_const_default(name: &str, available_consts: &HashMap<String, Value>) -> Option<Value> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    available_consts.get(name).cloned()
 }
 
 /// Parse a default value string into a [`Value`].
@@ -600,6 +601,15 @@ pub(crate) fn parse_default_value_with_type(s: &str, var_type: &VarType) -> Opti
     // Float
     if let Ok(n) = s.parse::<f64>() {
         return Some(Value::Float(n));
+    }
+
+    // Handle option<T> defaults: None maps to Value::None, otherwise delegate
+    // to the inner type.
+    if let VarType::Option(inner) = var_type {
+        if s == crate::consts::OPTION_NONE {
+            return Some(Value::None);
+        }
+        return parse_default_value_with_type(s, inner);
     }
 
     // If the expected type is an Enum, handle variant identifiers.
@@ -698,14 +708,16 @@ mod tests {
     fn parse_decls(rest: &str) -> Result<Vec<VarDecl>, crate::error::TemplateError> {
         let aliases = HashMap::new();
         let imports = HashMap::new();
-        parse_declarations(rest, &aliases, &imports, false)
+        let consts = HashMap::new();
+        parse_declarations(rest, &aliases, &imports, false, &consts)
     }
 
     /// Helper: parse constant declarations with empty aliases/imports.
     fn parse_consts(rest: &str) -> Result<Vec<VarDecl>, crate::error::TemplateError> {
         let aliases = HashMap::new();
         let imports = HashMap::new();
-        parse_declarations(rest, &aliases, &imports, true)
+        let consts = HashMap::new();
+        parse_declarations(rest, &aliases, &imports, true, &consts)
     }
 
     // =========================================================================
@@ -1713,16 +1725,10 @@ mod tests {
     fn type_option_str() {
         let result = parse_type("option<str>").unwrap();
         match result {
-            VarType::Enum(variants) => {
-                assert_eq!(variants.len(), 2);
-                assert_eq!(variants[0].name, "Some");
-                assert_eq!(variants[0].fields.len(), 1);
-                assert_eq!(variants[0].fields[0].name, "val");
-                assert_eq!(variants[0].fields[0].var_type, VarType::Str);
-                assert_eq!(variants[1].name, "None");
-                assert!(variants[1].fields.is_empty());
+            VarType::Option(inner) => {
+                assert_eq!(*inner, VarType::Str);
             }
-            other => panic!("Expected Enum, got {other:?}"),
+            other => panic!("Expected Option, got {other:?}"),
         }
     }
 
@@ -1795,19 +1801,14 @@ mod tests {
     #[test]
     fn option_default_none() {
         let decls = parse_decls("[x = option<str> := None]").unwrap();
-        assert_eq!(decls[0].default_value, Some(Value::Str("None".into())));
+        assert_eq!(decls[0].default_value, Some(Value::None));
     }
 
     #[test]
     fn option_default_some() {
-        let decls = parse_decls("[x = option<str> := Some(val = 'hello')]").unwrap();
-        match &decls[0].default_value {
-            Some(Value::Struct(map)) => {
-                assert_eq!(map.get("__kind__"), Some(&Value::Str("Some".into())));
-                assert_eq!(map.get("val"), Some(&Value::Str("hello".into())));
-            }
-            other => panic!("Expected Struct, got {other:?}"),
-        }
+        // Transparent option: := "hello" stores the raw string, not a Some(val=...) struct.
+        let decls = parse_decls("[x = option<str> := \"hello\"]").unwrap();
+        assert_eq!(decls[0].default_value, Some(Value::Str("hello".into())));
     }
 
     #[test]

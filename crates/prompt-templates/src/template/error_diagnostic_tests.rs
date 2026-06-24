@@ -44,7 +44,7 @@ params: [data = struct<x = str>]
         "data",
         crate::Value::new_struct([("x", crate::Value::from("hello"))]),
     );
-    let err = tmpl.render(&ctx).unwrap_err();
+    let err = tmpl.render_ctx(&ctx).unwrap_err();
     let msg = err.to_string();
     assert!(
         matches!(err, TemplateError::UndefinedVariable(_)),
@@ -117,7 +117,7 @@ params: [a = str, b = int, c = bool]
     )
     .unwrap();
     let ctx = Context::new();
-    let err = tmpl.render(&ctx).unwrap_err();
+    let err = tmpl.render_ctx(&ctx).unwrap_err();
     let msg = err.to_string();
     assert!(
         matches!(err, TemplateError::MissingParams(_)),
@@ -142,7 +142,7 @@ params: [count = int]
     )
     .unwrap();
     let ctx = ctx! { count: "not-a-number" };
-    let err = tmpl.render(&ctx).unwrap_err();
+    let err = tmpl.render_ctx(&ctx).unwrap_err();
     let msg = err.to_string();
     assert!(
         matches!(err, TemplateError::TypeMismatch { .. }),
@@ -172,7 +172,7 @@ params: [items = list<score = int>]
             { score: "not-int" }
         ]
     };
-    let err = tmpl.render(&ctx).unwrap_err();
+    let err = tmpl.render_ctx(&ctx).unwrap_err();
     let msg = err.to_string();
     assert!(
         matches!(err, TemplateError::TypeMismatch { .. }),
@@ -230,7 +230,7 @@ allow_unused: true
     .unwrap();
     let tmpl = Template::from_file(&main_path).unwrap();
     let ctx = ctx! { x: "hello" };
-    let err = tmpl.render(&ctx).unwrap_err();
+    let err = tmpl.render_ctx(&ctx).unwrap_err();
     let msg = err.to_string();
     // The error should mention the missing file path.
     assert!(
@@ -289,7 +289,7 @@ params: [name = str]
     )
     .unwrap();
     let ctx = ctx! { name: "Alice", bonus: 42_i64 };
-    let err = tmpl.render(&ctx).unwrap_err();
+    let err = tmpl.render_ctx(&ctx).unwrap_err();
     let msg = err.to_string();
     assert!(
         matches!(err, TemplateError::ExtraParams(_)),
@@ -374,7 +374,7 @@ params: [items = list<config = struct<timeout = int>>]
             { config: { timeout: "not-int" } }
         ]
     };
-    let err = tmpl.render(&ctx).unwrap_err();
+    let err = tmpl.render_ctx(&ctx).unwrap_err();
     let msg = err.to_string();
     assert!(
         matches!(err, TemplateError::TypeMismatch { .. }),

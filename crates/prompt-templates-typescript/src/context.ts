@@ -38,6 +38,11 @@ export class Context {
     this.values.set(key, fromJs(value));
   }
 
+  /** Insert a pre-converted Value directly into the context. */
+  setRaw(key: string, value: Value): void {
+    this.values.set(key, value);
+  }
+
   /** Look up a top-level variable. */
   get(key: string): Value | undefined {
     return this.values.get(key);

@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use crate::{CompileOptions, Context, RenderOptions, Template, Value};
+use crate::{CompileOptions, Context, Template, Value};
 
 // ---------------------------------------------------------------------------
 // A. Constants inside includes — isolation & propagation
@@ -38,7 +38,7 @@ params: [name = str]
 
     let mut ctx = Context::new();
     ctx.set("name", "Alice");
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(output, "Hey Alice!");
 }
 
@@ -101,7 +101,7 @@ params: [ctx_val = str]
 
     let mut ctx = Context::new();
     ctx.set("ctx_val", "from_parent");
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(output, "Got: from_parent");
 }
 
@@ -136,7 +136,7 @@ Color: {{ colors.PRIMARY }}, Count: {{ colors.COUNT }}";
     let (tmpl, _) = Template::compile(main_src, CompileOptions::default().base_dir(base)).unwrap();
 
     let ctx = Context::new();
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(output, "Color: blue, Count: 42");
 }
 
@@ -178,7 +178,7 @@ params: []
     let (tmpl, _) = Template::compile(main_src, CompileOptions::default().base_dir(base)).unwrap();
 
     let ctx = Context::new();
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(output, "from_a from_b");
 }
 
@@ -251,7 +251,7 @@ params: []
     let (tmpl, _) = Template::compile(main_src, CompileOptions::default().base_dir(base)).unwrap();
 
     let ctx = Context::new();
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert!(
         output.contains("Hello Alice"),
         "first include should greet Alice, got: {output}"
@@ -296,7 +296,7 @@ Parent: {{ val }}
 
     let mut ctx = Context::new();
     ctx.set("val", "original");
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert!(
         output.contains("Parent: original"),
         "parent should see original, got: {output}"
@@ -336,7 +336,7 @@ params: []
     let (tmpl, _) = Template::compile(main_src, CompileOptions::default().base_dir(base)).unwrap();
 
     let ctx = Context::new();
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(output, "Button(gray)");
 }
 
@@ -365,7 +365,7 @@ params: []
     let (tmpl, _) = Template::compile(main_src, CompileOptions::default().base_dir(base)).unwrap();
 
     let ctx = Context::new();
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(output, "Button(red)");
 }
 
@@ -404,7 +404,7 @@ params: [items = list<str>]
             Value::Str("cherry".into()),
         ])),
     );
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert!(output.contains("- apple"), "got: {output}");
     assert!(output.contains("- banana"), "got: {output}");
     assert!(output.contains("- cherry"), "got: {output}");
@@ -438,7 +438,7 @@ After";
 
     let mut ctx = Context::new();
     ctx.set("items", Value::List(Arc::new(vec![])));
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert!(output.contains("Before"), "got: {output}");
     assert!(output.contains("After"), "got: {output}");
     assert!(
@@ -490,7 +490,7 @@ params: []
     let (tmpl, _) = Template::compile(main_src, CompileOptions::default().base_dir(base)).unwrap();
 
     let ctx = Context::new();
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert!(output.contains("[TOP]"), "got: {output}");
     assert!(output.contains("[MID]"), "got: {output}");
     assert!(output.contains("[LEAF]"), "got: {output}");
@@ -523,7 +523,7 @@ params: [formatter = tmpl<name = str>]
 
     let mut ctx = Context::new();
     ctx.set("formatter", Value::Tmpl(Arc::new(helper)));
-    let output = main.render(&ctx).unwrap();
+    let output = main.render_ctx(&ctx).unwrap();
     assert_eq!(output, "Dr. Smith");
 }
 
@@ -546,7 +546,7 @@ params: [h = tmpl<>]
 }
 
 // ---------------------------------------------------------------------------
-// H. RenderOptions interactions
+// H. allow_extra interactions
 // ---------------------------------------------------------------------------
 
 /// `allow_extra(true)` allows extra context keys without error.
@@ -564,9 +564,7 @@ Hi {{ name }}",
     ctx.set("name", "Alice");
     ctx.set("extra_key", "should not error");
 
-    let output = tmpl
-        .render_with(&ctx, RenderOptions::default().allow_extra(true))
-        .unwrap();
+    let output = tmpl.render_ctx_allowing_extra(&ctx).unwrap();
     assert_eq!(output, "Hi Alice");
 }
 
@@ -585,7 +583,7 @@ Hi {{ name }}",
     ctx.set("name", "Alice");
     ctx.set("extra_key", "boom");
 
-    let result = tmpl.render(&ctx);
+    let result = tmpl.render_ctx(&ctx);
     assert!(
         result.is_err(),
         "strict mode should reject extra context keys"
@@ -610,7 +608,7 @@ params: []
     .unwrap();
 
     let ctx = Context::new();
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(output, "HELLO WORLD");
 }
 
@@ -627,7 +625,7 @@ params: [msg = str]
 
     let mut ctx = Context::new();
     ctx.set("msg", "  spaced  ");
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(output, "SPACED");
 }
 
@@ -653,7 +651,7 @@ ON
     .unwrap();
 
     let ctx = Context::new();
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert!(output.contains("ON"), "got: {output}");
 }
 
@@ -679,7 +677,7 @@ OFF
     .unwrap();
 
     let ctx = Context::new();
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert!(output.contains("OFF"), "got: {output}");
     assert!(!output.contains("ON"), "got: {output}");
 }
@@ -705,12 +703,12 @@ low
 
     let mut ctx = Context::new();
     ctx.set("level", 10);
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert!(output.contains("high"), "got: {output}");
 
     let mut ctx2 = Context::new();
     ctx2.set("level", 2);
-    let output2 = tmpl.render(&ctx2).unwrap();
+    let output2 = tmpl.render_ctx(&ctx2).unwrap();
     assert!(output2.contains("low"), "got: {output2}");
 }
 
@@ -742,7 +740,7 @@ stopped
 
     let mut ctx = Context::new();
     ctx.set("status", "Active");
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert!(output.contains("running"), "got: {output}");
     assert!(!output.contains("stopped"), "got: {output}");
 }
@@ -779,7 +777,7 @@ params: [name = str]
 
     let mut ctx = Context::new();
     ctx.set("name", "World");
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert!(output.contains("Hi World!"), "got: {output}");
 }
 
@@ -813,7 +811,7 @@ params: []
     let tmpl = Template::from_source(src).unwrap();
 
     let ctx = Context::new();
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert!(output.contains("[A]"), "got: {output}");
     assert!(output.contains("[B]"), "got: {output}");
 }
@@ -842,19 +840,17 @@ consts:
     let mut ctx = Context::new();
     ctx.set("x", "hello");
 
-    let direct = tmpl.render(&ctx).unwrap();
-    let cached = tmpl
-        .render_cached_with(&ctx, &cache, RenderOptions::default())
-        .unwrap();
+    let direct = tmpl.render_ctx(&ctx).unwrap();
+    let cached = tmpl.render_ctx_cached(&ctx, &cache).unwrap();
     assert_eq!(direct, cached, "cached and direct render must match");
     assert_eq!(direct, "v1: hello");
 }
 
 // ---------------------------------------------------------------------------
-// N. render_into correctness
+// N. render_ctx_into correctness
 // ---------------------------------------------------------------------------
 
-/// `render_into` appends to an existing buffer correctly.
+/// `render_ctx_into` appends to an existing buffer correctly.
 #[test]
 fn render_into_appends_correctly() {
     let tmpl = Template::from_source(
@@ -869,7 +865,7 @@ params: [x = str]
     ctx.set("x", "world");
 
     let mut buf = String::from("hello ");
-    tmpl.render_into(&ctx, &mut buf).unwrap();
+    tmpl.render_ctx_into(&ctx, &mut buf).unwrap();
     assert_eq!(buf, "hello world");
 }
 
@@ -892,7 +888,7 @@ params: []
     .unwrap();
 
     let ctx = Context::new();
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(output, "MyApp v2");
 }
 
@@ -907,7 +903,7 @@ params: []
     )
     .unwrap();
     let ctx = Context::new();
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(output, "");
 }
 
@@ -922,7 +918,7 @@ params: []
     )
     .unwrap();
     let ctx = Context::new();
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert!(output.is_empty(), "got: {output:?}");
 }
 
@@ -944,7 +940,7 @@ params: []
     .unwrap();
 
     let ctx = Context::new();
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(output, "localhost:8080");
 }
 
@@ -962,7 +958,7 @@ params: []
     .unwrap();
 
     let ctx = Context::new();
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(output, "Rust, Go, Python");
 }
 
@@ -988,7 +984,7 @@ release
     .unwrap();
 
     let ctx = Context::new();
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert!(output.contains("release"), "got: {output}");
     assert!(!output.contains("debug_on"), "got: {output}");
 }
@@ -1024,7 +1020,7 @@ Priority: {{ kind(p) }}";
 
     let mut ctx = Context::new();
     ctx.set("p", "High");
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(output, "Priority: High");
 }
 
@@ -1057,7 +1053,7 @@ params: [items = list<str>]
             Value::Str("b".into()),
         ])),
     );
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert!(output.contains("* a"), "got: {output}");
     assert!(output.contains("* b"), "got: {output}");
 }
@@ -1081,7 +1077,7 @@ Done",
 
     let mut ctx = Context::new();
     ctx.set("items", Value::List(Arc::new(vec![Value::Str("x".into())])));
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert!(output.contains('x'), "got: {output}");
     assert!(output.contains("Done"), "got: {output}");
 }
@@ -1124,7 +1120,7 @@ params: []
     let (tmpl, _) = Template::compile(main_src, CompileOptions::default().base_dir(base)).unwrap();
 
     let ctx = Context::new();
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert!(output.contains("A=first"), "got: {output}");
     assert!(output.contains("B=second"), "got: {output}");
     assert!(
@@ -1156,9 +1152,7 @@ params: []
 
     let mut ctx = Context::new();
     ctx.set("FIXED", "hacked");
-    let output = tmpl
-        .render_with(&ctx, RenderOptions::default().allow_extra(true))
-        .unwrap();
+    let output = tmpl.render_ctx_allowing_extra(&ctx).unwrap();
     assert_eq!(output, "immutable");
 }
 
@@ -1193,7 +1187,7 @@ params: []
     let (tmpl, _) = Template::compile(main_src, CompileOptions::default().base_dir(base)).unwrap();
 
     let ctx = Context::new();
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(
         output,
         r"====
@@ -1238,7 +1232,7 @@ params: [items = list<str>]
             Value::Str("beta".into()),
         ])),
     );
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert!(output.contains("> alpha"), "got: {output}");
     assert!(output.contains("> beta"), "got: {output}");
 }

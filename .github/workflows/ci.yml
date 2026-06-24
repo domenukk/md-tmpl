@@ -35,7 +35,8 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --all-targets --exclude prompt-templates-macros --all-features -- -D warnings
+      - run: cargo clippy -p prompt-templates-macros --all-targets -- -D warnings
 
   fmt:
     name: Rustfmt
@@ -139,6 +140,8 @@ jobs:
         run: cargo install wasm-pack
       - name: Build WASM package
         run: cd crates/prompt-templates-wasm && wasm-pack build --target nodejs --out-dir pkg --release
+      - name: Install test deps
+        run: cd crates/prompt-templates-wasm && npm install
       - name: Run WASM tests
-        run: cd crates/prompt-templates-wasm && node tests/correctness.mjs && node --test tests/wasm.test.mjs
+        run: cd crates/prompt-templates-wasm && npx tsc && node dist/correctness.js && node --test dist/wasm.test.js
 

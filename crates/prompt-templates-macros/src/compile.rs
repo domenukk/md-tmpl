@@ -272,9 +272,18 @@ pub(crate) fn load_include_declarations(
                 )
             },
         )?;
+    // Build const values map from included file's own consts.
+    let mut included_consts = hashbrown::HashMap::new();
+    for d in &included_fm.consts {
+        if let Some(ref v) = d.default_value {
+            included_consts.insert(d.name.clone(), v.clone());
+        }
+    }
     inc.inline_compiled = Some(prompt_templates::compiled::CompiledInlineTemplate {
         segments: std::sync::Arc::from(included_segments),
         declarations: std::sync::Arc::from(included_fm.declarations),
+        consts: std::sync::Arc::new(included_consts),
+        imported_consts: std::sync::Arc::new(included_fm.imported_consts),
     });
     Ok(())
 }
@@ -333,9 +342,18 @@ pub(crate) fn resolve_single_include(
         )?;
     }
 
+    // Build const values map from included file's own consts.
+    let mut included_consts = hashbrown::HashMap::new();
+    for d in &included_fm.consts {
+        if let Some(ref v) = d.default_value {
+            included_consts.insert(d.name.clone(), v.clone());
+        }
+    }
     inc.inline_compiled = Some(prompt_templates::compiled::CompiledInlineTemplate {
         segments: std::sync::Arc::from(included_segments),
         declarations: std::sync::Arc::from(included_fm.declarations),
+        consts: std::sync::Arc::new(included_consts),
+        imported_consts: std::sync::Arc::new(included_fm.imported_consts),
     });
     Ok(())
 }

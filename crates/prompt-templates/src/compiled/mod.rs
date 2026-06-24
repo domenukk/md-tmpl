@@ -33,8 +33,8 @@ pub use crate::scope::{CompiledExpr, CompiledPath, ConditionOperand};
 use crate::{
     compat::HashMap,
     consts::{
-        CLOSE_FOR, CLOSE_IF, CLOSE_MATCH, CLOSE_RAW, KW_DEFAULT, KW_ELSE, KW_RAW, KW_RAW_ASSIGN,
-        STMT_END, STMT_START, TAG_CASE_PREFIX, TAG_ELIF_PREFIX, TAG_FOR_PREFIX, TAG_IF_PREFIX,
+        CLOSE_FOR, CLOSE_IF, CLOSE_MATCH, CLOSE_RAW, KW_ELSE, KW_RAW, KW_RAW_ASSIGN, STMT_END,
+        STMT_START, TAG_CASE_PREFIX, TAG_ELIF_PREFIX, TAG_FOR_PREFIX, TAG_IF_PREFIX,
         TAG_INCLUDE_PREFIX, TAG_MATCH_PREFIX,
     },
     error::TemplateError,
@@ -53,6 +53,10 @@ pub struct CompiledInlineTemplate {
     pub segments: Arc<[Segment]>,
     /// Declared variables from inline frontmatter.
     pub declarations: Arc<[VarDecl]>,
+    /// Resolved constant values from inline frontmatter `consts:` block.
+    pub consts: Arc<HashMap<String, crate::value::Value>>,
+    /// Imported constants from inline frontmatter `imports:` block.
+    pub imported_consts: Arc<HashMap<String, crate::value::Value>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +100,10 @@ pub enum Segment {
         expr: CompiledPath,
         /// `(variant_name, body)` pairs.
         arms: MatchArms,
+        /// `true` when matching on `option<T>` — resolved via `Value::None`
+        /// discriminant rather than string-based variant tag lookup.
+        /// Computed once at compile time from arm names.
+        is_option: bool,
     },
     /// `{% raw %}literal text{% /raw %}`.
     Raw(Cow<'static, str>),
@@ -146,6 +154,9 @@ pub struct ParsedFilter {
     pub kind: FilterKind,
     /// Optional argument string (e.g. the separator for `join`).
     pub args: Option<Cow<'static, str>>,
+    /// Pre-parsed numeric argument for filters like `fixed(n)`, `limit(n)`, `add(n)`, `sub(n)`.
+    /// Avoids repeated `str::parse::<usize>()` on every render call.
+    pub parsed_num: Option<usize>,
 }
 
 /// Strongly-typed filter names, resolved at compile time.
@@ -469,9 +480,11 @@ fn compile_expr(expr: &str) -> Result<Segment, TemplateError> {
             }
             let (name, args) = crate::filter::parse_filter(filter_str);
             let kind = parse_filter_kind(name)?;
+            let parsed_num = args.and_then(|a| a.parse::<usize>().ok());
             filters.push(ParsedFilter {
                 kind,
                 args: args.map(|a| Cow::Owned(a.to_string())),
+                parsed_num,
             });
         }
     }
@@ -537,7 +550,6 @@ fn compile_statement<'a>(
         || stmt == CLOSE_RAW
         || stmt == CLOSE_MATCH
         || stmt.starts_with(TAG_CASE_PREFIX)
-        || stmt == KW_DEFAULT
     {
         Err(TemplateError::syntax(format!(
             "unexpected '{{% {stmt} %}}' without matching opening tag"
@@ -675,6 +687,18 @@ fn compile_raw_block<'a>(
     Ok((Segment::Raw(Cow::Owned(body.to_string())), rest))
 }
 
+/// Returns `true` if the match arms use option-style variant names (`Some`/`None`).
+///
+/// Called once at compile time so the renderer can use a discriminant check
+/// (`Value::None` vs not) instead of scanning arm names on every render.
+fn arms_are_option(arms: &MatchArms) -> bool {
+    arms.iter().any(|(variants, _)| {
+        variants
+            .iter()
+            .any(|v| v.as_ref() == "Some" || v.as_ref() == "None")
+    })
+}
+
 /// Compile a match block.
 ///
 /// Supports two forms:
@@ -709,18 +733,27 @@ fn compile_match<'a>(
     let (body_text, rest) = parser::find_closing_block(after_tag, TAG_MATCH_PREFIX, CLOSE_MATCH)?;
 
     if let Some(variant) = inline_variant {
-        // Inline form: entire body is one arm.
-        let body = compile_body(body_text).map_err(|e| enrich_error(e, body_text))?;
+        // Inline form: check for {% else %} to create a default arm.
+        let (case_text, else_text) = split_for_else(body_text);
+        let case_body = compile_body(case_text).map_err(|e| enrich_error(e, case_text))?;
+        let mut arms = vec![(
+            variant
+                .split(crate::consts::PIPE)
+                .map(|v| Cow::Owned(v.trim().to_string()))
+                .collect(),
+            case_body,
+        )];
+        if let Some(else_body_text) = else_text {
+            let else_body =
+                compile_body(else_body_text).map_err(|e| enrich_error(e, else_body_text))?;
+            arms.push((vec![Cow::Borrowed("_")], else_body));
+        }
+        let is_option = arms_are_option(&arms);
         Ok((
             Segment::Match {
                 expr: expr_compiled,
-                arms: vec![(
-                    variant
-                        .split(crate::consts::PIPE)
-                        .map(|v| Cow::Owned(v.trim().to_string()))
-                        .collect(),
-                    body,
-                )],
+                arms,
+                is_option,
             },
             rest,
         ))
@@ -732,10 +765,12 @@ fn compile_match<'a>(
                 "match: no {% case %} arms found".to_string(),
             ));
         }
+        let is_option = arms_are_option(&arms);
         Ok((
             Segment::Match {
                 expr: expr_compiled,
                 arms,
+                is_option,
             },
             rest,
         ))
@@ -761,7 +796,7 @@ fn split_match_arms(body: &str) -> Result<MatchArms, TemplateError> {
     }
 
     loop {
-        // Find the next {% case Variant %} or {% default %} tag.
+        // Find the next {% case Variant %} or {% else %} tag.
         let scan = parser::scan_next_tag(remaining)?;
         match scan {
             parser::ScanResult::Literal(_) => break,
@@ -779,10 +814,10 @@ fn split_match_arms(body: &str) -> Result<MatchArms, TemplateError> {
                 }
 
                 if let Some(variant) = stmt.strip_prefix(TAG_CASE_PREFIX) {
-                    // {% case %} after {% default %} is not allowed.
+                    // {% case %} after {% else %} is not allowed.
                     if has_default {
                         return Err(TemplateError::syntax(
-                            "match: {% case %} after {% default %} is not allowed".to_string(),
+                            "match: {% case %} after {% else %} is not allowed".to_string(),
                         ));
                     }
 
@@ -793,7 +828,7 @@ fn split_match_arms(body: &str) -> Result<MatchArms, TemplateError> {
                         ));
                     }
 
-                    // Scan forward to find the next {% case %}, {% default %}, or end.
+                    // Scan forward to find the next {% case %}, {% else %}, or end.
                     let arm_body = scan_to_next_case_or_end(after)?;
                     let arm_segments =
                         compile_body(arm_body).map_err(|e| enrich_error(e, arm_body))?;
@@ -807,15 +842,15 @@ fn split_match_arms(body: &str) -> Result<MatchArms, TemplateError> {
                     if remaining.is_empty() {
                         break;
                     }
-                } else if stmt == KW_DEFAULT {
+                } else if stmt == KW_ELSE {
                     if has_default {
                         return Err(TemplateError::syntax(
-                            "match: only one {% default %} arm is allowed".to_string(),
+                            "match: only one {% else %} arm is allowed".to_string(),
                         ));
                     }
                     has_default = true;
 
-                    // Scan forward to find the next {% case %}, {% default %}, or end.
+                    // Scan forward to find the next {% case %}, {% else %}, or end.
                     let arm_body = scan_to_next_case_or_end(after)?;
                     let arm_segments =
                         compile_body(arm_body).map_err(|e| enrich_error(e, arm_body))?;
@@ -843,10 +878,11 @@ fn split_match_arms(body: &str) -> Result<MatchArms, TemplateError> {
 }
 
 /// Scan forward from `input` until we find a top-level `{% case %}` tag
-/// (respecting nesting of inner match blocks). Returns the text slice
-/// that constitutes the arm body.
+/// (respecting nesting of inner match, if, and for blocks). Returns the
+/// text slice that constitutes the arm body.
 fn scan_to_next_case_or_end(input: &str) -> Result<&str, TemplateError> {
-    let mut depth: u32 = 0;
+    let mut match_depth: u32 = 0;
+    let mut if_for_depth: u32 = 0;
     let mut search_from: usize = 0;
 
     while search_from < input.len() {
@@ -863,15 +899,22 @@ fn scan_to_next_case_or_end(input: &str) -> Result<&str, TemplateError> {
                 let tag_pos = search_from + before.len();
 
                 if stmt.starts_with(TAG_MATCH_PREFIX) {
-                    depth += 1;
+                    match_depth += 1;
                 } else if stmt == CLOSE_MATCH {
-                    if depth == 0 {
+                    if match_depth == 0 {
                         // End of our match block — return everything before.
                         return Ok(&input[..tag_pos]);
                     }
-                    depth -= 1;
-                } else if (stmt.starts_with(TAG_CASE_PREFIX) || stmt == KW_DEFAULT) && depth == 0 {
-                    // Next case/default at our level — return everything before.
+                    match_depth -= 1;
+                } else if stmt.starts_with(TAG_IF_PREFIX) || stmt.starts_with(TAG_FOR_PREFIX) {
+                    if_for_depth += 1;
+                } else if stmt == CLOSE_IF || stmt == CLOSE_FOR {
+                    if_for_depth = if_for_depth.saturating_sub(1);
+                } else if (stmt.starts_with(TAG_CASE_PREFIX) || stmt == KW_ELSE)
+                    && match_depth == 0
+                    && if_for_depth == 0
+                {
+                    // Next case/else at our level — return everything before.
                     return Ok(&input[..tag_pos]);
                 }
 
@@ -916,10 +959,10 @@ fn compile_include<'a>(
     ))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 #[path = "tests.rs"]
 mod tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 #[path = "tests_analysis.rs"]
 mod tests_analysis;

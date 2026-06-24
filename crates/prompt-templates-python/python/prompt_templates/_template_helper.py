@@ -84,6 +84,21 @@ class _TemplateWithTypes:
         """
         return self._native.render_dict(params)
 
+    def render_empty(self) -> str:
+        """Render a template that takes no user-provided parameters.
+
+        If the template declares parameters, those must all have defaults.
+        Calling ``render_empty()`` on a template with required (no-default)
+        parameters raises ``ValueError``.
+
+        Returns:
+            str: The rendered output.
+
+        Raises:
+            ValueError: If any declared parameter lacks a default value.
+        """
+        return self._native.render_empty()
+
     def declarations(self) -> list[tuple[str, str]]:
         """Return parameter declarations as (name, type) tuples."""
         return self._native.declarations()

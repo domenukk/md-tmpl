@@ -71,39 +71,6 @@ impl CompileOptions<'_> {
     }
 }
 
-/// Options for template rendering.
-///
-/// Controls strictness for render calls. Use with [`Template::render_with`],
-/// [`Template::render_into_with`], or [`Template::render_cached_with`].
-///
-/// # Examples
-///
-/// ```
-/// use prompt_templates::RenderOptions;
-///
-/// // Default options (strict mode):
-/// let opts = RenderOptions::default();
-///
-/// // Allow extra undeclared context keys:
-/// let opts = RenderOptions::default().allow_extra(true);
-/// ```
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, Default)]
-pub struct RenderOptions {
-    /// When `true`, extra (undeclared) context keys are silently ignored
-    /// instead of producing an error.
-    pub allow_extra: bool,
-}
-
-impl RenderOptions {
-    /// Allow extra (undeclared) parameters during rendering.
-    #[must_use]
-    pub fn allow_extra(mut self, allow: bool) -> Self {
-        self.allow_extra = allow;
-        self
-    }
-}
-
 /// A parsed template ready for rendering.
 ///
 /// Templates can be loaded from files or parsed from in-memory strings.
@@ -236,7 +203,10 @@ impl Template {
     /// use prompt_templates::{CompileOptions, Template};
     ///
     /// let (tmpl, fm) = Template::compile(
-    ///     "---\nparams: [name = str]\n---\nHello {{ name }}!",
+    ///     r#"---
+    /// params: [name = str]
+    /// ---
+    /// Hello {{ name }}!"#,
     ///     CompileOptions::default(),
     /// )
     /// .unwrap();
@@ -331,7 +301,7 @@ impl Template {
             .iter()
             .filter_map(|d| d.default_value.clone().map(|v| (d.name.clone(), v)))
             .collect();
-        // Inject enum type aliases as namespace constants (e.g. Phase.Explore).
+        // Inject enum type aliases as namespace constants (e.g. Stage.Design).
         inject_enum_type_constants(&fm.type_aliases, &mut consts);
         let segments: Arc<[Segment]> = Arc::from(segments);
         let estimated_capacity = compiled::render::estimate_output_capacity(&segments);
@@ -385,7 +355,7 @@ impl Template {
             .iter()
             .filter_map(|d| d.default_value.clone().map(|v| (d.name.clone(), v)))
             .collect();
-        // Inject enum type aliases as namespace constants (e.g. Phase.Explore).
+        // Inject enum type aliases as namespace constants (e.g. Stage.Design).
         inject_enum_type_constants(&fm.type_aliases, &mut consts);
         let segments: Arc<[Segment]> = Arc::from(segments);
         let estimated_capacity = compiled::render::estimate_output_capacity(&segments);
@@ -581,12 +551,17 @@ impl Template {
     /// ```
     /// # use prompt_templates::{Template, Context};
     /// let tmpl = Template::from_source(
-    ///     "---\nparams:\n  - name = str\n  - count = int := 5\n---\n{{ name }} ({{ count }})",
+    ///     r#"---
+    /// params:
+    ///   - name = str
+    ///   - count = int := 5
+    /// ---
+    /// {{ name }} ({{ count }})"#,
     /// )
     /// .unwrap();
     /// let mut ctx = tmpl.defaults_context();
     /// ctx.set("name", "Alice"); // count already has default 5
-    /// assert_eq!(tmpl.render(&ctx).unwrap(), "Alice (5)");
+    /// assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Alice (5)");
     /// ```
     #[must_use]
     pub fn defaults_context(&self) -> Context {
@@ -648,9 +623,15 @@ impl Template {
     /// ```
     /// use prompt_templates::Template;
     ///
-    /// let tmpl =
-    ///     Template::from_source("---\nconsts:\n  - MAX = int := 100\nparams: []\n---\n{{ MAX }}")
-    ///         .unwrap();
+    /// let tmpl = Template::from_source(
+    ///     r#"---
+    /// consts:
+    ///   - MAX = int := 100
+    /// params: []
+    /// ---
+    /// {{ MAX }}"#,
+    /// )
+    /// .unwrap();
     /// let consts = tmpl.consts();
     /// assert_eq!(consts.get("MAX").unwrap().as_int(), Some(100));
     /// ```
@@ -769,20 +750,20 @@ impl Template {
     /// - Type mismatches → error
     /// - Extra undeclared parameters → error
     ///
-    /// Use [`render_allowing_extra`](Self::render_allowing_extra) to permit
+    /// Use [`render_ctx_allowing_extra`](Self::render_ctx_allowing_extra) to permit
     /// undeclared parameters (e.g. when sharing a context across templates).
     ///
     /// # Errors
     ///
     /// Returns [`TemplateError`] if validation fails or a rendering error
     /// occurs.
-    pub fn render(&self, ctx: &Context) -> Result<String, TemplateError> {
+    pub fn render_ctx(&self, ctx: &Context) -> Result<String, TemplateError> {
         self.render_inner(ctx, false)
     }
 
     /// Render the template, allowing extra (undeclared) parameters.
     ///
-    /// Like [`render`](Self::render), but extra context keys that aren't
+    /// Like [`render_ctx`](Self::render_ctx), but extra context keys that aren't
     /// declared in frontmatter are silently ignored instead of producing
     /// an error. Useful when forwarding a shared context to multiple
     /// templates.
@@ -791,30 +772,61 @@ impl Template {
     ///
     /// Returns [`TemplateError`] if validation fails or a rendering error
     /// occurs.
-    #[deprecated(
-        since = "0.2.0",
-        note = "Use `render_with(&ctx, RenderOptions::default().allow_extra(true))` instead"
-    )]
-    pub fn render_allowing_extra(&self, ctx: &Context) -> Result<String, TemplateError> {
+    pub fn render_ctx_allowing_extra(&self, ctx: &Context) -> Result<String, TemplateError> {
         self.render_inner(ctx, true)
     }
 
-    /// Render the template with options controlling strictness.
+    /// Render a template that takes no user-provided parameters.
     ///
-    /// When `allow_extra` is `false`, this behaves like [`render`](Self::render).
-    /// When `allow_extra` is `true`, extra context keys that aren't declared
-    /// in frontmatter are silently ignored.
+    /// If the template declares parameters, those **must** all have defaults.
+    /// Calling `render_empty()` on a template with required (no-default)
+    /// parameters returns [`TemplateError::MissingParams`].
+    ///
+    /// This is more efficient than `render(&empty_struct)` (no serde overhead)
+    /// and more explicit than `render_ctx(&Context::new())`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use prompt_templates::Template;
+    ///
+    /// // No params — renders as-is
+    /// let tmpl = Template::from_source("---\nparams: []\n---\nHello world!").unwrap();
+    /// assert_eq!(tmpl.render_empty().unwrap(), "Hello world!");
+    ///
+    /// // All params have defaults
+    /// let tmpl = Template::from_source(
+    ///     "---\nparams:\n  - greeting = str := \"Hi\"\n---\n{{ greeting }}!",
+    /// ).unwrap();
+    /// assert_eq!(tmpl.render_empty().unwrap(), "Hi!");
+    /// ```
     ///
     /// # Errors
     ///
-    /// Returns [`TemplateError`] if validation fails or a rendering error
-    /// occurs.
-    pub fn render_with(
-        &self,
-        ctx: &Context,
-        options: RenderOptions,
-    ) -> Result<String, TemplateError> {
-        self.render_inner(ctx, options.allow_extra)
+    /// Returns [`TemplateError::MissingParams`] if any declared parameter
+    /// lacks a default value.
+    pub fn render_empty(&self) -> Result<String, TemplateError> {
+        let ctx = if self.has_defaults {
+            self.defaults_context()
+        } else {
+            Context::new()
+        };
+        self.render_ctx(&ctx)
+    }
+
+    /// Like [`render_empty`](Self::render_empty), but appends to an existing buffer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TemplateError::MissingParams`] if any declared parameter
+    /// lacks a default value.
+    pub fn render_empty_into(&self, output: &mut String) -> Result<(), TemplateError> {
+        let ctx = if self.has_defaults {
+            self.defaults_context()
+        } else {
+            Context::new()
+        };
+        self.render_ctx_into(&ctx, output)
     }
 
     /// Internal render path with configurable strictness.
@@ -826,7 +838,7 @@ impl Template {
 
     /// Render the template directly into an existing `String` buffer.
     ///
-    /// Unlike [`render`](Self::render), this appends to `output` without
+    /// Unlike [`render_ctx`](Self::render_ctx), this appends to `output` without
     /// allocating a new `String`. Useful when composing multiple template
     /// outputs into a single buffer.
     ///
@@ -834,43 +846,23 @@ impl Template {
     ///
     /// Returns [`TemplateError`] if validation fails or a rendering error
     /// occurs. On error, `output` may contain partial results.
-    pub fn render_into(&self, ctx: &Context, output: &mut String) -> Result<(), TemplateError> {
+    pub fn render_ctx_into(&self, ctx: &Context, output: &mut String) -> Result<(), TemplateError> {
         self.render_into_inner(ctx, false, output)
     }
 
-    /// Like [`render_into`](Self::render_into), but allows extra (undeclared)
+    /// Like [`render_ctx_into`](Self::render_ctx_into), but allows extra (undeclared)
     /// parameters.
     ///
     /// # Errors
     ///
     /// Returns [`TemplateError`] if validation fails or a rendering error
     /// occurs.
-    #[deprecated(
-        since = "0.2.0",
-        note = "Use `render_into_with(&ctx, &mut output, RenderOptions::default().allow_extra(true))` instead"
-    )]
-    pub fn render_into_allowing_extra(
+    pub fn render_ctx_into_allowing_extra(
         &self,
         ctx: &Context,
         output: &mut String,
     ) -> Result<(), TemplateError> {
         self.render_into_inner(ctx, true, output)
-    }
-
-    /// Like [`render_with`](Self::render_with), but appends to a buffer
-    /// instead of allocating a new `String`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TemplateError`] if validation fails or a rendering error
-    /// occurs. On error, `output` may contain partial results.
-    pub fn render_into_with(
-        &self,
-        ctx: &Context,
-        output: &mut String,
-        options: RenderOptions,
-    ) -> Result<(), TemplateError> {
-        self.render_into_inner(ctx, options.allow_extra, output)
     }
 
     /// Shared implementation for all render-into paths.
@@ -887,7 +879,7 @@ impl Template {
     /// Core rendering without any context validation.
     ///
     /// Used by both `render_into_inner` (after validation) and
-    /// `render_unchecked` (no validation at all).
+    /// `render_ctx_unchecked` (no validation at all).
     fn render_core(&self, ctx: &Context, output: &mut String) -> Result<(), TemplateError> {
         let ctx = self.inject_defaults(ctx);
         let mut scope = Scope::new(&ctx).with_max_include_depth(self.max_include_depth);
@@ -910,7 +902,7 @@ impl Template {
     /// Render the template **without** context validation.
     ///
     /// Skips the parameter presence, type, and extra-key checks that
-    /// [`render`](Self::render) performs on every call. This is a safe
+    /// [`render_ctx`](Self::render_ctx) performs on every call. This is a safe
     /// operation — rendering errors (e.g. undefined variable) are still
     /// reported via `Err` — but the upfront validation overhead is removed.
     ///
@@ -921,7 +913,7 @@ impl Template {
     ///
     /// Returns [`TemplateError`] if a rendering error occurs (e.g.
     /// undefined variable, filter error).
-    pub fn render_unchecked(&self, ctx: &Context) -> Result<String, TemplateError> {
+    pub fn render_ctx_unchecked(&self, ctx: &Context) -> Result<String, TemplateError> {
         let mut output = String::with_capacity(self.estimated_capacity);
         self.render_core(ctx, &mut output)?;
         Ok(output)
@@ -929,13 +921,13 @@ impl Template {
 
     /// Render into a buffer **without** context validation.
     ///
-    /// Like [`render_unchecked`](Self::render_unchecked), but appends to
+    /// Like [`render_ctx_unchecked`](Self::render_ctx_unchecked), but appends to
     /// an existing buffer.
     ///
     /// # Errors
     ///
     /// Returns [`TemplateError`] if a rendering error occurs.
-    pub fn render_into_unchecked(
+    pub fn render_ctx_into_unchecked(
         &self,
         ctx: &Context,
         output: &mut String,
@@ -945,7 +937,7 @@ impl Template {
 
     /// Render the template using a [`TemplateCache`](crate::TemplateCache) for include resolution.
     ///
-    /// Like [`render`](Self::render), but included templates are resolved
+    /// Like [`render_ctx`](Self::render_ctx), but included templates are resolved
     /// through the cache — unchanged includes are not re-read or re-compiled.
     /// This is the recommended rendering path for hot-reload scenarios where
     /// templates are re-rendered frequently.
@@ -955,41 +947,44 @@ impl Template {
     /// Returns [`TemplateError`] if validation fails or a rendering error
     /// occurs.
     #[cfg(feature = "std")]
-    #[deprecated(
-        since = "0.2.0",
-        note = "Use `render_cached_with(&ctx, &cache, RenderOptions::default())` instead"
-    )]
-    pub fn render_cached<S: core::hash::BuildHasher + Send + Sync>(
+    pub fn render_ctx_cached<S: core::hash::BuildHasher + Send + Sync>(
         &self,
         ctx: &Context,
         cache: &crate::TemplateCache<S>,
     ) -> Result<String, TemplateError> {
-        self.render_cached_with(ctx, cache, RenderOptions::default())
+        self.validate_context(ctx, false)?;
+        let ctx = self.inject_defaults(ctx);
+        let mut scope =
+            Scope::with_cache(&ctx, cache).with_max_include_depth(self.max_include_depth);
+        if !self.consts.is_empty() || !self.imported_consts.is_empty() {
+            scope.set_consts(&self.consts, &self.imported_consts);
+        }
+        scope.set_inline_templates(&self.inline_templates);
+        compiled::render_segments(&self.segments, &mut scope, self.base_dir.as_deref())
     }
 
-    /// Render using a [`TemplateCache`](crate::TemplateCache), with options.
+    /// Render with caching, allowing extra parameters in the context.
     ///
-    /// Like [`render_with`](Self::render_with), but included templates are
-    /// resolved through the cache — unchanged includes are not re-read or
-    /// re-compiled. This is the recommended rendering path for hot-reload
-    /// scenarios where templates are re-rendered frequently.
+    /// Like [`render_ctx_cached()`](Self::render_ctx_cached) but does not
+    /// reject parameters not declared in the template frontmatter.
     ///
     /// # Errors
     ///
     /// Returns [`TemplateError`] if validation fails or a rendering error
     /// occurs.
     #[cfg(feature = "std")]
-    pub fn render_cached_with<S: core::hash::BuildHasher + Send + Sync>(
+    pub fn render_ctx_cached_allowing_extra<S: core::hash::BuildHasher + Send + Sync>(
         &self,
         ctx: &Context,
         cache: &crate::TemplateCache<S>,
-        options: RenderOptions,
     ) -> Result<String, TemplateError> {
-        self.validate_context(ctx, options.allow_extra)?;
+        self.validate_context(ctx, true)?;
         let ctx = self.inject_defaults(ctx);
         let mut scope =
             Scope::with_cache(&ctx, cache).with_max_include_depth(self.max_include_depth);
-        scope.set_consts(&self.consts, &self.imported_consts);
+        if !self.consts.is_empty() || !self.imported_consts.is_empty() {
+            scope.set_consts(&self.consts, &self.imported_consts);
+        }
         scope.set_inline_templates(&self.inline_templates);
         compiled::render_segments(&self.segments, &mut scope, self.base_dir.as_deref())
     }
@@ -1043,39 +1038,42 @@ impl Template {
     /// }
     ///
     /// let tmpl = Template::from_source(
-    ///     "---\nparams: [name = str, count = int]\n---\n{{ name }} has {{ count }} items",
+    ///     r#"---
+    /// params: [name = str, count = int]
+    /// ---
+    /// {{ name }} has {{ count }} items"#,
     /// )
     /// .unwrap();
     /// let output = tmpl
-    ///     .render_serde(&Data {
+    ///     .render(&Data {
     ///         name: "Alice".into(),
     ///         count: 3,
     ///     })
     ///     .unwrap();
     /// assert_eq!(output, "Alice has 3 items");
     /// ```
-    pub fn render_serde<T: serde::Serialize>(
+    pub fn render<T: serde::Serialize>(
         &self,
         value: &T,
     ) -> Result<String, crate::error::TemplateError> {
         let ctx = Context::from_serialize(value)?;
-        self.render(&ctx)
+        self.render_ctx(&ctx)
     }
 
-    /// Like [`render_serde`](Self::render_serde), but appends output into an
+    /// Like [`render`](Self::render), but appends output into an
     /// existing buffer.
     ///
     /// # Errors
     ///
     /// Returns [`TemplateError`] if serialization fails, the value is not a
     /// struct/map, or rendering encounters an error.
-    pub fn render_serde_into<T: serde::Serialize>(
+    pub fn render_into<T: serde::Serialize>(
         &self,
         value: &T,
         output: &mut String,
     ) -> Result<(), crate::error::TemplateError> {
         let ctx = Context::from_serialize(value)?;
-        self.render_into(&ctx, output)
+        self.render_ctx_into(&ctx, output)
     }
 }
 
@@ -1141,10 +1139,10 @@ pub fn load_template(dir: &Path, name: &str) -> Result<Template, TemplateError> 
 }
 /// Inject enum type aliases as namespace constants.
 ///
-/// For each enum type alias like `Phase = enum<Explore, Triage>`, this creates
-/// a dict constant `Phase` → `{Explore: "Explore", Triage: "Triage"}`.
-/// This enables expressions like `{{ kind(Phase.Explore) }}` in templates.
-/// Bare access like `{{ Phase.Explore }}` is rejected at compile time —
+/// For each enum type alias like `Stage = enum<Design, Build>`, this creates
+/// a dict constant `Stage` → `{Design: "Design", Build: "Build"}`.
+/// This enables expressions like `{{ kind(Stage.Design) }}` in templates.
+/// Bare access like `{{ Stage.Design }}` is rejected at compile time —
 /// users must wrap enum literals in `kind()` for explicit variant name extraction.
 ///
 /// Unit variants map to `Value::Str(name)`. Struct variants map to a tagged
@@ -1183,7 +1181,7 @@ fn inject_enum_type_constants(
 
 /// Collect the set of enum type names (both local and imported).
 ///
-/// For local types, stores just the type name (e.g. `"Phase"`).
+/// For local types, stores just the type name (e.g. `"Stage"`).
 /// For imported types, stores the full `stem.TypeName` key (e.g.
 /// `"lib.Color"`), so that non-enum imports like `lib.MAX_TIMEOUT`
 /// are not incorrectly flagged.
@@ -1202,11 +1200,11 @@ fn collect_enum_type_keys(fm: &Frontmatter) -> HashSet<String> {
     keys
 }
 
-/// Reject bare enum literal expressions like `{{ Phase.Explore }}`.
+/// Reject bare enum literal expressions like `{{ Stage.Design }}`.
 ///
 /// Enum type namespaces are injected as dict constants so that `kind()` can
 /// access them, but they should not be rendered directly. Instead, users
-/// must wrap them in `kind()`: `{{ kind(Phase.Explore) }}`.
+/// must wrap them in `kind()`: `{{ kind(Stage.Design) }}`.
 ///
 /// This prevents accidental confusion between enum type access and regular
 /// variable dot-access.
@@ -1260,7 +1258,7 @@ fn check_bare_enum_access(
 
 /// Check if a dotted path matches a known enum type namespace.
 ///
-/// - Local: `["Phase", "Explore"]` → checks `"Phase"` in keys.
+/// - Local: `["Stage", "Design"]` → checks `"Stage"` in keys.
 /// - Imported: `["lib", "Color", "Red"]` → checks `"lib.Color"` in keys.
 fn is_enum_path(parts: &[String], enum_keys: &HashSet<String>) -> bool {
     // Try 1-part root (local enum type).
@@ -1295,7 +1293,7 @@ fn check_undeclared_variables(
         declared.insert(import.stem.clone());
     }
     // Enum type aliases are auto-injected as namespace constants,
-    // so references like `Phase.Explore` (root = `Phase`) are valid.
+    // so references like `Stage.Design` (root = `Stage`) are valid.
     for (name, ty) in &fm.type_aliases {
         if matches!(ty, VarType::Enum(_)) {
             declared.insert(name.clone());
@@ -1470,15 +1468,21 @@ fn hash_source_no_std(source: &str) -> u64 {
     crate::__private::fnv1a_hash(source.as_bytes())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod adversarial_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
+mod collision_and_scope_tests;
+#[cfg(all(test, feature = "std"))]
 mod const_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod error_diagnostic_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod higher_order_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
+mod inline_edge_tests;
+#[cfg(all(test, feature = "std"))]
 mod render_integration_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
+mod shared_tests;
+#[cfg(all(test, feature = "std"))]
 mod tests;

@@ -21,8 +21,8 @@ use crate::{
 pub(crate) const MAX_INCLUDE_DEPTH: usize = 16;
 
 /// Empty inline template map used as default when no inline templates exist.
-static EMPTY_INLINE_TEMPLATES: crate::compat::Lazy<HashMap<String, CompiledInlineTemplate>> =
-    crate::compat::Lazy::new(HashMap::new);
+static EMPTY_INLINE_TEMPLATES: crate::compat::LazyLock<HashMap<String, CompiledInlineTemplate>> =
+    crate::compat::LazyLock::new(HashMap::new);
 
 /// Loop metadata for a for-loop binding.
 ///
@@ -57,6 +57,19 @@ impl CompiledPath {
         Self { raw, parts }
     }
 
+    /// Build a `CompiledPath` from a raw string and pre-split parts.
+    ///
+    /// Used by compile-time macros to avoid re-splitting at runtime.
+    /// Both `raw` and each element of `parts` are `&'static str` from
+    /// string literals baked into the binary.
+    #[must_use]
+    pub fn from_static(raw: &'static str, parts: &[&'static str]) -> Self {
+        Self {
+            raw: Cow::Borrowed(raw),
+            parts: parts.iter().map(|s| (*s).to_string()).collect(),
+        }
+    }
+
     /// Get the original raw path string.
     #[must_use]
     pub fn as_str(&self) -> &str {
@@ -76,7 +89,7 @@ pub enum CompiledExpr {
     /// A dotted variable path lookup.
     Path(CompiledPath),
     /// Loop index lookup `idx(binding)`.
-    Idx(String),
+    Idx(Cow<'static, str>),
     /// Length lookup `len(path)`.
     Len(CompiledPath),
     /// Variant name lookup `kind(path)`.
@@ -100,7 +113,7 @@ impl CompiledExpr {
 
         if let Some((func_name, arg)) = parse_function_call(raw) {
             match func_name {
-                crate::consts::FN_IDX => Ok(Self::Idx(arg.to_string())),
+                crate::consts::FN_IDX => Ok(Self::Idx(Cow::Owned(arg.to_string()))),
                 crate::consts::FN_LEN => Ok(Self::Len(CompiledPath::compile(arg))),
                 crate::consts::FN_KIND => Ok(Self::Kind(CompiledPath::compile(arg))),
                 crate::consts::FN_HAS => Ok(Self::Has(CompiledPath::compile(arg))),
@@ -127,7 +140,7 @@ pub enum ConditionOperand {
         filters: Vec<ParsedFilter>,
     },
     /// Loop index lookup `idx(binding)`.
-    Idx(String),
+    Idx(Cow<'static, str>),
     /// Length lookup `len(path)`.
     Len(CompiledPath),
     /// Variant name lookup `kind(path)`.
@@ -174,7 +187,7 @@ impl ConditionOperand {
         // 5. Function calls: idx(binding), len(list), kind(enum)
         if let Some((func_name, arg)) = parse_function_call(token) {
             match func_name {
-                crate::consts::FN_IDX => return Ok(Self::Idx(arg.to_string())),
+                crate::consts::FN_IDX => return Ok(Self::Idx(Cow::Owned(arg.to_string()))),
                 crate::consts::FN_LEN => return Ok(Self::Len(CompiledPath::compile(arg))),
                 crate::consts::FN_KIND => return Ok(Self::Kind(CompiledPath::compile(arg))),
                 crate::consts::FN_HAS => return Ok(Self::Has(CompiledPath::compile(arg))),
@@ -205,9 +218,11 @@ impl ConditionOperand {
                 }
                 let (name, args) = crate::filter::parse_filter(filter_str);
                 let kind = crate::compiled::parse_filter_kind(name)?;
+                let parsed_num = args.and_then(|a| a.parse::<usize>().ok());
                 filters.push(ParsedFilter {
                     kind,
                     args: args.map(|a| Cow::Owned(a.to_string())),
+                    parsed_num,
                 });
             }
         }
@@ -491,8 +506,12 @@ impl<'a> Scope<'a> {
         consts: &Arc<HashMap<String, Value>>,
         imported_consts: &Arc<HashMap<String, Value>>,
     ) {
-        self.consts_stack.push(Arc::clone(consts));
-        self.imported_consts_stack.push(Arc::clone(imported_consts));
+        if !consts.is_empty() {
+            self.consts_stack.push(Arc::clone(consts));
+        }
+        if !imported_consts.is_empty() {
+            self.imported_consts_stack.push(Arc::clone(imported_consts));
+        }
     }
 
     /// Push new constants onto the scope stack (used by includes).
@@ -596,6 +615,7 @@ impl<'a> Scope<'a> {
                 }
             }
             Value::Str(s) => Ok(Value::Str(s.clone())),
+            Value::None => Ok(Value::Str("None".into())),
             _ => Err(TemplateError::syntax(format!(
                 "kind() requires an enum value, got {}",
                 val.type_name()
@@ -620,6 +640,8 @@ impl<'a> Scope<'a> {
     pub(crate) fn is_option_some(val: &Value) -> bool {
         use crate::consts::{ENUM_TAG_KEY, OPTION_NONE, OPTION_SOME};
         match val {
+            // Explicit absent value — always not-present.
+            Value::None => false,
             // Struct variant: check __kind__ tag.
             Value::Struct(d) => {
                 if let Some(Value::Str(tag)) = d.get(ENUM_TAG_KEY) {
@@ -1085,7 +1107,10 @@ mod tests {
     #[test]
     fn kind_extracts_enum_variant_name() {
         let tmpl = crate::Template::from_source(
-            "---\nparams: [outcome = struct<evidence = str>]\n---\n{{ kind(outcome) }}",
+            r"---
+params: [outcome = struct<evidence = str>]
+---
+{{ kind(outcome) }}",
         )
         .unwrap();
         let mut ctx = crate::Context::new();
@@ -1099,17 +1124,21 @@ mod tests {
                 ("evidence".into(), Value::Str("confirmed finding".into())),
             ]))),
         );
-        assert_eq!(tmpl.render(&ctx).unwrap(), "Confirmed");
+        assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Confirmed");
     }
 
     #[test]
     fn kind_rejects_non_dict() {
-        let tmpl =
-            crate::Template::from_source("---\nparams: [count = int]\n---\n{{ kind(count) }}")
-                .unwrap();
+        let tmpl = crate::Template::from_source(
+            r"---
+params: [count = int]
+---
+{{ kind(count) }}",
+        )
+        .unwrap();
         let mut ctx = crate::Context::new();
         ctx.set("count", 42);
-        let err = tmpl.render(&ctx).unwrap_err();
+        let err = tmpl.render_ctx(&ctx).unwrap_err();
         assert!(
             err.to_string().contains("enum"),
             "should mention enum requirement: {err}"
@@ -1119,7 +1148,10 @@ mod tests {
     #[test]
     fn kind_rejects_dict_without_variant_tag() {
         let tmpl = crate::Template::from_source(
-            "---\nparams: [data = struct<name = str>]\n---\n{{ kind(data) }}",
+            r"---
+params: [data = struct<name = str>]
+---
+{{ kind(data) }}",
         )
         .unwrap();
         let mut ctx = crate::Context::new();
@@ -1130,7 +1162,7 @@ mod tests {
                 Value::Str("x".into()),
             )]))),
         );
-        let err = tmpl.render(&ctx).unwrap_err();
+        let err = tmpl.render_ctx(&ctx).unwrap_err();
         assert!(
             err.to_string().contains("enum"),
             "should mention enum requirement: {err}"
@@ -1141,7 +1173,10 @@ mod tests {
     fn kind_key_not_accessible_via_dot_path() {
         // The internal __kind__ key must not be accessible as {{ outcome.__kind__ }}.
         let tmpl = crate::Template::from_source(
-            "---\nparams: [outcome = struct<evidence = str>]\n---\n{{ outcome.__kind__ }}",
+            r"---
+params: [outcome = struct<evidence = str>]
+---
+{{ outcome.__kind__ }}",
         )
         .unwrap();
         let mut ctx = crate::Context::new();
@@ -1155,7 +1190,7 @@ mod tests {
                 ("evidence".into(), Value::Str("found it".into())),
             ]))),
         );
-        let err = tmpl.render(&ctx).unwrap_err();
+        let err = tmpl.render_ctx(&ctx).unwrap_err();
         assert!(
             err.to_string().contains("not found") || err.to_string().contains("undefined"),
             "__kind__ should not be accessible from templates: {err}"
@@ -1166,7 +1201,10 @@ mod tests {
     fn user_field_named_tag_does_not_collide() {
         // A user field named "tag" must not collide with the internal __kind__ key.
         let tmpl = crate::Template::from_source(
-            "---\nparams: [entry = struct<tag = str>]\n---\n{{ kind(entry) }}: {{ entry.tag }}",
+            r"---
+params: [entry = struct<tag = str>]
+---
+{{ kind(entry) }}: {{ entry.tag }}",
         )
         .unwrap();
         let mut ctx = crate::Context::new();
@@ -1180,7 +1218,7 @@ mod tests {
                 ("tag".into(), Value::Str("Montag".into())),
             ]))),
         );
-        assert_eq!(tmpl.render(&ctx).unwrap(), "Woche: Montag");
+        assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Woche: Montag");
     }
 
     // -- parse_function_call edge cases --

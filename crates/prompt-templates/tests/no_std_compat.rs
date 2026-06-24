@@ -57,8 +57,8 @@ fn private_format_macro() {
 
 #[test]
 fn private_lazy_initializes() {
-    static VAL: prompt_templates::__private::Lazy<i32> =
-        prompt_templates::__private::Lazy::new(|| 99);
+    static VAL: prompt_templates::__private::LazyLock<i32> =
+        prompt_templates::__private::LazyLock::new(|| 99);
     assert_eq!(*VAL, 99);
 }
 
@@ -210,38 +210,51 @@ fn context_overwrite() {
 }
 
 // ---------------------------------------------------------------------------
-// 5. Template — from_source and render (the core no_std path)
+// 5. Template — from_source and render_ctx (the core no_std path)
 // ---------------------------------------------------------------------------
 
 #[test]
 fn template_from_source_simple() {
-    let tmpl = Template::from_source("---\nparams: [name = str]\n---\nHello, {{ name }}!").unwrap();
+    let tmpl = Template::from_source(
+        r"---
+params: [name = str]
+---
+Hello, {{ name }}!",
+    )
+    .unwrap();
     assert_eq!(tmpl.declarations().len(), 1);
     assert_eq!(tmpl.declarations()[0].name, "name");
 }
 
 #[test]
 fn template_render_simple() {
-    let tmpl = Template::from_source("---\nparams: [greeting = str]\n---\n{{ greeting }}, world!")
-        .unwrap();
-    let output = tmpl.render(&ctx! { greeting: "Hello" }).unwrap();
+    let tmpl = Template::from_source(
+        r"---
+params: [greeting = str]
+---
+{{ greeting }}, world!",
+    )
+    .unwrap();
+    let output = tmpl.render_ctx(&ctx! { greeting: "Hello" }).unwrap();
     assert_eq!(output, "Hello, world!");
 }
 
 #[test]
 fn template_render_with_list() {
     let tmpl = Template::from_source(
-        "---\nparams: [items = list<label = str>]\n---\n\
-         \n\
-         > {% for item in items %}\n\
-         \n\
-         {{ item.label }}\n\
-         \n\
-         > {% /for %}",
+        r"---
+params: [items = list<label = str>]
+---
+
+> {% for item in items %}
+
+{{ item.label }}
+
+> {% /for %}",
     )
     .unwrap();
     let output = tmpl
-        .render(&ctx! {
+        .render_ctx(&ctx! {
             items: [{ label: "alpha" }, { label: "beta" }],
         })
         .unwrap();
@@ -251,48 +264,64 @@ fn template_render_with_list() {
 #[test]
 fn template_render_with_conditional() {
     let tmpl = Template::from_source(
-        "---\nparams: [show = bool, msg = str]\n---\n\
-         \n\
-         > {% if show %}\n\
-         \n\
-         {{ msg }}\n\
-         \n\
-         > {% /if %}",
+        r"---
+params: [show = bool, msg = str]
+---
+
+> {% if show %}
+
+{{ msg }}
+
+> {% /if %}",
     )
     .unwrap();
-    let shown = tmpl.render(&ctx! { show: true, msg: "visible" }).unwrap();
+    let shown = tmpl
+        .render_ctx(&ctx! { show: true, msg: "visible" })
+        .unwrap();
     assert_eq!(shown, "visible\n");
     let hidden = tmpl
-        .render(&ctx! { show: false, msg: "invisible" })
+        .render_ctx(&ctx! { show: false, msg: "invisible" })
         .unwrap();
     assert_eq!(hidden, "");
 }
 
 #[test]
 fn template_render_with_defaults() {
-    let tmpl =
-        Template::from_source("---\nparams: [name = str := \"world\"]\n---\nHello, {{ name }}!")
-            .unwrap();
-    let output = tmpl.render(&Context::new()).unwrap();
+    let tmpl = Template::from_source(
+        r#"---
+params: [name = str := "world"]
+---
+Hello, {{ name }}!"#,
+    )
+    .unwrap();
+    let output = tmpl.render_ctx(&Context::new()).unwrap();
     assert_eq!(output, "Hello, world!");
 }
 
 #[test]
 fn template_render_with_filters() {
-    let tmpl = Template::from_source("---\nparams: [name = str]\n---\n{{ name | upper }}").unwrap();
-    let output = tmpl.render(&ctx! { name: "hello" }).unwrap();
+    let tmpl = Template::from_source(
+        r"---
+params: [name = str]
+---
+{{ name | upper }}",
+    )
+    .unwrap();
+    let output = tmpl.render_ctx(&ctx! { name: "hello" }).unwrap();
     assert_eq!(output, "HELLO");
 }
 
 #[test]
 fn template_render_with_nested_dict() {
     let tmpl = Template::from_source(
-        "---\nparams: [user = struct<name = str, role = str>]\n---\n\
-         {{ user.name }} is a {{ user.role }}",
+        r"---
+params: [user = struct<name = str, role = str>]
+---
+{{ user.name }} is a {{ user.role }}",
     )
     .unwrap();
     let output = tmpl
-        .render(&ctx! {
+        .render_ctx(&ctx! {
             user: { name: "Alice", role: "admin" },
         })
         .unwrap();
@@ -302,23 +331,23 @@ fn template_render_with_nested_dict() {
 #[test]
 fn template_render_enum_match() {
     let tmpl = Template::from_source(
-        "---\n\
-         params: [status = enum<Open, Closed>]\n\
-         ---\n\
-         \n\
-         > {% match status %}\n\
-         > {% case Open %}\n\
-         \n\
-         open\n\
-         \n\
-         > {% case Closed %}\n\
-         \n\
-         closed\n\
-         \n\
-         > {% /match %}",
+        r"---
+params: [status = enum<Open, Closed>]
+---
+
+> {% match status %}
+> {% case Open %}
+
+open
+
+> {% case Closed %}
+
+closed
+
+> {% /match %}",
     )
     .unwrap();
-    let output = tmpl.render(&ctx! { status: "Open" }).unwrap();
+    let output = tmpl.render_ctx(&ctx! { status: "Open" }).unwrap();
     assert_eq!(output, "open\n");
 }
 
@@ -328,9 +357,13 @@ fn template_render_enum_match() {
 
 #[test]
 fn parse_frontmatter_returns_declarations() {
-    let (fm, body) =
-        prompt_templates::parse_frontmatter("---\nparams: [x = str, y = int]\n---\nbody text")
-            .unwrap();
+    let (fm, body) = prompt_templates::parse_frontmatter(
+        r"---
+params: [x = str, y = int]
+---
+body text",
+    )
+    .unwrap();
     assert_eq!(fm.declarations.len(), 2);
     assert_eq!(fm.declarations[0].name, "x");
     assert_eq!(fm.declarations[1].name, "y");
@@ -340,7 +373,12 @@ fn parse_frontmatter_returns_declarations() {
 #[test]
 fn parse_frontmatter_with_types() {
     let (fm, _) = prompt_templates::parse_frontmatter(
-        "---\ntypes:\n  - Priority = enum<Low, High>\nparams: [p = Priority]\n---\nbody",
+        r"---
+types:
+  - Priority = enum<Low, High>
+params: [p = Priority]
+---
+body",
     )
     .unwrap();
     assert!(fm.type_aliases.contains_key("Priority"));
@@ -348,7 +386,12 @@ fn parse_frontmatter_with_types() {
 
 #[test]
 fn strip_frontmatter_removes_header() {
-    let body = prompt_templates::strip_frontmatter("---\nparams: [x = str]\n---\nactual body");
+    let body = prompt_templates::strip_frontmatter(
+        r"---
+params: [x = str]
+---
+actual body",
+    );
     assert_eq!(body.unwrap(), "actual body");
 }
 
@@ -385,15 +428,27 @@ fn extract_template_stem_works() {
 
 #[test]
 fn template_error_display() {
-    let err = Template::from_source("---\nparams: [x = UnknownType]\n---\nbody").unwrap_err();
+    let err = Template::from_source(
+        r"---
+params: [x = UnknownType]
+---
+body",
+    )
+    .unwrap_err();
     let msg = err.to_string();
     assert!(!msg.is_empty(), "error should have a display message");
 }
 
 #[test]
 fn template_error_undefined_variable() {
-    let tmpl = Template::from_source("---\nparams: [name = str]\n---\n{{ name }}").unwrap();
-    let err = tmpl.render(&Context::new()).unwrap_err();
+    let tmpl = Template::from_source(
+        r"---
+params: [name = str]
+---
+{{ name }}",
+    )
+    .unwrap();
+    let err = tmpl.render_ctx(&Context::new()).unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("name"),
@@ -407,7 +462,10 @@ fn template_error_undefined_variable() {
 
 #[test]
 fn source_hash_stable() {
-    let src = "---\nparams: [x = str]\n---\n{{ x }}";
+    let src = r"---
+params: [x = str]
+---
+{{ x }}";
     let t1 = Template::from_source(src).unwrap();
     let t2 = Template::from_source(src).unwrap();
     assert_eq!(t1.source_hash(), t2.source_hash());
@@ -415,8 +473,20 @@ fn source_hash_stable() {
 
 #[test]
 fn source_hash_differs_for_different_source() {
-    let t1 = Template::from_source("---\nparams: [x = str]\n---\n{{ x }}").unwrap();
-    let t2 = Template::from_source("---\nparams: [y = str]\n---\n{{ y }}").unwrap();
+    let t1 = Template::from_source(
+        r"---
+params: [x = str]
+---
+{{ x }}",
+    )
+    .unwrap();
+    let t2 = Template::from_source(
+        r"---
+params: [y = str]
+---
+{{ y }}",
+    )
+    .unwrap();
     assert_ne!(t1.source_hash(), t2.source_hash());
 }
 
@@ -453,17 +523,26 @@ fn to_pascal_case() {
 #[test]
 fn frontmatter_name_and_description() {
     let (fm, _) = prompt_templates::parse_frontmatter(
-        "---\nname: test_tmpl\ndescription: A test\nparams: [x = str]\n---\nbody",
+        r"---
+name: test_tmpl
+description: A test
+params: [x = str]
+---
+body",
     )
     .unwrap();
-    assert_eq!(fm.name, "test_tmpl");
-    assert_eq!(fm.description, "A test");
+    assert_eq!(fm.name, Some("test_tmpl".to_string()));
+    assert_eq!(fm.description, Some("A test".to_string()));
 }
 
 #[test]
 fn frontmatter_allow_unused() {
     let (fm, _) = prompt_templates::parse_frontmatter(
-        "---\nparams: [x = str]\nallow_unused: true\n---\nbody",
+        r"---
+params: [x = str]
+allow_unused: true
+---
+body",
     )
     .unwrap();
     assert!(fm.allow_unused);
@@ -476,7 +555,10 @@ fn frontmatter_allow_unused() {
 #[test]
 fn template_defaults_extracted() {
     let tmpl = Template::from_source(
-        "---\nparams: [name = str := \"world\", count = int := 5]\n---\n{{ name }} {{ count }}",
+        r#"---
+params: [name = str := "world", count = int := 5]
+---
+{{ name }} {{ count }}"#,
     )
     .unwrap();
     let defaults = tmpl.defaults();
@@ -491,49 +573,51 @@ fn template_defaults_extracted() {
 #[test]
 fn inline_template_include_no_std() {
     let tmpl = Template::from_source(
-        "---\n\
-         params: [name = str]\n\
-         ---\n\
-         \n\
-         > {% tmpl greeting %}\n\
-         \n\
-         ---\n\
-         params: [name = str]\n\
-         ---\n\
-         Hello, {{ name }}!\n\
-         \n\
-         > {% /tmpl %}\n\
-         \n\
-         > {% include greeting with name=name %}\n",
+        r"---
+params: [name = str]
+---
+
+> {% tmpl greeting %}
+
+---
+params: [name = str]
+---
+Hello, {{ name }}!
+
+> {% /tmpl %}
+
+> {% include greeting with name=name %}
+",
     )
     .unwrap();
-    let output = tmpl.render(&ctx! { name: "World" }).unwrap();
+    let output = tmpl.render_ctx(&ctx! { name: "World" }).unwrap();
     assert_eq!(output, "Hello, World!\n");
 }
 
 #[test]
 fn inline_template_include_with_override() {
     let tmpl = Template::from_source(
-        "---\n\
-         params: [name = str, greeting = str]\n\
-         ---\n\
-         \n\
-         > {% tmpl greet %}\n\
-         \n\
-         ---\n\
-         params:\n\
-           - name = str\n\
-           - greeting = str\n\
-         ---\n\
-         {{ greeting }} {{ name }}!\n\
-         \n\
-         > {% /tmpl %}\n\
-         \n\
-         > {% include greet with name=name, greeting=greeting %}\n",
+        r"---
+params: [name = str, greeting = str]
+---
+
+> {% tmpl greet %}
+
+---
+params:
+  - name = str
+  - greeting = str
+---
+{{ greeting }} {{ name }}!
+
+> {% /tmpl %}
+
+> {% include greet with name=name, greeting=greeting %}
+",
     )
     .unwrap();
     let output = tmpl
-        .render(&ctx! { name: "Alice", greeting: "Hey" })
+        .render_ctx(&ctx! { name: "Alice", greeting: "Hey" })
         .unwrap();
     assert_eq!(output, "Hey Alice!\n");
 }
@@ -542,44 +626,53 @@ fn inline_template_include_with_override() {
 fn tmpl_param_include_no_std() {
     // Create a "child" template as a Value::Tmpl parameter.
     let (child, _fm) = Template::compile(
-        "---\nparams: [msg = str]\n---\n[{{ msg }}]",
+        r"---
+params: [msg = str]
+---
+[{{ msg }}]",
         CompileOptions::default().allow_unused(true),
     )
     .unwrap();
 
     // Create a "parent" template that includes the child via a tmpl parameter.
     let parent = Template::from_source(
-        "---\n\
-         params: [widget = tmpl<msg = str>, text = str]\n\
-         ---\n\
-         before\n\
-         \n\
-         > {% include widget with msg=text %}\n\
-         \n\
-         after\n",
+        r"---
+params: [widget = tmpl<msg = str>, text = str]
+---
+before
+
+> {% include widget with msg=text %}
+
+after
+",
     )
     .unwrap();
 
     let mut ctx = Context::new();
     ctx.set("widget", Value::Tmpl(std::sync::Arc::new(child)));
     ctx.set("text", "hello");
-    let output = parent.render(&ctx).unwrap();
+    let output = parent.render_ctx(&ctx).unwrap();
     assert_eq!(output, "before\n[hello]after\n");
 }
 
 #[test]
 fn tmpl_param_include_for_each() {
     let (child, _fm) = Template::compile(
-        "---\nparams: [item = str]\n---\n- {{ item.label }}\n",
+        r"---
+params: [item = str]
+---
+- {{ item.label }}
+",
         CompileOptions::default().allow_unused(true),
     )
     .unwrap();
 
     let parent = Template::from_source(
-        "---\n\
-         params: [row = tmpl<item = str>, items = list<label = str>]\n\
-         ---\n\
-         > {% include row for item in items %}\n",
+        r"---
+params: [row = tmpl<item = str>, items = list<label = str>]
+---
+> {% include row for item in items %}
+",
     )
     .unwrap();
 
@@ -592,31 +685,35 @@ fn tmpl_param_include_for_each() {
             Value::new_struct([("label", Value::from("beta"))]),
         ])),
     );
-    let output = parent.render(&ctx).unwrap();
+    let output = parent.render_ctx(&ctx).unwrap();
     assert_eq!(output, "- alpha\n- beta\n");
 }
 
 #[test]
 fn tmpl_param_include_type_mismatch_errors() {
     let child = Template::compile(
-        "---\nparams: [count = int]\n---\n{{ count }}",
+        r"---
+params: [count = int]
+---
+{{ count }}",
         CompileOptions::default().allow_unused(true),
     )
     .unwrap()
     .0;
 
     let parent = Template::from_source(
-        "---\n\
-         params: [widget = tmpl<count = int>, val = str]\n\
-         ---\n\
-         > {% include widget with count=val %}\n",
+        r"---
+params: [widget = tmpl<count = int>, val = str]
+---
+> {% include widget with count=val %}
+",
     )
     .unwrap();
 
     let mut ctx = Context::new();
     ctx.set("widget", Value::Tmpl(std::sync::Arc::new(child)));
     ctx.set("val", "not an int");
-    let err = parent.render(&ctx).unwrap_err();
+    let err = parent.render_ctx(&ctx).unwrap_err();
     assert!(
         matches!(err, prompt_templates::TemplateError::TypeMismatch { .. }),
         "expected TypeMismatch, got: {err}"
@@ -626,22 +723,26 @@ fn tmpl_param_include_type_mismatch_errors() {
 #[test]
 fn tmpl_param_include_contract_rejects_missing_params() {
     let (child, _fm) = Template::compile(
-        "---\nparams: [title = str, count = int]\n---\n{{ title }} ({{ count }})",
+        r"---
+params: [title = str, count = int]
+---
+{{ title }} ({{ count }})",
         CompileOptions::default().allow_unused(true),
     )
     .unwrap();
 
     let parent = Template::from_source(
-        "---\n\
-         params: [widget = tmpl<title = str, count = int>]\n\
-         ---\n\
-         > {% include widget %}\n",
+        r"---
+params: [widget = tmpl<title = str, count = int>]
+---
+> {% include widget %}
+",
     )
     .unwrap();
 
     let mut ctx = Context::new();
     ctx.set("widget", Value::Tmpl(std::sync::Arc::new(child)));
-    let err = parent.render(&ctx).unwrap_err();
+    let err = parent.render_ctx(&ctx).unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("title"), "error should mention 'title': {msg}");
     assert!(msg.contains("count"), "error should mention 'count': {msg}");
@@ -654,15 +755,19 @@ fn tmpl_param_include_contract_rejects_missing_params() {
 #[test]
 fn tmpl_param_via_from_template_owned() {
     let (child, _fm) = Template::compile(
-        "---\nparams: [msg = str]\n---\n[{{ msg }}]",
+        r"---
+params: [msg = str]
+---
+[{{ msg }}]",
         CompileOptions::default().allow_unused(true),
     )
     .unwrap();
     let parent = Template::from_source(
-        "---\n\
-         params: [widget = tmpl<msg = str>, text = str]\n\
-         ---\n\
-         > {% include widget with msg=text %}\n",
+        r"---
+params: [widget = tmpl<msg = str>, text = str]
+---
+> {% include widget with msg=text %}
+",
     )
     .unwrap();
 
@@ -670,22 +775,26 @@ fn tmpl_param_via_from_template_owned() {
     // Ergonomic: pass Template directly, no Arc wrapping
     ctx.set("widget", child);
     ctx.set("text", "hello");
-    let output = parent.render(&ctx).unwrap();
+    let output = parent.render_ctx(&ctx).unwrap();
     assert_eq!(output, "[hello]");
 }
 
 #[test]
 fn tmpl_param_via_from_template_ref() {
     let (child, _fm) = Template::compile(
-        "---\nparams: [msg = str]\n---\n({{ msg }})",
+        r"---
+params: [msg = str]
+---
+({{ msg }})",
         CompileOptions::default().allow_unused(true),
     )
     .unwrap();
     let parent = Template::from_source(
-        "---\n\
-         params: [widget = tmpl<msg = str>, text = str]\n\
-         ---\n\
-         > {% include widget with msg=text %}\n",
+        r"---
+params: [widget = tmpl<msg = str>, text = str]
+---
+> {% include widget with msg=text %}
+",
     )
     .unwrap();
 
@@ -693,50 +802,58 @@ fn tmpl_param_via_from_template_ref() {
     // Ergonomic: pass &Template (like from include_template!/template!)
     ctx.set("widget", &child);
     ctx.set("text", "world");
-    let output = parent.render(&ctx).unwrap();
+    let output = parent.render_ctx(&ctx).unwrap();
     assert_eq!(output, "(world)");
 }
 
 #[test]
 fn tmpl_param_via_context_builder() {
     let child = Template::compile(
-        "---\nparams: [msg = str]\n---\n{{ msg }}!",
+        r"---
+params: [msg = str]
+---
+{{ msg }}!",
         CompileOptions::default().allow_unused(true),
     )
     .unwrap()
     .0;
     let parent = Template::from_source(
-        "---\n\
-         params: [widget = tmpl<msg = str>, text = str]\n\
-         ---\n\
-         > {% include widget with msg=text %}\n",
+        r"---
+params: [widget = tmpl<msg = str>, text = str]
+---
+> {% include widget with msg=text %}
+",
     )
     .unwrap();
 
     // Builder chain — .var() returns Self
     let ctx = Context::new().var("widget", child).var("text", "hi");
-    let output = parent.render(&ctx).unwrap();
+    let output = parent.render_ctx(&ctx).unwrap();
     assert_eq!(output, "hi!");
 }
 
 #[test]
 fn tmpl_param_via_ctx_macro() {
     let (child, _fm) = Template::compile(
-        "---\nparams: [msg = str]\n---\n{{ msg }}!!",
+        r"---
+params: [msg = str]
+---
+{{ msg }}!!",
         CompileOptions::default().allow_unused(true),
     )
     .unwrap();
     let parent = Template::from_source(
-        "---\n\
-         params: [widget = tmpl<msg = str>, text = str]\n\
-         ---\n\
-         > {% include widget with msg=text %}\n",
+        r"---
+params: [widget = tmpl<msg = str>, text = str]
+---
+> {% include widget with msg=text %}
+",
     )
     .unwrap();
 
     // ctx! macro with parenthesized expression for the template
     let ctx = ctx! { widget: (child), text: "boom" };
-    let output = parent.render(&ctx).unwrap();
+    let output = parent.render_ctx(&ctx).unwrap();
     assert_eq!(output, "boom!!");
 }
 
@@ -744,20 +861,24 @@ fn tmpl_param_via_ctx_macro() {
 fn tmpl_param_from_source_inline() {
     // One-liner: create and pass a template in one expression
     let parent = Template::from_source(
-        "---\n\
-         params: [widget = tmpl<name = str>, who = str]\n\
-         ---\n\
-         > {% include widget with name=who %}\n",
+        r"---
+params: [widget = tmpl<name = str>, who = str]
+---
+> {% include widget with name=who %}
+",
     )
     .unwrap();
 
     let ctx = ctx! {
         widget: (Template::compile(
-            "---\nparams: [name = str]\n---\nHi {{ name }}!",
+            r"---
+params: [name = str]
+---
+Hi {{ name }}!",
             CompileOptions::default().allow_unused(true),
         ).unwrap().0),
         who: "Alice"
     };
-    let output = parent.render(&ctx).unwrap();
+    let output = parent.render_ctx(&ctx).unwrap();
     assert_eq!(output, "Hi Alice!");
 }

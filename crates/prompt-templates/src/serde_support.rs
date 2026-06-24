@@ -129,8 +129,8 @@ impl ser::Serializer for ValueSerializer {
     }
 
     fn serialize_none(self) -> Result<Value, SerError> {
-        // Map to the template engine's `None` variant for `option<T>`.
-        Ok(Value::Str(crate::consts::OPTION_NONE.to_string()))
+        // Map to the template engine's `Value::None` for `option<T>`.
+        Ok(Value::None)
     }
     fn serialize_some<T: ?Sized + Serialize>(self, value: &T) -> Result<Value, SerError> {
         value.serialize(self)
@@ -430,6 +430,7 @@ impl<'de> de::Deserializer<'de> for ValueDeserializer<'de> {
             Value::Tmpl(_) => Err(DeError(
                 "cannot deserialize a Tmpl value — templates are not data".into(),
             )),
+            Value::None => visitor.visit_none(),
         }
     }
 
@@ -521,8 +522,9 @@ impl<'de> de::Deserializer<'de> for ValueDeserializer<'de> {
     }
 
     fn deserialize_option<V: de::Visitor<'de>>(self, visitor: V) -> Result<V::Value, DeError> {
-        // Template `None` variant or empty string → Rust None, anything else → Some.
         match self.0 {
+            Value::None => visitor.visit_none(),
+            // Legacy: template `None` variant string or empty string → Rust None.
             Value::Str(s) if s.is_empty() || s == crate::consts::OPTION_NONE => {
                 visitor.visit_none()
             }
@@ -830,12 +832,12 @@ impl<'de> serde::Deserialize<'de> for Value {
                 Ok(Value::Struct(Arc::new(hashmap)))
             }
             fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
-                // null / unit → template `None` variant for `option<T>`.
-                Ok(Value::Str(crate::consts::OPTION_NONE.to_string()))
+                // null / unit → template `Value::None` for `option<T>`.
+                Ok(Value::None)
             }
             fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
-                // serde `None` → template `None` variant for `option<T>`.
-                Ok(Value::Str(crate::consts::OPTION_NONE.to_string()))
+                // serde `None` → template `Value::None` for `option<T>`.
+                Ok(Value::None)
             }
         }
         deserializer.deserialize_any(ValueVisitor)
@@ -918,7 +920,7 @@ mod tests {
     #[test]
     fn option_none() {
         let val = to_value(&Option::<String>::None).unwrap();
-        assert_eq!(val, Value::Str("None".into()));
+        assert_eq!(val, Value::None);
     }
 
     #[test]

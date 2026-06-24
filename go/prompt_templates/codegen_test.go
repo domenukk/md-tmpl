@@ -600,3 +600,171 @@ Hello!`
 func writeTestFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0644)
 }
+
+// ---------------------------------------------------------------------------
+// Option params — generates pointer types
+// ---------------------------------------------------------------------------
+
+func TestGenerateOptionParams(t *testing.T) {
+	source := `---
+params:
+  - name = str
+  - email = option<str>
+  - age = option<int>
+  - score = option<float>
+  - active = option<bool>
+allow_unused: true
+---
+{{ name }}`
+
+	code, err := GenerateTypes(source, WithRenderHelper(false))
+	if err != nil {
+		t.Fatalf("GenerateTypes: %v", err)
+	}
+
+	assertCompiles(t, code)
+
+	// Verify pointer types for option fields.
+	if !containsNormalized(code, "Email *string") {
+		t.Errorf("expected 'Email *string' for option<str>:\n%s", code)
+	}
+	if !containsNormalized(code, "Age *int64") {
+		t.Errorf("expected 'Age *int64' for option<int>:\n%s", code)
+	}
+	if !containsNormalized(code, "Score *float64") {
+		t.Errorf("expected 'Score *float64' for option<float>:\n%s", code)
+	}
+	if !containsNormalized(code, "Active *bool") {
+		t.Errorf("expected 'Active *bool' for option<bool>:\n%s", code)
+	}
+	// Non-option field should not be a pointer.
+	if !containsNormalized(code, "Name string") {
+		t.Errorf("expected 'Name string' (not pointer):\n%s", code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Scalar list params — generates typed slices
+// ---------------------------------------------------------------------------
+
+func TestGenerateScalarListParams(t *testing.T) {
+	source := `---
+params:
+  - tags = list<str>
+  - scores = list<int>
+  - weights = list<float>
+  - flags = list<bool>
+allow_unused: true
+---
+> {% for t in tags %}
+
+{{ t }}
+
+> {% /for %}
+> {% for s in scores %}
+
+{{ s }}
+
+> {% /for %}
+> {% for w in weights %}
+
+{{ w }}
+
+> {% /for %}
+> {% for f in flags %}
+
+{{ f }}
+
+> {% /for %}`
+
+	code, err := GenerateTypes(source, WithRenderHelper(false))
+	if err != nil {
+		t.Fatalf("GenerateTypes: %v", err)
+	}
+
+	assertCompiles(t, code)
+
+	// Verify typed slices.
+	if !containsNormalized(code, "Tags []string") {
+		t.Errorf("expected 'Tags []string' for scalar_list<str>:\n%s", code)
+	}
+	if !containsNormalized(code, "Scores []int64") {
+		t.Errorf("expected 'Scores []int64' for scalar_list<int>:\n%s", code)
+	}
+	if !containsNormalized(code, "Weights []float64") {
+		t.Errorf("expected 'Weights []float64' for scalar_list<float>:\n%s", code)
+	}
+	if !containsNormalized(code, "Flags []bool") {
+		t.Errorf("expected 'Flags []bool' for scalar_list<bool>:\n%s", code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TypeSpec parser — option and scalar_list
+// ---------------------------------------------------------------------------
+
+func TestParseTypeSpecOption(t *testing.T) {
+	node, err := parseTypeSpec("option<str>")
+	if err != nil {
+		t.Fatalf("parseTypeSpec: %v", err)
+	}
+	if node.kind != typeOption {
+		t.Fatalf("expected typeOption, got %d", node.kind)
+	}
+	if node.innerType == nil {
+		t.Fatal("expected innerType to be set")
+	}
+	if node.innerType.kind != typeStr {
+		t.Errorf("expected inner type str, got %d", node.innerType.kind)
+	}
+}
+
+func TestParseTypeSpecScalarList(t *testing.T) {
+	node, err := parseTypeSpec("scalar_list<int>")
+	if err != nil {
+		t.Fatalf("parseTypeSpec: %v", err)
+	}
+	if node.kind != typeScalarList {
+		t.Fatalf("expected typeScalarList, got %d", node.kind)
+	}
+	if node.innerType == nil {
+		t.Fatal("expected innerType to be set")
+	}
+	if node.innerType.kind != typeInt {
+		t.Errorf("expected inner type int, got %d", node.innerType.kind)
+	}
+}
+
+func TestParseTypeSpecListBareType(t *testing.T) {
+	// list<str> (from Rust FFI for scalar typed lists) should parse as typeScalarList.
+	node, err := parseTypeSpec("list<str>")
+	if err != nil {
+		t.Fatalf("parseTypeSpec: %v", err)
+	}
+	if node.kind != typeScalarList {
+		t.Fatalf("expected typeScalarList for list<str>, got %d", node.kind)
+	}
+	if node.innerType == nil {
+		t.Fatal("expected innerType to be set")
+	}
+	if node.innerType.kind != typeStr {
+		t.Errorf("expected inner type str, got %d", node.innerType.kind)
+	}
+}
+
+func TestParseTypeSpecOptionNested(t *testing.T) {
+	// option wrapping a struct
+	node, err := parseTypeSpec("option<struct<host = str, port = int>>")
+	if err != nil {
+		t.Fatalf("parseTypeSpec: %v", err)
+	}
+	if node.kind != typeOption {
+		t.Fatalf("expected typeOption, got %d", node.kind)
+	}
+	if node.innerType == nil || node.innerType.kind != typeStruct {
+		t.Fatalf("expected inner type struct, got %v", node.innerType)
+	}
+	if len(node.innerType.fields) != 2 {
+		t.Errorf("expected 2 fields in inner struct, got %d", len(node.innerType.fields))
+	}
+}

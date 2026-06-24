@@ -53,6 +53,7 @@ extern char *pt_context_set_str(void *ctx, const char *key, const char *value);
 extern char *pt_context_set_int(void *ctx, const char *key, int64_t value);
 extern char *pt_context_set_float(void *ctx, const char *key, double value);
 extern char *pt_context_set_bool(void *ctx, const char *key, _Bool value);
+extern char *pt_context_set_none(void *ctx, const char *key);
 extern char *pt_context_set_json(void *ctx, const char *key, const char *json);
 extern char *pt_context_set_tmpl(void *ctx, const char *key, const void *tmpl);
 extern char *pt_context_merge_json(void *ctx, const char *json);
@@ -803,6 +804,21 @@ func (c *Context) SetBool(key string, value bool) error {
 	return freeError(errPtr)
 }
 
+// SetNone sets a None (absent) value in the context.
+//
+// Use this for option<T> parameters to indicate an absent value.
+// Equivalent to passing null/nil.
+func (c *Context) SetNone(key string) error {
+	if c.ptr == nil {
+		return ErrClosed
+	}
+	cKey := C.CString(key)
+	defer C.free(unsafe.Pointer(cKey))
+
+	errPtr := C.pt_context_set_none(c.ptr, cKey)
+	return freeError(errPtr)
+}
+
 // SetJSON sets a complex value (list, struct, enum) in the context from a JSON string.
 //
 // Example:
@@ -904,6 +920,7 @@ func (c *Context) SetTmpl(key string, tmpl *Template) error {
 // Set sets a value in the context, automatically choosing the right type.
 //
 // Supported types:
+//   - nil → SetNone (absent option value)
 //   - string → SetStr
 //   - int, int64 → SetInt
 //   - float64 → SetFloat
@@ -914,6 +931,9 @@ func (c *Context) SetTmpl(key string, tmpl *Template) error {
 func (c *Context) Set(key string, value any) error {
 	if c.ptr == nil {
 		return ErrClosed
+	}
+	if value == nil {
+		return c.SetNone(key)
 	}
 	switch v := value.(type) {
 	case string:
@@ -936,6 +956,8 @@ func (c *Context) Set(key string, value any) error {
 		return c.SetInt(key, int64(v))
 	case uint32:
 		return c.SetInt(key, int64(v))
+	case uint64:
+		return c.SetInt(key, int64(v))
 	case float64:
 		return c.SetFloat(key, v)
 	case float32:
@@ -949,25 +971,23 @@ func (c *Context) Set(key string, value any) error {
 			// Unit variant → set as string directly.
 			return c.SetStr(key, v.Kind)
 		}
-		// Struct variant → FlexBuffers binary encoding.
-		data, err := marshalFlexbuffers(v)
-		if err != nil {
-			return fmt.Errorf("cannot marshal Variant to flexbuffers: %w", err)
-		}
-		cKey := C.CString(key)
-		defer C.free(unsafe.Pointer(cKey))
-		errPtr := C.pt_context_set_flexbuffers(c.ptr, cKey, (*C.uint8_t)(&data[0]), C.size_t(len(data)))
-		return freeError(errPtr)
+		// Struct variant → fall through to FlexBuffers path.
+		return c.setFlexbuffers(key, v)
 	default:
-		data, err := marshalFlexbuffers(v)
-		if err != nil {
-			return fmt.Errorf("cannot marshal %T to flexbuffers: %w", v, err)
-		}
-		cKey := C.CString(key)
-		defer C.free(unsafe.Pointer(cKey))
-		errPtr := C.pt_context_set_flexbuffers(c.ptr, cKey, (*C.uint8_t)(&data[0]), C.size_t(len(data)))
-		return freeError(errPtr)
+		return c.setFlexbuffers(key, v)
 	}
+}
+
+// setFlexbuffers marshals any value to FlexBuffers and sets it in the context.
+func (c *Context) setFlexbuffers(key string, v any) error {
+	data, err := marshalFlexbuffers(v)
+	if err != nil {
+		return fmt.Errorf("cannot marshal %T to flexbuffers: %w", v, err)
+	}
+	cKey := C.CString(key)
+	defer C.free(unsafe.Pointer(cKey))
+	errPtr := C.pt_context_set_flexbuffers(c.ptr, cKey, (*C.uint8_t)(&data[0]), C.size_t(len(data)))
+	return freeError(errPtr)
 }
 
 // ---------------------------------------------------------------------------

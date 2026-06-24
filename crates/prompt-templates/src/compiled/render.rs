@@ -78,25 +78,9 @@ pub(crate) fn render_segments(
     Ok(output)
 }
 
-/// Render pre-compiled segments into a string (`no_std` variant — includes unavailable).
-///
-/// # Errors
-///
-/// Returns [`TemplateError`] on variable resolution or filter errors.
-/// Include directives produce a runtime error.
-#[cfg(all(not(feature = "std"), test))]
-pub(crate) fn render_segments(
-    segments: &[Segment],
-    scope: &mut Scope<'_>,
-    _base_dir: Option<&()>,
-) -> Result<String, TemplateError> {
-    let mut output = String::with_capacity(estimate_output_capacity(segments));
-    render_segments_into_no_std(segments, scope, &mut output)?;
-    Ok(output)
-}
-
 /// Render segments into an existing output buffer.
 #[cfg(feature = "std")]
+#[inline]
 pub(crate) fn render_segments_into(
     segments: &[Segment],
     scope: &mut Scope<'_>,
@@ -131,8 +115,12 @@ pub(crate) fn render_segments_into(
             } => {
                 render_if(branches, else_body, scope, base_dir, output)?;
             }
-            Segment::Match { expr, arms } => {
-                render_match(expr, arms, scope, base_dir, output)?;
+            Segment::Match {
+                expr,
+                arms,
+                is_option,
+            } => {
+                render_match(expr, arms, *is_option, scope, base_dir, output)?;
             }
             Segment::Include(inc) => {
                 render_include(inc, scope, base_dir, output)?;
@@ -181,8 +169,12 @@ pub(crate) fn render_segments_into_no_std(
             } => {
                 render_if_no_std(branches, else_body, scope, output)?;
             }
-            Segment::Match { expr, arms } => {
-                render_match_no_std(expr, arms, scope, output)?;
+            Segment::Match {
+                expr,
+                arms,
+                is_option,
+            } => {
+                render_match_no_std(expr, arms, *is_option, scope, output)?;
             }
             Segment::Include(inc) => {
                 render_include_no_std(inc, scope, output)?;
@@ -217,6 +209,7 @@ fn render_value_into(val: &Value, output: &mut String) -> Result<(), TemplateErr
             // forwards to `String::push_str` which cannot fail.
             write!(output, "{f}").expect("fmt::Write for String is infallible");
         }
+        Value::None => { /* Absent value renders as empty. */ }
         Value::List(_) | Value::Struct(_) | Value::Tmpl(_) => {
             return Err(TemplateError::syntax(alloc::format!(
                 "cannot display value of type '{}'",
@@ -241,32 +234,30 @@ fn eval_compiled_expr_into(
     // into `output` without allocating an intermediate String or Value.
     if filters.len() == 1 && filters[0].kind == super::FilterKind::Fixed {
         if let CompiledExpr::Path(path) = expr {
-            if let Some(precision_str) = filters[0].args.as_ref() {
-                if let Ok(precision) = precision_str.as_ref().parse::<usize>() {
-                    let val = scope.resolve_path(path)?;
-                    match val {
-                        Value::Float(f) => {
-                            use core::fmt::Write;
-                            write!(output, "{f:.precision$}")
-                                .expect("fmt::Write for String is infallible");
-                            return Ok(());
-                        }
-                        Value::Int(i) => {
-                            // Use itoa for the integer part to avoid
-                            // i64→f64 precision loss for values > 2^53.
-                            let mut buf = itoa::Buffer::new();
-                            let int_str = buf.format(*i);
-                            output.push_str(int_str);
-                            if precision > 0 {
-                                output.push('.');
-                                for _ in 0..precision {
-                                    output.push('0');
-                                }
-                            }
-                            return Ok(());
-                        }
-                        _ => {}
+            if let Some(precision) = filters[0].parsed_num {
+                let val = scope.resolve_path(path)?;
+                match val {
+                    Value::Float(f) => {
+                        use core::fmt::Write;
+                        write!(output, "{f:.precision$}")
+                            .expect("fmt::Write for String is infallible");
+                        return Ok(());
                     }
+                    Value::Int(i) => {
+                        // Use itoa for the integer part to avoid
+                        // i64→f64 precision loss for values > 2^53.
+                        let mut buf = itoa::Buffer::new();
+                        let int_str = buf.format(*i);
+                        output.push_str(int_str);
+                        if precision > 0 {
+                            output.push('.');
+                            for _ in 0..precision {
+                                output.push('0');
+                            }
+                        }
+                        return Ok(());
+                    }
+                    _ => {}
                 }
             }
         }
@@ -396,6 +387,7 @@ pub(crate) fn register_loop_meta(scope: &mut Scope<'_>, binding: &str, i: usize)
 
 /// Render a compiled for-loop.
 #[cfg(feature = "std")]
+#[inline]
 fn render_for_loop(
     binding: &str,
     list_expr: &CompiledPath,
@@ -473,6 +465,7 @@ fn render_for_loop_no_std(
 /// of the first match. Falls through to `else_body` when no branch
 /// matches.
 #[cfg(feature = "std")]
+#[inline]
 fn render_if(
     branches: &[(Condition, alloc::vec::Vec<Segment>)],
     else_body: &[Segment],
@@ -524,11 +517,12 @@ fn render_if_no_std(
 fn render_match(
     expr: &CompiledPath,
     arms: &[(alloc::vec::Vec<Cow<'static, str>>, alloc::vec::Vec<Segment>)],
+    is_option: bool,
     scope: &mut Scope<'_>,
     base_dir: Option<&std::path::Path>,
     output: &mut String,
 ) -> Result<(), TemplateError> {
-    let active_variant = resolve_match_variant(expr, scope)?;
+    let active_variant = resolve_match_variant(expr, is_option, scope)?;
 
     for (variants, body) in arms {
         if variants
@@ -549,10 +543,11 @@ fn render_match(
 fn render_match_no_std(
     expr: &CompiledPath,
     arms: &[(alloc::vec::Vec<Cow<'static, str>>, alloc::vec::Vec<Segment>)],
+    is_option: bool,
     scope: &mut Scope<'_>,
     output: &mut String,
 ) -> Result<(), TemplateError> {
-    let active_variant = resolve_match_variant(expr, scope)?;
+    let active_variant = resolve_match_variant(expr, is_option, scope)?;
 
     for (variants, body) in arms {
         if variants
@@ -566,14 +561,23 @@ fn render_match_no_std(
     Ok(())
 }
 
-/// Resolve the active enum variant name for a match expression.
+/// Resolve the active enum/option variant name for a match expression.
+///
+/// When `is_option` is `true`, uses `Value::None` discriminant check
+/// (zero-cost) instead of string-based variant tag lookup.
 fn resolve_match_variant<'a>(
     expr: &CompiledPath,
+    is_option: bool,
     scope: &'a Scope<'_>,
 ) -> Result<&'a str, TemplateError> {
     let value = scope.resolve_path(expr)?;
+
     match value {
-        // Unit variant stored as plain string.
+        // Absent option value → "None" variant.
+        Value::None => Ok("None"),
+        // For option<T>: any non-None value is the "Some" branch.
+        _ if is_option => Ok("Some"),
+        // Unit enum variant stored as plain string.
         Value::Str(s) => Ok(s.as_str()),
         // Struct variant stored as dict with "tag" key.
         Value::Struct(map) => {
@@ -581,13 +585,13 @@ fn resolve_match_variant<'a>(
             match map.get(tag_key) {
                 Some(Value::Str(tag)) => Ok(tag.as_str()),
                 _ => Err(TemplateError::syntax(alloc::format!(
-                    "match: '{}' is a dict without a 'tag' field",
+                    "match: \'{}\' is a dict without a \'tag\' field",
                     expr.as_str()
                 ))),
             }
         }
         _ => Err(TemplateError::syntax(alloc::format!(
-            "match: '{}' is not an enum value (got {})",
+            "match: \'{}\' is not an enum value (got {})",
             expr.as_str(),
             value.type_name()
         ))),
@@ -823,24 +827,36 @@ fn render_include_no_std_inner(
 
     // 0. Pre-compiled inline AST.
     if let Some(compiled) = &inc.inline_compiled {
-        return validate_and_render_no_std(
+        scope.push_consts(
+            (*compiled.consts).clone(),
+            (*compiled.imported_consts).clone(),
+        );
+        let result = validate_and_render_no_std(
             &compiled.segments,
             &compiled.declarations,
             &directive,
             scope,
             output,
         );
+        scope.pop_consts();
+        return result;
     }
 
     // 1. Inline templates from the current scope.
     if let Some(compiled) = scope.get_inline_template(directive.path).cloned() {
-        return validate_and_render_no_std(
+        scope.push_consts(
+            (*compiled.consts).clone(),
+            (*compiled.imported_consts).clone(),
+        );
+        let result = validate_and_render_no_std(
             &compiled.segments,
             &compiled.declarations,
             &directive,
             scope,
             output,
         );
+        scope.pop_consts();
+        return result;
     }
 
     // 2. Value::Tmpl parameter.

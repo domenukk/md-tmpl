@@ -170,9 +170,13 @@ fn extract_basic_inline_template() {
 fn extract_inline_template_with_frontmatter() {
     let input = concat!(
         "{% tmpl row %}\n",
-        "---\n",
+        "\
+---
+",
         "params: [label = str]\n",
-        "---\n",
+        "\
+---
+",
         "- {{ label }}\n",
         "{% /tmpl %}\n",
     );
@@ -667,14 +671,19 @@ fn include_depth_limit_enforced() {
     // Create a self-including template to trigger depth limit.
     std::fs::write(
         dir.path().join("self.tmpl.md"),
-        "---\nname: self\nparams: []\n---\nX{% include [self](self.tmpl.md) %}",
+        "\
+---
+name: self
+params: []
+---
+X{% include [self](self.tmpl.md) %}",
     )
     .unwrap();
 
     let tmpl = crate::Template::from_file(&dir.path().join("self.tmpl.md")).unwrap();
     let ctx = Context::new();
     let err = tmpl
-        .render(&ctx)
+        .render_ctx(&ctx)
         .expect_err("self-including template should exceed depth limit");
     let err = err.to_string();
     assert!(
@@ -688,17 +697,32 @@ fn include_depth_custom_limit_enforced() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("child.tmpl.md"),
-        "---\nname: child\nparams: []\n---\nchild",
+        "\
+---
+name: child
+params: []
+---
+child",
     )
     .unwrap();
     std::fs::write(
         dir.path().join("parent.tmpl.md"),
-        "---\nname: parent\nparams: []\n---\nparent+{% include [child](child.tmpl.md) %}",
+        "\
+---
+name: parent
+params: []
+---
+parent+{% include [child](child.tmpl.md) %}",
     )
     .unwrap();
     std::fs::write(
         dir.path().join("grandparent.tmpl.md"),
-        "---\nname: grandparent\nparams: []\n---\ngrandparent+{% include [parent](parent.tmpl.md) %}",
+        "\
+---
+name: grandparent
+params: []
+---
+grandparent+{% include [parent](parent.tmpl.md) %}",
     )
     .unwrap();
 
@@ -706,13 +730,13 @@ fn include_depth_custom_limit_enforced() {
     let ctx = Context::new();
 
     // 1. With default max include depth (16), it should render fine.
-    let res = tmpl.render(&ctx).unwrap();
+    let res = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(res, "grandparent+parent+child");
 
     // 2. Set max include depth to 1. Since grandparent -> parent -> child requires 2 includes, depth is 2, so it should error.
     tmpl.set_max_include_depth(1);
     let err = tmpl
-        .render(&ctx)
+        .render_ctx(&ctx)
         .expect_err("include depth 1 should be exceeded by 2-level chain");
     let err = err.to_string();
     assert!(
@@ -722,7 +746,7 @@ fn include_depth_custom_limit_enforced() {
 
     // 3. Set max include depth to 2, it should render fine again.
     let tmpl = tmpl.with_max_include_depth(2);
-    let res2 = tmpl.render(&ctx).unwrap();
+    let res2 = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(res2, "grandparent+parent+child");
 }
 
@@ -732,18 +756,33 @@ fn deeply_nested_includes_three_levels() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("child.tmpl.md"),
-        "---\nname: child\nparams: [leaf = str]\n---\nLeaf:{{ leaf }}",
+        "\
+---
+name: child
+params: [leaf = str]
+---
+Leaf:{{ leaf }}",
     )
     .unwrap();
     std::fs::write(
         dir.path().join("parent.tmpl.md"),
-        "---\nname: parent\nparams: [middle = str]\n---\n\
+        "\
+---
+name: parent
+params: [middle = str]
+---
+\
          Mid:{{ middle }},{% include [child](child.tmpl.md) with leaf=\"deep\" %}",
     )
     .unwrap();
     std::fs::write(
         dir.path().join("grandparent.tmpl.md"),
-        "---\nname: grandparent\nparams: [top = str]\n---\n\
+        "\
+---
+name: grandparent
+params: [top = str]
+---
+\
          Top:{{ top }},{% include [parent](parent.tmpl.md) with middle=\"mid\" %}",
     )
     .unwrap();
@@ -751,7 +790,7 @@ fn deeply_nested_includes_three_levels() {
     let tmpl = crate::Template::from_file(&dir.path().join("grandparent.tmpl.md")).unwrap();
     let mut ctx = Context::new();
     ctx.set("top", "root");
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(result, "Top:root,Mid:mid,Leaf:deep");
 }
 
@@ -761,28 +800,48 @@ fn deeply_nested_includes_four_levels() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("d.tmpl.md"),
-        "---\nname: d\nparams: []\n---\nD",
+        "\
+---
+name: d
+params: []
+---
+D",
     )
     .unwrap();
     std::fs::write(
         dir.path().join("c.tmpl.md"),
-        "---\nname: c\nparams: []\n---\nC+{% include [d](d.tmpl.md) %}",
+        "\
+---
+name: c
+params: []
+---
+C+{% include [d](d.tmpl.md) %}",
     )
     .unwrap();
     std::fs::write(
         dir.path().join("b.tmpl.md"),
-        "---\nname: b\nparams: []\n---\nB+{% include [c](c.tmpl.md) %}",
+        "\
+---
+name: b
+params: []
+---
+B+{% include [c](c.tmpl.md) %}",
     )
     .unwrap();
     std::fs::write(
         dir.path().join("a.tmpl.md"),
-        "---\nname: a\nparams: []\n---\nA+{% include [b](b.tmpl.md) %}",
+        "\
+---
+name: a
+params: []
+---
+A+{% include [b](b.tmpl.md) %}",
     )
     .unwrap();
 
     let tmpl = crate::Template::from_file(&dir.path().join("a.tmpl.md")).unwrap();
     let ctx = Context::new();
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(result, "A+B+C+D");
 }
 
@@ -793,19 +852,29 @@ fn include_missing_contract_params_errors() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("child.tmpl.md"),
-        "---\nname: child\nparams: [msg = str]\n---\n{{ msg }}",
+        "\
+---
+name: child
+params: [msg = str]
+---
+{{ msg }}",
     )
     .unwrap();
     std::fs::write(
         dir.path().join("parent.tmpl.md"),
-        "---\nname: parent\nparams: []\n---\n> {% include [child](child.tmpl.md) %}",
+        "\
+---
+name: parent
+params: []
+---
+> {% include [child](child.tmpl.md) %}",
     )
     .unwrap();
 
     let tmpl = crate::Template::from_file(&dir.path().join("parent.tmpl.md")).unwrap();
     let ctx = Context::new();
     let err = tmpl
-        .render(&ctx)
+        .render_ctx(&ctx)
         .expect_err("include missing required param 'msg' should fail");
     let err = err.to_string();
     assert!(
@@ -819,18 +888,28 @@ fn include_with_contract_satisfied_renders() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("child.tmpl.md"),
-        "---\nname: child\nparams: [msg = str]\n---\nHello {{ msg }}",
+        "\
+---
+name: child
+params: [msg = str]
+---
+Hello {{ msg }}",
     )
     .unwrap();
     std::fs::write(
         dir.path().join("parent.tmpl.md"),
-        "---\nname: parent\nparams: []\n---\n> {% include [child](child.tmpl.md) with msg=\"World\" %}",
+        "\
+---
+name: parent
+params: []
+---
+> {% include [child](child.tmpl.md) with msg=\"World\" %}",
     )
     .unwrap();
 
     let tmpl = crate::Template::from_file(&dir.path().join("parent.tmpl.md")).unwrap();
     let ctx = Context::new();
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(result, "Hello World");
 }
 
@@ -839,18 +918,28 @@ fn include_no_params_always_ok() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("static.tmpl.md"),
-        "---\nname: static\nparams: []\n---\nStatic!",
+        "\
+---
+name: static
+params: []
+---
+Static!",
     )
     .unwrap();
     std::fs::write(
         dir.path().join("parent.tmpl.md"),
-        "---\nname: parent\nparams: []\n---\n> {% include [static](static.tmpl.md) %}",
+        "\
+---
+name: parent
+params: []
+---
+> {% include [static](static.tmpl.md) %}",
     )
     .unwrap();
 
     let tmpl = crate::Template::from_file(&dir.path().join("parent.tmpl.md")).unwrap();
     let ctx = Context::new();
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(result, "Static!");
 }
 
@@ -1079,14 +1168,19 @@ fn self_recursive_include_hits_depth_limit() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("self.tmpl.md"),
-        "---\nname: self\nparams: []\n---\nR> {% include [self](self.tmpl.md) %}",
+        "\
+---
+name: self
+params: []
+---
+R> {% include [self](self.tmpl.md) %}",
     )
     .unwrap();
 
     let tmpl = crate::Template::from_file(&dir.path().join("self.tmpl.md")).unwrap();
     let ctx = Context::new();
     let err = tmpl
-        .render(&ctx)
+        .render_ctx(&ctx)
         .expect_err("self-recursion should hit depth limit");
     assert!(
         err.to_string().contains("include depth"),
@@ -1099,19 +1193,29 @@ fn mutual_recursive_includes_hit_depth_limit() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("a.tmpl.md"),
-        "---\nname: a\nparams: []\n---\nA> {% include [b](b.tmpl.md) %}",
+        "\
+---
+name: a
+params: []
+---
+A> {% include [b](b.tmpl.md) %}",
     )
     .unwrap();
     std::fs::write(
         dir.path().join("b.tmpl.md"),
-        "---\nname: b\nparams: []\n---\nB> {% include [a](a.tmpl.md) %}",
+        "\
+---
+name: b
+params: []
+---
+B> {% include [a](a.tmpl.md) %}",
     )
     .unwrap();
 
     let tmpl = crate::Template::from_file(&dir.path().join("a.tmpl.md")).unwrap();
     let ctx = Context::new();
     let err = tmpl
-        .render(&ctx)
+        .render_ctx(&ctx)
         .expect_err("mutual recursion should hit depth limit");
     assert!(
         err.to_string().contains("include depth"),
@@ -1124,12 +1228,22 @@ fn include_type_mismatch_caught_at_runtime() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("child.tmpl.md"),
-        "---\nname: child\nparams: [count = int]\n---\n{{ count }}",
+        "\
+---
+name: child
+params: [count = int]
+---
+{{ count }}",
     )
     .unwrap();
     std::fs::write(
         dir.path().join("parent.tmpl.md"),
-        "---\nname: parent\nparams: [name = str]\n---\n\
+        "\
+---
+name: parent
+params: [name = str]
+---
+\
          > {% include [child](child.tmpl.md) with count=name %}",
     )
     .unwrap();
@@ -1138,7 +1252,7 @@ fn include_type_mismatch_caught_at_runtime() {
     let mut ctx = Context::new();
     ctx.set("name", "not_a_number");
     let err = tmpl
-        .render(&ctx)
+        .render_ctx(&ctx)
         .expect_err("type mismatch should error at runtime");
     assert!(
         err.to_string().contains("type mismatch") || err.to_string().contains("expected"),
@@ -1154,17 +1268,25 @@ fn include_type_mismatch_caught_at_runtime() {
 fn inline_template_include_renders_test() {
     // Uses `> {% tmpl %}` blockquote prefix as required by the parser.
     let src = concat!(
-        "---\nparams: []\n---\n",
+        "\
+---
+params: []
+---
+",
         "> {% tmpl greeting %}\n",
-        "---\n",
+        "\
+---
+",
         "params: [who = str]\n",
-        "---\n",
+        "\
+---
+",
         "Hello {{ who }}!\n\n",
         "> {% /tmpl %}\n\n",
         "> {% include greeting with who=\"World\" %}",
     );
     let tmpl = crate::Template::from_source(src).unwrap();
-    let result = tmpl.render(&Context::new()).unwrap();
+    let result = tmpl.render_ctx(&Context::new()).unwrap();
     assert_eq!(result, "Hello World!\n");
 }
 
@@ -1172,18 +1294,28 @@ fn inline_template_include_renders_test() {
 fn inline_template_missing_params_errors() {
     // Inline template with required param not provided at include site.
     let src = concat!(
-        "---\nparams: []\n---\n",
+        "\
+---
+params: []
+---
+",
         "> {% tmpl greeting %}\n",
-        "---\n",
+        "\
+---
+",
         "params: [who = str]\n",
-        "---\n",
+        "\
+---
+",
         "Hello {{ who }}!\n\n",
         "> {% /tmpl %}\n\n",
         "> {% include greeting %}",
     );
     let tmpl = crate::Template::from_source(src).unwrap();
     let ctx = Context::new();
-    let err = tmpl.render(&ctx).expect_err("missing params should error");
+    let err = tmpl
+        .render_ctx(&ctx)
+        .expect_err("missing params should error");
     let msg = err.to_string();
     assert!(
         msg.contains("who"),
@@ -1204,11 +1336,19 @@ fn same_named_tmpl_in_different_files_render_independently() {
     std::fs::write(
         dir.path().join("included_file.tmpl.md"),
         concat!(
-            "---\nparams: []\n---\n",
+            "\
+---
+params: []
+---
+",
             "> {% tmpl helper %}\n",
-            "---\n",
+            "\
+---
+",
             "params: []\n",
-            "---\n",
+            "\
+---
+",
             "CHILD\n\n",
             "> {% /tmpl %}\n\n",
             "> {% include helper %}",
@@ -1218,19 +1358,29 @@ fn same_named_tmpl_in_different_files_render_independently() {
 
     // Parent template: defines its own "helper" and includes the file
     let parent_src = concat!(
-        "---\nparams: []\n---\n",
+        "\
+---
+params: []
+---
+",
         "> {% tmpl helper %}\n",
-        "---\n",
+        "\
+---
+",
         "params: []\n",
-        "---\n",
+        "\
+---
+",
         "PARENT\n\n",
         "> {% /tmpl %}\n\n",
         "> {% include helper %}\n\n",
-        "---\n",
+        "\
+---
+",
     );
 
     let tmpl = crate::Template::from_source(parent_src).unwrap();
-    let result = tmpl.render(&Context::new()).unwrap();
+    let result = tmpl.render_ctx(&Context::new()).unwrap();
     // Parent's "helper" renders "PARENT"
     assert_eq!(result, "PARENT\n---\n");
 }
@@ -1243,20 +1393,40 @@ fn included_file_uses_own_inline_templates() {
 
     std::fs::write(
         dir.path().join("child.tmpl.md"),
-        "---\nparams:\n  - name = str\n---\n\
-         > {% tmpl row %}\n\n\
-         ---\n\
-         params:\n  - label = str\n\
-         ---\n\
-         - {{ label }}\n\n\
-         > {% /tmpl %}\n\n\
+        "\
+---
+params:
+  - name = str
+---
+\
+         > {% tmpl row %}
+
+\
+         ---
+\
+         params:
+  - label = str
+\
+         ---
+\
+         - {{ label }}
+
+\
+         > {% /tmpl %}
+
+\
          > {% include row with label=name %}",
     )
     .unwrap();
 
     std::fs::write(
         dir.path().join("parent.tmpl.md"),
-        "---\nparams:\n  - name = str\n---\n\
+        "\
+---
+params:
+  - name = str
+---
+\
          > {% include [child](child.tmpl.md) with name=name %}",
     )
     .unwrap();
@@ -1264,7 +1434,7 @@ fn included_file_uses_own_inline_templates() {
     let tmpl = crate::Template::from_file(&dir.path().join("parent.tmpl.md")).unwrap();
     let mut ctx = Context::new();
     ctx.set("name", "Alice");
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(result, "- Alice\n");
 }
 
@@ -1277,20 +1447,37 @@ fn parent_tmpl_does_not_leak_to_included_file() {
     // child tries to use "secret" which only parent defines
     std::fs::write(
         dir.path().join("child.tmpl.md"),
-        "---\nparams: []\n---\n\
+        "\
+---
+params: []
+---
+\
          > {% include secret %}",
     )
     .unwrap();
 
     std::fs::write(
         dir.path().join("parent.tmpl.md"),
-        "---\nparams: []\n---\n\
-         > {% tmpl secret %}\n\n\
-         ---\n\
-         params: []\n\
-         ---\n\
-         SECRET\n\n\
-         > {% /tmpl %}\n\n\
+        "\
+---
+params: []
+---
+\
+         > {% tmpl secret %}
+
+\
+         ---
+\
+         params: []
+\
+         ---
+\
+         SECRET
+
+\
+         > {% /tmpl %}
+
+\
          > {% include [child](child.tmpl.md) %}",
     )
     .unwrap();
@@ -1300,7 +1487,7 @@ fn parent_tmpl_does_not_leak_to_included_file() {
     // This should be a render error at runtime (file not found for "secret").
     let tmpl = crate::Template::from_file(&dir.path().join("parent.tmpl.md")).unwrap();
     let err = tmpl
-        .render(&Context::new())
+        .render_ctx(&Context::new())
         .expect_err("child should not see parent's inline template 'secret'");
     let msg = err.to_string();
     assert!(
@@ -1317,33 +1504,61 @@ fn same_named_tmpl_in_parent_and_child_are_independent() {
 
     std::fs::write(
         dir.path().join("child.tmpl.md"),
-        "---\nparams: []\n---\n\
-         > {% tmpl greeting %}\n\n\
-         ---\n\
-         params: []\n\
-         ---\n\
-         CHILD_GREETING\n\n\
-         > {% /tmpl %}\n\n\
+        "\
+---
+params: []
+---
+\
+         > {% tmpl greeting %}
+
+\
+         ---
+\
+         params: []
+\
+         ---
+\
+         CHILD_GREETING
+
+\
+         > {% /tmpl %}
+
+\
          > {% include greeting %}",
     )
     .unwrap();
 
     std::fs::write(
         dir.path().join("parent.tmpl.md"),
-        "---\nparams: []\n---\n\
-         > {% tmpl greeting %}\n\n\
-         ---\n\
-         params: []\n\
-         ---\n\
-         PARENT_GREETING\n\n\
-         > {% /tmpl %}\n\n\
-         > {% include greeting %}\n\n\
+        "\
+---
+params: []
+---
+\
+         > {% tmpl greeting %}
+
+\
+         ---
+\
+         params: []
+\
+         ---
+\
+         PARENT_GREETING
+
+\
+         > {% /tmpl %}
+
+\
+         > {% include greeting %}
+
+\
          > {% include [child](child.tmpl.md) %}",
     )
     .unwrap();
 
     let tmpl = crate::Template::from_file(&dir.path().join("parent.tmpl.md")).unwrap();
-    let result = tmpl.render(&Context::new()).unwrap();
+    let result = tmpl.render_ctx(&Context::new()).unwrap();
     assert_eq!(result, "PARENT_GREETING\nCHILD_GREETING\n");
 }
 
@@ -1355,40 +1570,72 @@ fn two_included_files_same_tmpl_name_different_content() {
 
     std::fs::write(
         dir.path().join("alpha.tmpl.md"),
-        "---\nparams: []\n---\n\
-         > {% tmpl row %}\n\n\
-         ---\n\
-         params: []\n\
-         ---\n\
-         ALPHA_ROW\n\n\
-         > {% /tmpl %}\n\n\
+        "\
+---
+params: []
+---
+\
+         > {% tmpl row %}
+
+\
+         ---
+\
+         params: []
+\
+         ---
+\
+         ALPHA_ROW
+
+\
+         > {% /tmpl %}
+
+\
          > {% include row %}",
     )
     .unwrap();
 
     std::fs::write(
         dir.path().join("beta.tmpl.md"),
-        "---\nparams: []\n---\n\
-         > {% tmpl row %}\n\n\
-         ---\n\
-         params: []\n\
-         ---\n\
-         BETA_ROW\n\n\
-         > {% /tmpl %}\n\n\
+        "\
+---
+params: []
+---
+\
+         > {% tmpl row %}
+
+\
+         ---
+\
+         params: []
+\
+         ---
+\
+         BETA_ROW
+
+\
+         > {% /tmpl %}
+
+\
          > {% include row %}",
     )
     .unwrap();
 
     std::fs::write(
         dir.path().join("parent.tmpl.md"),
-        "---\nparams: []\n---\n\
-         > {% include [alpha](alpha.tmpl.md) %}\n\n\
+        "\
+---
+params: []
+---
+\
+         > {% include [alpha](alpha.tmpl.md) %}
+
+\
          > {% include [beta](beta.tmpl.md) %}",
     )
     .unwrap();
 
     let tmpl = crate::Template::from_file(&dir.path().join("parent.tmpl.md")).unwrap();
-    let result = tmpl.render(&Context::new()).unwrap();
+    let result = tmpl.render_ctx(&Context::new()).unwrap();
     assert_eq!(result, "ALPHA_ROW\nBETA_ROW\n");
 }
 
@@ -1403,20 +1650,37 @@ fn same_display_name_different_files_work() {
 
     std::fs::write(
         dir.path().join("en/greeting.tmpl.md"),
-        "---\nparams:\n  - name = str\n---\nHello {{ name }}!",
+        "\
+---
+params:
+  - name = str
+---
+Hello {{ name }}!",
     )
     .unwrap();
 
     std::fs::write(
         dir.path().join("de/greeting.tmpl.md"),
-        "---\nparams:\n  - name = str\n---\nHallo {{ name }}!",
+        "\
+---
+params:
+  - name = str
+---
+Hallo {{ name }}!",
     )
     .unwrap();
 
     std::fs::write(
         dir.path().join("parent.tmpl.md"),
-        "---\nparams:\n  - name = str\n---\n\
-         > {% include [greeting](en/greeting.tmpl.md) with name=name %}\n\n\
+        "\
+---
+params:
+  - name = str
+---
+\
+         > {% include [greeting](en/greeting.tmpl.md) with name=name %}
+
+\
          > {% include [greeting](de/greeting.tmpl.md) with name=name %}",
     )
     .unwrap();
@@ -1424,7 +1688,7 @@ fn same_display_name_different_files_work() {
     let tmpl = crate::Template::from_file(&dir.path().join("parent.tmpl.md")).unwrap();
     let mut ctx = Context::new();
     ctx.set("name", "World");
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(result, "Hello World!Hallo World!");
 }
 
@@ -1435,22 +1699,41 @@ fn nested_include_chain_a_b_c() {
 
     std::fs::write(
         dir.path().join("c.tmpl.md"),
-        "---\nparams:\n  - msg = str\n---\n[C:{{ msg }}]",
+        "\
+---
+params:
+  - msg = str
+---
+[C:{{ msg }}]",
     )
     .unwrap();
 
     std::fs::write(
         dir.path().join("b.tmpl.md"),
-        "---\nparams:\n  - msg = str\n---\n\
-         [B:{{ msg }}]\n\n\
+        "\
+---
+params:
+  - msg = str
+---
+\
+         [B:{{ msg }}]
+
+\
          > {% include [c](c.tmpl.md) with msg=msg %}",
     )
     .unwrap();
 
     std::fs::write(
         dir.path().join("a.tmpl.md"),
-        "---\nparams:\n  - msg = str\n---\n\
-         [A:{{ msg }}]\n\n\
+        "\
+---
+params:
+  - msg = str
+---
+\
+         [A:{{ msg }}]
+
+\
          > {% include [b](b.tmpl.md) with msg=msg %}",
     )
     .unwrap();
@@ -1458,7 +1741,7 @@ fn nested_include_chain_a_b_c() {
     let tmpl = crate::Template::from_file(&dir.path().join("a.tmpl.md")).unwrap();
     let mut ctx = Context::new();
     ctx.set("msg", "hello");
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(result, "[A:hello]\n[B:hello]\n[C:hello]");
 }
 
@@ -1470,30 +1753,57 @@ fn diamond_include_deduplicates_correctly() {
 
     std::fs::write(
         dir.path().join("d.tmpl.md"),
-        "---\nparams:\n  - label = str\n---\n[D:{{ label }}]",
+        "\
+---
+params:
+  - label = str
+---
+[D:{{ label }}]",
     )
     .unwrap();
 
     std::fs::write(
         dir.path().join("b.tmpl.md"),
-        "---\nparams:\n  - val = str\n---\n\
-         [B]\n\n\
+        "\
+---
+params:
+  - val = str
+---
+\
+         [B]
+
+\
          > {% include [d](d.tmpl.md) with label=val %}",
     )
     .unwrap();
 
     std::fs::write(
         dir.path().join("c.tmpl.md"),
-        "---\nparams:\n  - val = str\n---\n\
-         [C]\n\n\
+        "\
+---
+params:
+  - val = str
+---
+\
+         [C]
+
+\
          > {% include [d](d.tmpl.md) with label=val %}",
     )
     .unwrap();
 
     std::fs::write(
         dir.path().join("a.tmpl.md"),
-        "---\nparams:\n  - x = str\n  - y = str\n---\n\
-         > {% include [b](b.tmpl.md) with val=x %}\n\n\
+        "\
+---
+params:
+  - x = str
+  - y = str
+---
+\
+         > {% include [b](b.tmpl.md) with val=x %}
+
+\
          > {% include [c](c.tmpl.md) with val=y %}",
     )
     .unwrap();
@@ -1502,7 +1812,7 @@ fn diamond_include_deduplicates_correctly() {
     let mut ctx = Context::new();
     ctx.set("x", "from_b");
     ctx.set("y", "from_c");
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(result, "[B]\n[D:from_b][C]\n[D:from_c]");
 }
 
@@ -1594,4 +1904,101 @@ fn for_without_else_still_works() {
     );
     let result = compiled_render("> {% for item in items %}[{{ item }}]{% /for %}", &ctx).unwrap();
     assert_eq!(result, "[a][b]");
+}
+
+#[test]
+fn if_inside_match_case_arm_with_blockquotes() {
+    // Regression: {% if %} inside a {% match %} case arm with blockquote
+    // syntax should compile and render correctly.
+    let template = concat!(
+        "> {% match role %}\n",
+        "> {% case A %}\n",
+        "\n",
+        "Section A\n",
+        "\n",
+        "{{ msg }}\n",
+        "\n",
+        "> {% if mission %}\n",
+        "\n",
+        "## Mission\n",
+        "\n",
+        "{{ mission }}\n",
+        "\n",
+        "> {% /if %}\n",
+        "\n",
+        "More content\n",
+        "\n",
+        "> {% case B %}\n",
+        "\n",
+        "Section B\n",
+        "\n",
+        "> {% /match %}\n",
+    );
+    let mut ctx = Context::new();
+    ctx.set("role", "A");
+    ctx.set("msg", "hello");
+    ctx.set("mission", "find bugs");
+    let result = compiled_render(template, &ctx);
+    assert!(
+        result.is_ok(),
+        "if inside match should compile: {:?}",
+        result.err()
+    );
+    let output = result.unwrap();
+    assert!(
+        output.contains("Mission"),
+        "output should contain Mission: {output:?}"
+    );
+    assert!(
+        output.contains("find bugs"),
+        "output should contain mission value: {output:?}"
+    );
+}
+
+#[test]
+fn if_else_inside_match_case_arm_with_blockquotes() {
+    // Regression: {% if %}...{% else %}...{% /if %} inside a match case arm
+    // must not confuse the {% else %} with a match-level {% else %} arm.
+    let template = concat!(
+        "> {% match role %}\n",
+        "> {% case A %}\n",
+        "\n",
+        "Section A\n",
+        "\n",
+        "> {% if flag %}\n",
+        "\n",
+        "flag is set\n",
+        "\n",
+        "> {% else %}\n",
+        "\n",
+        "flag is not set\n",
+        "\n",
+        "> {% /if %}\n",
+        "\n",
+        "After if\n",
+        "\n",
+        "> {% case B %}\n",
+        "\n",
+        "Section B\n",
+        "\n",
+        "> {% /match %}\n",
+    );
+    let mut ctx = Context::new();
+    ctx.set("role", "A");
+    ctx.set("flag", Value::Bool(false));
+    let result = compiled_render(template, &ctx);
+    assert!(
+        result.is_ok(),
+        "if/else inside match should compile: {:?}",
+        result.err()
+    );
+    let output = result.unwrap();
+    assert!(
+        output.contains("flag is not set"),
+        "should render else branch: {output:?}"
+    );
+    assert!(
+        !output.contains("flag is set\n"),
+        "should NOT render if branch: {output:?}"
+    );
 }

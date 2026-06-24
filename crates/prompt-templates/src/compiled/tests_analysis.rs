@@ -1042,7 +1042,7 @@ params: []
 
     let tmpl = crate::Template::from_file(&dir.path().join("main.tmpl.md")).unwrap();
     let ctx = Context::new();
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(result, "Hello!");
 }
 
@@ -1070,7 +1070,7 @@ params: []
 
     let tmpl = crate::Template::from_file(&dir.path().join("parent.tmpl.md")).unwrap();
     let ctx = Context::new();
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(result, "Got: hi");
 }
 
@@ -1105,7 +1105,7 @@ params: [items = list<str>]
             Value::Str("two".into()),
         ])),
     );
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(result, "- one- two");
 }
 
@@ -1151,7 +1151,7 @@ params:
             ]))),
         ])),
     );
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(
         result,
         r"root
@@ -1187,6 +1187,6 @@ params:
     let mut ctx = Context::new();
     ctx.set("label", "solo");
     ctx.set("children", Value::List(Arc::new(vec![])));
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(result.trim(), "solo");
 }

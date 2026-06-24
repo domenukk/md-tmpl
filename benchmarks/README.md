@@ -50,7 +50,9 @@ python benchmarks/python/bench_templates.py
 
 ## Go
 
-Go's `testing.B` framework, comparing against `text/template`.
+Go's `testing.B` framework, comparing prompt-templates (Rust/CGo FFI)
+against Go's `text/template` across compile, render, and round-trip
+scenarios.
 
 ```bash
 just bench-go
@@ -73,6 +75,29 @@ wasm-pack build --target nodejs --out-dir pkg
 node benchmarks/bench.mjs            # table output
 node benchmarks/bench.mjs --json     # JSON to stdout
 ```
+
+## Fairness & Methodology
+
+These benchmarks aim for objectivity. Known asymmetries:
+
+- **Rust render-only groups**: MiniJinja re-serializes `&impl Serialize`
+  each iteration while the other engines use pre-built contexts. The
+  `_e2e` groups include context construction for all engines to level
+  this playing field.
+- **Handlebars** lacks string equality, numeric comparisons, and filters.
+  Data structs include pre-computed boolean flags and formatted strings
+  so it can produce equivalent output — Handlebars therefore does
+  slightly less per-render work.
+- **Python**: `prompt-templates` is a Rust/PyO3 engine; competitors
+  (Jinja2, Mako, Django, Chevron) are pure Python. The speed advantage
+  is partly due to native code, not template design alone.
+- **Go**: prompt-templates uses CGo FFI (~100–200ns overhead per call),
+  penalizing it relative to the pure-Go `text/template` on small
+  templates. The comparison is fair at the API boundary level.
+- **TypeScript comparison**: Mustache lacks `elif` and filters, so its
+  benchmark templates do less work in conditional/loop scenarios.
+
+All comparison benchmarks verify output correctness before timing.
 
 ## Results
 

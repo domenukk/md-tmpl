@@ -276,7 +276,7 @@ params:
 }
 
 // ---------------------------------------------------------------------------
-// End-to-end: parse + render the exact README hero example
+// End-to-end: parse + render_ctx the exact README hero example
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -352,7 +352,7 @@ params:
     );
 
     let output = tmpl
-        .render(&ctx)
+        .render_ctx(&ctx)
         .expect("README hero example should render");
     assert_eq!(
         output,

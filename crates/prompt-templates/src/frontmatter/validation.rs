@@ -156,7 +156,7 @@ pub(crate) fn add_implicit_param_types(fm: &mut Frontmatter) {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
     use crate::{
@@ -168,8 +168,8 @@ mod tests {
     /// Helper: build a minimal valid `Frontmatter` with no conflicts.
     fn empty_fm() -> Frontmatter {
         Frontmatter {
-            name: String::new(),
-            description: String::new(),
+            name: None,
+            description: None,
             declarations: vec![],
             params: vec![],
             has_params: false,

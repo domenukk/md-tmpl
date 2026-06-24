@@ -1,6 +1,7 @@
 //! Frontmatter type declarations and validation.
 
 use alloc::{
+    boxed::Box,
     string::{String, ToString},
     vec::Vec,
 };
@@ -27,6 +28,9 @@ pub enum VarType {
     Enum(Vec<VariantDecl>),
     /// `tmpl<field = type, ...>` — expects a template with matching params.
     Tmpl(Vec<VarDecl>),
+    /// `option<T>` — syntactic sugar for `enum<Some(val = T), None>`.
+    /// Accepts `Value::None` or the inner `T` type directly.
+    Option(Box<VarType>),
 }
 
 /// Write a comma-separated `name = type` field list.
@@ -82,15 +86,27 @@ impl fmt::Display for VarType {
                 }
             }
             Self::Tmpl(fields) => {
-                f.write_str(crate::consts::TYPE_TMPL_PREFIX)?;
+                write!(f, "tmpl<")?;
                 fmt_fields(fields, f)?;
                 write!(f, ">")
             }
+            Self::Option(inner) => write!(f, "option<{inner}>"),
         }
     }
 }
 
 impl VarType {
+    /// Returns `true` if this type can be directly displayed via `{{ expr }}`.
+    ///
+    /// Only scalar types (`str`, `int`, `float`, `bool`) are displayable.
+    /// Compound types (`list`, `struct`, `enum`, `tmpl`, `option`) must be
+    /// accessed through iteration, field access, `kind()`, `has()`, or
+    /// `{% match %}` instead.
+    #[must_use]
+    pub fn is_displayable(&self) -> bool {
+        matches!(self, Self::Str | Self::Int | Self::Float | Self::Bool)
+    }
+
     /// Returns `true` if `value` is compatible with this declared type.
     ///
     /// - Scalar types match their corresponding `Value` variant.
@@ -133,6 +149,7 @@ impl VarType {
     /// For deeply nested types with many list items, this is dramatically
     /// faster than the full `check_inner` path on the success case.
     #[inline]
+    #[allow(clippy::too_many_lines)]
     fn check_fast(&self, value: &Value) -> bool {
         match self {
             Self::Str => matches!(value, Value::Str(_)),
@@ -231,6 +248,7 @@ impl VarType {
                 }
                 true
             }
+            Self::Option(inner) => matches!(value, Value::None) || inner.check_fast(value),
         }
     }
 
@@ -268,6 +286,13 @@ impl VarType {
             Self::Struct(fields) => Self::check_dict(fields, value, path),
             Self::Enum(variants) => Self::check_enum(variants, value, path),
             Self::Tmpl(params) => Self::check_tmpl(params, value, path),
+            Self::Option(inner) => {
+                if matches!(value, Value::None) {
+                    Ok(())
+                } else {
+                    inner.check_inner(value, path)
+                }
+            }
         }
     }
 
@@ -564,17 +589,22 @@ impl VarDecl {
 }
 
 impl VarType {
-    /// Returns `true` if this type is the desugared form of `option<T>`,
-    /// i.e. `enum<Some(val = T), None>`.
+    /// Returns `true` if this type is an `option<T>`, either as the dedicated
+    /// `Option` variant or the desugared `enum<Some(val = T), None>` form.
     #[must_use]
     pub fn is_option(&self) -> bool {
-        matches!(self, VarType::Enum(v) if Self::detect_option_inner(v).is_some())
+        match self {
+            VarType::Option(_) => true,
+            VarType::Enum(v) => Self::detect_option_inner(v).is_some(),
+            _ => false,
+        }
     }
 
     /// If this type is `option<T>`, returns the inner `T` type.
     #[must_use]
     pub fn option_inner_type(&self) -> Option<&VarType> {
         match self {
+            VarType::Option(inner) => Some(inner),
             VarType::Enum(variants) => Self::detect_option_inner(variants),
             _ => None,
         }
@@ -657,7 +687,7 @@ pub fn to_pascal_case(s: &str) -> String {
 // Tests
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use std::sync::Arc;
 

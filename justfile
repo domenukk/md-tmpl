@@ -49,7 +49,8 @@ lint: lint-rust lint-toml lint-markdown lint-just lint-python lint-go lint-ts
 
 # Lint Rust with clippy (pedantic + all, deny warnings)
 lint-rust:
-    cargo clippy --workspace --all-targets --all-features -- -D warnings
+    cargo clippy --workspace --all-targets --exclude prompt-templates-macros --all-features -- -D warnings
+    cargo clippy -p prompt-templates-macros --all-targets -- -D warnings
 
 # Check Rust formatting without modifying files
 lint-rust-fmt:
@@ -85,7 +86,8 @@ test: test-rust test-no-std test-python test-go test-ts test-wasm
 
 # Run Rust tests (lib + doctests + integration + macros, zero ignored)
 test-rust:
-    cargo test --workspace --all-features 2>&1 | tee /tmp/cargo-test-output.txt
+    cargo test --workspace --exclude prompt-templates-macros --all-features 2>&1 | tee /tmp/cargo-test-output.txt
+    cargo test -p prompt-templates-macros 2>&1 | tee -a /tmp/cargo-test-output.txt
     @echo "Verifying zero ignored tests..."
     @if grep 'test result:' /tmp/cargo-test-output.txt | grep -v '0 ignored'; then echo "ERROR: ignored tests found!" && exit 1; fi
     @echo "All tests pass, none ignored ✓"

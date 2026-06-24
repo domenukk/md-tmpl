@@ -1,6 +1,6 @@
 //! Compatibility shims for `no_std` / `std` mode.
 //!
-//! Re-exports [`HashMap`], [`HashSet`], and [`Lazy`] from either `std` or
+//! Re-exports [`HashMap`], [`HashSet`], and [`LazyLock`] from either `std` or
 //! `hashbrown`/`spin` depending on the active feature set. All other types
 //! (`Arc`, `Cow`, `Vec`, `String`, `fmt`, etc.) are available via `alloc`
 //! and `core` regardless of mode.
@@ -12,17 +12,17 @@
 // Template data is not adversarial, so DOS-resistant hashing is unnecessary.
 // -- Lazy static --------------------------------------------------------------
 /// Lazy initializer — [`std::sync::LazyLock`] under `std`,
-/// [`spin::Lazy`] under `no_std`.
+/// [`spin::LazyLock`] under `no_std`.
 #[cfg(feature = "std")]
-pub use std::sync::LazyLock as Lazy;
+pub use std::sync::LazyLock;
 
 #[cfg(feature = "serde")]
 pub(crate) use hashbrown::hash_map;
 pub(crate) use hashbrown::{HashMap, HashSet};
 /// Lazy initializer — [`std::sync::LazyLock`] under `std`,
-/// [`spin::Lazy`] under `no_std`.
+/// [`spin::LazyLock`] under `no_std`.
 #[cfg(not(feature = "std"))]
-pub use spin::Lazy;
+pub use spin::LazyLock;
 
 #[cfg(test)]
 mod tests {
@@ -119,20 +119,20 @@ mod tests {
 
     #[test]
     fn lazy_initializes_on_first_access() {
-        static COUNTER: Lazy<i32> = Lazy::new(|| 42);
+        static COUNTER: LazyLock<i32> = LazyLock::new(|| 42);
         assert_eq!(*COUNTER, 42);
     }
 
     #[test]
     fn lazy_returns_same_value_on_subsequent_access() {
-        static VAL: Lazy<String> = Lazy::new(|| String::from("initialized"));
+        static VAL: LazyLock<String> = LazyLock::new(|| String::from("initialized"));
         assert_eq!(&*VAL, "initialized");
         assert_eq!(&*VAL, "initialized"); // second access
     }
 
     #[test]
     fn lazy_with_vec() {
-        static ITEMS: Lazy<vec::Vec<i32>> = Lazy::new(|| vec![1, 2, 3]);
+        static ITEMS: LazyLock<vec::Vec<i32>> = LazyLock::new(|| vec![1, 2, 3]);
         assert_eq!(ITEMS.len(), 3);
         assert_eq!(ITEMS[0], 1);
     }

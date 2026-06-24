@@ -12,7 +12,7 @@ consts:
 "#;
     let tmpl = Template::from_source(source).unwrap();
     let ctx = Context::new();
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(
         output,
         r"MyApp will retry 3 times.
@@ -33,7 +33,7 @@ Version: {{ VERSION }}
     ctx.set("VERSION", "OVERRIDE");
 
     // Constant MUST win over context.
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(
         output,
         r"Version: 1.0
@@ -53,7 +53,7 @@ Tags: {{ TAGS | join(", ") }}
 "#;
     let tmpl = Template::from_source(source).unwrap();
     let ctx = Context::new();
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(
         output,
         r"Env: prod (debug=false)
@@ -89,7 +89,7 @@ Primary Color: {{ lib.COLORS.primary }}
     let (tmpl, _fm) =
         Template::compile(main_source, CompileOptions::default().base_dir(base_dir)).unwrap();
     let ctx = Context::new();
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(
         output,
         r"Timeout: 30
@@ -110,7 +110,7 @@ Level: {{ kind(DEFAULT_LEVEL) }}
 ";
     let tmpl = Template::from_source(source).unwrap();
     let ctx = Context::new();
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(
         output,
         r"Level: High
@@ -157,7 +157,7 @@ params: []
     let (tmpl, _fm) =
         Template::compile(main_source, CompileOptions::default().base_dir(base_dir)).unwrap();
     let ctx = Context::new();
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(
         output,
         r"Sub Value: 100
@@ -171,13 +171,13 @@ params: []
 
 #[test]
 fn enum_literal_bare_access_is_error() {
-    // Bare {{ Phase.Explore }} should produce a compile error.
+    // Bare {{ Stage.Design }} should produce a compile error.
     let source = r"---
 types:
-  - Phase = enum<Explore, Triage>
+  - Stage = enum<Design, Build>
 params: []
 ---
-{{ Phase.Explore }}";
+{{ Stage.Design }}";
     let result = Template::from_source(source);
     assert!(result.is_err(), "bare enum literal should be rejected");
     let err = result.unwrap_err().to_string();
@@ -205,13 +205,13 @@ params: []
 fn enum_literal_kind_unit_variant() {
     let source = r"---
 types:
-  - Phase = enum<Explore, Triage>
+  - Stage = enum<Design, Build>
 params: []
 ---
-{{ kind(Phase.Explore) }}";
+{{ kind(Stage.Design) }}";
     let tmpl = Template::from_source(source).unwrap();
     let ctx = Context::new();
-    assert_eq!(tmpl.render(&ctx).unwrap(), "Explore");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Design");
 }
 
 #[test]
@@ -224,7 +224,7 @@ params: []
 {{ kind(Color.Red) }}, {{ kind(Color.Green) }}, {{ kind(Color.Blue) }}";
     let tmpl = Template::from_source(source).unwrap();
     let ctx = Context::new();
-    assert_eq!(tmpl.render(&ctx).unwrap(), "Red, Green, Blue");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Red, Green, Blue");
 }
 
 #[test]
@@ -238,7 +238,7 @@ allow_unused: true
 {{ kind(Status.Active) }} {{ kind(Status.Paused) }}";
     let tmpl = Template::from_source(source).unwrap();
     let ctx = Context::new();
-    assert_eq!(tmpl.render(&ctx).unwrap(), "Active Paused");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Active Paused");
 }
 
 #[test]
@@ -267,7 +267,7 @@ params: []
     let (tmpl, _) = Template::compile(main_src, CompileOptions::default().base_dir(base)).unwrap();
 
     let ctx = Context::new();
-    assert_eq!(tmpl.render(&ctx).unwrap(), "High");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "High");
 }
 
 #[test]
@@ -305,12 +305,12 @@ fn enum_literal_const_name_collision_is_error() {
     // A constant with the same name as a type alias is rejected at compile time.
     let source = r#"---
 types:
-  - Phase = enum<Explore, Triage>
+  - Stage = enum<Design, Build>
 consts:
-  - Phase = str := "overridden"
+  - Stage = str := "overridden"
 params: []
 ---
-{{ Phase }}"#;
+{{ Stage }}"#;
     let result = Template::from_source(source);
     assert!(
         result.is_err(),
@@ -323,10 +323,10 @@ fn enum_literal_in_condition_kind_is_ok() {
     // kind() in conditions should work.
     let source = r"---
 types:
-  - Phase = enum<Explore, Triage>
-params: [p = Phase]
+  - Stage = enum<Design, Build>
+params: [p = Stage]
 ---
-> {% if kind(p) == kind(Phase.Explore) %}
+> {% if kind(p) == kind(Stage.Design) %}
 
 found
 
@@ -334,9 +334,9 @@ found
 ";
     let tmpl = Template::from_source(source).unwrap();
     let mut ctx = Context::new();
-    ctx.set("p", "Explore");
+    ctx.set("p", "Design");
     assert_eq!(
-        tmpl.render(&ctx).unwrap(),
+        tmpl.render_ctx(&ctx).unwrap(),
         r"found
 "
     );
