@@ -325,11 +325,11 @@ Criterion benchmarks, render only (pre-compiled template + data → output).
 
 | Scenario        | prompt-templates |     Tera | `MiniJinja` | Handlebars |
 | --------------- | ---------------: | -------: | ----------: | ---------: |
-| **simple**      |    **118 ns** 🏆 |   219 ns |      551 ns |     619 ns |
-| **loop**        |    **433 ns** 🏆 |   817 ns |     1.91 µs |    2.84 µs |
-| **conditional** |    **165 ns** 🏆 |   351 ns |      621 ns |    1.18 µs |
-| **hero**        |   **1.99 µs** 🏆 |  2.33 µs |     7.83 µs |    21.1 µs |
-| **mega**        |   **9.66 µs** 🏆 | 10.80 µs |     28.4 µs |    83.1 µs |
+| **simple**      |    **119 ns** 🏆 |   215 ns |      553 ns |     610 ns |
+| **loop**        |    **402 ns** 🏆 |   596 ns |     1.96 µs |    2.92 µs |
+| **conditional** |    **196 ns** 🏆 |   341 ns |      615 ns |    1.16 µs |
+| **hero**        |   **2.08 µs** 🏆 |  2.21 µs |     7.58 µs |    21.0 µs |
+| **mega**        |   **9.93 µs** 🏆 | 10.87 µs |     28.5 µs |    82.4 µs |
 
 _Intel Xeon @ 2.60 GHz, 100 samples._
 

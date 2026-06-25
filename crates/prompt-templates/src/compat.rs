@@ -12,7 +12,7 @@
 // Template data is not adversarial, so DOS-resistant hashing is unnecessary.
 // -- Lazy static --------------------------------------------------------------
 /// Lazy initializer — [`std::sync::LazyLock`] under `std`,
-/// [`spin::Lazy`] under `no_std`.
+/// [`spin::LazyLock`] under `no_std`.
 #[cfg(feature = "std")]
 pub use std::sync::LazyLock as Lazy;
 
@@ -20,9 +20,9 @@ pub use std::sync::LazyLock as Lazy;
 pub(crate) use hashbrown::hash_map;
 pub(crate) use hashbrown::{HashMap, HashSet};
 /// Lazy initializer — [`std::sync::LazyLock`] under `std`,
-/// [`spin::Lazy`] under `no_std`.
+/// [`spin::LazyLock`] under `no_std`.
 #[cfg(not(feature = "std"))]
-pub use spin::Lazy;
+pub use spin::LazyLock as Lazy;
 
 #[cfg(test)]
 mod tests {

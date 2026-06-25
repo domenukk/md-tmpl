@@ -4,6 +4,16 @@ Proc macros for compile-time template validation, pre-parsing, and typed
 parameter struct generation for
 [prompt-templates](https://github.com/domenukk/prompt-templates).
 
+[![Crates.io](https://img.shields.io/crates/v/prompt-templates-macros.svg)](https://crates.io/crates/prompt-templates-macros)
+[![Docs.rs](https://docs.rs/prompt-templates-macros/badge.svg)](https://docs.rs/prompt-templates-macros)
+
+## Installation
+
+```bash
+cargo add prompt-templates
+cargo add prompt-templates-macros
+```
+
 ## Macros
 
 ### `include_template!`
@@ -104,3 +114,7 @@ let output = greeting::Params {
 | `enum<Variant, ...>`        | `Params{Field}` (auto-generated enum)                |
 | `option<T>`                 | `Option<RustType>`                                   |
 | `tmpl<field = type, ...>`   | `Params{Field}` (template callable)                  |
+
+## License
+
+Apache-2.0 OR MIT

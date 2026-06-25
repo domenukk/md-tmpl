@@ -1,6 +1,8 @@
 # prompt-templates for Python
 
 Strongly-typed prompt templates for LLMs.
+
+[![PyPI version](https://badge.fury.io/py/prompt-templates.svg)](https://badge.fury.io/py/prompt-templates)
 Templates are markdown files with YAML frontmatter declaring typed
 parameters — every variable, list shape, and enum variant is validated
 at render time.
@@ -366,3 +368,7 @@ CPython dictionary iteration.
 ## Full Reference
 
 See **[SPEC.md](../../SPEC.md)** for the complete syntax reference.
+
+## License
+
+Apache-2.0 OR MIT

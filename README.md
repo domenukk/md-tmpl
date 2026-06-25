@@ -242,6 +242,19 @@ params:
 {{ name }}'s notebook: {{ NOTEBOOK_FILENAME }} (max {{ MAX_RETRIES }} retries)
 ```
 
+## Performance
+
+Built for speed with zero-allocation rendering (in Rust). Approximate benchmark results (render-only):
+
+| Language                                | simple         | loop           | conditional    | hero            |
+| --------------------------------------- | -------------- | -------------- | -------------- | --------------- |
+| **Rust** (vs Tera/MiniJinja/Handlebars) | **119 ns** 🏆  | **402 ns** 🏆  | **196 ns** 🏆  | **2.08 µs** 🏆  |
+| **Python** (vs Jinja2/Mako)             | **0.94 µs** 🏆 | **2.63 µs** 🏆 | **1.07 µs** 🏆 | 23.95 µs        |
+| **Go** (vs `text/template`)             | 536 ns         | **1.71 µs** 🏆 | N/A            | **24.23 µs** 🏆 |
+| **TypeScript** (vs Handlebars/Mustache) | **690 ns** 🏆  | 6.30 µs        | 1.21 µs        | N/A             |
+
+See the language-specific READMEs or the [benchmarks suite](benchmarks/README.md) for full details, compile-time overhead, and methodology.
+
 ## Language Bindings
 
 ### Rust
