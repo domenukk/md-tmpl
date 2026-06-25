@@ -16,15 +16,13 @@ use crate::{CompileOptions, Context, Template};
 /// up in the available constants map built from `consts:` declarations.
 #[test]
 fn const_ref_as_param_default_succeeds() {
-    let src = concat!(
-        "---\n",
-        "consts:\n",
-        "  - MAX = int := 10\n",
-        "params:\n",
-        "  - count = int := MAX\n",
-        "---\n",
-        "{{ count }}",
-    );
+    let src = r#"---
+consts:
+  - MAX = int := 10
+params:
+  - count = int := MAX
+---
+{{ count }}"#;
     let tmpl = Template::from_source(src)
         .expect("const name as param default should resolve to the const value");
     // Render without passing `count` — should use the default from the const.
@@ -38,25 +36,22 @@ fn imported_const_ref_as_param_default_succeeds() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("lib.tmpl.md"),
-        concat!(
-            "---\n",
-            "name: lib\n",
-            "consts:\n",
-            "  - LIMIT = int := 50\n",
-            "---\n",
-        ),
+        r#"---
+name: lib
+consts:
+  - LIMIT = int := 50
+---
+"#,
     )
     .unwrap();
 
-    let src = concat!(
-        "---\n",
-        "imports:\n",
-        "  - [lib](lib.tmpl.md)\n",
-        "params:\n",
-        "  - count = int := lib.LIMIT\n",
-        "---\n",
-        "{{ count }}",
-    );
+    let src = r#"---
+imports:
+  - [lib](lib.tmpl.md)
+params:
+  - count = int := lib.LIMIT
+---
+{{ count }}"#;
     let (tmpl, _fm) = Template::compile(src, CompileOptions::default().base_dir(dir.path()))
         .expect("imported const ref as default should resolve");
     let ctx = Context::new();
@@ -73,19 +68,21 @@ fn param_pascal_shadows_import_stem_rejected() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("Helper.tmpl.md"),
-        concat!("---\n", "name: Helper\n", "params: []\n", "---\n",),
+        r#"---
+name: Helper
+params: []
+---
+"#,
     )
     .unwrap();
 
-    let src = concat!(
-        "---\n",
-        "imports:\n",
-        "  - [Helper](Helper.tmpl.md)\n",
-        "params:\n",
-        "  - helper = str\n",
-        "---\n",
-        "{{ helper }}",
-    );
+    let src = r#"---
+imports:
+  - [Helper](Helper.tmpl.md)
+params:
+  - helper = str
+---
+{{ helper }}"#;
     let err = Template::compile(src, CompileOptions::default().base_dir(dir.path()))
         .expect_err("param 'helper' (PascalCase 'Helper') should shadow import 'Helper'");
     let msg = err.to_string();
@@ -101,19 +98,21 @@ fn const_pascal_shadows_import_stem_rejected() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("Config.tmpl.md"),
-        concat!("---\n", "name: Config\n", "params: []\n", "---\n",),
+        r#"---
+name: Config
+params: []
+---
+"#,
     )
     .unwrap();
 
-    let src = concat!(
-        "---\n",
-        "imports:\n",
-        "  - [Config](Config.tmpl.md)\n",
-        "consts:\n",
-        "  - config = int := 1\n",
-        "---\n",
-        "{{ config }}",
-    );
+    let src = r#"---
+imports:
+  - [Config](Config.tmpl.md)
+consts:
+  - config = int := 1
+---
+{{ config }}"#;
     let err = Template::compile(src, CompileOptions::default().base_dir(dir.path()))
         .expect_err("const 'config' (PascalCase 'Config') should shadow import 'Config'");
     let msg = err.to_string();
@@ -130,15 +129,13 @@ fn const_pascal_shadows_import_stem_rejected() {
 /// Param shadows type alias with a DIFFERENT type → rejected.
 #[test]
 fn param_shadows_type_alias_different_type_rejected() {
-    let src = concat!(
-        "---\n",
-        "types:\n",
-        "  - Level = enum<High, Low>\n",
-        "params:\n",
-        "  - level = str\n",
-        "---\n",
-        "{{ level }}",
-    );
+    let src = r#"---
+types:
+  - Level = enum<High, Low>
+params:
+  - level = str
+---
+{{ level }}"#;
     let err = Template::from_source(src)
         .expect_err("param 'level' (PascalCase 'Level') with different type should conflict");
     let msg = err.to_string();
@@ -151,15 +148,13 @@ fn param_shadows_type_alias_different_type_rejected() {
 /// Param shadows type alias with the SAME type → allowed (R1 exception).
 #[test]
 fn param_shadows_type_alias_same_type_allowed() {
-    let src = concat!(
-        "---\n",
-        "types:\n",
-        "  - Level = enum<High, Low>\n",
-        "params:\n",
-        "  - level = Level\n",
-        "---\n",
-        "{{ level }}",
-    );
+    let src = r#"---
+types:
+  - Level = enum<High, Low>
+params:
+  - level = Level
+---
+{{ level }}"#;
     let tmpl = Template::from_source(src)
         .expect("param type IS the alias → R1 exception should allow this");
     let mut ctx = Context::new();
@@ -170,15 +165,13 @@ fn param_shadows_type_alias_same_type_allowed() {
 /// Const shadows type alias with a different type → rejected.
 #[test]
 fn const_shadows_type_alias_different_type_rejected() {
-    let src = concat!(
-        "---\n",
-        "types:\n",
-        "  - Status = enum<Active, Paused>\n",
-        "consts:\n",
-        "  - status = str := \"override\"\n",
-        "---\n",
-        "{{ status }}",
-    );
+    let src = r#"---
+types:
+  - Status = enum<Active, Paused>
+consts:
+  - status = str := "override"
+---
+{{ status }}"#;
     let err = Template::from_source(src)
         .expect_err("const 'status' (PascalCase 'Status') with different type should conflict");
     let msg = err.to_string();
@@ -195,15 +188,13 @@ fn const_shadows_type_alias_different_type_rejected() {
 /// Param and const with the same name → rejected (param declared first).
 #[test]
 fn param_then_const_same_name_rejected() {
-    let src = concat!(
-        "---\n",
-        "params:\n",
-        "  - level = str\n",
-        "consts:\n",
-        "  - level = str := \"fixed\"\n",
-        "---\n",
-        "{{ level }}",
-    );
+    let src = r#"---
+params:
+  - level = str
+consts:
+  - level = str := "fixed"
+---
+{{ level }}"#;
     let err = Template::from_source(src)
         .expect_err("param and const with same name 'level' should conflict");
     let msg = err.to_string();
@@ -216,15 +207,13 @@ fn param_then_const_same_name_rejected() {
 /// Const then param with same name → also rejected (order reversed).
 #[test]
 fn const_then_param_same_name_rejected() {
-    let src = concat!(
-        "---\n",
-        "consts:\n",
-        "  - level = str := \"fixed\"\n",
-        "params:\n",
-        "  - level = str\n",
-        "---\n",
-        "{{ level }}",
-    );
+    let src = r#"---
+consts:
+  - level = str := "fixed"
+params:
+  - level = str
+---
+{{ level }}"#;
     let err = Template::from_source(src)
         .expect_err("const then param with same name 'level' should conflict");
     let msg = err.to_string();
@@ -244,21 +233,23 @@ fn type_alias_shadows_import_stem_rejected() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(
         dir.path().join("Utils.tmpl.md"),
-        concat!("---\n", "name: Utils\n", "params: []\n", "---\n",),
+        r#"---
+name: Utils
+params: []
+---
+"#,
     )
     .unwrap();
 
-    let src = concat!(
-        "---\n",
-        "imports:\n",
-        "  - [Utils](Utils.tmpl.md)\n",
-        "types:\n",
-        "  - Utils = enum<A, B>\n",
-        "params:\n",
-        "  - x = Utils\n",
-        "---\n",
-        "{{ x }}",
-    );
+    let src = r#"---
+imports:
+  - [Utils](Utils.tmpl.md)
+types:
+  - Utils = enum<A, B>
+params:
+  - x = Utils
+---
+{{ x }}"#;
     let err = Template::compile(src, CompileOptions::default().base_dir(dir.path()))
         .expect_err("type alias 'Utils' shadowing import stem 'Utils' should fail");
     let msg = err.to_string();
@@ -275,20 +266,18 @@ fn type_alias_shadows_import_stem_rejected() {
 /// Inline template with the same name as a param → rejected.
 #[test]
 fn inline_tmpl_shadows_param_rejected() {
-    let src = concat!(
-        "---\n",
-        "params: [widget = str]\n",
-        "---\n",
-        "> {% tmpl widget %}\n",
-        "---\n",
-        "params: []\n",
-        "---\n",
-        "inner\n",
-        "\n",
-        "> {% /tmpl %}\n",
-        "\n",
-        "{{ widget }}",
-    );
+    let src = r#"---
+params: [widget = str]
+---
+> {% tmpl widget %}
+---
+params: []
+---
+inner
+
+> {% /tmpl %}
+
+{{ widget }}"#;
     let err = Template::from_source(src)
         .expect_err("inline template 'widget' should conflict with param 'widget'");
     let msg = err.to_string();
@@ -302,21 +291,19 @@ fn inline_tmpl_shadows_param_rejected() {
 /// Inline template with the same name as a const → rejected.
 #[test]
 fn inline_tmpl_shadows_const_rejected() {
-    let src = concat!(
-        "---\n",
-        "consts:\n",
-        "  - widget = str := \"fixed\"\n",
-        "---\n",
-        "> {% tmpl widget %}\n",
-        "---\n",
-        "params: []\n",
-        "---\n",
-        "inner\n",
-        "\n",
-        "> {% /tmpl %}\n",
-        "\n",
-        "{{ widget }}",
-    );
+    let src = r#"---
+consts:
+  - widget = str := "fixed"
+---
+> {% tmpl widget %}
+---
+params: []
+---
+inner
+
+> {% /tmpl %}
+
+{{ widget }}"#;
     let err = Template::from_source(src)
         .expect_err("inline template 'widget' should conflict with const 'widget'");
     let msg = err.to_string();
@@ -334,23 +321,21 @@ fn inline_tmpl_shadows_const_rejected() {
 /// Inline template with the same name as an import stem → rejected.
 #[test]
 fn inline_tmpl_shadows_import_stem_rejected() {
-    let src = concat!(
-        "---\n",
-        "imports: [[shared](shared.tmpl.md)]\n",
-        "params: [x = str]\n",
-        "allow_unused: true\n",
-        "---\n",
-        "> {% tmpl shared %}\n",
-        "\n",
-        "---\n",
-        "params: []\n",
-        "---\n",
-        "inner\n",
-        "\n",
-        "> {% /tmpl %}\n",
-        "\n",
-        "{{ x }}",
-    );
+    let src = r#"---
+imports: [[shared](shared.tmpl.md)]
+params: [x = str]
+allow_unused: true
+---
+> {% tmpl shared %}
+
+---
+params: []
+---
+inner
+
+> {% /tmpl %}
+
+{{ x }}"#;
     let err = Template::from_source(src)
         .expect_err("inline template 'shared' should conflict with import stem 'shared'");
     let msg = err.to_string();
@@ -367,18 +352,16 @@ fn inline_tmpl_shadows_import_stem_rejected() {
 /// For-loop binding `item` shadows param named `item` → rejected.
 #[test]
 fn for_binding_shadows_param_rejected() {
-    let src = concat!(
-        "---\n",
-        "params:\n",
-        "  - items = list<name = str>\n",
-        "  - item = str\n",
-        "---\n",
-        "> {% for item in items %}{{ item.name }}\n",
-        "\n",
-        "> {% /for %}\n",
-        "\n",
-        "{{ item }}",
-    );
+    let src = r#"---
+params:
+  - items = list<name = str>
+  - item = str
+---
+> {% for item in items %}{{ item.name }}
+
+> {% /for %}
+
+{{ item }}"#;
     let err =
         Template::from_source(src).expect_err("for binding 'item' should shadow param 'item'");
     let msg = err.to_string();
@@ -391,17 +374,15 @@ fn for_binding_shadows_param_rejected() {
 /// For-loop binding shadows const → rejected.
 #[test]
 fn for_binding_shadows_const_rejected() {
-    let src = concat!(
-        "---\n",
-        "consts:\n",
-        "  - item = str := \"fixed\"\n",
-        "params:\n",
-        "  - items = list<name = str>\n",
-        "---\n",
-        "> {% for item in items %}{{ item.name }}\n",
-        "\n",
-        "> {% /for %}",
-    );
+    let src = r#"---
+consts:
+  - item = str := "fixed"
+params:
+  - items = list<name = str>
+---
+> {% for item in items %}{{ item.name }}
+
+> {% /for %}"#;
     let err =
         Template::from_source(src).expect_err("for binding 'item' should shadow const 'item'");
     let msg = err.to_string();
@@ -414,18 +395,16 @@ fn for_binding_shadows_const_rejected() {
 /// For-loop binding shadows import stem → rejected.
 #[test]
 fn for_binding_shadows_import_stem_rejected() {
-    let src = concat!(
-        "---\n",
-        "imports:\n",
-        "  - \"[lib](lib.tmpl.md)\"\n",
-        "params:\n",
-        "  - items = list<name = str>\n",
-        "allow_unused: true\n",
-        "---\n",
-        "> {% for lib in items %}{{ lib.name }}\n",
-        "\n",
-        "> {% /for %}",
-    );
+    let src = r#"---
+imports:
+  - "[lib](lib.tmpl.md)"
+params:
+  - items = list<name = str>
+allow_unused: true
+---
+> {% for lib in items %}{{ lib.name }}
+
+> {% /for %}"#;
     let err =
         Template::from_source(src).expect_err("for binding 'lib' should shadow import stem 'lib'");
     let msg = err.to_string();
@@ -438,21 +417,19 @@ fn for_binding_shadows_import_stem_rejected() {
 /// For-loop binding shadows inline template name → rejected.
 #[test]
 fn for_binding_shadows_inline_tmpl_rejected() {
-    let src = concat!(
-        "---\n",
-        "params: [items = list<name = str>]\n",
-        "allow_unused: true\n",
-        "---\n",
-        "> {% tmpl card %}\n",
-        "---\n",
-        "params: [title = str]\n",
-        "---\n",
-        "{{ title }}\n",
-        "\n",
-        "> {% /tmpl %}\n",
-        "> {% for card in items %}{{ card.name }}\n",
-        "> {% /for %}",
-    );
+    let src = r#"---
+params: [items = list<name = str>]
+allow_unused: true
+---
+> {% tmpl card %}
+---
+params: [title = str]
+---
+{{ title }}
+
+> {% /tmpl %}
+> {% for card in items %}{{ card.name }}
+> {% /for %}"#;
     let err = Template::from_source(src)
         .expect_err("for binding 'card' should shadow inline template 'card'");
     let msg = err.to_string();
@@ -471,24 +448,22 @@ fn for_binding_shadows_inline_tmpl_rejected() {
 /// A child `{% tmpl %}` can reference types defined in the parent's frontmatter.
 #[test]
 fn nested_tmpl_inherits_parent_type_aliases() {
-    let src = concat!(
-        "---\n",
-        "types:\n",
-        "  - Level = enum<High, Low>\n",
-        "params:\n",
-        "  - priority = Level\n",
-        "---\n",
-        "> {% tmpl child %}\n",
-        "---\n",
-        "params:\n",
-        "  - val = Level\n",
-        "---\n",
-        "{{ val }}\n",
-        "\n",
-        "> {% /tmpl %}\n",
-        "\n",
-        "{{ priority }}",
-    );
+    let src = r#"---
+types:
+  - Level = enum<High, Low>
+params:
+  - priority = Level
+---
+> {% tmpl child %}
+---
+params:
+  - val = Level
+---
+{{ val }}
+
+> {% /tmpl %}
+
+{{ priority }}"#;
     // Inline templates inherit the parent's types — this should compile.
     let tmpl =
         Template::from_source(src).expect("child template should inherit parent's type aliases");
@@ -506,22 +481,20 @@ fn nested_tmpl_inherits_parent_type_aliases() {
 /// Constants defined in the parent scope ARE accessible in the child template.
 #[test]
 fn nested_tmpl_inherits_parent_consts() {
-    let src = concat!(
-        "---\n",
-        "consts:\n",
-        "  - VERSION = str := \"1.0\"\n",
-        "params: []\n",
-        "---\n",
-        "> {% tmpl child %}\n",
-        "---\n",
-        "params: []\n",
-        "---\n",
-        "{{ VERSION }}\n",
-        "\n",
-        "> {% /tmpl %}\n",
-        "\n",
-        "{{ VERSION }}",
-    );
+    let src = r#"---
+consts:
+  - VERSION = str := "1.0"
+params: []
+---
+> {% tmpl child %}
+---
+params: []
+---
+{{ VERSION }}
+
+> {% /tmpl %}
+
+{{ VERSION }}"#;
     // The parent's VERSION should be visible to the child.
     let tmpl =
         Template::from_source(src).expect("child template should inherit parent's constants");
@@ -536,20 +509,19 @@ fn nested_tmpl_inherits_parent_consts() {
 /// Positive case: nested tmpl can define and use its own types.
 #[test]
 fn nested_tmpl_can_define_own_types() {
-    let src = concat!(
-        "---\n",
-        "params: [name = str]\n",
-        "---\n",
-        "> {% tmpl greeting %}\n",
-        "---\n",
-        "params: [who = str]\n",
-        "---\n",
-        "Hello {{ who }}!\n",
-        "\n",
-        "> {% /tmpl %}\n",
-        "\n",
-        "> {% include greeting with who = name %}\n",
-    );
+    let src = r#"---
+params: [name = str]
+---
+> {% tmpl greeting %}
+---
+params: [who = str]
+---
+Hello {{ who }}!
+
+> {% /tmpl %}
+
+> {% include greeting with who = name %}
+"#;
     let tmpl = Template::from_source(src).expect("nested tmpl with its own params should compile");
     let mut ctx = Context::new();
     ctx.set("name", "World");
@@ -564,22 +536,21 @@ fn nested_tmpl_can_define_own_types() {
 /// the template renders successfully using its own const values.
 #[test]
 fn nested_tmpl_own_consts_in_render_scope() {
-    let src = concat!(
-        "---\n",
-        "params: []\n",
-        "---\n",
-        "> {% tmpl versioned %}\n",
-        "---\n",
-        "consts:\n",
-        "  - V = str := \"2.0\"\n",
-        "params: []\n",
-        "---\n",
-        "v{{ V }}\n",
-        "\n",
-        "> {% /tmpl %}\n",
-        "\n",
-        "> {% include versioned %}\n",
-    );
+    let src = r#"---
+params: []
+---
+> {% tmpl versioned %}
+---
+consts:
+  - V = str := "2.0"
+params: []
+---
+v{{ V }}
+
+> {% /tmpl %}
+
+> {% include versioned %}
+"#;
     let tmpl = Template::from_source(src).expect("inline tmpl with own consts should compile");
     let ctx = Context::new();
     // Render succeeds: inline template's own consts are now properly
@@ -598,14 +569,12 @@ fn nested_tmpl_own_consts_in_render_scope() {
 /// Two constants with the same name → rejected.
 #[test]
 fn duplicate_const_names_rejected() {
-    let src = concat!(
-        "---\n",
-        "consts:\n",
-        "  - X = int := 1\n",
-        "  - X = int := 2\n",
-        "---\n",
-        "{{ X }}",
-    );
+    let src = r#"---
+consts:
+  - X = int := 1
+  - X = int := 2
+---
+{{ X }}"#;
     let err = Template::from_source(src).expect_err("duplicate constant name should be rejected");
     let msg = err.to_string();
     assert!(
@@ -617,14 +586,12 @@ fn duplicate_const_names_rejected() {
 /// Duplicate const names with different types → also rejected.
 #[test]
 fn duplicate_const_names_different_types_rejected() {
-    let src = concat!(
-        "---\n",
-        "consts:\n",
-        "  - LABEL = str := \"hello\"\n",
-        "  - LABEL = int := 42\n",
-        "---\n",
-        "{{ LABEL }}",
-    );
+    let src = r#"---
+consts:
+  - LABEL = str := "hello"
+  - LABEL = int := 42
+---
+{{ LABEL }}"#;
     let err = Template::from_source(src)
         .expect_err("duplicate constant with different types should be rejected");
     let msg = err.to_string();
@@ -637,15 +604,13 @@ fn duplicate_const_names_different_types_rejected() {
 /// Three consts, two share a name → rejected.
 #[test]
 fn duplicate_const_among_multiple_rejected() {
-    let src = concat!(
-        "---\n",
-        "consts:\n",
-        "  - A = int := 1\n",
-        "  - B = int := 2\n",
-        "  - A = int := 3\n",
-        "---\n",
-        "{{ A }} {{ B }}",
-    );
+    let src = r#"---
+consts:
+  - A = int := 1
+  - B = int := 2
+  - A = int := 3
+---
+{{ A }} {{ B }}"#;
     let err = Template::from_source(src)
         .expect_err("duplicate 'A' among multiple consts should be rejected");
     let msg = err.to_string();
@@ -662,16 +627,14 @@ fn duplicate_const_among_multiple_rejected() {
 /// Const with `PascalCase` name matching a type alias (different type) → rejected.
 #[test]
 fn const_pascal_conflicts_with_type_alias_rejected() {
-    let src = concat!(
-        "---\n",
-        "types:\n",
-        "  - Stage = enum<Design, Build>\n",
-        "consts:\n",
-        "  - Stage = str := \"override\"\n",
-        "params: []\n",
-        "---\n",
-        "{{ Stage }}",
-    );
+    let src = r#"---
+types:
+  - Stage = enum<Design, Build>
+consts:
+  - Stage = str := "override"
+params: []
+---
+{{ Stage }}"#;
     let err = Template::from_source(src)
         .expect_err("const 'Stage' conflicting with type alias 'Stage' should be rejected");
     let msg = err.to_string();
@@ -684,14 +647,12 @@ fn const_pascal_conflicts_with_type_alias_rejected() {
 /// Const named `my_phase` where `MyPhase` doesn't exist as type → OK.
 #[test]
 fn const_pascal_no_matching_type_alias_ok() {
-    let src = concat!(
-        "---\n",
-        "consts:\n",
-        "  - my_val = int := 42\n",
-        "params: []\n",
-        "---\n",
-        "{{ my_val }}",
-    );
+    let src = r#"---
+consts:
+  - my_val = int := 42
+params: []
+---
+{{ my_val }}"#;
     let tmpl =
         Template::from_source(src).expect("const with no matching type alias should compile fine");
     let ctx = Context::new();
@@ -702,16 +663,14 @@ fn const_pascal_no_matching_type_alias_ok() {
 /// (R1 exception applies to consts too).
 #[test]
 fn const_pascal_matches_type_alias_same_type_allowed() {
-    let src = concat!(
-        "---\n",
-        "types:\n",
-        "  - DefaultLevel = enum<High, Low>\n",
-        "consts:\n",
-        "  - default_level = DefaultLevel := High\n",
-        "params: []\n",
-        "---\n",
-        "{{ kind(default_level) }}",
-    );
+    let src = r#"---
+types:
+  - DefaultLevel = enum<High, Low>
+consts:
+  - default_level = DefaultLevel := High
+params: []
+---
+{{ kind(default_level) }}"#;
     let tmpl = Template::from_source(src)
         .expect("const whose PascalCase matches alias with same type should be allowed");
     let ctx = Context::new();
@@ -721,17 +680,15 @@ fn const_pascal_matches_type_alias_same_type_allowed() {
 /// Multiple type aliases and consts — only the conflicting pair is rejected.
 #[test]
 fn multiple_types_and_consts_only_conflict_rejected() {
-    let src = concat!(
-        "---\n",
-        "types:\n",
-        "  - Color = enum<Red, Blue>\n",
-        "  - Size = enum<Big, Small>\n",
-        "consts:\n",
-        "  - color = str := \"override\"\n",
-        "params: []\n",
-        "---\n",
-        "{{ color }}",
-    );
+    let src = r#"---
+types:
+  - Color = enum<Red, Blue>
+  - Size = enum<Big, Small>
+consts:
+  - color = str := "override"
+params: []
+---
+{{ color }}"#;
     let err = Template::from_source(src)
         .expect_err("const 'color' (PascalCase 'Color') with different type should conflict");
     let msg = err.to_string();
