@@ -308,6 +308,29 @@ pub unsafe extern "C" fn pt_context_set_bool(
     ptr::null_mut()
 }
 
+/// Set a None (absent/null) value in the context.
+///
+/// Use this for `option<T>` parameters to indicate an absent value.
+///
+/// # Safety
+///
+/// `ctx` must be a valid context handle. `key` must be a valid C string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pt_context_set_none(
+    ctx: *mut PtContext,
+    key: *const c_char,
+) -> *mut c_char {
+    let Some(ctx) = (unsafe { ctx.as_mut() }) else {
+        return err_to_cstring("null context");
+    };
+    let key = match unsafe { cstr_to_str(key) } {
+        Ok(s) => s,
+        Err(e) => return err_to_cstring(&e),
+    };
+    ctx.inner.set(key, Value::None);
+    ptr::null_mut()
+}
+
 /// Set a JSON value in the context (for complex types: lists, dicts, enums).
 ///
 /// The JSON string is deserialized into a template `Value` using serde.
@@ -574,12 +597,9 @@ fn parse_json_bool(s: &str) -> Result<(Value, &str), String> {
 
 fn parse_json_null(s: &str) -> Result<(Value, &str), String> {
     if let Some(rest) = s.strip_prefix("null") {
-        // Map JSON null to the template engine's `None` variant, used by
-        // `option<T>` types (desugared to `enum<Some(val=T), None>`).
-        Ok((
-            Value::Str(prompt_templates::consts::OPTION_NONE.to_string()),
-            rest,
-        ))
+        // Map JSON null to the template engine's `Value::None`, used by
+        // `option<T>` types.
+        Ok((Value::None, rest))
     } else {
         Err(format!("unexpected token: {}", &s[..s.len().min(10)]))
     }
@@ -640,7 +660,7 @@ pub unsafe extern "C" fn pt_template_render(
         unsafe { *out_err = err_to_cstring("null context") };
         return ptr::null_mut();
     };
-    match tmpl.inner.render(&ctx.inner) {
+    match tmpl.inner.render_ctx(&ctx.inner) {
         Ok(rendered) => {
             unsafe { *out_err = ptr::null_mut() };
             CString::new(rendered)
@@ -678,10 +698,7 @@ pub unsafe extern "C" fn pt_template_render_allowing_extra(
         unsafe { *out_err = err_to_cstring("null context") };
         return ptr::null_mut();
     };
-    match tmpl.inner.render_with(
-        &ctx.inner,
-        prompt_templates::RenderOptions::default().allow_extra(true),
-    ) {
+    match tmpl.inner.render_ctx_allowing_extra(&ctx.inner) {
         Ok(rendered) => {
             unsafe { *out_err = ptr::null_mut() };
             CString::new(rendered)
@@ -755,10 +772,11 @@ pub unsafe extern "C" fn pt_template_render_json(
     }
 
     // Render with the requested strictness.
-    let result = tmpl.inner.render_with(
-        &ctx,
-        prompt_templates::RenderOptions::default().allow_extra(allow_extra),
-    );
+    let result = if allow_extra {
+        tmpl.inner.render_ctx_allowing_extra(&ctx)
+    } else {
+        tmpl.inner.render_ctx(&ctx)
+    };
     match result {
         Ok(rendered) => {
             unsafe { *out_err = ptr::null_mut() };
@@ -872,10 +890,11 @@ pub unsafe extern "C" fn pt_template_render_flexbuffers(
         }
     };
 
-    let result = tmpl.inner.render_with(
-        &ctx,
-        prompt_templates::RenderOptions::default().allow_extra(allow_extra),
-    );
+    let result = if allow_extra {
+        tmpl.inner.render_ctx_allowing_extra(&ctx)
+    } else {
+        tmpl.inner.render_ctx(&ctx)
+    };
     match result {
         Ok(rendered) => {
             unsafe { *out_err = ptr::null_mut() };
@@ -999,6 +1018,7 @@ fn value_to_json(val: &Value) -> String {
             format!("{{{}}}", pairs.join(", "))
         }
         Value::Tmpl(_) => "\"<template>\"".to_string(),
+        Value::None => "null".to_string(),
     }
 }
 
@@ -1154,8 +1174,16 @@ pub unsafe extern "C" fn pt_template_from_source_with_frontmatter(
             let handle = Box::new(PtTemplate { inner: tmpl });
             unsafe { *out_tmpl = Box::into_raw(handle) };
 
-            let name_escaped = fm.name.replace('\\', "\\\\").replace('"', "\\\"");
-            let desc_escaped = fm.description.replace('\\', "\\\\").replace('"', "\\\"");
+            let name_escaped = fm
+                .name
+                .unwrap_or_default()
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"");
+            let desc_escaped = fm
+                .description
+                .unwrap_or_default()
+                .replace('\\', "\\\\")
+                .replace('"', "\\\"");
             let params: Vec<String> = fm.params.iter().map(|p| format!("\"{p}\"")).collect();
 
             let json = format!(
@@ -1289,14 +1317,19 @@ pub unsafe extern "C" fn pt_template_validate_declarations(
 /// `tmpl` must be a valid template handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pt_template_imported_consts_json(tmpl: *const PtTemplate) -> *mut c_char {
-    let Some(_tmpl) = (unsafe { tmpl.as_ref() }) else {
+    let Some(tmpl) = (unsafe { tmpl.as_ref() }) else {
         return CString::new("{}").unwrap().into_raw();
     };
-    // imported_consts lives on the Frontmatter, which Template doesn't
-    // expose directly yet. For templates loaded via from_source,
-    // imported_consts is always empty anyway. When the core API adds
-    // an imported_consts() accessor, this stub can be completed.
-    CString::new("{}").unwrap().into_raw()
+    let imported = tmpl.inner.imported_consts();
+    if imported.is_empty() {
+        return CString::new("{}").unwrap().into_raw();
+    }
+    let pairs: Vec<String> = imported
+        .iter()
+        .map(|(k, v)| format!("\"{k}\": {}", value_to_json(v)))
+        .collect();
+    let json = format!("{{{}}}", pairs.join(", "));
+    CString::new(json).unwrap().into_raw()
 }
 
 /// Parse a JSON string of `[["name", "type"], ...]` pairs.
@@ -1430,7 +1463,15 @@ mod tests {
 
     #[test]
     fn test_from_source_and_render() {
-        let source = CString::new("---\nparams:\n  - name = str\n---\nHello {{ name }}!").unwrap();
+        let source = CString::new(
+            "\
+---
+params:
+  - name = str
+---
+Hello {{ name }}!",
+        )
+        .unwrap();
         let mut tmpl: *mut PtTemplate = ptr::null_mut();
         let err = unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
         assert!(err.is_null(), "expected no error");
@@ -1468,7 +1509,14 @@ mod tests {
 
     #[test]
     fn test_context_set_int() {
-        let source = CString::new("---\nparams: [count = int]\n---\nCount: {{ count }}").unwrap();
+        let source = CString::new(
+            "\
+---
+params: [count = int]
+---
+Count: {{ count }}",
+        )
+        .unwrap();
         let mut tmpl: *mut PtTemplate = ptr::null_mut();
         let err = unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
         assert!(err.is_null());
@@ -1494,7 +1542,19 @@ mod tests {
     #[test]
     fn test_context_set_bool() {
         let source = CString::new(
-            "---\nparams: [flag = bool]\n---\n> {% if flag %}\n\nyes\n\n> {% else %}\n\nno\n\n> {% /if %}",
+            "\
+---
+params: [flag = bool]
+---
+> {% if flag %}
+
+yes
+
+> {% else %}
+
+no
+
+> {% /if %}",
         )
         .unwrap();
         let mut tmpl: *mut PtTemplate = ptr::null_mut();
@@ -1522,7 +1582,16 @@ mod tests {
     #[test]
     fn test_context_set_json_list() {
         let source = CString::new(
-            "---\nparams:\n  - items = list<label = str>\n---\n> {% for item in items %}\n\n{{ item.label }}\n\n> {% /for %}",
+            "\
+---
+params:
+  - items = list<label = str>
+---
+> {% for item in items %}
+
+{{ item.label }}
+
+> {% /for %}",
         )
         .unwrap();
         let mut tmpl: *mut PtTemplate = ptr::null_mut();
@@ -1550,7 +1619,14 @@ mod tests {
 
     #[test]
     fn test_source_hash() {
-        let source = CString::new("---\nparams: [x = str]\n---\n{{ x }}").unwrap();
+        let source = CString::new(
+            "\
+---
+params: [x = str]
+---
+{{ x }}",
+        )
+        .unwrap();
         let mut t1: *mut PtTemplate = ptr::null_mut();
         let mut t2: *mut PtTemplate = ptr::null_mut();
         unsafe {
@@ -1568,9 +1644,14 @@ mod tests {
 
     #[test]
     fn test_declarations() {
-        let source =
-            CString::new("---\nparams: [name = str, count = int]\n---\n{{ name }} {{ count }}")
-                .unwrap();
+        let source = CString::new(
+            "\
+---
+params: [name = str, count = int]
+---
+{{ name }} {{ count }}",
+        )
+        .unwrap();
         let mut tmpl: *mut PtTemplate = ptr::null_mut();
         unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
         let declarations_raw = unsafe { pt_template_declarations(tmpl) };
@@ -1589,9 +1670,14 @@ mod tests {
 
     #[test]
     fn test_render_missing_param_error() {
-        let source =
-            CString::new("---\nparams: [name = str, age = int]\n---\n{{ name }} {{ age }}")
-                .unwrap();
+        let source = CString::new(
+            "\
+---
+params: [name = str, age = int]
+---
+{{ name }} {{ age }}",
+        )
+        .unwrap();
         let mut tmpl: *mut PtTemplate = ptr::null_mut();
         unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
 
@@ -1619,7 +1705,14 @@ mod tests {
 
     #[test]
     fn test_render_allowing_extra() {
-        let source = CString::new("---\nparams: [name = str]\n---\nHello {{ name }}!").unwrap();
+        let source = CString::new(
+            "\
+---
+params: [name = str]
+---
+Hello {{ name }}!",
+        )
+        .unwrap();
         let mut tmpl: *mut PtTemplate = ptr::null_mut();
         unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
 
@@ -1659,7 +1752,15 @@ mod tests {
     fn test_cache_lifecycle() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.tmpl.md");
-        std::fs::write(&path, "---\nparams: [x = str]\n---\n{{ x }}").unwrap();
+        std::fs::write(
+            &path,
+            "\
+---
+params: [x = str]
+---
+{{ x }}",
+        )
+        .unwrap();
 
         let cache = pt_cache_new();
         let path_c = CString::new(path.to_str().unwrap()).unwrap();
@@ -1699,7 +1800,14 @@ mod tests {
 
     #[test]
     fn test_context_set_float_render() {
-        let source = CString::new("---\nparams: [score = float]\n---\n{{ score }}").unwrap();
+        let source = CString::new(
+            "\
+---
+params: [score = float]
+---
+{{ score }}",
+        )
+        .unwrap();
         let mut tmpl: *mut PtTemplate = ptr::null_mut();
         let err = unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
         assert!(err.is_null());
@@ -1724,7 +1832,14 @@ mod tests {
 
     #[test]
     fn test_template_body() {
-        let source = CString::new("---\nparams: [x = str]\n---\nBody: {{ x }}").unwrap();
+        let source = CString::new(
+            "\
+---
+params: [x = str]
+---
+Body: {{ x }}",
+        )
+        .unwrap();
         let mut tmpl: *mut PtTemplate = ptr::null_mut();
         unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
         let body = unsafe { pt_template_body(tmpl) };
@@ -1740,8 +1855,15 @@ mod tests {
     fn test_context_set_tmpl_render() {
         // Template that takes a tmpl<> param: card = tmpl<title = str>
         // and iterates over items, including card for each
-        let card_source =
-            CString::new("---\nname: card\nparams: [title = str]\n---\n* {{ title }}").unwrap();
+        let card_source = CString::new(
+            "\
+---
+name: card
+params: [title = str]
+---
+* {{ title }}",
+        )
+        .unwrap();
         let mut card_tmpl: *mut PtTemplate = ptr::null_mut();
         unsafe {
             pt_template_from_source_allowing_unused(card_source.as_ptr(), &raw mut card_tmpl)
@@ -1749,8 +1871,17 @@ mod tests {
         assert!(!card_tmpl.is_null());
 
         let main_source = CString::new(
-            "---\nparams:\n  - card = tmpl<title = str>\n  - items = list<name = str>\n---\n> {% for item in items %}\n> {% include card with title=item.name %}\n> {% /for %}"
-        ).unwrap();
+            "\
+---
+params:
+  - card = tmpl<title = str>
+  - items = list<name = str>
+---
+> {% for item in items %}
+> {% include card with title=item.name %}
+> {% /for %}",
+        )
+        .unwrap();
         let mut main_tmpl: *mut PtTemplate = ptr::null_mut();
         let err = unsafe { pt_template_from_source(main_source.as_ptr(), &raw mut main_tmpl) };
         assert!(err.is_null());
@@ -1804,7 +1935,14 @@ mod tests {
     #[test]
     fn test_defaults_json() {
         let source = CString::new(
-            "---\nparams:\n  - name = str := \"World\"\n  - count = int := 5\n  - flag = bool\n---\n{{ name }} {{ count }} {{ flag }}",
+            "\
+---
+params:
+  - name = str := \"World\"
+  - count = int := 5
+  - flag = bool
+---
+{{ name }} {{ count }} {{ flag }}",
         )
         .unwrap();
         let mut tmpl: *mut PtTemplate = ptr::null_mut();
@@ -1834,7 +1972,14 @@ mod tests {
 
     #[test]
     fn test_defaults_json_empty() {
-        let source = CString::new("---\nparams: [x = str]\n---\n{{ x }}").unwrap();
+        let source = CString::new(
+            "\
+---
+params: [x = str]
+---
+{{ x }}",
+        )
+        .unwrap();
         let mut tmpl: *mut PtTemplate = ptr::null_mut();
         unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
 
@@ -1851,7 +1996,14 @@ mod tests {
     #[test]
     fn test_consts_json() {
         let source = CString::new(
-            "---\nconsts:\n  - MAX = int := 100\n  - GREETING = str := \"hello\"\nparams: []\n---\n{{ MAX }} {{ GREETING }}",
+            "\
+---
+consts:
+  - MAX = int := 100
+  - GREETING = str := \"hello\"
+params: []
+---
+{{ MAX }} {{ GREETING }}",
         )
         .unwrap();
         let mut tmpl: *mut PtTemplate = ptr::null_mut();
@@ -1877,7 +2029,14 @@ mod tests {
 
     #[test]
     fn test_consts_json_empty() {
-        let source = CString::new("---\nparams: [x = str]\n---\n{{ x }}").unwrap();
+        let source = CString::new(
+            "\
+---
+params: [x = str]
+---
+{{ x }}",
+        )
+        .unwrap();
         let mut tmpl: *mut PtTemplate = ptr::null_mut();
         unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
 
@@ -1894,7 +2053,13 @@ mod tests {
     #[test]
     fn test_defaults_context() {
         let source = CString::new(
-            "---\nparams:\n  - name = str := \"World\"\n  - greeting = str\n---\n{{ greeting }} {{ name }}",
+            "\
+---
+params:
+  - name = str := \"World\"
+  - greeting = str
+---
+{{ greeting }} {{ name }}",
         )
         .unwrap();
         let mut tmpl: *mut PtTemplate = ptr::null_mut();
@@ -1925,8 +2090,15 @@ mod tests {
 
     #[test]
     fn test_defaults_context_override() {
-        let source =
-            CString::new("---\nparams:\n  - name = str := \"World\"\n---\n{{ name }}").unwrap();
+        let source = CString::new(
+            "\
+---
+params:
+  - name = str := \"World\"
+---
+{{ name }}",
+        )
+        .unwrap();
         let mut tmpl: *mut PtTemplate = ptr::null_mut();
         unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
 
@@ -1953,12 +2125,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("header.tmpl.md"),
-            "---\nname: header\nparams: [title = str]\n---\n# {{ title }}",
+            "\
+---
+name: header
+params: [title = str]
+---
+# {{ title }}",
         )
         .unwrap();
 
         let source = CString::new(
-            "---\nparams: [title = str]\n---\n> {% include [header](header.tmpl.md) with title=title %}\n\nBody",
+            "\
+---
+params: [title = str]
+---
+> {% include [header](header.tmpl.md) with title=title %}
+
+Body",
         )
         .unwrap();
         let base_dir = CString::new(dir.path().to_str().unwrap()).unwrap();
@@ -1995,7 +2178,13 @@ mod tests {
     #[test]
     fn test_from_source_with_frontmatter() {
         let source = CString::new(
-            "---\nname: greeting\ndescription: A greeting template\nparams: [name = str]\n---\nHello {{ name }}!",
+            "\
+---
+name: greeting
+description: A greeting template
+params: [name = str]
+---
+Hello {{ name }}!",
         )
         .unwrap();
         let mut tmpl: *mut PtTemplate = ptr::null_mut();
@@ -2047,9 +2236,16 @@ mod tests {
 
     #[test]
     fn test_from_source_with_frontmatter_no_params() {
-        let source =
-            CString::new("---\nname: static\ndescription: No params\nparams: []\n---\nHello!")
-                .unwrap();
+        let source = CString::new(
+            "\
+---
+name: static
+description: No params
+params: []
+---
+Hello!",
+        )
+        .unwrap();
         let mut tmpl: *mut PtTemplate = ptr::null_mut();
         let mut fm: *mut c_char = ptr::null_mut();
         let err = unsafe {
@@ -2089,9 +2285,14 @@ mod tests {
 
     #[test]
     fn test_validate_declarations_match() {
-        let source =
-            CString::new("---\nparams: [name = str, count = int]\n---\n{{ name }} {{ count }}")
-                .unwrap();
+        let source = CString::new(
+            "\
+---
+params: [name = str, count = int]
+---
+{{ name }} {{ count }}",
+        )
+        .unwrap();
         let mut tmpl: *mut PtTemplate = ptr::null_mut();
         unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
         assert!(!tmpl.is_null());
@@ -2106,7 +2307,14 @@ mod tests {
 
     #[test]
     fn test_validate_declarations_mismatch_retyped() {
-        let source = CString::new("---\nparams: [name = str]\n---\n{{ name }}").unwrap();
+        let source = CString::new(
+            "\
+---
+params: [name = str]
+---
+{{ name }}",
+        )
+        .unwrap();
         let mut tmpl: *mut PtTemplate = ptr::null_mut();
         unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
 
@@ -2128,9 +2336,14 @@ mod tests {
 
     #[test]
     fn test_validate_declarations_mismatch_added() {
-        let source =
-            CString::new("---\nparams: [name = str, count = int]\n---\n{{ name }} {{ count }}")
-                .unwrap();
+        let source = CString::new(
+            "\
+---
+params: [name = str, count = int]
+---
+{{ name }} {{ count }}",
+        )
+        .unwrap();
         let mut tmpl: *mut PtTemplate = ptr::null_mut();
         unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
 
@@ -2152,9 +2365,14 @@ mod tests {
 
     #[test]
     fn test_render_json_single_shot() {
-        let source =
-            CString::new("---\nparams: [name = str, count = int]\n---\n{{ name }}: {{ count }}")
-                .unwrap();
+        let source = CString::new(
+            "\
+---
+params: [name = str, count = int]
+---
+{{ name }}: {{ count }}",
+        )
+        .unwrap();
         let mut tmpl: *mut PtTemplate = ptr::null_mut();
         let err = unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
         assert!(err.is_null());
@@ -2176,7 +2394,14 @@ mod tests {
 
     #[test]
     fn test_render_json_allow_extra() {
-        let source = CString::new("---\nparams: [name = str]\n---\nHello {{ name }}!").unwrap();
+        let source = CString::new(
+            "\
+---
+params: [name = str]
+---
+Hello {{ name }}!",
+        )
+        .unwrap();
         let mut tmpl: *mut PtTemplate = ptr::null_mut();
         unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
 
@@ -2209,7 +2434,14 @@ mod tests {
 
     #[test]
     fn test_render_json_non_object_error() {
-        let source = CString::new("---\nparams: [x = str]\n---\n{{ x }}").unwrap();
+        let source = CString::new(
+            "\
+---
+params: [x = str]
+---
+{{ x }}",
+        )
+        .unwrap();
         let mut tmpl: *mut PtTemplate = ptr::null_mut();
         unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
 
@@ -2240,9 +2472,14 @@ mod tests {
             count: i64,
         }
 
-        let source =
-            CString::new("---\nparams: [name = str, count = int]\n---\n{{ name }}: {{ count }}")
-                .unwrap();
+        let source = CString::new(
+            "\
+---
+params: [name = str, count = int]
+---
+{{ name }}: {{ count }}",
+        )
+        .unwrap();
         let mut tmpl: *mut PtTemplate = ptr::null_mut();
         let err = unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
         assert!(err.is_null());
@@ -2279,10 +2516,15 @@ mod tests {
     #[test]
     fn test_option_json_null_renders_none_via_match() {
         let source = CString::new(concat!(
-            "---\nparams:\n  - label = option<str>\n---\n",
+            "\
+---
+params:
+  - label = option<str>
+---
+",
             "> {% match label %}\n",
             "> {% case Some %}\n\n",
-            "got:{{ label.val }}\n\n",
+            "got:{{ label }}\n\n",
             "> {% case None %}\n\n",
             "empty\n\n",
             "> {% /match %}"
@@ -2309,10 +2551,15 @@ mod tests {
     #[test]
     fn test_option_json_some_renders_value_via_match() {
         let source = CString::new(concat!(
-            "---\nparams:\n  - label = option<str>\n---\n",
+            "\
+---
+params:
+  - label = option<str>
+---
+",
             "> {% match label %}\n",
             "> {% case Some %}\n\n",
-            "got:{{ label.val }}\n\n",
+            "got:{{ label }}\n\n",
             "> {% case None %}\n\n",
             "empty\n\n",
             "> {% /match %}"
@@ -2322,7 +2569,7 @@ mod tests {
         let err = unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
         assert!(err.is_null());
 
-        let json = CString::new(r#"{"label":{"__kind__":"Some","val":"hello"}}"#).unwrap();
+        let json = CString::new(r#"{"label":"hello"}"#).unwrap();
         let mut render_err: *mut c_char = ptr::null_mut();
         let result =
             unsafe { pt_template_render_json(tmpl, json.as_ptr(), false, &raw mut render_err) };
@@ -2342,9 +2589,14 @@ mod tests {
     #[test]
     fn test_option_json_null_via_has() {
         let source = CString::new(concat!(
-            "---\nparams:\n  - label = option<str>\n---\n",
+            "\
+---
+params:
+  - label = option<str>
+---
+",
             "> {% if has(label) %}\n\n",
-            "got:{{ label.val }}\n\n",
+            "got:{{ label }}\n\n",
             "> {% else %}\n\n",
             "empty\n\n",
             "> {% /if %}"
@@ -2371,9 +2623,14 @@ mod tests {
     #[test]
     fn test_option_json_some_via_has() {
         let source = CString::new(concat!(
-            "---\nparams:\n  - label = option<str>\n---\n",
+            "\
+---
+params:
+  - label = option<str>
+---
+",
             "> {% if has(label) %}\n\n",
-            "got:{{ label.val }}\n\n",
+            "got:{{ label }}\n\n",
             "> {% else %}\n\n",
             "empty\n\n",
             "> {% /if %}"
@@ -2383,7 +2640,7 @@ mod tests {
         let err = unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
         assert!(err.is_null());
 
-        let json = CString::new(r#"{"label":{"__kind__":"Some","val":"world"}}"#).unwrap();
+        let json = CString::new(r#"{"label":"world"}"#).unwrap();
         let mut render_err: *mut c_char = ptr::null_mut();
         let result =
             unsafe { pt_template_render_json(tmpl, json.as_ptr(), false, &raw mut render_err) };
@@ -2396,6 +2653,90 @@ mod tests {
 
         unsafe {
             pt_free_string(result);
+            pt_template_free(tmpl);
+        }
+    }
+    #[test]
+    fn test_option_set_none_direct() {
+        let source = CString::new(concat!(
+            "\
+---
+params:
+  - label = option<str>
+---
+",
+            "> {% if has(label) %}\n\n",
+            "got:{{ label }}\n\n",
+            "> {% else %}\n\n",
+            "empty\n\n",
+            "> {% /if %}"
+        ))
+        .unwrap();
+        let mut tmpl: *mut PtTemplate = ptr::null_mut();
+        let err = unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
+        assert!(err.is_null());
+
+        // Use the direct pt_context_set_none API
+        let ctx = pt_context_new();
+        let key = CString::new("label").unwrap();
+        let err = unsafe { pt_context_set_none(ctx, key.as_ptr()) };
+        assert!(err.is_null(), "pt_context_set_none should succeed");
+
+        let mut render_err: *mut c_char = ptr::null_mut();
+        let result = unsafe { pt_template_render(tmpl, ctx, &raw mut render_err) };
+        assert!(render_err.is_null(), "expected no render error");
+        let result_str = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
+        assert_eq!(result_str.trim(), "empty");
+
+        unsafe {
+            pt_free_string(result);
+            pt_context_free(ctx);
+            pt_template_free(tmpl);
+        }
+    }
+
+    #[test]
+    fn test_option_set_none_then_some() {
+        // Verify setting a value after None properly overrides
+        let source = CString::new(concat!(
+            "\
+---
+params:
+  - label = option<str>
+---
+",
+            "> {% if has(label) %}\n\n",
+            "got:{{ label }}\n\n",
+            "> {% else %}\n\n",
+            "empty\n\n",
+            "> {% /if %}"
+        ))
+        .unwrap();
+        let mut tmpl: *mut PtTemplate = ptr::null_mut();
+        let err = unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
+        assert!(err.is_null());
+
+        // Set to None first, then override with a value
+        let ctx = pt_context_new();
+        let key = CString::new("label").unwrap();
+        let err = unsafe { pt_context_set_none(ctx, key.as_ptr()) };
+        assert!(err.is_null(), "pt_context_set_none should succeed");
+        let val = CString::new("override").unwrap();
+        let err = unsafe { pt_context_set_str(ctx, key.as_ptr(), val.as_ptr()) };
+        assert!(err.is_null(), "pt_context_set_str should succeed");
+
+        let mut render_err: *mut c_char = ptr::null_mut();
+        let result = unsafe { pt_template_render(tmpl, ctx, &raw mut render_err) };
+        assert!(render_err.is_null(), "expected no render error");
+        let result_str = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
+        assert!(
+            result_str.contains("got:override"),
+            "expected 'got:override', got '{result_str}'"
+        );
+
+        unsafe {
+            pt_free_string(result);
+            pt_context_free(ctx);
             pt_template_free(tmpl);
         }
     }

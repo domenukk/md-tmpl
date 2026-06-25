@@ -11,7 +11,15 @@
  */
 
 import { TemplateSyntaxError } from "./errors.js";
-import { type Value, ENUM_TAG_KEY, str, int, float, bool } from "./value.js";
+import {
+  type Value,
+  ENUM_TAG_KEY,
+  NONE,
+  str,
+  int,
+  float,
+  bool,
+} from "./value.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -34,6 +42,7 @@ export type VarType =
   | { kind: "scalar_list"; elementType: VarType }
   | { kind: "struct"; fields: readonly VarDecl[] }
   | { kind: "enum"; variants: readonly VariantDecl[]; isOption?: boolean }
+  | { kind: "option"; innerType: VarType }
   | { kind: "alias"; name: string }
   | { kind: "untyped_list" };
 
@@ -54,6 +63,15 @@ export interface Frontmatter {
   readonly imports: readonly ImportDecl[];
   /** Resolved constants from imports, keyed by `stem.NAME`. */
   readonly importedConsts: Readonly<Record<string, unknown>>;
+  /**
+   * Param defaults that couldn't be resolved during frontmatter parsing
+   * (e.g., references to imported consts like `stem.NAME`).
+   * Maps param name → raw default text.
+   */
+  readonly unresolvedDefaults: ReadonlyMap<
+    string,
+    { text: string; varType: VarType }
+  >;
 }
 
 /** An import declaration. */
@@ -95,6 +113,8 @@ export function varTypeToString(vt: VarType): string {
       });
       return `enum<${parts.join(", ")}>`;
     }
+    case "option":
+      return `option<${varTypeToString(vt.innerType)}>`;
     case "alias":
       return vt.name;
     case "untyped_list":
@@ -165,10 +185,15 @@ function parseFrontmatterYaml(lines: string[]): Frontmatter {
   let name: string | undefined;
   let description: string | undefined;
   let allowUnused = false;
-  const params: VarDecl[] = [];
   const typeAliases = new Map<string, VarType>();
-  const consts: VarDecl[] = [];
   const imports: ImportDecl[] = [];
+
+  // Two-pass approach: first collect raw items per block, then resolve.
+  // This allows consts to be parsed before params, enabling const names
+  // as param defaults.
+  const rawParams: string[] = [];
+  const rawConsts: string[] = [];
+  let inlineParamsRaw: string[] | undefined;
 
   let currentBlock: "none" | "params" | "types" | "consts" | "imports" = "none";
 
@@ -205,10 +230,7 @@ function parseFrontmatterYaml(lines: string[]): Frontmatter {
       // Inline params: [x = str, y = int]
       const rest = trimmed.slice(7).trim();
       if (rest.startsWith("[")) {
-        const inlineParams = parseInlineList(rest);
-        for (const p of inlineParams) {
-          params.push(parseParamDecl(p));
-        }
+        inlineParamsRaw = parseInlineList(rest);
         currentBlock = "none";
       }
       continue;
@@ -231,13 +253,20 @@ function parseFrontmatterYaml(lines: string[]): Frontmatter {
       const item = trimmed.slice(2).trim();
       switch (currentBlock) {
         case "params":
-          params.push(parseParamDecl(item));
+          rawParams.push(item);
           break;
-        case "types":
-          typeAliases.set(...parseTypeAlias(item));
+        case "types": {
+          const [aliasName, aliasType] = parseTypeAlias(item);
+          if (typeAliases.has(aliasName)) {
+            throw new TemplateSyntaxError(
+              `duplicate type alias '${aliasName}'`,
+            );
+          }
+          typeAliases.set(aliasName, aliasType);
           break;
+        }
         case "consts":
-          consts.push(parseConstDecl(item));
+          rawConsts.push(item);
           break;
         case "imports":
           imports.push(parseImportDecl(item));
@@ -245,6 +274,37 @@ function parseFrontmatterYaml(lines: string[]): Frontmatter {
         default:
           break;
       }
+    }
+  }
+
+  // Phase 1: Parse consts (they only use literal defaults)
+  const consts: VarDecl[] = [];
+  for (const raw of rawConsts) {
+    consts.push(parseConstDecl(raw));
+  }
+
+  // Build resolved const values map for param default resolution
+  const constValues = new Map<string, Value>();
+  for (const decl of consts) {
+    if (decl.defaultValue !== undefined) {
+      constValues.set(decl.name, decl.defaultValue);
+    }
+  }
+
+  // Phase 2: Parse params with const values available for defaults.
+  // For imported consts (dotted names like stem.NAME), the default is
+  // deferred — stored in unresolvedDefaults for later resolution.
+  const params: VarDecl[] = [];
+  const unresolvedDefaults = new Map<
+    string,
+    { text: string; varType: VarType }
+  >();
+  const allRawParams = inlineParamsRaw ?? rawParams;
+  for (const raw of allRawParams) {
+    const [decl, unresolved] = parseParamDeclDeferred(raw, constValues);
+    params.push(decl);
+    if (unresolved !== undefined) {
+      unresolvedDefaults.set(decl.name, unresolved);
     }
   }
 
@@ -257,6 +317,7 @@ function parseFrontmatterYaml(lines: string[]): Frontmatter {
     consts,
     imports,
     importedConsts: {},
+    unresolvedDefaults,
   };
 }
 
@@ -264,8 +325,18 @@ function parseFrontmatterYaml(lines: string[]): Frontmatter {
 // Declaration parsers
 // ---------------------------------------------------------------------------
 
-/** Parse `name = type` or `name = type := default`. */
-function parseParamDecl(raw: string): VarDecl {
+/**
+ * Parse `name = type` or `name = type := default`.
+ *
+ * If `constValues` is provided, unrecognised default literals are
+ * looked up as const names before raising an error.  This enables
+ * `param = int := MY_CONST` where `MY_CONST` is a previously
+ * declared constant.
+ */
+function parseParamDecl(
+  raw: string,
+  constValues?: ReadonlyMap<string, Value>,
+): VarDecl {
   const defaultSplit = splitDefault(raw);
   const [nameType, defaultLiteral] = defaultSplit;
 
@@ -280,12 +351,73 @@ function parseParamDecl(raw: string): VarDecl {
   const typeStr = nameType!.slice(eqIdx + 1).trim();
 
   const varType = parseVarType(typeStr);
-  const defaultValue =
-    defaultLiteral !== undefined
-      ? parseLiteral(defaultLiteral.trim(), varType)
-      : undefined;
+  let defaultValue: Value | undefined;
+  if (defaultLiteral !== undefined) {
+    const trimmedDefault = defaultLiteral.trim();
+    defaultValue = parseLiteralOrConst(trimmedDefault, varType, constValues);
+  }
 
   return { name, varType, defaultValue };
+}
+
+/**
+ * Like `parseParamDecl` but defers unresolvable defaults (e.g., imported
+ * consts like `stem.NAME`) instead of throwing.
+ *
+ * Returns `[VarDecl, unresolved]` where `unresolved` is either undefined
+ * (default was resolved) or `{ text, varType }` for later resolution.
+ */
+function parseParamDeclDeferred(
+  raw: string,
+  constValues?: ReadonlyMap<string, Value>,
+): [VarDecl, { text: string; varType: VarType } | undefined] {
+  const defaultSplit = splitDefault(raw);
+  const [nameType, defaultLiteral] = defaultSplit;
+
+  const eqIdx = nameType!.indexOf("=");
+  if (eqIdx === -1) {
+    throw new TemplateSyntaxError(
+      `parameter must have explicit type: '${raw}'`,
+    );
+  }
+
+  const name = nameType!.slice(0, eqIdx).trim();
+  const typeStr = nameType!.slice(eqIdx + 1).trim();
+
+  const varType = parseVarType(typeStr);
+  if (defaultLiteral === undefined) {
+    return [{ name, varType }, undefined];
+  }
+
+  const trimmedDefault = defaultLiteral.trim();
+
+  // Check first: if it looks like a dotted reference (stem.NAME), and it's
+  // not resolvable as a local const, defer resolution for imported consts.
+  if (/^[a-zA-Z_]\w*\.[A-Z_]\w*$/.test(trimmedDefault)) {
+    // Try to resolve as literal or local const first
+    try {
+      const defaultValue = parseLiteralOrConst(
+        trimmedDefault,
+        varType,
+        constValues,
+      );
+      return [{ name, varType, defaultValue }, undefined];
+    } catch {
+      // Defer to imported const resolution
+      return [
+        { name, varType },
+        { text: trimmedDefault, varType },
+      ];
+    }
+  }
+
+  // Not a dotted reference — parse normally, let errors propagate as-is
+  const defaultValue = parseLiteralOrConst(
+    trimmedDefault,
+    varType,
+    constValues,
+  );
+  return [{ name, varType, defaultValue }, undefined];
 }
 
 /** Parse `Name = type` for type aliases. */
@@ -383,15 +515,7 @@ export function parseVarType(typeStr: string): VarType {
   if (t.startsWith("option<")) {
     const inner = extractAngleBrackets(t, "option");
     const innerType = parseVarType(inner);
-    // Desugar option<T> to enum<Some(val = T), None> with isOption flag
-    return {
-      kind: "enum",
-      variants: [
-        { name: "Some", fields: [{ name: "val", varType: innerType }] },
-        { name: "None", fields: [] },
-      ],
-      isOption: true,
-    };
+    return { kind: "option", innerType };
   }
 
   if (t.startsWith("enum<")) {
@@ -525,28 +649,96 @@ function splitDefault(raw: string): [string, string | undefined] {
   return [raw.slice(0, idx).trim(), raw.slice(idx + marker.length).trim()];
 }
 
+/**
+ * Try to parse a literal, falling back to const-name lookup.
+ *
+ * If `parseLiteral()` throws and `constValues` contains a matching
+ * key, the const's value is returned instead — enabling declarations
+ * like `param = int := MY_CONST`.
+ */
+function parseLiteralOrConst(
+  literal: string,
+  varType: VarType,
+  constValues?: ReadonlyMap<string, Value>,
+): Value {
+  try {
+    return parseLiteral(literal, varType);
+  } catch (err) {
+    // If the default text matches a known const name, use its value.
+    if (constValues) {
+      const constVal = constValues.get(literal);
+      if (constVal !== undefined) {
+        // Validate that the const value is compatible with the param type.
+        validateConstDefaultType(literal, constVal, varType);
+        return constVal;
+      }
+    }
+    // Re-throw the original parse error.
+    throw err;
+  }
+}
+
+/**
+ * Validate that a const value used as a param default is type-compatible.
+ *
+ * @throws {TemplateSyntaxError} if the const value type doesn't match
+ *         the expected param type.
+ */
+function validateConstDefaultType(
+  constName: string,
+  constVal: Value,
+  varType: VarType,
+): void {
+  const expectedKind = varType.kind;
+  // For simple scalar types, check the Value's type tag.
+  const typeMap: Record<string, string> = {
+    str: "str",
+    bool: "bool",
+    int: "int",
+    float: "float",
+  };
+  if (expectedKind in typeMap) {
+    const expected = typeMap[expectedKind]!;
+    if (constVal.type !== expected) {
+      // Allow int → float promotion.
+      if (expected === "float" && constVal.type === "int") return;
+      throw new TemplateSyntaxError(
+        `const '${constName}' has type '${constVal.type}' but param expects '${expected}'`,
+      );
+    }
+  }
+  // For option<T>, validate against the inner type (const can't be None).
+  if (expectedKind === "option") {
+    validateConstDefaultType(
+      constName,
+      constVal,
+      (varType as Extract<VarType, { kind: "option" }>).innerType,
+    );
+  }
+}
+
 /** Parse a literal value for a default. */
-function parseLiteral(literal: string, varType: VarType): Value {
+export function parseLiteral(literal: string, varType: VarType): Value {
   // Option types need to be checked first so that quoted strings like
   // "None" are correctly parsed as Some(val="None") rather than being
   // consumed by the generic string literal handler as str("None").
-  if (varType.kind === "enum" && varType.isOption) {
-    // Bare None → unit variant
+  if (varType.kind === "option") {
+    // Bare None → Value.None
     if (literal === "None") {
-      return str("None");
+      return NONE;
     }
-    // Any other literal → auto-wrap to Some(val = <parsed value>)
+    // Any other literal → parse as the inner type (auto-wrap to Some)
+    return parseLiteral(literal, varType.innerType);
+  }
+
+  // Legacy isOption handling (for backward compatibility with old enum-based options)
+  if (varType.kind === "enum" && varType.isOption) {
+    if (literal === "None") {
+      return NONE;
+    }
     const someVariant = varType.variants.find((v) => v.name === "Some");
     if (someVariant && someVariant.fields.length === 1) {
-      const innerType = someVariant.fields[0]!.varType;
-      const innerVal = parseLiteral(literal, innerType);
-      return {
-        type: "dict",
-        fields: new Map<string, Value>([
-          [ENUM_TAG_KEY, str("Some")],
-          ["val", innerVal],
-        ]),
-      };
+      return parseLiteral(literal, someVariant.fields[0]!.varType);
     }
   }
 

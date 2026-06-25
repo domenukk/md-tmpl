@@ -116,6 +116,14 @@ function varTypeEquals(a: VarType, b: VarType): boolean {
         });
       });
     }
+    case "option":
+      return varTypeEquals(a.innerType, (b as typeof a).innerType);
+    default: {
+      const _exhaustive: never = a;
+      throw new Error(
+        `unexpected VarType kind: ${(_exhaustive as VarType).kind}`,
+      );
+    }
   }
 }
 
@@ -362,5 +370,405 @@ export function validateBodyCollisions(
         `for-loop binding '${binding}' shadows a declared name (param, const, or import stem)`,
       );
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Compile-time displayability check (with flow-sensitive narrowing)
+// ---------------------------------------------------------------------------
+
+/** Scalar types that can appear in {{ expr }} interpolations. */
+function isDisplayableType(ty: VarType): boolean {
+  // Alias types can't be resolved here (we'd need the full type alias map).
+  // Conservatively allow them — the resolved type may be scalar.
+  if (ty.kind === "alias") return true;
+  return (
+    ty.kind === "str" ||
+    ty.kind === "int" ||
+    ty.kind === "float" ||
+    ty.kind === "bool"
+  );
+}
+
+/** Built-in functions that always return a scalar (displayable) value. */
+const SCALAR_FUNCTIONS = new Set(["len", "idx", "kind", "has", "str"]);
+
+/** Human-readable label for a VarType. */
+function varTypeLabel(ty: VarType): string {
+  switch (ty.kind) {
+    case "list":
+    case "scalar_list":
+    case "untyped_list":
+      return "list";
+    case "struct":
+      return "struct";
+    case "enum":
+      return "enum";
+    case "option":
+      return "option";
+    default:
+      return ty.kind;
+  }
+}
+
+/** Hint message for non-displayable types. */
+function displayHint(ty: VarType): string {
+  switch (ty.kind) {
+    case "list":
+    case "scalar_list":
+    case "untyped_list":
+      return "use {% for %} to iterate, or | join()";
+    case "struct":
+      return "access fields with dot notation, e.g. {{ x.field }}";
+    case "enum":
+      return "use kind(x) for the variant name, or {% match %}";
+    case "option":
+      return "use {% if has(x) %} to unwrap, or {% match %}";
+    default:
+      return "only str, int, float, bool can be displayed";
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Type environment for flow-sensitive narrowing
+// ---------------------------------------------------------------------------
+
+/**
+ * Immutable type environment that tracks declarations and narrowings.
+ * Each scope level can override types for specific variable paths.
+ */
+class TypeEnv {
+  private readonly decls: readonly VarDecl[];
+  private readonly narrowings: ReadonlyMap<string, VarType>;
+
+  constructor(
+    decls: readonly VarDecl[],
+    narrowings?: ReadonlyMap<string, VarType>,
+  ) {
+    this.decls = decls;
+    this.narrowings = narrowings ?? new Map();
+  }
+
+  /** Create a new env with an additional narrowing. */
+  withNarrowing(path: string, ty: VarType): TypeEnv {
+    const next = new Map(this.narrowings);
+    next.set(path, ty);
+    return new TypeEnv(this.decls, next);
+  }
+
+  /** Create a new env with an additional variable binding (e.g. for-loop). */
+  withBinding(name: string, ty: VarType): TypeEnv {
+    const nextDecls = [...this.decls, { name, varType: ty }];
+    return new TypeEnv(nextDecls, this.narrowings);
+  }
+
+  /**
+   * Resolve the type of a dotted path expression.
+   *
+   * Returns `undefined` if the path cannot be resolved (unknown variable,
+   * unresolvable field). Only returns a concrete VarType when the full path
+   * can be statically typed.
+   */
+  resolveExprType(expr: string): VarType | undefined {
+    // If filters are applied, skip — filters may transform the type.
+    if (expr.indexOf("|") >= 0) return undefined;
+
+    const pathStr = expr.trim();
+
+    // Skip string/numeric literals
+    if (
+      pathStr.startsWith('"') ||
+      pathStr.startsWith("'") ||
+      /^\d/.test(pathStr)
+    ) {
+      return undefined;
+    }
+
+    // Skip built-in functions — they return scalars
+    const funcMatch = pathStr.match(/^(\w+)\s*\(/);
+    if (funcMatch && SCALAR_FUNCTIONS.has(funcMatch[1]!)) {
+      return undefined;
+    }
+
+    // Check narrowings first (full path match)
+    const narrowed = this.narrowings.get(pathStr);
+    if (narrowed !== undefined) return narrowed;
+
+    // Split dotted path: "user.address.city" → ["user", "address", "city"]
+    const parts = pathStr.split(".");
+    const root = parts[0]!;
+
+    // Check if a prefix is narrowed (e.g. "x" narrowed, resolving "x.field")
+    const rootNarrowed = this.narrowings.get(root);
+    let currentType: VarType;
+    if (rootNarrowed !== undefined) {
+      currentType = rootNarrowed;
+    } else {
+      const rootDecl = this.decls.find((d) => d.name === root);
+      if (!rootDecl) return undefined;
+      currentType = rootDecl.varType;
+    }
+
+    // Walk remaining path segments
+    for (let i = 1; i < parts.length; i++) {
+      const field = parts[i]!;
+      const resolved = resolveFieldType(currentType, field);
+      if (resolved === undefined) return undefined;
+      currentType = resolved;
+    }
+
+    return currentType;
+  }
+}
+
+/**
+ * Resolve a field access on a type. Returns the field's type,
+ * or undefined if the type doesn't support field access.
+ */
+function resolveFieldType(ty: VarType, field: string): VarType | undefined {
+  switch (ty.kind) {
+    case "struct":
+    case "list": {
+      const fieldDecl = ty.fields.find((f) => f.name === field);
+      return fieldDecl?.varType;
+    }
+    case "enum": {
+      // A field is accessible if ALL variants have it
+      const allHave = ty.variants.every((v) =>
+        v.fields.some((f) => f.name === field),
+      );
+      if (!allHave) return undefined;
+      for (const v of ty.variants) {
+        const f = v.fields.find((f) => f.name === field);
+        if (f) return f.varType;
+      }
+      return undefined;
+    }
+    case "option": {
+      // Transparent access through option: option<struct<x = str>>.x → str
+      return resolveFieldType(ty.innerType, field);
+    }
+    default:
+      return undefined;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Flow-sensitive AST walker
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract has() narrowing from a condition string.
+ *
+ * If the condition is `has(path)`, and `path` resolves to `option<T>` in the
+ * current environment, returns `[path, T]` — the narrowed type.
+ */
+function extractHasNarrowing(
+  condition: string,
+  env: TypeEnv,
+): [string, VarType] | undefined {
+  const trimmed = condition.trim();
+  const match = /^has\(\s*([^)]+?)\s*\)$/.exec(trimmed);
+  if (!match) return undefined;
+
+  const path = match[1]!;
+  const ty = env.resolveExprType(path);
+  if (!ty) return undefined;
+
+  if (ty.kind === "option") {
+    return [path, ty.innerType];
+  }
+
+  // Legacy enum-based option
+  if (ty.kind === "enum" && ty.isOption) {
+    const someVariant = ty.variants.find((v) => v.name === "Some");
+    if (someVariant && someVariant.fields.length === 1) {
+      return [path, someVariant.fields[0]!.varType];
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * Walk AST nodes with flow-sensitive narrowing, collecting displayability errors.
+ *
+ * This is the core of the compile-time type checker for the TS backend.
+ * It mirrors the Rust `walk_segments` + `validate_compiled_path` logic.
+ */
+function walkNodesWithNarrowing(
+  nodes: readonly import("./parser.js").Node[],
+  env: TypeEnv,
+  errors: string[],
+): void {
+  for (const node of nodes) {
+    switch (node.kind) {
+      case "expr": {
+        const resolvedType = env.resolveExprType(node.expr);
+        if (resolvedType === undefined) continue;
+        if (!isDisplayableType(resolvedType)) {
+          const hint = displayHint(resolvedType);
+          errors.push(
+            `'${node.expr.trim()}': cannot display value of type ${varTypeLabel(resolvedType)} — ${hint}`,
+          );
+        }
+        break;
+      }
+
+      case "if": {
+        for (const branch of node.branches) {
+          // Check for has() narrowing
+          const narrowing = extractHasNarrowing(branch.condition, env);
+          if (narrowing) {
+            const [path, narrowedType] = narrowing;
+            const narrowedEnv = env.withNarrowing(path, narrowedType);
+            walkNodesWithNarrowing(branch.body, narrowedEnv, errors);
+          } else {
+            walkNodesWithNarrowing(branch.body, env, errors);
+          }
+        }
+        if (node.elseBody) {
+          walkNodesWithNarrowing(node.elseBody, env, errors);
+        }
+        break;
+      }
+
+      case "match": {
+        const exprPath = node.expr.trim();
+        const exprType = env.resolveExprType(exprPath);
+
+        if (exprType?.kind === "enum") {
+          // Narrow each arm to only the matched variant(s)
+          for (const arm of node.arms) {
+            const matchedVariants = exprType.variants.filter((v) =>
+              arm.variants.includes(v.name),
+            );
+            if (matchedVariants.length > 0) {
+              const narrowedType: VarType = {
+                kind: "enum",
+                variants: matchedVariants,
+              };
+              const narrowedEnv = env.withNarrowing(exprPath, narrowedType);
+              walkNodesWithNarrowing(arm.body, narrowedEnv, errors);
+            } else if (arm.variants.length === 1 && arm.variants[0] === "_") {
+              // Default arm — no narrowing
+              walkNodesWithNarrowing(arm.body, env, errors);
+            } else {
+              walkNodesWithNarrowing(arm.body, env, errors);
+            }
+          }
+        } else if (exprType?.kind === "option") {
+          for (const arm of node.arms) {
+            if (arm.variants.includes("Some")) {
+              // Narrow option to inner type
+              const narrowedEnv = env.withNarrowing(
+                exprPath,
+                exprType.innerType,
+              );
+              walkNodesWithNarrowing(arm.body, narrowedEnv, errors);
+            } else {
+              walkNodesWithNarrowing(arm.body, env, errors);
+            }
+          }
+        } else {
+          // Can't resolve match expression type — walk arms without narrowing
+          for (const arm of node.arms) {
+            walkNodesWithNarrowing(arm.body, env, errors);
+          }
+        }
+
+        if (node.elseArm) {
+          walkNodesWithNarrowing(node.elseArm, env, errors);
+        }
+
+        // Inline guard
+        if (node.inlineGuard) {
+          if (exprType?.kind === "enum") {
+            const matchedVariants = exprType.variants.filter(
+              (v) => v.name === node.inlineGuard!.variant,
+            );
+            if (matchedVariants.length > 0) {
+              const narrowedType: VarType = {
+                kind: "enum",
+                variants: matchedVariants,
+              };
+              const narrowedEnv = env.withNarrowing(exprPath, narrowedType);
+              walkNodesWithNarrowing(
+                node.inlineGuard.body,
+                narrowedEnv,
+                errors,
+              );
+            } else {
+              walkNodesWithNarrowing(node.inlineGuard.body, env, errors);
+            }
+          } else {
+            walkNodesWithNarrowing(node.inlineGuard.body, env, errors);
+          }
+        }
+        break;
+      }
+
+      case "for": {
+        // Resolve the iterator expression type to determine element type
+        const iterType = env.resolveExprType(node.iterExpr);
+        if (iterType) {
+          let elementType: VarType | undefined;
+          if (iterType.kind === "list") {
+            // list<name = str, ...> → struct<name = str, ...>
+            elementType = { kind: "struct", fields: iterType.fields };
+          } else if (iterType.kind === "scalar_list") {
+            elementType = iterType.elementType;
+          } else if (iterType.kind === "untyped_list") {
+            // Can't determine element type
+            elementType = undefined;
+          }
+          if (elementType) {
+            const forEnv = env.withBinding(node.binding, elementType);
+            walkNodesWithNarrowing(node.body, forEnv, errors);
+          } else {
+            walkNodesWithNarrowing(node.body, env, errors);
+          }
+        } else {
+          walkNodesWithNarrowing(node.body, env, errors);
+        }
+
+        if (node.elseBody) {
+          walkNodesWithNarrowing(node.elseBody, env, errors);
+        }
+        break;
+      }
+
+      default:
+        // text, comment, raw, include, tmpl — no expressions to check
+        break;
+    }
+  }
+}
+
+/**
+ * Validate that all `{{ expr }}` interpolations resolve to displayable
+ * (scalar) types, with proper flow-sensitive narrowing through:
+ *
+ * - `{% if has(x) %}` — narrows `option<T>` to `T` in the true branch
+ * - `{% match x %}{% case V %}` — narrows enum to matched variant
+ * - `{% for item in list %}` — introduces element binding
+ *
+ * This is a compile-time check — called during `fromSource()`.
+ *
+ * @param nodes - Parsed AST nodes from the template body.
+ * @param declarations - Parameter declarations from frontmatter.
+ * @throws {TemplateSyntaxError} If an expression resolves to a non-displayable type.
+ */
+export function validateDisplayability(
+  nodes: readonly import("./parser.js").Node[],
+  declarations: readonly VarDecl[],
+): void {
+  const env = new TypeEnv(declarations);
+  const errors: string[] = [];
+
+  walkNodesWithNarrowing(nodes, env, errors);
+
+  if (errors.length > 0) {
+    throw new TemplateSyntaxError(errors[0]!);
   }
 }

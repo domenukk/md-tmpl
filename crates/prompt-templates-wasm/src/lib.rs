@@ -101,7 +101,7 @@ impl Template {
     pub fn render(&self, params: &JsParams) -> Result<String, JsValue> {
         let ctx = json_to_context(params.as_ref())?;
         self.inner
-            .render(&ctx)
+            .render_ctx(&ctx)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
@@ -111,10 +111,7 @@ impl Template {
     pub fn render_unchecked(&self, params: &JsParams) -> Result<String, JsValue> {
         let ctx = json_to_context(params.as_ref())?;
         self.inner
-            .render_with(
-                &ctx,
-                prompt_templates::RenderOptions::default().allow_extra(true),
-            )
+            .render_ctx_allowing_extra(&ctx)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
@@ -130,7 +127,7 @@ impl Template {
     pub fn render_json(&self, json_str: &str) -> Result<String, JsValue> {
         let ctx = json_str_to_context(json_str)?;
         self.inner
-            .render(&ctx)
+            .render_ctx(&ctx)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
@@ -143,10 +140,7 @@ impl Template {
     pub fn render_unchecked_json(&self, json_str: &str) -> Result<String, JsValue> {
         let ctx = json_str_to_context(json_str)?;
         self.inner
-            .render_with(
-                &ctx,
-                prompt_templates::RenderOptions::default().allow_extra(true),
-            )
+            .render_ctx_allowing_extra(&ctx)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
@@ -159,7 +153,7 @@ impl Template {
         let ctx = prompt_templates::Context::from_flexbuffers(buffer)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         self.inner
-            .render(&ctx)
+            .render_ctx(&ctx)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
@@ -169,10 +163,7 @@ impl Template {
         let ctx = prompt_templates::Context::from_flexbuffers(buffer)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
         self.inner
-            .render_with(
-                &ctx,
-                prompt_templates::RenderOptions::default().allow_extra(true),
-            )
+            .render_ctx_allowing_extra(&ctx)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
@@ -358,7 +349,7 @@ fn value_to_js(val: &Value) -> JsValue {
             }
             obj.into()
         }
-        Value::Tmpl(_) => JsValue::NULL,
+        Value::Tmpl(_) | Value::None => JsValue::NULL,
     }
 }
 

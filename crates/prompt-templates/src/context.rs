@@ -62,12 +62,12 @@ impl Context {
     /// Insert a value into the context.
     ///
     /// This is the **dynamic** API — the key is a plain string and type
-    /// mismatches are caught at [`render()`](crate::Template::render) time,
+    /// mismatches are caught at [`render_ctx()`](crate::Template::render_ctx) time,
     /// not here. For compile-time type safety, prefer one of:
     ///
     /// - `include_template!` (from `prompt-templates-macros`)
     ///   — generates a strongly-typed parameter struct from your template.
-    /// - [`Template::render_serde`](crate::Template::render_serde) (feature `serde`)
+    /// - [`Template::render`](crate::Template::render) (feature `serde`)
     ///   — renders directly from any `Serialize` struct.
     pub fn set(&mut self, key: impl Into<String>, value: impl Into<Value>) {
         self.values.insert(key.into(), value.into());
@@ -145,6 +145,27 @@ impl Context {
         Self::from_value(val)
     }
 
+    /// Build a `Context` from a CBOR binary buffer.
+    ///
+    /// Available in `no_std` — ciborium uses its own `Read` trait with a
+    /// blanket impl for `&[u8]`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TemplateError::Syntax` if the buffer is invalid or not a dict/map.
+    pub fn from_cbor(data: &[u8]) -> Result<Self, crate::error::TemplateError> {
+        let val: Value = ciborium::from_reader(data).map_err(|e| {
+            crate::error::TemplateError::syntax(format!("cbor deserialization failed: {e}"))
+        })?;
+        Self::from_value(val)
+    }
+}
+
+/// `FlexBuffers` support — requires `std` (the `flexbuffers` crate does not
+/// support `no_std`).
+#[cfg(feature = "std")]
+#[cfg(feature = "serde")]
+impl Context {
     /// Build a `Context` from a `FlexBuffers` binary buffer.
     ///
     /// # Errors
@@ -156,18 +177,6 @@ impl Context {
         })?;
         let val: Value = serde::Deserialize::deserialize(r).map_err(|e| {
             crate::error::TemplateError::syntax(format!("flexbuffers deserialization failed: {e}"))
-        })?;
-        Self::from_value(val)
-    }
-
-    /// Build a `Context` from a CBOR binary buffer.
-    ///
-    /// # Errors
-    ///
-    /// Returns `TemplateError::Syntax` if the buffer is invalid or not a dict/map.
-    pub fn from_cbor(data: &[u8]) -> Result<Self, crate::error::TemplateError> {
-        let val: Value = ciborium::from_reader(data).map_err(|e| {
-            crate::error::TemplateError::syntax(format!("cbor deserialization failed: {e}"))
         })?;
         Self::from_value(val)
     }

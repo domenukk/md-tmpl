@@ -101,7 +101,9 @@ fn serde_yaml_params(yaml_block: &str) -> Vec<String> {
 
 #[test]
 fn types_simple_enum() {
-    let yaml = "types:\n  - Priority = enum<Low, Medium, High>\nparams: [x = Priority]";
+    let yaml = r"types:
+  - Priority = enum<Low, Medium, High>
+params: [x = Priority]";
     assert_valid_yaml(yaml);
     let source = source_from_yaml(yaml);
     let our_types = our_parser_type_names(&source);
@@ -110,7 +112,10 @@ fn types_simple_enum() {
 
 #[test]
 fn types_multiple_entries() {
-    let yaml = "types:\n  - Priority = enum<Low, High>\n  - Status = enum<Open, Closed>\nparams: [p = Priority, s = Status]";
+    let yaml = r"types:
+  - Priority = enum<Low, High>
+  - Status = enum<Open, Closed>
+params: [p = Priority, s = Status]";
     let doc = assert_valid_yaml(yaml);
     let types = doc["types"].as_sequence().unwrap();
     assert_eq!(types.len(), 2);
@@ -122,7 +127,9 @@ fn types_multiple_entries() {
 
 #[test]
 fn types_complex_enum_with_fields() {
-    let yaml = "types:\n  - Outcome = enum<Confirmed(evidence = str), Rejected, NeedsWork>\nparams: [result = Outcome]";
+    let yaml = r"types:
+  - Outcome = enum<Confirmed(evidence = str), Rejected, NeedsWork>
+params: [result = Outcome]";
     assert_valid_yaml(yaml);
     let source = source_from_yaml(yaml);
     let our_types = our_parser_type_names(&source);
@@ -148,7 +155,9 @@ fn types_chained_aliases() {
 
 #[test]
 fn types_list_alias() {
-    let yaml = "types:\n  - Tags = list<name = str>\nparams: [items = Tags]";
+    let yaml = r"types:
+  - Tags = list<name = str>
+params: [items = Tags]";
     assert_valid_yaml(yaml);
     let source = source_from_yaml(yaml);
     let our_types = our_parser_type_names(&source);
@@ -163,11 +172,18 @@ fn types_list_alias() {
 fn imports_single() {
     // Our parser uses `imports: [[stem](path)]` format (bracket links).
     // For YAML validity, the outer brackets form a flow sequence.
-    let yaml = "imports:\n  - \"[helper](helper.tmpl.md)\"\nparams: []\nallow_unused: true";
+    let yaml = r#"imports:
+  - "[helper](helper.tmpl.md)"
+params: []
+allow_unused: true"#;
     assert_valid_yaml(yaml);
     // Our custom parser uses inline syntax
-    let source =
-        "---\nimports: [[helper](helper.tmpl.md)]\nparams: []\nallow_unused: true\n---\nbody";
+    let source = r"---
+imports: [[helper](helper.tmpl.md)]
+params: []
+allow_unused: true
+---
+body";
     let our_imports = our_parser_imports(source);
     assert_eq!(our_imports.len(), 1);
     assert_eq!(our_imports[0].0, "helper");
@@ -183,7 +199,12 @@ fn imports_multiple() {
         "allow_unused: true"
     );
     assert_valid_yaml(yaml);
-    let source = "---\nimports: [[header](header.tmpl.md), [footer](footer.tmpl.md)]\nparams: []\nallow_unused: true\n---\nbody";
+    let source = r"---
+imports: [[header](header.tmpl.md), [footer](footer.tmpl.md)]
+params: []
+allow_unused: true
+---
+body";
     let our_imports = our_parser_imports(source);
     assert_eq!(our_imports.len(), 2);
     assert_eq!(our_imports[0].0, "header");
@@ -192,10 +213,17 @@ fn imports_multiple() {
 
 #[test]
 fn imports_subdirectory_path() {
-    let yaml =
-        "imports:\n  - \"[shared](../common/shared.tmpl.md)\"\nparams: []\nallow_unused: true";
+    let yaml = r#"imports:
+  - "[shared](../common/shared.tmpl.md)"
+params: []
+allow_unused: true"#;
     assert_valid_yaml(yaml);
-    let source = "---\nimports: [[shared](../common/shared.tmpl.md)]\nparams: []\nallow_unused: true\n---\nbody";
+    let source = r"---
+imports: [[shared](../common/shared.tmpl.md)]
+params: []
+allow_unused: true
+---
+body";
     let our_imports = our_parser_imports(source);
     assert_eq!(our_imports[0].0, "shared");
     assert!(our_imports[0].1.contains("shared.tmpl.md"));
@@ -205,7 +233,12 @@ fn imports_subdirectory_path() {
 fn imports_inline_bracket_syntax() {
     // Our inline bracket syntax: imports: [[a](a.tmpl.md), [b](b.tmpl.md)]
     // This is also valid YAML (flow sequence of strings).
-    let source = "---\nimports: [[alpha](alpha.tmpl.md), [beta](beta.tmpl.md)]\nparams: []\nallow_unused: true\n---\nbody";
+    let source = r"---
+imports: [[alpha](alpha.tmpl.md), [beta](beta.tmpl.md)]
+params: []
+allow_unused: true
+---
+body";
     let our_imports = our_parser_imports(source);
     assert_eq!(our_imports.len(), 2);
     assert_eq!(our_imports[0].0, "alpha");
@@ -218,7 +251,11 @@ fn imports_inline_bracket_syntax() {
 
 #[test]
 fn params_simple_types() {
-    let yaml = "params:\n  - name = str\n  - count = int\n  - flag = bool\n  - rate = float";
+    let yaml = r"params:
+  - name = str
+  - count = int
+  - flag = bool
+  - rate = float";
     assert_valid_yaml(yaml);
     let source = source_from_yaml(yaml);
     let serde_params = serde_yaml_params(yaml);
@@ -233,8 +270,10 @@ fn params_simple_types() {
 
 #[test]
 fn params_with_defaults() {
-    let yaml =
-        "params:\n  - name = str := \"world\"\n  - count = int := 42\n  - verbose = bool := true";
+    let yaml = r#"params:
+  - name = str := "world"
+  - count = int := 42
+  - verbose = bool := true"#;
     assert_valid_yaml(yaml);
     let source = source_from_yaml(yaml);
     let (fm, _) = parse_frontmatter(&source).expect("parse failed");
@@ -245,7 +284,10 @@ fn params_with_defaults() {
 
 #[test]
 fn params_alias_reference() {
-    let yaml = "types:\n  - Priority = enum<Low, Medium, High>\nparams:\n  - severity = Priority";
+    let yaml = r"types:
+  - Priority = enum<Low, Medium, High>
+params:
+  - severity = Priority";
     assert_valid_yaml(yaml);
     let source = source_from_yaml(yaml);
     let serde_params = serde_yaml_params(yaml);
@@ -256,7 +298,8 @@ fn params_alias_reference() {
 
 #[test]
 fn params_compound_list() {
-    let yaml = "params:\n  - items = list<name = str, score = int>";
+    let yaml = r"params:
+  - items = list<name = str, score = int>";
     assert_valid_yaml(yaml);
     let source = source_from_yaml(yaml);
     let our_params = our_parser_params(&source);
@@ -266,7 +309,8 @@ fn params_compound_list() {
 
 #[test]
 fn params_compound_struct() {
-    let yaml = "params:\n  - meta = struct<key = str, value = int>";
+    let yaml = r"params:
+  - meta = struct<key = str, value = int>";
     assert_valid_yaml(yaml);
     let source = source_from_yaml(yaml);
     let our_params = our_parser_params(&source);
@@ -276,7 +320,10 @@ fn params_compound_struct() {
 
 #[test]
 fn params_inline_flow_syntax() {
-    let source = "---\nparams: [a = str, b = int]\n---\n{{ a }} {{ b }}";
+    let source = r"---
+params: [a = str, b = int]
+---
+{{ a }} {{ b }}";
     let (fm, _) = parse_frontmatter(source).expect("parse failed");
     assert_eq!(fm.declarations.len(), 2);
     assert_eq!(fm.declarations[0].name, "a");
@@ -289,8 +336,8 @@ fn params_inline_flow_syntax() {
 
 #[test]
 fn nested_enum_with_associated_data() {
-    let yaml =
-        "params:\n  - outcome = enum<Confirmed(evidence = str, confidence = float), Rejected>";
+    let yaml = r"params:
+  - outcome = enum<Confirmed(evidence = str, confidence = float), Rejected>";
     assert_valid_yaml(yaml);
     let source = source_from_yaml(yaml);
     let our_params = our_parser_params(&source);
@@ -299,7 +346,8 @@ fn nested_enum_with_associated_data() {
 
 #[test]
 fn deeply_nested_list_enum() {
-    let yaml = "params:\n  - reports = list<title = str, findings = list<desc = str, severity = enum<Critical, High, Low>>>";
+    let yaml = r"params:
+  - reports = list<title = str, findings = list<desc = str, severity = enum<Critical, High, Low>>>";
     assert_valid_yaml(yaml);
     let source = source_from_yaml(yaml);
     let our_params = our_parser_params(&source);
@@ -308,7 +356,8 @@ fn deeply_nested_list_enum() {
 
 #[test]
 fn triple_nested_types() {
-    let yaml = "params:\n  - data = list<groups = list<items = list<name = str>>>";
+    let yaml = r"params:
+  - data = list<groups = list<items = list<name = str>>>";
     assert_valid_yaml(yaml);
     let source = source_from_yaml(yaml);
     let our_params = our_parser_params(&source);
@@ -317,7 +366,8 @@ fn triple_nested_types() {
 
 #[test]
 fn enum_with_nested_list() {
-    let yaml = "params:\n  - action = enum<Batch(items = list<name = str>), Single(name = str)>";
+    let yaml = r"params:
+  - action = enum<Batch(items = list<name = str>), Single(name = str)>";
     assert_valid_yaml(yaml);
     let source = source_from_yaml(yaml);
     let our_params = our_parser_params(&source);
@@ -346,7 +396,16 @@ fn full_realistic_types_imports_params() {
     assert!(mapping.contains_key(serde_yaml::Value::String("imports".into())));
     assert!(mapping.contains_key(serde_yaml::Value::String("params".into())));
 
-    let source = "---\ntypes:\n  - Severity = enum<Critical, High, Medium, Low>\nimports: [[header](header.tmpl.md)]\nparams:\n  - title = str\n  - tasks = list<name = str, severity = Severity>\nallow_unused: true\n---\nbody";
+    let source = r"---
+types:
+  - Severity = enum<Critical, High, Medium, Low>
+imports: [[header](header.tmpl.md)]
+params:
+  - title = str
+  - tasks = list<name = str, severity = Severity>
+allow_unused: true
+---
+body";
     let (fm, _) = parse_frontmatter(source).expect("our parser failed");
     assert!(fm.type_aliases.contains_key("Severity"));
     assert_eq!(fm.imports.len(), 1);
@@ -355,7 +414,9 @@ fn full_realistic_types_imports_params() {
 
 #[test]
 fn types_only_no_imports() {
-    let yaml = "types:\n  - Priority = enum<Low, High>\nparams: [x = Priority]";
+    let yaml = r"types:
+  - Priority = enum<Low, High>
+params: [x = Priority]";
     assert_valid_yaml(yaml);
     let source = source_from_yaml(yaml);
     let (fm, _) = parse_frontmatter(&source).expect("our parser failed");
@@ -365,8 +426,12 @@ fn types_only_no_imports() {
 
 #[test]
 fn imports_only_no_types() {
-    let source =
-        "---\nimports: [[helper](helper.tmpl.md)]\nparams: []\nallow_unused: true\n---\nbody";
+    let source = r"---
+imports: [[helper](helper.tmpl.md)]
+params: []
+allow_unused: true
+---
+body";
     let (fm, _) = parse_frontmatter(source).expect("our parser failed");
     assert_eq!(fm.imports.len(), 1);
     assert!(fm.type_aliases.is_empty());
@@ -374,7 +439,8 @@ fn imports_only_no_types() {
 
 #[test]
 fn allow_unused_flag() {
-    let yaml = "params: [x = str]\nallow_unused: true";
+    let yaml = r"params: [x = str]
+allow_unused: true";
     let doc = assert_valid_yaml(yaml);
     let mapping = doc.as_mapping().unwrap();
     let allow_unused = mapping
@@ -388,7 +454,9 @@ fn allow_unused_flag() {
 
 #[test]
 fn name_and_description_fields() {
-    let yaml = "name: my_template\ndescription: A test template\nparams: [x = str]";
+    let yaml = r"name: my_template
+description: A test template
+params: [x = str]";
     let doc = assert_valid_yaml(yaml);
     let mapping = doc.as_mapping().unwrap();
     assert_eq!(
@@ -401,8 +469,8 @@ fn name_and_description_fields() {
     );
     let source = source_from_yaml(yaml);
     let (fm, _) = parse_frontmatter(&source).expect("our parser failed");
-    assert_eq!(fm.name, "my_template");
-    assert_eq!(fm.description, "A test template");
+    assert_eq!(fm.name, Some("my_template".to_string()));
+    assert_eq!(fm.description, Some("A test template".to_string()));
 }
 
 #[test]
@@ -428,9 +496,22 @@ fn kitchen_sink() {
     assert!(mapping.contains_key(serde_yaml::Value::String("types".into())));
     assert!(mapping.contains_key(serde_yaml::Value::String("params".into())));
 
-    let source = "---\nname: kitchen_sink\ndescription: Everything at once\ntypes:\n  - Priority = enum<Low, Medium, High>\n  - TaskList = list<title = str, severity = Priority>\nimports: [[header](header.tmpl.md), [footer](footer.tmpl.md)]\nparams:\n  - agent_name = str\n  - tasks = TaskList\n  - verbose = bool := false\nallow_unused: true\n---\nbody";
+    let source = r"---
+name: kitchen_sink
+description: Everything at once
+types:
+  - Priority = enum<Low, Medium, High>
+  - TaskList = list<title = str, severity = Priority>
+imports: [[header](header.tmpl.md), [footer](footer.tmpl.md)]
+params:
+  - agent_name = str
+  - tasks = TaskList
+  - verbose = bool := false
+allow_unused: true
+---
+body";
     let (fm, _) = parse_frontmatter(source).expect("our parser failed");
-    assert_eq!(fm.name, "kitchen_sink");
+    assert_eq!(fm.name, Some("kitchen_sink".to_string()));
     assert_eq!(fm.imports.len(), 2);
     assert_eq!(fm.declarations.len(), 3);
     assert!(fm.allow_unused);
@@ -443,8 +524,10 @@ fn kitchen_sink() {
 
 #[test]
 fn cross_validate_type_alias_names() {
-    let yaml =
-        "types:\n  - Alpha = enum<A, B>\n  - Beta = list<x = str>\nparams: [a = Alpha, b = Beta]";
+    let yaml = r"types:
+  - Alpha = enum<A, B>
+  - Beta = list<x = str>
+params: [a = Alpha, b = Beta]";
     let serde_names = serde_yaml_type_names(yaml);
     let source = source_from_yaml(yaml);
     let our_names = our_parser_type_names(&source);
@@ -464,7 +547,10 @@ fn cross_validate_type_alias_names() {
 
 #[test]
 fn cross_validate_param_names() {
-    let yaml = "params:\n  - name = str\n  - count = int\n  - items = list<label = str>";
+    let yaml = r"params:
+  - name = str
+  - count = int
+  - items = list<label = str>";
     let serde_params = serde_yaml_params(yaml);
     let source = source_from_yaml(yaml);
     let our_params = our_parser_params(&source);
@@ -480,7 +566,9 @@ fn cross_validate_param_names() {
 
 #[test]
 fn cross_validate_param_types_match() {
-    let yaml = "params:\n  - name = str\n  - items = list<label = str, score = int>";
+    let yaml = r"params:
+  - name = str
+  - items = list<label = str, score = int>";
     let serde_params = serde_yaml_params(yaml);
     let source = source_from_yaml(yaml);
     let our_params = our_parser_params(&source);
@@ -497,7 +585,11 @@ fn cross_validate_param_types_match() {
 fn cross_validate_import_stems() {
     // YAML-side uses quoted form; our parser uses bracket link form.
     // Both should agree on stems.
-    let yaml = "imports:\n  - \"[alpha](alpha.tmpl.md)\"\n  - \"[beta](beta.tmpl.md)\"\nparams: []\nallow_unused: true";
+    let yaml = r#"imports:
+  - "[alpha](alpha.tmpl.md)"
+  - "[beta](beta.tmpl.md)"
+params: []
+allow_unused: true"#;
     let doc = assert_valid_yaml(yaml);
     let imports = doc["imports"].as_sequence().unwrap();
     let serde_stems: Vec<String> = imports
@@ -510,7 +602,12 @@ fn cross_validate_import_stems() {
         })
         .collect();
 
-    let source = "---\nimports: [[alpha](alpha.tmpl.md), [beta](beta.tmpl.md)]\nparams: []\nallow_unused: true\n---\nbody";
+    let source = r"---
+imports: [[alpha](alpha.tmpl.md), [beta](beta.tmpl.md)]
+params: []
+allow_unused: true
+---
+body";
     let our_imports = our_parser_imports(source);
     assert_eq!(serde_stems.len(), our_imports.len());
     for (i, stem) in serde_stems.iter().enumerate() {
@@ -525,7 +622,8 @@ fn cross_validate_import_stems() {
 #[test]
 fn special_chars_in_type_expressions() {
     // Characters like <, >, (, ), , are valid in YAML plain scalars in block context
-    let yaml = "params:\n  - result = enum<Success(code = int, msg = str), Failure(reason = str)>";
+    let yaml = r"params:
+  - result = enum<Success(code = int, msg = str), Failure(reason = str)>";
     assert_valid_yaml(yaml);
     let source = source_from_yaml(yaml);
     let our_params = our_parser_params(&source);
@@ -545,21 +643,23 @@ fn empty_params_block() {
 
 #[test]
 fn name_field_only() {
-    let yaml = "name: simple\nparams: [x = str]";
+    let yaml = r"name: simple
+params: [x = str]";
     assert_valid_yaml(yaml);
     let source = source_from_yaml(yaml);
     let (fm, _) = parse_frontmatter(&source).expect("our parser failed");
-    assert_eq!(fm.name, "simple");
-    assert!(fm.description.is_empty());
+    assert_eq!(fm.name, Some("simple".to_string()));
+    assert!(fm.description.is_none());
 }
 
 #[test]
 fn description_field_only() {
-    let yaml = "description: A helpful template\nparams: [x = str]";
+    let yaml = r"description: A helpful template
+params: [x = str]";
     assert_valid_yaml(yaml);
     let source = source_from_yaml(yaml);
     let (fm, _) = parse_frontmatter(&source).expect("our parser failed");
-    assert_eq!(fm.description, "A helpful template");
+    assert_eq!(fm.description, Some("A helpful template".to_string()));
 }
 
 // ---------------------------------------------------------------------------
@@ -628,7 +728,10 @@ fn stress_chained_aliases_realistic() {
 // Rule 1: Duplicate param names → error
 #[test]
 fn duplicate_param_names_rejected() {
-    let source = "---\nparams: [a = str, a = int]\n---\nbody";
+    let source = r"---
+params: [a = str, a = int]
+---
+body";
     let err = parse_frontmatter(source).expect_err("duplicate param should fail");
     assert!(
         err.to_string().contains("duplicate parameter name"),
@@ -639,8 +742,13 @@ fn duplicate_param_names_rejected() {
 // Rule 2: Duplicate type alias names → error
 #[test]
 fn duplicate_type_alias_names_rejected() {
-    let source =
-        "---\ntypes:\n  - Foo = enum<A, B>\n  - Foo = enum<C, D>\nparams: [x = Foo]\n---\nbody";
+    let source = r"---
+types:
+  - Foo = enum<A, B>
+  - Foo = enum<C, D>
+params: [x = Foo]
+---
+body";
     let err = parse_frontmatter(source).expect_err("duplicate type alias should fail");
     assert!(
         err.to_string().contains("duplicate type alias"),
@@ -653,7 +761,12 @@ fn duplicate_type_alias_names_rejected() {
 fn param_type_collision_different_types_rejected() {
     // Type alias `Tasks` exists, but param `tasks` has a different type (str).
     // PascalCase of `tasks` = `Tasks`, which collides with the alias.
-    let source = "---\ntypes:\n  - Tasks = enum<A, B>\nparams: [tasks = str]\n---\nbody";
+    let source = r"---
+types:
+  - Tasks = enum<A, B>
+params: [tasks = str]
+---
+body";
     let err = parse_frontmatter(source).expect_err("param/type collision should fail");
     assert!(
         err.to_string().contains("conflicts with type alias"),
@@ -665,7 +778,13 @@ fn param_type_collision_different_types_rejected() {
 #[test]
 fn param_type_collision_same_type_allowed() {
     // Param `tasks` has type `Tasks` which matches the alias — this is OK.
-    let source = "---\ntypes:\n  - Tasks = enum<A, B>\nparams: [tasks = Tasks]\nallow_unused: true\n---\nbody";
+    let source = r"---
+types:
+  - Tasks = enum<A, B>
+params: [tasks = Tasks]
+allow_unused: true
+---
+body";
     let (fm, _) = parse_frontmatter(source).expect("matching param/type should succeed");
     assert!(fm.type_aliases.contains_key("Tasks"));
 }
@@ -673,7 +792,14 @@ fn param_type_collision_same_type_allowed() {
 // Rule 4a: Type alias shadows import stem → error
 #[test]
 fn type_alias_shadows_import_stem_rejected() {
-    let source = "---\nimports: [[helper](helper.tmpl.md)]\ntypes:\n  - helper = enum<A>\nparams: [x = helper]\nallow_unused: true\n---\nbody";
+    let source = r"---
+imports: [[helper](helper.tmpl.md)]
+types:
+  - helper = enum<A>
+params: [x = helper]
+allow_unused: true
+---
+body";
     let err = parse_frontmatter(source).expect_err("type shadowing import should fail");
     assert!(
         err.to_string().contains("shadows"),
@@ -685,7 +811,12 @@ fn type_alias_shadows_import_stem_rejected() {
 #[test]
 fn param_pascal_case_shadows_import_stem_rejected() {
     // Param `helper` → PascalCase `Helper`, import stem `Helper`
-    let source = "---\nimports: [[Helper](Helper.tmpl.md)]\nparams: [helper = str]\nallow_unused: true\n---\nbody";
+    let source = r"---
+imports: [[Helper](Helper.tmpl.md)]
+params: [helper = str]
+allow_unused: true
+---
+body";
     let err = parse_frontmatter(source).expect_err("param shadowing import should fail");
     assert!(
         err.to_string().contains("shadows import"),
@@ -710,7 +841,10 @@ fn reserved_keyword_as_param_name_rejected() {
 // Rule 7: `params` as a param name → error
 #[test]
 fn param_named_params_rejected() {
-    let source = "---\nparams: [params = str]\n---\nbody";
+    let source = r"---
+params: [params = str]
+---
+body";
     let err = parse_frontmatter(source).expect_err("param named 'params' should fail");
     assert!(
         err.to_string().contains("reserved keyword"),
@@ -721,7 +855,12 @@ fn param_named_params_rejected() {
 // Rule 7: Reserved keyword as type alias name → error
 #[test]
 fn reserved_keyword_as_type_name_rejected() {
-    let source = "---\ntypes:\n  - str = enum<A, B>\nparams: [x = str]\n---\nbody";
+    let source = r"---
+types:
+  - str = enum<A, B>
+params: [x = str]
+---
+body";
     let err = parse_frontmatter(source).expect_err("type named 'str' should fail");
     assert!(
         err.to_string().contains("shadows built-in"),
@@ -733,8 +872,12 @@ fn reserved_keyword_as_type_name_rejected() {
 #[test]
 fn import_stem_mismatch_rejected() {
     // Stem is 'wrong' but file is 'helper.tmpl.md' (expected stem: 'helper')
-    let source =
-        "---\nimports: [[wrong](helper.tmpl.md)]\nparams: []\nallow_unused: true\n---\nbody";
+    let source = r"---
+imports: [[wrong](helper.tmpl.md)]
+params: []
+allow_unused: true
+---
+body";
     let err = parse_frontmatter(source).expect_err("mismatched stem should fail");
     assert!(
         err.to_string().contains("does not match")
@@ -747,8 +890,12 @@ fn import_stem_mismatch_rejected() {
 // Rule 8 (positive): Matching stem succeeds
 #[test]
 fn import_stem_matches_filename_accepted() {
-    let source =
-        "---\nimports: [[helper](helper.tmpl.md)]\nparams: []\nallow_unused: true\n---\nbody";
+    let source = r"---
+imports: [[helper](helper.tmpl.md)]
+params: []
+allow_unused: true
+---
+body";
     let (fm, _) = parse_frontmatter(source).expect("matching stem should succeed");
     assert_eq!(fm.imports[0].stem, "helper");
 }
@@ -759,7 +906,10 @@ fn import_stem_matches_filename_accepted() {
 // Unknown type reference → error
 #[test]
 fn unknown_type_reference_rejected() {
-    let source = "---\nparams: [x = UnknownType]\n---\nbody";
+    let source = r"---
+params: [x = UnknownType]
+---
+body";
     let err = parse_frontmatter(source).expect_err("unknown type should fail");
     assert!(
         err.to_string().contains("unknown type") || err.to_string().contains("UnknownType"),
@@ -770,7 +920,11 @@ fn unknown_type_reference_rejected() {
 // Empty types block is valid
 #[test]
 fn empty_types_block_is_valid() {
-    let source = "---\ntypes: []\nparams: [x = str]\n---\nbody";
+    let source = r"---
+types: []
+params: [x = str]
+---
+body";
     let (fm, _) = parse_frontmatter(source).expect("empty types should be valid");
     assert!(fm.type_aliases.is_empty());
 }
@@ -778,7 +932,15 @@ fn empty_types_block_is_valid() {
 // Type alias used in multiple params
 #[test]
 fn type_alias_used_in_multiple_params() {
-    let source = "---\ntypes:\n  - Priority = enum<Low, High>\nparams:\n  - primary = Priority\n  - secondary = Priority\nallow_unused: true\n---\nbody";
+    let source = r"---
+types:
+  - Priority = enum<Low, High>
+params:
+  - primary = Priority
+  - secondary = Priority
+allow_unused: true
+---
+body";
     let (fm, _) = parse_frontmatter(source).expect("alias in multiple params should work");
     assert_eq!(fm.declarations.len(), 2);
 }
@@ -786,7 +948,12 @@ fn type_alias_used_in_multiple_params() {
 // Implicit param types are generated for compound types
 #[test]
 fn implicit_param_types_generated() {
-    let source = "---\nparams:\n  - tasks = list<title = str>\n  - name = str\n---\nbody";
+    let source = r"---
+params:
+  - tasks = list<title = str>
+  - name = str
+---
+body";
     let (fm, _) = parse_frontmatter(source).expect("parse should succeed");
     // `tasks` is a compound type → implicit alias `Tasks` should be generated
     assert!(
@@ -805,7 +972,12 @@ fn implicit_param_types_generated() {
 #[test]
 fn builtin_type_shadow_case_insensitive() {
     // `List` should be rejected because `list` is a builtin (case-insensitive check)
-    let source = "---\ntypes:\n  - List = enum<A, B>\nparams: [x = List]\n---\nbody";
+    let source = r"---
+types:
+  - List = enum<A, B>
+params: [x = List]
+---
+body";
     let err = parse_frontmatter(source).expect_err("'List' should shadow builtin 'list'");
     assert!(
         err.to_string().contains("shadows built-in"),

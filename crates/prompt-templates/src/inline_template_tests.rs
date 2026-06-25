@@ -5,57 +5,83 @@ use crate::{context::Context, ctx, template::Template};
 #[test]
 fn basic_inline_template() {
     let src = concat!(
-        "---\n",
+        "\
+---
+",
         "params: [name = str]\n",
-        "---\n",
+        "\
+---
+",
         "> {% tmpl greeting %}\n",
-        "---\n",
+        "\
+---
+",
         "params: [name = str]\n",
-        "---\n",
+        "\
+---
+",
         "Hello {{ name }}!\n\n",
         "> {% /tmpl %}\n\n",
         "> {% include greeting with name=name %}",
     );
     let tmpl = Template::from_source(src).unwrap();
-    let output = tmpl.render(&ctx! { name: "world" }).unwrap();
+    let output = tmpl.render_ctx(&ctx! { name: "world" }).unwrap();
     assert_eq!(output, "Hello world!\n");
 }
 
 #[test]
 fn inline_template_with_typed_vars() {
     let src = concat!(
-        "---\n",
+        "\
+---
+",
         "params: [label = str, count = int]\n",
-        "---\n",
+        "\
+---
+",
         "> {% tmpl row %}\n",
-        "---\n",
+        "\
+---
+",
         "params: [label = str, count = int]\n",
-        "---\n",
+        "\
+---
+",
         "- {{ label }}: {{ count }}\n\n",
         "> {% /tmpl %}\n\n",
         "> {% include row with label=label, count=count %}",
     );
     let tmpl = Template::from_source(src).unwrap();
-    let output = tmpl.render(&ctx! { label: "tasks", count: 42 }).unwrap();
+    let output = tmpl
+        .render_ctx(&ctx! { label: "tasks", count: 42 })
+        .unwrap();
     assert_eq!(output, "- tasks: 42\n");
 }
 
 #[test]
 fn inline_template_type_mismatch() {
     let src = concat!(
-        "---\n",
+        "\
+---
+",
         "params: [name = str]\n",
-        "---\n",
+        "\
+---
+",
         "> {% tmpl row %}\n",
-        "---\n",
+        "\
+---
+",
         "params: [count = int]\n",
-        "---\n",
+        "\
+---
+",
         "{{ count }}\n\n",
         "> {% /tmpl %}\n\n",
         "> {% include row with count=name %}",
     );
     let tmpl = Template::from_source(src).unwrap();
-    let err = tmpl.render(&ctx! { name: "oops" }).unwrap_err();
+    let err = tmpl.render_ctx(&ctx! { name: "oops" }).unwrap_err();
     assert!(
         err.to_string().contains("type mismatch"),
         "expected type mismatch error, got: {err}"
@@ -65,33 +91,52 @@ fn inline_template_type_mismatch() {
 #[test]
 fn inline_template_for_loop() {
     let src = concat!(
-        "---\n",
+        "\
+---
+",
         "params: [items = list<str>]\n",
-        "---\n",
+        "\
+---
+",
         "> {% tmpl item %}\n",
-        "---\n",
+        "\
+---
+",
         "params: [it = str]\n",
-        "---\n",
+        "\
+---
+",
         "- {{ it }}\n\n",
         "> {% /tmpl %}\n\n",
         "> {% include item for it in items %}",
     );
     let tmpl = Template::from_source(src).unwrap();
-    let output = tmpl.render(&ctx! { items: ["a", "b", "c"] }).unwrap();
+    let output = tmpl.render_ctx(&ctx! { items: ["a", "b", "c"] }).unwrap();
     assert_eq!(output, "- a\n- b\n- c\n");
 }
 
 #[test]
 fn inline_template_used_twice() {
     let src = concat!(
-        "---\n",
+        "\
+---
+",
         "params: []\n",
-        "---\n",
+        "\
+---
+",
         "> {% tmpl sep %}\n",
-        "---\n",
+        "\
+---
+",
         "params: []\n",
-        "---\n",
-        "---\n\n",
+        "\
+---
+",
+        "\
+---
+
+",
         "> {% /tmpl %}\n\n",
         "\n",
         "A\n\n",
@@ -101,20 +146,28 @@ fn inline_template_used_twice() {
         "> {% include sep %}",
     );
     let tmpl = Template::from_source(src).unwrap();
-    let output = tmpl.render(&Context::new()).unwrap();
+    let output = tmpl.render_ctx(&Context::new()).unwrap();
     assert_eq!(output, "A\n---\nB\n---\n");
 }
 
 #[test]
 fn raw_block_inside_inline_template() {
     let src = concat!(
-        "---\n",
+        "\
+---
+",
         "params: []\n",
-        "---\n",
+        "\
+---
+",
         "> {% tmpl code %}\n",
-        "---\n",
+        "\
+---
+",
         "params: []\n",
-        "---\n",
+        "\
+---
+",
         "> {% raw %}\n",
         "{{ not_processed }}\n\n",
         "> {% /raw %}\n\n",
@@ -122,16 +175,20 @@ fn raw_block_inside_inline_template() {
         "> {% include code %}",
     );
     let tmpl = Template::from_source(src).unwrap();
-    let output = tmpl.render(&Context::new()).unwrap();
+    let output = tmpl.render_ctx(&Context::new()).unwrap();
     assert_eq!(output, "{{ not_processed }}\n");
 }
 
 #[test]
 fn tmpl_inside_raw_is_literal() {
     let src = concat!(
-        "---\n",
+        "\
+---
+",
         "params: []\n",
-        "---\n",
+        "\
+---
+",
         "> {% raw %}\n",
         "{% tmpl fake %}\n",
         "this is not a template\n",
@@ -139,7 +196,7 @@ fn tmpl_inside_raw_is_literal() {
         "> {% /raw %}",
     );
     let tmpl = Template::from_source(src).unwrap();
-    let output = tmpl.render(&Context::new()).unwrap();
+    let output = tmpl.render_ctx(&Context::new()).unwrap();
     assert_eq!(
         output,
         "{% tmpl fake %}\nthis is not a template\n{% /tmpl %}\n"
@@ -149,29 +206,41 @@ fn tmpl_inside_raw_is_literal() {
 #[test]
 fn tmpl_definition_produces_no_output() {
     let src = concat!(
-        "---\n",
+        "\
+---
+",
         "params: []\n",
-        "---\n",
+        "\
+---
+",
         "> {% tmpl unused_but_included_later %}\n",
-        "---\n",
+        "\
+---
+",
         "params: []\n",
-        "---\n",
+        "\
+---
+",
         "invisible\n\n",
         "> {% /tmpl %}\n\n",
         "visible\n\n",
         "> {% include unused_but_included_later %}",
     );
     let tmpl = Template::from_source(src).unwrap();
-    let output = tmpl.render(&Context::new()).unwrap();
+    let output = tmpl.render_ctx(&Context::new()).unwrap();
     // The definition itself doesn't render; only the include does.
     assert_eq!(output, "visible\ninvisible\n");
 }
 
 #[test]
 fn comment_in_template_strips_cleanly() {
-    let src = "---\nparams: [x = str]\n---\nbefore{# a comment #}after {{ x }}";
+    let src = "\
+---
+params: [x = str]
+---
+before{# a comment #}after {{ x }}";
     let tmpl = Template::from_source(src).unwrap();
-    let output = tmpl.render(&ctx! { x: "!" }).unwrap();
+    let output = tmpl.render_ctx(&ctx! { x: "!" }).unwrap();
     assert_eq!(output, "beforeafter !");
 }
 
@@ -183,19 +252,27 @@ fn comment_in_template_strips_cleanly() {
 #[test]
 fn inline_template_name_not_flagged_as_undeclared() {
     let src = concat!(
-        "---\n",
+        "\
+---
+",
         "params: [name = str]\n",
-        "---\n",
+        "\
+---
+",
         "> {% tmpl greeting %}\n",
-        "---\n",
+        "\
+---
+",
         "params: [name = str]\n",
-        "---\n",
+        "\
+---
+",
         "Hello {{ name }}!\n\n",
         "> {% /tmpl %}\n\n",
         "> {% include greeting with name=name %}",
     );
     // This should NOT fail with "undeclared variable: greeting".
     let tmpl = Template::from_source(src).unwrap();
-    let output = tmpl.render(&ctx! { name: "world" }).unwrap();
+    let output = tmpl.render_ctx(&ctx! { name: "world" }).unwrap();
     assert_eq!(output, "Hello world!\n");
 }

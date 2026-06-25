@@ -96,7 +96,15 @@ impl HasLastAccessed for CacheEntry {
 ///
 /// let dir = tempfile::tempdir().unwrap();
 /// let path = dir.path().join("greeting.tmpl.md");
-/// std::fs::write(&path, "---\nparams:\n  - name = str\n---\nHi {{ name }}!").unwrap();
+/// std::fs::write(
+///     &path,
+///     r#"---
+/// params:
+///   - name = str
+/// ---
+/// Hi {{ name }}!"#,
+/// )
+/// .unwrap();
 ///
 /// let cache = TemplateCache::new();
 ///
@@ -127,7 +135,15 @@ pub(crate) trait IncludeResolver: Send + Sync {
 ///
 /// let dir = tempfile::tempdir().unwrap();
 /// let path = dir.path().join("greeting.tmpl.md");
-/// std::fs::write(&path, "---\nparams:\n  - name = str\n---\nHi {{ name }}!").unwrap();
+/// std::fs::write(
+///     &path,
+///     r#"---
+/// params:
+///   - name = str
+/// ---
+/// Hi {{ name }}!"#,
+/// )
+/// .unwrap();
 ///
 /// let cache = TemplateCache::new();
 /// let tmpl = cache.load(&path).unwrap();
@@ -212,12 +228,19 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
     ///
     /// let dir = tempfile::tempdir().unwrap();
     /// let path = dir.path().join("test.tmpl.md");
-    /// std::fs::write(&path, "---\nparams: [x = str]\n---\n{{ x }}").unwrap();
+    /// std::fs::write(
+    ///     &path,
+    ///     r#"---
+    /// params: [x = str]
+    /// ---
+    /// {{ x }}"#,
+    /// )
+    /// .unwrap();
     ///
     /// let tmpl = cache.load(&path).unwrap();
     /// let mut ctx = prompt_templates::Context::new();
     /// ctx.set("x", "works");
-    /// assert_eq!(tmpl.render(&ctx).unwrap(), "works");
+    /// assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "works");
     /// ```
     #[must_use]
     pub fn with_hasher(hasher: S) -> Self {
@@ -555,7 +578,14 @@ mod tests {
     fn cache_returns_same_template_for_unchanged_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.tmpl.md");
-        std::fs::write(&path, "---\nparams: [name = str]\n---\nHello {{ name }}!").unwrap();
+        std::fs::write(
+            &path,
+            r"---
+params: [name = str]
+---
+Hello {{ name }}!",
+        )
+        .unwrap();
 
         let cache = TemplateCache::new();
         let t1 = cache.load(&path).unwrap();
@@ -569,12 +599,26 @@ mod tests {
     fn cache_recompiles_on_file_change() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.tmpl.md");
-        std::fs::write(&path, "---\nparams: [name = str]\n---\nHello {{ name }}!").unwrap();
+        std::fs::write(
+            &path,
+            r"---
+params: [name = str]
+---
+Hello {{ name }}!",
+        )
+        .unwrap();
 
         let cache = TemplateCache::new();
         let t1 = cache.load(&path).unwrap();
 
-        std::fs::write(&path, "---\nparams: [name = str]\n---\nGoodbye {{ name }}!").unwrap();
+        std::fs::write(
+            &path,
+            r"---
+params: [name = str]
+---
+Goodbye {{ name }}!",
+        )
+        .unwrap();
         let t2 = cache.load(&path).unwrap();
 
         assert_ne!(t1.source_hash(), t2.source_hash());
@@ -585,7 +629,14 @@ mod tests {
     fn cache_clear_invalidates_all() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("test.tmpl.md");
-        std::fs::write(&path, "---\nparams: []\n---\nHi").unwrap();
+        std::fs::write(
+            &path,
+            r"---
+params: []
+---
+Hi",
+        )
+        .unwrap();
 
         let cache = TemplateCache::new();
         cache.load(&path).unwrap();
@@ -599,7 +650,15 @@ mod tests {
     fn include_cache_avoids_recompile() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("header.tmpl.md");
-        std::fs::write(&path, "---\nname: header\nparams: []\n---\n# Header").unwrap();
+        std::fs::write(
+            &path,
+            r"---
+name: header
+params: []
+---
+# Header",
+        )
+        .unwrap();
 
         let cache = TemplateCache::new();
         let c1 = cache.resolve_include(&path).unwrap();
@@ -613,7 +672,15 @@ mod tests {
     fn load_with_frontmatter_caches() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("fm.tmpl.md");
-        std::fs::write(&path, "---\nname: test\nparams: [x = str]\n---\n{{ x }}").unwrap();
+        std::fs::write(
+            &path,
+            r"---
+name: test
+params: [x = str]
+---
+{{ x }}",
+        )
+        .unwrap();
 
         let cache = TemplateCache::new();
         let (t1, fm1) = cache.load_with_frontmatter(&path).unwrap();
@@ -631,13 +698,22 @@ mod tests {
         // Create a main template that includes a header.
         std::fs::write(
             dir.path().join("header.tmpl.md"),
-            "---\nname: header\nparams: [title = str]\n---\n# {{ title }}",
+            r"---
+name: header
+params: [title = str]
+---
+# {{ title }}",
         )
         .unwrap();
         let main_path = dir.path().join("main.tmpl.md");
         std::fs::write(
             &main_path,
-            "---\nparams: [title = str]\n---\n> {% include [header](header.tmpl.md) with title=title %}\n\nBody",
+            r"---
+params: [title = str]
+---
+> {% include [header](header.tmpl.md) with title=title %}
+
+Body",
         )
         .unwrap();
 
@@ -648,17 +724,13 @@ mod tests {
         ctx.set("title", "Hello");
 
         // First render — compiles include from disk.
-        let output1 = tmpl
-            .render_cached_with(&ctx, &cache, crate::RenderOptions::default())
-            .unwrap();
+        let output1 = tmpl.render_ctx_cached(&ctx, &cache).unwrap();
         assert!(output1.contains("# Hello"));
         assert!(output1.contains("Body"));
         assert_eq!(cache.include_count(), 1);
 
         // Second render — include resolved from cache.
-        let output2 = tmpl
-            .render_cached_with(&ctx, &cache, crate::RenderOptions::default())
-            .unwrap();
+        let output2 = tmpl.render_ctx_cached(&ctx, &cache).unwrap();
         assert_eq!(output1, output2);
         assert_eq!(cache.include_count(), 1); // same entry, no new compilation
     }
@@ -674,12 +746,19 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("custom.tmpl.md");
-        std::fs::write(&path, "---\nparams: [x = str]\n---\n{{ x }}").unwrap();
+        std::fs::write(
+            &path,
+            r"---
+params: [x = str]
+---
+{{ x }}",
+        )
+        .unwrap();
 
         let tmpl = cache.load(&path).unwrap();
         let mut ctx = crate::Context::new();
         ctx.set("x", "works");
-        assert_eq!(tmpl.render(&ctx).unwrap(), "works");
+        assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "works");
 
         // Cached reload works.
         let tmpl2 = cache.load(&path).unwrap();
@@ -694,9 +773,33 @@ mod tests {
         let path_a = dir.path().join("a.tmpl.md");
         let path_b = dir.path().join("b.tmpl.md");
         let path_c = dir.path().join("c.tmpl.md");
-        std::fs::write(&path_a, "---\nparams: []\n---\nA").unwrap();
-        std::fs::write(&path_b, "---\nparams: []\n---\nB").unwrap();
-        std::fs::write(&path_c, "---\nparams: []\n---\nC").unwrap();
+        std::fs::write(
+            &path_a,
+            "\
+---
+params: []
+---
+A",
+        )
+        .unwrap();
+        std::fs::write(
+            &path_b,
+            "\
+---
+params: []
+---
+B",
+        )
+        .unwrap();
+        std::fs::write(
+            &path_c,
+            "\
+---
+params: []
+---
+C",
+        )
+        .unwrap();
 
         cache.load(&path_a).unwrap();
         cache.load(&path_b).unwrap();
@@ -714,7 +817,16 @@ mod tests {
 
         for i in 0..10 {
             let path = dir.path().join(format!("{i}.tmpl.md"));
-            std::fs::write(&path, format!("---\nparams: []\n---\n{i}")).unwrap();
+            std::fs::write(
+                &path,
+                format!(
+                    "---
+params: []
+---
+{i}"
+                ),
+            )
+            .unwrap();
             cache.load(&path).unwrap();
         }
         assert_eq!(cache.template_count(), 10);
@@ -722,7 +834,7 @@ mod tests {
 
     /// Stress-test `TemplateCache` under concurrent access.
     ///
-    /// Spawns 8 threads that simultaneously `load`, `render_cached`,
+    /// Spawns 8 threads that simultaneously `load`, `render_ctx_cached`,
     /// `clear`, and query `template_count` / `include_count` in a tight
     /// loop. The test verifies:
     ///
@@ -748,7 +860,12 @@ mod tests {
             let path = dir.path().join(format!("t{i}.tmpl.md"));
             std::fs::write(
                 &path,
-                format!("---\nparams: [x = str]\n---\ntemplate{i}: {{{{ x }}}}"),
+                format!(
+                    "---
+params: [x = str]
+---
+template{i}: {{{{ x }}}}"
+                ),
             )
             .unwrap();
             paths.push(path);
@@ -793,10 +910,9 @@ mod tests {
                                 if let Ok(tmpl) = cache.load(path) {
                                     let mut ctx = crate::Context::new();
                                     ctx.set("x", "hello");
-                                    if let Ok(output) = tmpl.render_cached_with(
+                                    if let Ok(output) = tmpl.render_ctx_cached(
                                         &ctx,
                                         &cache,
-                                        crate::RenderOptions::default(),
                                     ) {
                                         assert!(
                                             output.contains("hello"),

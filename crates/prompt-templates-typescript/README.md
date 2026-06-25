@@ -13,20 +13,12 @@ Rust engine is also available for exact feature parity.
 
 ## Why?
 
-LLM prompts grow complex — multi-shot examples, tool schemas, agentic
-workflows — but most TypeScript projects still manage them as inline
-template literals or untyped Handlebars/Mustache templates.
-
-**Inline template literals** mix prose with code, making prompts
-unreadable and hard to review. **Untyped template engines** push every
-error to runtime: rename a variable, add a field, change a list
-shape — you discover it when the prompt renders garbage in production.
-
+Inline template literals are unreadable. Untyped Handlebars/Mustache templates break at runtime.
 `prompt-templates` gives you:
 
-- **Markdown-native** — prompts live in `.tmpl.md` files, not template literals. They render as clean markdown in any editor or on GitHub — includes are clickable links, and control flow uses blockquote-prefixed lines so it stays visually separated from prose.
-- **Strict typing** — every parameter declares a type; mismatches are caught before rendering. `generateTypes()` emits TypeScript interfaces from frontmatter.
-- **Agent-safe** — when an LLM writes or edits prompts, the engine catches drift immediately instead of letting it propagate.
+- **Markdown-native** — prompts live in `.tmpl.md` files, readable in any editor or on GitHub.
+- **Strict typing** — every parameter declares a type; `generateTypes()` emits TypeScript interfaces from frontmatter.
+- **Agent-safe** — when an LLM edits prompts, the engine catches drift immediately.
 
 ## Installation
 
@@ -36,11 +28,54 @@ npm install prompt-templates
 
 ## Quick Start
 
+### Type-Safe Templates (recommended)
+
+Generate TypeScript interfaces from frontmatter, then use
+`TypedTemplate<P>` for compile-time checked rendering:
+
+**1. Generate types** (build script or CLI):
+
+```ts
+import { generateTypesFromFile } from "prompt-templates";
+import * as fs from "node:fs";
+
+fs.writeFileSync(
+  "src/generated/greeting.ts",
+  generateTypesFromFile("prompts/greeting.tmpl.md"),
+);
+```
+
+This produces interfaces like:
+
+```ts
+export interface Params {
+  readonly name: string;
+  readonly count: number;
+}
+```
+
+**2. Use with `TypedTemplate<P>`**:
+
+```ts
+import type { Params } from "./generated/greeting.js";
+import { TypedTemplate } from "prompt-templates";
+
+const tmpl = TypedTemplate.fromFile<Params>("prompts/greeting.tmpl.md");
+
+tmpl.render({ name: "Alice", count: 42 }); // ✅ type-checked
+// tmpl.render({ name: "Alice" });           // ❌ TS error: missing 'count'
+
+tmpl.renderTrusted(params); // validate first call, skip rest — fast path
+```
+
+### Inline Templates
+
+For quick prototyping, parse templates inline:
+
 ```ts
 import { Template } from "prompt-templates";
 
-const tmpl = Template.fromSource(`
----
+const tmpl = Template.fromSource(`---
 params:
   - name = str
   - role = str
@@ -51,91 +86,15 @@ console.log(tmpl.render({ name: "Alice", role: "an AI assistant" }));
 // → "You are an AI assistant. Hello Alice!"
 ```
 
-## API
-
-### Template
-
-```ts
-// Constructors
-Template.fromSource(source: string): Template
-Template.fromSourceAllowingUnused(source): Template
-Template.fromSourceWithBaseDir(source, dir): Template
-Template.fromFile(path: string): Template
-
-// Rendering
-tmpl.render(params, options?)        // type-validated
-tmpl.renderUnchecked(params)         // skip validation (fastest)
-tmpl.renderDict(params, options?)    // from Map or Record
-// options: { allowExtra?: boolean }
-
-// Metadata
-tmpl.declarations()                  // → [["name", "str"], ["count", "int"]]
-tmpl.sourceHash()                    // content hash
-tmpl.body()                          // template body after frontmatter
-tmpl.defaults()                      // → { count: 5 }
-tmpl.consts()                        // → { MAX_RETRIES: 3 }
-tmpl.frontmatter                     // parsed frontmatter
-tmpl.setMaxIncludeDepth(depth)
-tmpl.validateDeclarationsAgainst(expected)
-```
-
-### TypedTemplate\<P\>
-
-Compile-time type-checked wrapper — use with generated types:
-
-```ts
-import type { Params } from "./my_template.js";
-import { TypedTemplate } from "prompt-templates";
-
-const tmpl = TypedTemplate.fromSource<Params>(`---
-params:
-  - name = str
-  - count = int
----
-{{ name }} ({{ count }})`);
-
-tmpl.render({ name: "Alice", count: 42 }); // ✅ type-checked
-// tmpl.render({ name: "Alice" });           // ❌ TS error: missing 'count'
-
-tmpl.renderUnchecked(params); // skip validation, trust TS types
-tmpl.renderTrusted(params); // validate first call, skip rest
-```
-
-### TemplateCache
-
-```ts
-const cache = new TemplateCache();
-const tmpl = cache.load("prompts/greeting.tmpl.md");
-cache.templateCount();
-cache.clear();
-```
-
-### ITemplate Interface
-
-Both the pure-TypeScript `Template` and the WASM `Template` implement
-`ITemplate`. Write backend-agnostic code:
-
-```ts
-import type { ITemplate } from "prompt-templates";
-
-function renderGreeting(tmpl: ITemplate, name: string): string {
-  return tmpl.render({ name });
-}
-```
-
 ## Type Generation
 
-Generate TypeScript interfaces from frontmatter:
+`generateTypes()` turns frontmatter into full TypeScript — interfaces,
+enums, constants, and defaults:
 
 ```ts
-import {
-  generateTypes,
-  generateTypesFromFile,
-  inferTypes,
-} from "prompt-templates";
+import { generateTypes } from "prompt-templates";
 
-const code = generateTypes(`
----
+const code = generateTypes(`---
 consts:
   - MAX_RETRIES = int := 3
 params:
@@ -178,16 +137,38 @@ export const DEFAULTS: Partial<Params> = {
 };
 ```
 
-Build script:
+## Enum Dispatch
+
+`defineVariants` creates type-safe enum constructors with pattern matching:
 
 ```ts
-import { generateTypesFromFile } from "prompt-templates";
-import * as fs from "node:fs";
+import { defineVariants, match, isVariant, Template } from "prompt-templates";
 
-fs.writeFileSync(
-  "src/greeting.ts",
-  generateTypesFromFile("prompts/greeting.tmpl.md"),
-);
+const Status = defineVariants({
+  Done: ["summary"],
+  InProgress: null,
+  Blocked: ["reason"],
+});
+
+tmpl.render({ status: Status.Done({ summary: "All tests pass" }) });
+
+// Pattern matching — exhaustive over all variants
+const msg = match(status, {
+  Done: (f) => `✅ ${f.summary}`,
+  InProgress: () => "🔄 Working...",
+  Blocked: (f) => `❌ ${f.reason}`,
+});
+
+// Wildcard fallback
+const simple = match(status, {
+  Done: (f) => f.summary as string,
+  _: () => "pending",
+});
+
+// Type guard
+if (isVariant(status, "Done")) {
+  console.log("Completed!");
+}
 ```
 
 ## Features
@@ -226,36 +207,22 @@ tmpl.render({ name: "Alice" }); // → "Hello, Alice!"
 tmpl.defaults(); // → { greeting: "Hello" }
 ```
 
-### Enum Dispatch
+### If/Elif/Else
 
-```ts
-import { defineVariants, match, isVariant, Template } from "prompt-templates";
+```markdown
+> {% if level == 1 %}
 
-const Status = defineVariants({
-  Done: ["summary"],
-  InProgress: null,
-  Blocked: ["reason"],
-});
+Beginner: {{ name }}
 
-tmpl.render({ status: Status.Done({ summary: "All tests pass" }) });
+> {% elif level == 2 %}
 
-// Pattern matching
-const msg = match(status, {
-  Done: (f) => `✅ ${f.summary}`,
-  InProgress: () => "🔄 Working...",
-  Blocked: (f) => `❌ ${f.reason}`,
-});
+Intermediate: {{ name }}
 
-// Wildcard fallback
-const simple = match(status, {
-  Done: (f) => f.summary as string,
-  _: () => "pending",
-});
+> {% else %}
 
-// Type guard
-if (isVariant(status, "Done")) {
-  console.log("Completed!");
-}
+Expert: {{ name }}
+
+> {% /if %}
 ```
 
 ### Filters
@@ -277,27 +244,70 @@ if (isVariant(status, "Done")) {
 ```
 {{ len(items) }}          → 3 (list length)
 {{ len(name) }}           → 5 (string length)
-{{ idx(item) }}               → 0, 1, 2, … (loop index)
+{{ idx(item) }}           → 0, 1, 2, … (loop index)
 {{ kind(status) }}        → "Done" (variant name)
 {{ has(field) }}          → true if option<T> is present
 ```
 
-### If/Elif/Else
+## API Reference
 
-```markdown
-> {% if level == 1 %}
+### Template
 
-Beginner: {{ name }}
+```ts
+// Constructors
+Template.fromSource(source: string): Template
+Template.fromSourceAllowingUnused(source): Template
+Template.fromSourceWithBaseDir(source, dir): Template
+Template.fromFile(path: string): Template
 
-> {% elif level == 2 %}
+// Rendering
+tmpl.render(params, options?)        // type-validated
+tmpl.renderUnchecked(params)         // skip validation (fastest)
+tmpl.renderDict(params, options?)    // from Map or Record
+// options: { allowExtra?: boolean }
 
-Intermediate: {{ name }}
+// Metadata
+tmpl.declarations()                  // → [["name", "str"], ["count", "int"]]
+tmpl.sourceHash()                    // content hash
+tmpl.body()                          // template body after frontmatter
+tmpl.defaults()                      // → { count: 5 }
+tmpl.consts()                        // → { MAX_RETRIES: 3 }
+tmpl.frontmatter                     // parsed frontmatter
+tmpl.setMaxIncludeDepth(depth)
+tmpl.validateDeclarationsAgainst(expected)
+```
 
-> {% else %}
+### TypedTemplate\<P\>
 
-Expert: {{ name }}
+```ts
+TypedTemplate.fromSource<P>(source): TypedTemplate<P>
+TypedTemplate.fromFile<P>(path): TypedTemplate<P>
 
-> {% /if %}
+tmpl.render(params: P)              // TS compile-time + runtime checked
+tmpl.renderUnchecked(params: P)     // skip runtime validation, trust TS types
+tmpl.renderTrusted(params: P)       // validate first call, skip rest
+```
+
+### TemplateCache
+
+```ts
+const cache = new TemplateCache();
+const tmpl = cache.load("prompts/greeting.tmpl.md");
+cache.templateCount();
+cache.clear();
+```
+
+### ITemplate Interface
+
+Both the pure-TypeScript `Template` and the WASM `Template` implement
+`ITemplate`. Write backend-agnostic code:
+
+```ts
+import type { ITemplate } from "prompt-templates";
+
+function renderGreeting(tmpl: ITemplate, name: string): string {
+  return tmpl.render({ name });
+}
 ```
 
 ## Performance
@@ -309,11 +319,11 @@ Node.js 22, 50,000 iterations, best of 5 runs
 
 <!-- BENCHMARK:TS_COMPARISON_RENDER -->
 
-| Scenario           | prompt-templates |      Handlebars |      Mustache |
-| ------------------ | ---------------: | --------------: | ------------: |
-| **simple**         |    **690 ns** 🏆 |        1,057 ns |        767 ns |
-| **loop (5 items)** |         6,301 ns | **2,386 ns** 🏆 |      3,462 ns |
-| **conditional**    |         1,219 ns |        1,418 ns | **906 ns** 🏆 |
+| Scenario           | render() | renderUnchecked() |      Handlebars |      Mustache |
+| ------------------ | -------: | ----------------: | --------------: | ------------: |
+| **simple**         |   752 ns |     **723 ns** 🏆 |          942 ns |        732 ns |
+| **loop (5 items)** | 6,750 ns |          4,413 ns | **2,195 ns** 🏆 |      3,389 ns |
+| **conditional**    | 1,280 ns |          1,205 ns |        1,201 ns | **897 ns** 🏆 |
 
 <!-- /BENCHMARK:TS_COMPARISON_RENDER -->
 
@@ -323,12 +333,13 @@ Node.js 22, 50,000 iterations, best of 5 runs
 
 | Scenario           | prompt-templates | Handlebars |        Mustache |
 | ------------------ | ---------------: | ---------: | --------------: |
-| **simple**         |         6,150 ns |  81,294 ns |   **843 ns** 🏆 |
-| **loop (5 items)** |        16,399 ns | 156,028 ns | **3,477 ns** 🏆 |
+| **simple**         |         6,828 ns |  78,160 ns |   **920 ns** 🏆 |
+| **loop (5 items)** |        18,862 ns | 156,362 ns | **3,500 ns** 🏆 |
+| **conditional**    |              N/A |        N/A |             N/A |
 
 <!-- /BENCHMARK:TS_COMPARISON_ROUNDTRIP -->
 
-`renderUnchecked()` skips runtime type validation for ~746 ns simple render.
+`renderUnchecked()` skips runtime type validation for ~723 ns simple render.
 
 A [WASM build](../prompt-templates-wasm/README.md) wrapping the Rust
 engine is also available (~200 KB `.wasm`). Pure TypeScript is 2–6×

@@ -322,4 +322,25 @@ mod tests {
         assert!(!is_valid_tag_neighbor("some content"));
         assert!(!is_valid_tag_neighbor("- list item"));
     }
+
+    #[test]
+    fn strip_inline_if_inside_match() {
+        let input = r"
+> {% match status %}
+> {% case Active %}
+
+> {% if detail %}DETAIL{% else %}BRIEF{% /if %}
+
+> {% case Inactive %}
+
+OFF
+
+> {% /match %}";
+        let result = strip_blockquote_tags(input);
+        // The inline if line should be preserved intact
+        assert!(
+            result.contains("{% if detail %}DETAIL{% else %}BRIEF{% /if %}"),
+            "inline if should be preserved: {result}"
+        );
+    }
 }

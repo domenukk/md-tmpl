@@ -435,10 +435,10 @@ func TestParseTypeSpecPrimitives(t *testing.T) {
 		spec string
 		kind typeKind
 	}{
-		{"str", typeStr},
-		{"int", typeInt},
-		{"float", typeFloat},
-		{"bool", typeBool},
+		{"str", kindStr},
+		{"int", kindInt},
+		{"float", kindFloat},
+		{"bool", kindBool},
 	} {
 		node, err := parseTypeSpec(tc.spec)
 		if err != nil {
@@ -456,16 +456,16 @@ func TestParseTypeSpecList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseTypeSpec: %v", err)
 	}
-	if node.kind != typeList {
-		t.Fatalf("expected typeList, got %d", node.kind)
+	if node.kind != kindList {
+		t.Fatalf("expected kindList, got %d", node.kind)
 	}
 	if len(node.fields) != 2 {
 		t.Fatalf("expected 2 fields, got %d", len(node.fields))
 	}
-	if node.fields[0].name != "label" || node.fields[0].typeNode.kind != typeStr {
+	if node.fields[0].name != "label" || node.fields[0].typeNode.kind != kindStr {
 		t.Errorf("field 0: got %v, want label=str", node.fields[0])
 	}
-	if node.fields[1].name != "count" || node.fields[1].typeNode.kind != typeInt {
+	if node.fields[1].name != "count" || node.fields[1].typeNode.kind != kindInt {
 		t.Errorf("field 1: got %v, want count=int", node.fields[1])
 	}
 }
@@ -475,8 +475,8 @@ func TestParseTypeSpecEnum(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseTypeSpec: %v", err)
 	}
-	if node.kind != typeEnum {
-		t.Fatalf("expected typeEnum, got %d", node.kind)
+	if node.kind != kindEnum {
+		t.Fatalf("expected kindEnum, got %d", node.kind)
 	}
 	if len(node.variants) != 3 {
 		t.Fatalf("expected 3 variants, got %d", len(node.variants))
@@ -497,8 +497,8 @@ func TestParseTypeSpecStruct(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseTypeSpec: %v", err)
 	}
-	if node.kind != typeStruct {
-		t.Fatalf("expected typeStruct, got %d", node.kind)
+	if node.kind != kindStruct {
+		t.Fatalf("expected kindStruct, got %d", node.kind)
 	}
 	if len(node.fields) != 2 {
 		t.Fatalf("expected 2 fields, got %d", len(node.fields))
@@ -511,15 +511,15 @@ func TestParseTypeSpecNested(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseTypeSpec: %v", err)
 	}
-	if node.kind != typeList {
-		t.Fatalf("expected typeList, got %d", node.kind)
+	if node.kind != kindList {
+		t.Fatalf("expected kindList, got %d", node.kind)
 	}
 	if len(node.fields) != 2 {
 		t.Fatalf("expected 2 fields, got %d", len(node.fields))
 	}
 	// Second field should be an enum.
-	if node.fields[1].typeNode.kind != typeEnum {
-		t.Errorf("expected typeEnum for severity, got %d", node.fields[1].typeNode.kind)
+	if node.fields[1].typeNode.kind != kindEnum {
+		t.Errorf("expected kindEnum for severity, got %d", node.fields[1].typeNode.kind)
 	}
 	if len(node.fields[1].typeNode.variants) != 3 {
 		t.Errorf("expected 3 enum variants, got %d", len(node.fields[1].typeNode.variants))
@@ -599,4 +599,172 @@ Hello!`
 
 func writeTestFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0644)
+}
+
+// ---------------------------------------------------------------------------
+// Option params — generates pointer types
+// ---------------------------------------------------------------------------
+
+func TestGenerateOptionParams(t *testing.T) {
+	source := `---
+params:
+  - name = str
+  - email = option<str>
+  - age = option<int>
+  - score = option<float>
+  - active = option<bool>
+allow_unused: true
+---
+{{ name }}`
+
+	code, err := GenerateTypes(source, WithRenderHelper(false))
+	if err != nil {
+		t.Fatalf("GenerateTypes: %v", err)
+	}
+
+	assertCompiles(t, code)
+
+	// Verify pointer types for option fields.
+	if !containsNormalized(code, "Email *string") {
+		t.Errorf("expected 'Email *string' for option<str>:\n%s", code)
+	}
+	if !containsNormalized(code, "Age *int64") {
+		t.Errorf("expected 'Age *int64' for option<int>:\n%s", code)
+	}
+	if !containsNormalized(code, "Score *float64") {
+		t.Errorf("expected 'Score *float64' for option<float>:\n%s", code)
+	}
+	if !containsNormalized(code, "Active *bool") {
+		t.Errorf("expected 'Active *bool' for option<bool>:\n%s", code)
+	}
+	// Non-option field should not be a pointer.
+	if !containsNormalized(code, "Name string") {
+		t.Errorf("expected 'Name string' (not pointer):\n%s", code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Scalar list params — generates typed slices
+// ---------------------------------------------------------------------------
+
+func TestGenerateScalarListParams(t *testing.T) {
+	source := `---
+params:
+  - tags = list<str>
+  - scores = list<int>
+  - weights = list<float>
+  - flags = list<bool>
+allow_unused: true
+---
+> {% for t in tags %}
+
+{{ t }}
+
+> {% /for %}
+> {% for s in scores %}
+
+{{ s }}
+
+> {% /for %}
+> {% for w in weights %}
+
+{{ w }}
+
+> {% /for %}
+> {% for f in flags %}
+
+{{ f }}
+
+> {% /for %}`
+
+	code, err := GenerateTypes(source, WithRenderHelper(false))
+	if err != nil {
+		t.Fatalf("GenerateTypes: %v", err)
+	}
+
+	assertCompiles(t, code)
+
+	// Verify typed slices.
+	if !containsNormalized(code, "Tags []string") {
+		t.Errorf("expected 'Tags []string' for scalar_list<str>:\n%s", code)
+	}
+	if !containsNormalized(code, "Scores []int64") {
+		t.Errorf("expected 'Scores []int64' for scalar_list<int>:\n%s", code)
+	}
+	if !containsNormalized(code, "Weights []float64") {
+		t.Errorf("expected 'Weights []float64' for scalar_list<float>:\n%s", code)
+	}
+	if !containsNormalized(code, "Flags []bool") {
+		t.Errorf("expected 'Flags []bool' for scalar_list<bool>:\n%s", code)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// TypeSpec parser — option and scalar_list
+// ---------------------------------------------------------------------------
+
+func TestParseTypeSpecOption(t *testing.T) {
+	node, err := parseTypeSpec("option<str>")
+	if err != nil {
+		t.Fatalf("parseTypeSpec: %v", err)
+	}
+	if node.kind != kindOption {
+		t.Fatalf("expected kindOption, got %d", node.kind)
+	}
+	if node.innerType == nil {
+		t.Fatal("expected innerType to be set")
+	}
+	if node.innerType.kind != kindStr {
+		t.Errorf("expected inner type str, got %d", node.innerType.kind)
+	}
+}
+
+func TestParseTypeSpecScalarList(t *testing.T) {
+	node, err := parseTypeSpec("scalar_list<int>")
+	if err != nil {
+		t.Fatalf("parseTypeSpec: %v", err)
+	}
+	if node.kind != kindScalarList {
+		t.Fatalf("expected kindScalarList, got %d", node.kind)
+	}
+	if node.innerType == nil {
+		t.Fatal("expected innerType to be set")
+	}
+	if node.innerType.kind != kindInt {
+		t.Errorf("expected inner type int, got %d", node.innerType.kind)
+	}
+}
+
+func TestParseTypeSpecListBareType(t *testing.T) {
+	// list<str> (from Rust FFI for scalar typed lists) should parse as kindScalarList.
+	node, err := parseTypeSpec("list<str>")
+	if err != nil {
+		t.Fatalf("parseTypeSpec: %v", err)
+	}
+	if node.kind != kindScalarList {
+		t.Fatalf("expected kindScalarList for list<str>, got %d", node.kind)
+	}
+	if node.innerType == nil {
+		t.Fatal("expected innerType to be set")
+	}
+	if node.innerType.kind != kindStr {
+		t.Errorf("expected inner type str, got %d", node.innerType.kind)
+	}
+}
+
+func TestParseTypeSpecOptionNested(t *testing.T) {
+	// option wrapping a struct
+	node, err := parseTypeSpec("option<struct<host = str, port = int>>")
+	if err != nil {
+		t.Fatalf("parseTypeSpec: %v", err)
+	}
+	if node.kind != kindOption {
+		t.Fatalf("expected kindOption, got %d", node.kind)
+	}
+	if node.innerType == nil || node.innerType.kind != kindStruct {
+		t.Fatalf("expected inner type struct, got %v", node.innerType)
+	}
+	if len(node.innerType.fields) != 2 {
+		t.Errorf("expected 2 fields in inner struct, got %d", len(node.innerType.fields))
+	}
 }

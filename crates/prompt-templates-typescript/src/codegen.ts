@@ -376,6 +376,10 @@ class CodegenContext {
         return vt.name;
       case "untyped_list":
         return "unknown[]";
+      case "option": {
+        const innerType = this.varTypeToTs(fieldName, vt.innerType);
+        return `${innerType} | null`;
+      }
     }
   }
 
@@ -539,6 +543,8 @@ function varTypeToLabel(vt: VarType): string {
       return vt.name;
     case "untyped_list":
       return "list<>";
+    case "option":
+      return `option<${varTypeToLabel(vt.innerType)}>`;
   }
 }
 
@@ -595,6 +601,10 @@ function varTypeToTsType(
     }
     case "untyped_list":
       return "unknown[]";
+    case "option": {
+      const inner = varTypeToTsType(_fieldName, vt.innerType, typeAliases);
+      return `${inner} | null`;
+    }
   }
 }
 
@@ -637,6 +647,8 @@ function valueToJsSource(v: Value): string {
       }
       return `{ ${entries.join(", ")} }`;
     }
+    case "none":
+      return "null";
   }
 }
 
@@ -659,5 +671,7 @@ function valueToJsLiteral(v: Value): unknown {
       }
       return obj;
     }
+    case "none":
+      return null;
   }
 }

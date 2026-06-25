@@ -1,0 +1,225 @@
+{
+  "tests": [
+    {
+      "name": "basic_inline_template",
+      "description": "Basic inline template definition and inclusion",
+      "template_lines": [
+        "---",
+        "params: [name = str]",
+        "---",
+        "> {% tmpl greeting %}",
+        "---",
+        "params: [name = str]",
+        "---",
+        "Hello {{ name }}!",
+        "",
+        "> {% /tmpl %}",
+        "",
+        "> {% include greeting with name=name %}"
+      ],
+      "params": {
+        "name": "world"
+      },
+      "expected_output": "Hello world!\n"
+    },
+    {
+      "name": "inline_template_with_typed_vars",
+      "description": "Inline template with typed parameters (str and int)",
+      "template_lines": [
+        "---",
+        "params:",
+        "  - label = str",
+        "  - count = int",
+        "---",
+        "> {% tmpl row %}",
+        "---",
+        "params:",
+        "  - label = str",
+        "  - count = int",
+        "---",
+        "- {{ label }}: {{ count }}",
+        "",
+        "> {% /tmpl %}",
+        "",
+        "> {% include row with label=label, count=count %}"
+      ],
+      "params": {
+        "label": "tasks",
+        "count": 42
+      },
+      "expected_output": "- tasks: 42\n"
+    },
+    {
+      "name": "inline_template_type_mismatch",
+      "description": "Passing a str where int is expected should produce a type mismatch error",
+      "template_lines": [
+        "---",
+        "params: [name = str]",
+        "---",
+        "> {% tmpl row %}",
+        "---",
+        "params: [count = int]",
+        "---",
+        "{{ count }}",
+        "",
+        "> {% /tmpl %}",
+        "",
+        "> {% include row with count=name %}"
+      ],
+      "params": {
+        "name": "oops"
+      },
+      "expected_error": "type mismatch"
+    },
+    {
+      "name": "inline_template_for_loop",
+      "description": "Inline template with for-each iteration over a list",
+      "template_lines": [
+        "---",
+        "params: [items = list<str>]",
+        "---",
+        "> {% tmpl item %}",
+        "---",
+        "params: [it = str]",
+        "---",
+        "- {{ it }}",
+        "",
+        "> {% /tmpl %}",
+        "",
+        "> {% include item for it in items %}"
+      ],
+      "params": {
+        "items": ["a", "b", "c"]
+      },
+      "expected_output": "- a\n- b\n- c\n"
+    },
+    {
+      "name": "inline_template_used_twice",
+      "description": "Same inline template included at two different sites",
+      "template_lines": [
+        "---",
+        "params: []",
+        "---",
+        "> {% tmpl sep %}",
+        "---",
+        "params: []",
+        "---",
+        "---",
+        "",
+        "> {% /tmpl %}",
+        "",
+        "A",
+        "",
+        "> {% include sep %}",
+        "",
+        "B",
+        "",
+        "> {% include sep %}"
+      ],
+      "params": {},
+      "expected_output": "A\n---\nB\n---\n"
+    },
+    {
+      "name": "raw_block_inside_inline_template",
+      "description": "Raw blocks inside inline templates preserve literal content",
+      "template_lines": [
+        "---",
+        "params: []",
+        "---",
+        "> {% tmpl code %}",
+        "---",
+        "params: []",
+        "---",
+        "",
+        "> {% raw %}",
+        "",
+        "{{ not_processed }}",
+        "",
+        "> {% /raw %}",
+        "",
+        "> {% /tmpl %}",
+        "",
+        "> {% include code %}"
+      ],
+      "params": {},
+      "expected_output": "{{ not_processed }}\n"
+    },
+    {
+      "name": "tmpl_inside_raw_is_literal",
+      "description": "tmpl tags inside raw blocks are treated as literal text",
+      "template_lines": [
+        "---",
+        "params: []",
+        "---",
+        "",
+        "> {% raw %}",
+        "",
+        "{% tmpl fake %}",
+        "this is not a template",
+        "{% /tmpl %}",
+        "",
+        "> {% /raw %}"
+      ],
+      "params": {},
+      "expected_output": "{% tmpl fake %}\nthis is not a template\n{% /tmpl %}\n"
+    },
+    {
+      "name": "tmpl_definition_produces_no_output",
+      "description": "The tmpl definition itself produces no output; only the include does",
+      "template_lines": [
+        "---",
+        "params: []",
+        "---",
+        "> {% tmpl unused_but_included_later %}",
+        "---",
+        "params: []",
+        "---",
+        "invisible",
+        "",
+        "> {% /tmpl %}",
+        "",
+        "visible",
+        "",
+        "> {% include unused_but_included_later %}"
+      ],
+      "params": {},
+      "expected_output": "visible\ninvisible\n"
+    },
+    {
+      "name": "comment_in_template_strips_cleanly",
+      "description": "Comments are stripped without leaving extra whitespace",
+      "template_lines": [
+        "---",
+        "params: [x = str]",
+        "---",
+        "before{# a comment #}after {{ x }}"
+      ],
+      "params": {
+        "x": "!"
+      },
+      "expected_output": "beforeafter !"
+    },
+    {
+      "name": "inline_template_name_not_flagged_as_undeclared",
+      "description": "Inline template names must not trigger undeclared variable errors",
+      "template_lines": [
+        "---",
+        "params: [name = str]",
+        "---",
+        "> {% tmpl greeting %}",
+        "---",
+        "params: [name = str]",
+        "---",
+        "Hello {{ name }}!",
+        "",
+        "> {% /tmpl %}",
+        "",
+        "> {% include greeting with name=name %}"
+      ],
+      "params": {
+        "name": "world"
+      },
+      "expected_output": "Hello world!\n"
+    }
+  ]
+}

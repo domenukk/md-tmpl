@@ -1,11 +1,20 @@
 # prompt-templates-macros
 
-Proc macros for compile-time template validation, pre-parsing, and typed
-parameter struct generation for
+[![crates.io](https://img.shields.io/crates/v/prompt-templates-macros.svg)](https://crates.io/crates/prompt-templates-macros)
+
+Proc macros for **compile-time** template validation, pre-parsing, and
+typed parameter struct generation for
 [prompt-templates](https://github.com/domenukk/prompt-templates).
 
 [![Crates.io](https://img.shields.io/crates/v/prompt-templates-macros.svg)](https://crates.io/crates/prompt-templates-macros)
 [![Docs.rs](https://docs.rs/prompt-templates-macros/badge.svg)](https://docs.rs/prompt-templates-macros)
+
+## Why?
+
+The core `prompt-templates` crate validates at runtime. This companion
+crate moves validation to `cargo build` — syntax errors, unknown
+variables, and type mismatches become compile errors. It also generates
+typed Rust structs from frontmatter.
 
 ## Installation
 
@@ -51,7 +60,7 @@ assert_eq!(output, "\nHello Alice!\n");
 - **`pub fn template() -> &'static Template`** — pre-compiled template singleton.
 - **`pub struct Params { ... }`** — typed parameter struct with:
   - `render()` — render using the embedded template.
-  - `render_with(tmpl)` — render with an externally-loaded template (hot-reload).
+  - `render_reloaded(tmpl)` — render with an externally-loaded template (hot-reload).
   - `validate_template(tmpl)` — check template compatibility.
   - `to_context()` — convert to a `Context`.
 - Sub-structs for compound types (e.g. `ParamsItemsItem`).
@@ -80,7 +89,8 @@ assert_eq!(output, "Hello World!\n");
 
 ## Hot-Reload with Type Safety
 
-Combine compile-time types with runtime loading:
+Combine compile-time types with runtime loading — iterate on prompt
+wording without recompiling, while keeping your type guarantees:
 
 ```rust
 use prompt_templates::Template;
@@ -98,7 +108,7 @@ let output = greeting::Params {
     name: "Bob".to_string(),
     count: 1,
     items: vec![],
-}.render_with(&tmpl).unwrap();
+}.render_reloaded(&tmpl).unwrap();
 ```
 
 ## Type Mapping

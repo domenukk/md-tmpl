@@ -31,12 +31,10 @@ const ENUM_TAG_KEY: &str = prompt_templates::consts::ENUM_TAG_KEY;
 ///
 /// Returns a `PyErr` if the value type is not supported or conversion fails.
 pub(crate) fn py_to_value(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
-    // Python None maps to the template engine's `None` variant, used by
-    // `option<T>` types (desugared to `enum<Some(val=T), None>`).
+    // Python None maps to the template engine's transparent `Value::None`,
+    // representing an absent optional value.
     if obj.is_none() {
-        return Ok(Value::Str(
-            prompt_templates::consts::OPTION_NONE.to_string(),
-        ));
+        return Ok(Value::None);
     }
 
     // Bool must be checked before int because bool is a subclass of int.
@@ -217,5 +215,6 @@ pub(crate) fn value_to_py(py: Python<'_>, value: &Value) -> PyResult<Py<PyAny>> 
             let py_tmpl = crate::template::PyTemplate::from_inner(inner, frontmatter);
             Ok(Py::new(py, py_tmpl)?.into_any())
         }
+        Value::None => Ok(py.None().into_pyobject(py)?.into_any().unbind()),
     }
 }

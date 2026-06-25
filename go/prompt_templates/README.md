@@ -10,20 +10,26 @@ allocations**.
 
 ## Why?
 
-LLM prompts grow complex — multi-shot examples, tool schemas, agentic
-workflows — but most Go projects still manage them as inline
-`fmt.Sprintf` strings or `text/template` files with no type safety.
-
-**Inline strings** mix prose with code, making prompts unreadable and
-hard to review. **`text/template`** provides no type checking: rename a
-variable, add a field, change a list shape — you discover it when the
-template panics or renders garbage.
-
+Inline `fmt.Sprintf` strings are unreadable. `text/template` has no type checking — rename a variable and you find out when it panics.
 `prompt-templates` gives you:
 
-- **Markdown-native** — prompts live in `.tmpl.md` files, not `fmt.Sprintf` strings. They render as clean markdown in any editor or on GitHub — includes are clickable links, and control flow uses blockquote-prefixed lines so it stays visually separated from prose.
-- **Strict typing** — every parameter declares a type; mismatches are caught at render time with clear error messages.
-- **Agent-safe** — when an LLM writes or edits prompts, the engine catches drift immediately instead of letting it propagate.
+- **Markdown-native** — prompts live in `.tmpl.md` files, readable in any editor or on GitHub.
+- **Strict typing** — every parameter declares a type; mismatches are caught at render time with clear errors.
+- **Agent-safe** — when an LLM edits prompts, the engine catches drift immediately.
+
+## Prerequisites
+
+The Go binding uses CGo to call the Rust-based engine. You need:
+
+1. **Rust toolchain** — install via [rustup.rs](https://rustup.rs/)
+2. **Build the native library** before `go build`:
+   ```bash
+   # Option A: using just (recommended)
+   just build-go-ffi
+
+   # Option B: manual
+   cargo build -p prompt-templates-ffi --release
+   ```
 
 ## Installation
 
@@ -31,50 +37,79 @@ template panics or renders garbage.
 go get github.com/domenukk/prompt-templates/go/prompt_templates
 ```
 
-Build the native library first:
-
-```bash
-just build-go-ffi
-```
-
 ## Quick Start
 
+### Struct-Based Rendering (recommended)
+
+Define Go structs that match your template parameters — fields are
+mapped by `json` tags, falling back to lowercased field name:
+
 ```go
+import pt "github.com/domenukk/prompt-templates/go/prompt_templates"
+
+type ReviewParams struct {
+    Reviewer string `json:"reviewer"`
+    FilePath string `json:"file_path"`
+    Severity string `json:"severity"`
+}
+
 tmpl, err := pt.FromSource(`---
 params:
-  - name = str
-  - role = str
+  - reviewer = str
+  - file_path = str
+  - severity = str
 ---
-You are {{ role }}. Hello {{ name }}!`)
+# Code Review by {{ reviewer }}
+
+File: {{ file_path }}
+Severity: {{ severity }}`)
 if err != nil {
     log.Fatal(err)
 }
 defer tmpl.Close()
 
-// Option 1: Map
-result, err := tmpl.RenderMap(map[string]any{
-    "name": "Alice",
-    "role": "an AI assistant",
+result, err := tmpl.RenderStruct(ReviewParams{
+    Reviewer: "Alice",
+    FilePath: "main.go",
+    Severity: "high",
 })
+```
 
-// Option 2: Struct
-type Params struct {
-    Name string `json:"name"`
-    Role string `json:"role"`
-}
-result, err = tmpl.RenderStruct(Params{Name: "Alice", Role: "an AI assistant"})
+### Map-Based Rendering
 
-// Option 3: Context (fine-grained control)
+For dynamic use cases, pass a `map[string]any`:
+
+```go
+result, err := tmpl.RenderMap(map[string]any{
+    "reviewer":  "Alice",
+    "file_path": "main.go",
+    "severity":  "high",
+})
+```
+
+### Context API (fine-grained control)
+
+```go
 ctx := pt.NewContext()
 defer ctx.Close()
-ctx.SetStr("name", "Alice")
-ctx.SetStr("role", "an AI assistant")
-result, err = tmpl.Render(ctx)
+ctx.SetStr("reviewer", "Alice")
+ctx.SetStr("file_path", "main.go")
+ctx.SetStr("severity", "high")
+result, err := tmpl.Render(ctx)
 ```
 
 ## Typed Lists
 
 ```go
+type TaskParams struct {
+    Tasks []Task `json:"tasks"`
+}
+
+type Task struct {
+    Title    string `json:"title"`
+    Priority string `json:"priority"`
+}
+
 tmpl, err := pt.FromSource(`---
 params:
   - tasks = list<title = str, priority = str>
@@ -88,60 +123,61 @@ if err != nil {
 }
 defer tmpl.Close()
 
-result, err := tmpl.RenderMap(map[string]any{
-    "tasks": []map[string]string{
-        {"title": "Write documentation", "priority": "High"},
-        {"title": "Add unit tests",      "priority": "Medium"},
+result, err := tmpl.RenderStruct(TaskParams{
+    Tasks: []Task{
+        {Title: "Write documentation", Priority: "High"},
+        {Title: "Add unit tests",      Priority: "Medium"},
     },
 })
 ```
 
 ## Enum Dispatch
 
-Typed variants with exhaustiveness checking and field narrowing:
+Typed variants with exhaustiveness checking and field narrowing.
+
+### TaggedVariant (static typing, recommended)
+
+Embed `TaggedVariant` in Go structs for compile-time typed enum variants
+with zero allocations:
 
 ```go
-// Option 1: Static typing with TaggedVariant (zero allocations)
 type DoneVariant struct {
     pt.TaggedVariant
     Summary string `json:"summary"`
 }
 
-result, err := tmpl.RenderStruct(map[string]any{
-    "status": DoneVariant{
+func NewDone(summary string) DoneVariant {
+    return DoneVariant{
         TaggedVariant: pt.NewTaggedVariant("Done"),
-        Summary:       "All tests pass",
-    },
-})
+        Summary:       summary,
+    }
+}
 
-// Option 2: Dynamic Variant
-result, err = tmpl.RenderMap(map[string]any{
+type StatusParams struct {
+    Status any `json:"status"`
+}
+
+result, err := tmpl.RenderStruct(StatusParams{
+    Status: NewDone("All tests pass"),
+})
+```
+
+### Dynamic Variant
+
+For cases where the variant is determined at runtime:
+
+```go
+result, err := tmpl.RenderMap(map[string]any{
     "status": pt.Variant{
         Kind:   "Done",
         Fields: map[string]any{"summary": "All tests pass"},
     },
 })
 
-// Unit variants
-ctx.Set("status", pt.Variant{Kind: "Blocked"})
-```
-
-### TaggedVariant (static typing)
-
-Embed `TaggedVariant` in Go structs for compile-time typed enum variants:
-
-```go
-type Confirmed struct {
-    prompt_templates.TaggedVariant
-    Evidence string `json:"evidence"`
-}
-
-func NewConfirmed(evidence string) Confirmed {
-    return Confirmed{
-        TaggedVariant: prompt_templates.NewTaggedVariant("Confirmed"),
-        Evidence:      evidence,
-    }
-}
+// Unit variants (no fields):
+result, err = tmpl.RenderMap(map[string]any{
+    "status": pt.Variant{Kind: "Blocked"},
+})
 ```
 
 ### Codegen
@@ -149,27 +185,6 @@ func NewConfirmed(evidence string) Confirmed {
 `GenerateTypes` produces sealed interfaces and concrete structs with
 direct FFI setters for scalar fields — bypassing reflection and
 FlexBuffers serialization.
-
-## RenderStruct & MergeStruct
-
-Fields are mapped by `json` tags, falling back to lowercased field name.
-Uses FlexBuffers under the hood:
-
-```go
-type Params struct {
-    Name  string `json:"name"`
-    Count int64  `json:"count"`
-    Tag   string `json:"tag,omitempty"` // skipped when zero
-}
-
-result, err := tmpl.RenderStruct(Params{Name: "Alice", Count: 42})
-
-// Or merge into an existing context:
-ctx := tmpl.DefaultsContext()
-defer ctx.Close()
-ctx.MergeStruct(Params{Name: "Alice", Count: 42})
-result, err = tmpl.Render(ctx)
-```
 
 ## Default Values
 
@@ -182,7 +197,7 @@ params:
 {{ greeting }}, {{ name }}!`)
 
 result, err := tmpl.RenderMap(map[string]any{"name": "Alice"})
-// Hello, Alice!
+// → "Hello, Alice!"
 
 // Pre-fill with defaults:
 ctx := tmpl.DefaultsContext()
@@ -208,7 +223,7 @@ result, err = tmpl.Render(ctx)
 ## Built-in Functions
 
 ```
-{{ idx(item) }}               → 0, 1, 2, … (loop index)
+{{ idx(item) }}           → 0, 1, 2, … (loop index)
 {{ len(items) }}          → 3 (list length)
 {{ len(name) }}           → 5 (string length)
 {{ kind(status) }}        → "Done" (variant name)
@@ -314,6 +329,7 @@ ctx.SetBool("enabled", true)
 ctx.SetJSON("items", `[{"label":"alpha"}]`)
 ctx.SetTmpl("card", cardTemplate)
 ctx.Set("key", value) // auto-detect type
+ctx.MergeStruct(myStruct) // merge struct fields into context
 ```
 
 ### Errors
@@ -330,26 +346,26 @@ vs Go's `text/template`, Intel Xeon @ 2.60 GHz, median of 3 runs
 
 **Render only** (pre-compiled template + data → output):
 
-| Scenario   | prompt-templates | Go `text/template` |  speedup |
-| ---------- | ---------------: | -----------------: | -------: |
-| **small**  |           536 ns |             532 ns |    ~1.0× |
-| **medium** |  **1,718 ns** 🏆 |           5,919 ns |     3.4× |
-| **large**  | **24,238 ns** 🏆 |         141,069 ns | **5.8×** |
+| Scenario   | prompt-templates | Go `text/template` | speedup |
+| ---------- | ---------------: | -----------------: | ------: |
+| **small**  |    **506 ns** 🏆 |           1,035 ns |    2.0× |
+| **medium** |  **1,523 ns** 🏆 |           6,349 ns |    4.2× |
+| **large**  | **24,257 ns** 🏆 |         137,271 ns |    5.7× |
 
 **Round-trip** (compile + render):
 
 | Scenario   | prompt-templates | Go `text/template` | speedup |
 | ---------- | ---------------: | -----------------: | ------: |
-| **small**  |  **5,515 ns** 🏆 |           5,643 ns |   ~1.0× |
-| **medium** | **19,436 ns** 🏆 |          21,798 ns |    1.1× |
-| **large**  | **57,015 ns** 🏆 |         167,417 ns |    2.9× |
+| **small**  |         5,603 ns |           5,802 ns |   ~1.0× |
+| **medium** | **19,313 ns** 🏆 |          21,452 ns |   1.11× |
+| **large**  | **63,594 ns** 🏆 |         168,819 ns |    2.7× |
 
 **Filters:**
 
 | Filter         | prompt-templates | Go `text/template` | speedup |
 | -------------- | ---------------: | -----------------: | ------: |
-| **upper**      |    **489 ns** 🏆 |             959 ns |    2.0× |
-| **trim+upper** |    **505 ns** 🏆 |           1,325 ns |    2.6× |
+| **upper**      |    **435 ns** 🏆 |             938 ns |    2.2× |
+| **trim+upper** |    **450 ns** 🏆 |           1,297 ns |    2.9× |
 
 ```bash
 just test-go     # 144 tests

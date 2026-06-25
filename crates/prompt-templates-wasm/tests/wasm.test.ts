@@ -1318,7 +1318,7 @@ params:
 > {% match label %}
 > {% case Some %}
 
-got:{{ label.val }}
+got:{{ label }}
 
 > {% case None %}
 
@@ -1334,7 +1334,7 @@ params:
 ---
 > {% if has(label) %}
 
-got:{{ label.val }}
+got:{{ label }}
 
 > {% else %}
 
@@ -1350,7 +1350,7 @@ empty
 
   it("Some struct renders Some arm via match", () => {
     const result = matchTemplate.render({
-      label: { __kind__: "Some", val: "hello" },
+      label: "hello",
     });
     assert.ok(result.includes("got:hello"), `expected 'got:hello', got '${result}'`);
   });
@@ -1362,7 +1362,7 @@ empty
 
   it("Some struct renders if branch via has()", () => {
     const result = hasTemplate.render({
-      label: { __kind__: "Some", val: "world" },
+      label: "world",
     });
     assert.ok(result.includes("got:world"), `expected 'got:world', got '${result}'`);
   });
@@ -1375,7 +1375,7 @@ params:
 ---
 > {% if has(count) %}
 
-count={{ count.val }}
+count={{ count }}
 
 > {% else %}
 
@@ -1395,7 +1395,7 @@ params:
 ---
 > {% if has(count) %}
 
-count={{ count.val }}
+count={{ count }}
 
 > {% else %}
 
@@ -1404,7 +1404,7 @@ no-count
 > {% /if %}`,
     );
     const result = t.render({
-      count: { __kind__: "Some", val: 42 },
+      count: 42,
     });
     assert.ok(result.includes("count=42"), `expected 'count=42', got '${result}'`);
   });

@@ -1,6 +1,9 @@
 use quote::{format_ident, quote};
 
-use crate::struct_gen::{SetterFn, builder_field_attrs, struct_derive_attrs, var_type_to_rust};
+use crate::{
+    crate_path,
+    struct_gen::{SetterFn, builder_field_attrs, struct_derive_attrs, var_type_to_rust},
+};
 
 /// Check whether any field in `decls` (recursively) contains a `tmpl<>` type.
 ///
@@ -62,17 +65,19 @@ pub(crate) fn typed_list_codegen(
     });
 
     let item_struct = item_struct_name.clone();
+    let cp = crate_path();
     (
         quote! { Vec<#item_struct> },
         Box::new(move |val, name| {
             let name_lit = name.to_string();
             let stmts = &item_set_stmts;
+            let cp = &cp;
             quote! {
-                ctx.set(#name_lit, ::prompt_templates::Value::List(::prompt_templates::__private::Arc::new(
+                ctx.set(#name_lit, #cp::Value::List(#cp::__private::Arc::new(
                     #val.iter().map(|item| {
-                        let mut ctx = ::prompt_templates::Context::new();
+                        let mut ctx = #cp::Context::new();
                         #(#stmts)*
-                        ::prompt_templates::Value::Struct(::prompt_templates::__private::Arc::new(ctx.into_inner()))
+                        #cp::Value::Struct(#cp::__private::Arc::new(ctx.into_inner()))
                     }).collect()
                 )));
             }
@@ -118,17 +123,19 @@ pub(crate) fn typed_dict_codegen(
     });
 
     let dict_struct = dict_struct_name.clone();
+    let cp = crate_path();
     (
         quote! { #dict_struct },
         Box::new(move |val, name| {
             let name_lit = name.to_string();
             let stmts = &dict_set_stmts;
+            let cp = &cp;
             quote! {
                 {
                     let val = &#val;
-                    let mut inner_ctx = ::prompt_templates::Context::new();
+                    let mut inner_ctx = #cp::Context::new();
                     #(#stmts)*
-                    ctx.set(#name_lit, ::prompt_templates::Value::Struct(::prompt_templates::__private::Arc::new(inner_ctx.into_inner())));
+                    ctx.set(#name_lit, #cp::Value::Struct(#cp::__private::Arc::new(inner_ctx.into_inner())));
                 }
             }
         }),
@@ -281,14 +288,16 @@ pub(crate) fn typed_enum_codegen(
     });
 
     let enum_type = enum_name.clone();
+    let cp = crate_path();
     (
         quote! { #enum_type },
         Box::new(move |val, name| {
             let name_lit = name.to_string();
+            let cp = &cp;
             quote! {
                 ctx.set(
                     #name_lit,
-                    match ::prompt_templates::to_value(&#val) {
+                    match #cp::to_value(&#val) {
                         ::core::result::Result::Ok(v) => v,
                         ::core::result::Result::Err(e) => {
                             unreachable!("generated enum type should always be serializable: {}", e)
@@ -302,10 +311,9 @@ pub(crate) fn typed_enum_codegen(
 
 /// Generate `Option<T>` and a setter for option-typed variables (`option<T>`).
 ///
-/// Instead of generating a full `enum { Some { val: T }, None }`, this produces
-/// a Rust `Option<inner_type>` field and a setter that converts:
-/// - `None` → template `Value::Str("None")`
-/// - `Some(v)` → template `Value::Struct({ __kind__: "Some", val: serialized_v })`
+/// Transparent option representation:
+/// - `None` → `Value::None`
+/// - `Some(v)` → the inner value directly (e.g. `Value::Int(42)`)
 pub(crate) fn typed_option_codegen(
     var_type: &prompt_templates::VarType,
     parent_struct: &str,
@@ -319,18 +327,16 @@ pub(crate) fn typed_option_codegen(
     let (inner_type, inner_set) =
         var_type_to_rust(inner_vt, parent_struct, field_name, sub_structs);
 
+    let cp = crate_path();
     (
         quote! { ::core::option::Option<#inner_type> },
         Box::new(move |val, name| {
             let name_lit = name.to_string();
             // The inner setter generates `ctx.set(key, value)` statements.
             // We shadow `ctx` with a temporary context to capture the inner value,
-            // then extract it for wrapping in the option enum representation.
-            //
-            // We clone the inner value from &T to T so that the inner setter
-            // receives an owned value (satisfying Into<Value> for primitives
-            // like i64 and for String via ctx.set(.., val.as_str())).
+            // then extract it for the transparent option representation.
             let inner_stmt = inner_set(quote! { __option_inner_val }, "__option_val__");
+            let cp = &cp;
             quote! {
                 ctx.set(#name_lit, {
                     let __option_ref = &#val;
@@ -338,25 +344,13 @@ pub(crate) fn typed_option_codegen(
                         let __option_inner_val = ::core::clone::Clone::clone(__option_inner_ref);
                         // Use a temporary context to serialize the inner value via
                         // the generated setter.
-                        let mut ctx = ::prompt_templates::Context::new();
+                        let mut ctx = #cp::Context::new();
                         #inner_stmt
-                        let __inner_value = ctx.get("__option_val__")
+                        ctx.get("__option_val__")
                             .cloned()
-                            .unwrap_or(::prompt_templates::Value::Str(::prompt_templates::__private::String::new()));
-                        ::prompt_templates::Value::Struct(::prompt_templates::__private::Arc::new(
-                            [
-                                (
-                                    ::prompt_templates::__private::String::from("__kind__"),
-                                    ::prompt_templates::Value::Str(::prompt_templates::__private::String::from("Some")),
-                                ),
-                                (
-                                    ::prompt_templates::__private::String::from("val"),
-                                    __inner_value,
-                                ),
-                            ].into_iter().collect()
-                        ))
+                            .unwrap_or(#cp::Value::None)
                     } else {
-                        ::prompt_templates::Value::Str(::prompt_templates::__private::String::from("None"))
+                        #cp::Value::None
                     }
                 });
             }
@@ -372,8 +366,8 @@ pub(crate) fn typed_option_codegen(
 ///
 /// Unlike `typed_enum_codegen` (which prefixes names with a parent struct),
 /// this function emits types using their **original alias name** from the
-/// template.  For example, `ResearchPhase = enum<Explore, Triage, Exploit>`
-/// generates `pub enum ResearchPhase { Explore, Triage, Exploit }`.
+/// template.  For example, `BuildPhase = enum<Compile, Link, Test>`
+/// generates `pub enum BuildPhase { Compile, Link, Test }`.
 ///
 /// For **unit-variant-only enums**, this additionally generates:
 /// - `Display` impl (variant name → string)
@@ -391,6 +385,9 @@ pub(crate) fn generate_type_alias_tokens(
 
     for (name, var_type) in aliases {
         match var_type {
+            prompt_templates::VarType::Option(_) => {
+                tokens.push(generate_toplevel_option_alias(name, var_type));
+            }
             prompt_templates::VarType::Enum(_) if var_type.is_option() => {
                 tokens.push(generate_toplevel_option_alias(name, var_type));
             }
@@ -540,6 +537,7 @@ pub(crate) fn generate_unit_enum_impls(
         .collect();
 
     let enum_name_str = enum_ident.to_string();
+    let cp = crate_path();
 
     quote! {
         impl ::core::fmt::Display for #enum_ident {
@@ -551,12 +549,12 @@ pub(crate) fn generate_unit_enum_impls(
         }
 
         impl ::core::str::FromStr for #enum_ident {
-            type Err = ::prompt_templates::__private::String;
+            type Err = #cp::__private::String;
 
             fn from_str(s: &str) -> ::core::result::Result<Self, Self::Err> {
                 match s.to_lowercase().as_str() {
                     #(#from_str_arms,)*
-                    other => ::core::result::Result::Err(::prompt_templates::__private::format!(
+                    other => ::core::result::Result::Err(#cp::__private::format!(
                         "unknown {} variant {:?}: expected one of [{}]",
                         #enum_name_str,
                         other,

@@ -26,6 +26,8 @@ pub enum Value {
     Struct(Arc<HashMap<String, Value>>),
     /// A pre-compiled template.
     Tmpl(Arc<crate::template::Template>),
+    /// An absent/null value — transparent representation of `Option::None`.
+    None,
 }
 
 impl PartialEq for Value {
@@ -38,6 +40,7 @@ impl PartialEq for Value {
             (Self::List(a), Self::List(b)) => a == b,
             (Self::Struct(a), Self::Struct(b)) => a == b,
             (Self::Tmpl(a), Self::Tmpl(b)) => Arc::ptr_eq(a, b),
+            (Self::None, Self::None) => true,
             _ => false,
         }
     }
@@ -58,6 +61,7 @@ impl fmt::Display for Value {
             Self::List(items) => write!(f, "[<list of {}>]", items.len()),
             Self::Struct(map) => write!(f, "{{<struct of {}>}}", map.len()),
             Self::Tmpl(_) => write!(f, "<template>"),
+            Self::None => Ok(()),
         }
     }
 }
@@ -74,9 +78,9 @@ impl Value {
             Self::List(v) => !v.is_empty(),
             Self::Struct(m) => !m.is_empty(),
             Self::Tmpl(_) => true,
+            Self::None => false,
         }
     }
-
     /// Returns the type name as a static string.
     #[must_use]
     pub fn type_name(&self) -> &'static str {
@@ -88,9 +92,9 @@ impl Value {
             Self::List(_) => crate::consts::TYPE_LIST,
             Self::Struct(_) => crate::consts::TYPE_STRUCT,
             Self::Tmpl(_) => crate::consts::TYPE_TMPL,
+            Self::None => "none",
         }
     }
-
     /// Access a field on a Struct value.
     ///
     /// The internal enum tag key ([`ENUM_TAG_KEY`](crate::consts::ENUM_TAG_KEY))
@@ -329,7 +333,13 @@ impl Value {
     ) -> Result<T, crate::serde_support::DeError> {
         crate::serde_support::from_value(self)
     }
+}
 
+/// `FlexBuffers` support — requires `std` (the `flexbuffers` crate does not
+/// support `no_std`).
+#[cfg(feature = "std")]
+#[cfg(feature = "serde")]
+impl Value {
     /// Create a `Value` from a `FlexBuffers` binary buffer.
     ///
     /// # Errors
@@ -875,7 +885,13 @@ mod tests {
 
     #[test]
     fn from_template_owned() {
-        let tmpl = crate::Template::from_source("---\nparams: [x = str]\n---\n{{ x }}").unwrap();
+        let tmpl = crate::Template::from_source(
+            r"---
+params: [x = str]
+---
+{{ x }}",
+        )
+        .unwrap();
         let val = Value::from(tmpl);
         assert!(matches!(val, Value::Tmpl(_)));
         assert_eq!(val.type_name(), "tmpl");
@@ -883,14 +899,26 @@ mod tests {
 
     #[test]
     fn from_template_ref() {
-        let tmpl = crate::Template::from_source("---\nparams: [x = str]\n---\n{{ x }}").unwrap();
+        let tmpl = crate::Template::from_source(
+            r"---
+params: [x = str]
+---
+{{ x }}",
+        )
+        .unwrap();
         let val = Value::from(&tmpl);
         assert!(matches!(val, Value::Tmpl(_)));
     }
 
     #[test]
     fn from_template_arc() {
-        let tmpl = crate::Template::from_source("---\nparams: [x = str]\n---\n{{ x }}").unwrap();
+        let tmpl = crate::Template::from_source(
+            r"---
+params: [x = str]
+---
+{{ x }}",
+        )
+        .unwrap();
         let arc = Arc::new(tmpl);
         let val = Value::from(arc);
         assert!(matches!(val, Value::Tmpl(_)));
@@ -898,7 +926,13 @@ mod tests {
 
     #[test]
     fn context_set_with_template() {
-        let tmpl = crate::Template::from_source("---\nparams: [x = str]\n---\n{{ x }}").unwrap();
+        let tmpl = crate::Template::from_source(
+            r"---
+params: [x = str]
+---
+{{ x }}",
+        )
+        .unwrap();
         let mut ctx = crate::Context::new();
         // Should compile — From<Template> for Value
         ctx.set("widget", tmpl);
@@ -907,7 +941,13 @@ mod tests {
 
     #[test]
     fn context_set_with_template_ref() {
-        let tmpl = crate::Template::from_source("---\nparams: [x = str]\n---\n{{ x }}").unwrap();
+        let tmpl = crate::Template::from_source(
+            r"---
+params: [x = str]
+---
+{{ x }}",
+        )
+        .unwrap();
         let mut ctx = crate::Context::new();
         // Should compile — From<&Template> for Value
         ctx.set("widget", &tmpl);

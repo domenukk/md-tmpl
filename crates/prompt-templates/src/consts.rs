@@ -123,8 +123,6 @@ pub(crate) const TAG_TMPL_PREFIX: &str = "tmpl ";
 pub(crate) const TAG_MATCH_PREFIX: &str = "match ";
 /// Case arm tag prefix: `case `.
 pub(crate) const TAG_CASE_PREFIX: &str = "case ";
-/// Default (catch-all) arm in match blocks: `default`.
-pub(crate) const KW_DEFAULT: &str = "default";
 
 // -- Closing block tags -------------------------------------------------------
 
@@ -202,7 +200,6 @@ pub(crate) const TYPE_TMPL_PREFIX: &str = "tmpl<";
 /// Type name for options: `option`.
 pub(crate) const TYPE_OPTION: &str = "option";
 /// Type prefix for options with angle brackets: `option<`.
-#[allow(dead_code)]
 pub(crate) const TYPE_OPTION_PREFIX: &str = "option<";
 
 /// Variant name for the `Some` variant of `option<T>`.

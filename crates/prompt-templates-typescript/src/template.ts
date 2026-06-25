@@ -34,11 +34,16 @@ import {
 } from "./errors.js";
 import {
   type Frontmatter,
+  type VarDecl,
   type VarType,
   parseFrontmatter,
   varTypeToString,
 } from "./frontmatter.js";
-import { validateFrontmatter, validateBodyCollisions } from "./validation.js";
+import {
+  validateFrontmatter,
+  validateBodyCollisions,
+  validateDisplayability,
+} from "./validation.js";
 import {
   type Node,
   type RenderOptions,
@@ -46,7 +51,7 @@ import {
   parseBody,
   renderNodes,
 } from "./parser.js";
-import { type Value, ENUM_TAG_KEY, str, dict } from "./value.js";
+import { type Value, ENUM_TAG_KEY, NONE, str, dict, fromJs } from "./value.js";
 import { renderDirect } from "./direct_renderer.js";
 
 // ---------------------------------------------------------------------------
@@ -89,6 +94,9 @@ export interface ITemplate {
 
   /** Return constants defined in the template's frontmatter. */
   consts(): Record<string, unknown>;
+
+  /** Render a template using only default values (no user-provided params). */
+  renderEmpty(): string;
 
   /** Return constants imported from other templates. */
   importedConsts(): Record<string, unknown>;
@@ -133,6 +141,8 @@ export class Template implements ITemplate {
   private readonly constValues: ReadonlyMap<string, Value>;
   /** Pre-computed constant values as plain JS (for direct renderer). */
   private readonly constJsValues: ReadonlyMap<string, unknown>;
+  /** Pre-computed set of option-typed parameter names/paths. */
+  private readonly optionParams: ReadonlySet<string>;
   private _maxIncludeDepth = 16;
 
   /** Get the base path for include resolution (if set). */
@@ -182,10 +192,17 @@ export class Template implements ITemplate {
     }
     this.constJsValues = constsJs;
 
+    // Pre-compute option-typed parameter names for kind()/match awareness
+    const optParams = new Set<string>();
+    for (const decl of fm.params) {
+      collectOptionPaths(decl.name, decl.varType, fm.typeAliases, optParams);
+    }
+    this.optionParams = optParams;
+
     // Inject enum type constants from type aliases.
-    // For each enum type (e.g., `Phase = enum<Explore, Build>`), create a
+    // For each enum type (e.g., `Stage = enum<Design, Build>`), create a
     // constant dict mapping variant names → values, enabling expressions
-    // like `{{ Phase.Explore }}`.  User-defined constants are never overwritten.
+    // like `{{ Stage.Design }}`.  User-defined constants are never overwritten.
     injectEnumTypeConstants(fm.typeAliases, consts, constsJs);
   }
 
@@ -214,6 +231,7 @@ export class Template implements ITemplate {
       collectInlineTemplateNames(nodes),
       collectForBindings(nodes),
     );
+    validateDisplayability(nodes, fm.params);
     return tmpl;
   }
 
@@ -225,6 +243,7 @@ export class Template implements ITemplate {
     const nodes = parseBody(body);
     const tmpl = new Template(fm, body, nodes, source);
     tmpl.checkBareEnumAccess();
+    validateDisplayability(nodes, fm.params);
     return tmpl;
   }
 
@@ -246,6 +265,7 @@ export class Template implements ITemplate {
       collectInlineTemplateNames(nodes),
       collectForBindings(nodes),
     );
+    validateDisplayability(nodes, resolvedFm.params);
     return tmpl;
   }
 
@@ -280,6 +300,7 @@ export class Template implements ITemplate {
       collectInlineTemplateNames(nodes),
       collectForBindings(nodes),
     );
+    validateDisplayability(nodes, resolvedFm.params);
     return tmpl;
   }
 
@@ -350,6 +371,43 @@ export class Template implements ITemplate {
     return this.render(obj, options);
   }
 
+  /**
+   * Render a template that takes no user-provided parameters.
+   *
+   * If the template declares parameters, they must all have defaults.
+   * Calling `renderEmpty()` on a template with required (no-default)
+   * parameters throws an error.
+   *
+   * More efficient than `render({})` — skips context building and
+   * validation entirely.
+   *
+   * @example
+   * ```ts
+   * const tmpl = Template.fromSource("Hello world!");
+   * tmpl.renderEmpty(); // => "Hello world!"
+   *
+   * const tmpl2 = Template.fromSource(
+   *   "---\nparams:\n  - greeting = str := \"Hi\"\n---\n{{ greeting }}!"
+   * );
+   * tmpl2.renderEmpty(); // => "Hi!"
+   * ```
+   *
+   * @throws Error if any declared parameter lacks a default value.
+   */
+  renderEmpty(): string {
+    // Check for required params (no default)
+    const missing = this.fm.params
+      .filter((d) => d.defaultValue === undefined)
+      .map((d) => d.name);
+    if (missing.length > 0) {
+      throw new Error(
+        `render_empty: template has required parameters without defaults: ${missing.join(", ")}`,
+      );
+    }
+    // All params have defaults — use direct renderer with just defaults + consts
+    return renderDirect(this.nodes, this.defaultValues, this.constJsValues);
+  }
+
   // ── Metadata ─────────────────────────────────────────────────────────
 
   /**
@@ -375,25 +433,10 @@ export class Template implements ITemplate {
     const result: Record<string, unknown> = {};
     for (const decl of this.fm.params) {
       if (decl.defaultValue !== undefined) {
-        const jsVal = valueToJs(decl.defaultValue);
-        // For option types, convert internal representation to user-facing API:
-        //   { __kind__: "Some", val: X } → X
-        //   string "None" → null
-        if (decl.varType.kind === "enum" && decl.varType.isOption) {
-          if (jsVal === "None") {
-            result[decl.name] = null;
-          } else if (
-            typeof jsVal === "object" &&
-            jsVal !== null &&
-            !Array.isArray(jsVal) &&
-            (jsVal as Record<string, unknown>).__kind__ === "Some"
-          ) {
-            result[decl.name] = (jsVal as Record<string, unknown>).val;
-          } else {
-            result[decl.name] = jsVal;
-          }
+        if (decl.defaultValue.type === "none") {
+          result[decl.name] = null;
         } else {
-          result[decl.name] = jsVal;
+          result[decl.name] = valueToJs(decl.defaultValue);
         }
       }
     }
@@ -487,7 +530,7 @@ export class Template implements ITemplate {
     for (const [name, value] of this.defaultValues) {
       const decl = this.fm.params.find((p) => p.name === name);
       if (decl) {
-        ctx.set(name, wrapOptions(value, decl.varType, this.fm.typeAliases));
+        ctx.setRaw(name, jsToValue(value, decl.varType, this.fm.typeAliases));
       } else {
         ctx.set(name, value);
       }
@@ -502,12 +545,12 @@ export class Template implements ITemplate {
       }
     }
 
-    // Set provided values (with option auto-wrapping)
+    // Set provided values (with option-transparent conversion)
     for (const [key, value] of Object.entries(params)) {
       if (this.declaredNames.has(key)) {
         const decl = this.fm.params.find((p) => p.name === key);
         if (decl) {
-          ctx.set(key, wrapOptions(value, decl.varType, this.fm.typeAliases));
+          ctx.setRaw(key, jsToValue(value, decl.varType, this.fm.typeAliases));
         } else {
           ctx.set(key, value);
         }
@@ -598,34 +641,13 @@ export class Template implements ITemplate {
         break;
       case "enum":
         if (varType.isOption) {
-          // Option type: accept str("None") for None, or dict with __kind__="Some"
-          if (value.type === "str" && value.value === "None") {
-            break; // None is always valid
+          // Legacy isOption: transparent — none is valid, otherwise check inner
+          if (value.type === "none") break;
+          const someVariant = varType.variants.find((v) => v.name === "Some");
+          if (someVariant && someVariant.fields.length === 1) {
+            this.typeCheck(path, value, someVariant.fields[0]!.varType);
           }
-          if (value.type === "dict") {
-            const tag = value.fields.get(ENUM_TAG_KEY);
-            if (tag && tag.type === "str") {
-              if (tag.value === "None") break;
-              if (tag.value === "Some") {
-                // Validate the inner value
-                const someVariant = varType.variants.find(
-                  (v) => v.name === "Some",
-                );
-                if (someVariant && someVariant.fields.length === 1) {
-                  const innerVal = value.fields.get("val");
-                  if (innerVal !== undefined) {
-                    this.typeCheck(
-                      `${path}.val`,
-                      innerVal,
-                      someVariant.fields[0]!.varType,
-                    );
-                  }
-                }
-                break;
-              }
-            }
-          }
-          throw new TypeMismatchError(path, "option<...>", value.type);
+          break;
         }
         if (value.type === "str") {
           // Unit variant as string
@@ -659,6 +681,11 @@ export class Template implements ITemplate {
           throw new TypeMismatchError(path, "enum", value.type);
         }
         break;
+      case "option":
+        // Transparent option: none is always valid, otherwise check inner type
+        if (value.type === "none") break;
+        this.typeCheck(path, value, varType.innerType);
+        break;
       case "alias":
         // Resolve alias from type aliases
         {
@@ -687,7 +714,11 @@ export class Template implements ITemplate {
   }
 
   private renderWithContext(ctx: Context): string {
-    const scope = new ScopeImpl(ctx.values, this.constValues);
+    const scope = new ScopeImpl(
+      ctx.values,
+      this.constValues,
+      this.optionParams,
+    );
     const options: RenderOptions = {
       maxIncludeDepth: this._maxIncludeDepth,
     };
@@ -697,7 +728,7 @@ export class Template implements ITemplate {
       const basePath = this._basePath;
       options.templateLoader = (
         includePath: string,
-      ): [Node[], Map<string, Value>] | undefined => {
+      ): [Node[], Map<string, Value>, readonly VarDecl[]] | undefined => {
         const fullPath = getPath().resolve(basePath, includePath);
         try {
           const source = getFs().readFileSync(fullPath, "utf-8");
@@ -710,7 +741,7 @@ export class Template implements ITemplate {
               consts.set(decl.name, decl.defaultValue);
             }
           }
-          return [nodes, consts];
+          return [nodes, consts, fm.params];
         } catch (err) {
           console.debug(
             "Template include resolution failed for path %s: %s",
@@ -722,13 +753,40 @@ export class Template implements ITemplate {
       };
     }
     // Collect inline template definitions ({% tmpl name %}...{% /tmpl %})
+    // Parse each inline template's frontmatter to extract declarations
+    // for contract validation and type checking at include time.
     const inlineTmpls = new Map<
       string,
-      { params: Map<string, unknown>; body: string }
+      {
+        declarations: readonly VarDecl[];
+        body: string;
+        consts: Map<string, Value>;
+      }
     >();
     for (const n of this.nodes) {
       if (n.kind === "tmpl") {
-        inlineTmpls.set(n.name, { params: new Map(), body: n.source });
+        try {
+          const [inlineFm, inlineBody] = parseFrontmatter(n.source);
+          const inlineConsts = new Map<string, Value>();
+          for (const decl of inlineFm.consts) {
+            if (decl.defaultValue !== undefined) {
+              inlineConsts.set(decl.name, decl.defaultValue);
+            }
+          }
+          inlineTmpls.set(n.name, {
+            declarations: inlineFm.params,
+            body: inlineBody,
+            consts: inlineConsts,
+          });
+        } catch {
+          // If frontmatter parsing fails, store with empty declarations.
+          // The template may not have frontmatter (pure body).
+          inlineTmpls.set(n.name, {
+            declarations: [],
+            body: n.source,
+            consts: new Map(),
+          });
+        }
       }
     }
     if (inlineTmpls.size > 0) {
@@ -750,9 +808,9 @@ export class Template implements ITemplate {
   }
 
   /**
-   * Reject bare enum literal expressions like `{{ Phase.Explore }}`.
+   * Reject bare enum literal expressions like `{{ Stage.Design }}`.
    *
-   * Only `{{ kind(Phase.Explore) }}` is allowed — using the enum
+   * Only `{{ kind(Stage.Design) }}` is allowed — using the enum
    * literal as a bare expression output is a compile error.
    */
   private checkBareEnumAccess(): void {
@@ -768,56 +826,48 @@ export class Template implements ITemplate {
 }
 
 /**
- * Recursively wrap option values in the user's JS input.
+ * Convert a JS value to a template Value, handling option types transparently.
  *
- * Transforms `null`/`undefined` → `"None"` and `val` → `{ __kind__: "Some", val }`
- * for option-typed fields at any nesting level (struct fields, list items),
- * so that the downstream `fromJs` + `typeCheck` pipeline sees the correct shapes.
+ * For `option<T>` fields:
+ * - `null`/`undefined` → `NONE` (absent value)
+ * - any other value → `fromJs(value)` (the inner value directly)
  *
- * We do this *before* `fromJs` because `fromJs(null)` must not change behavior
- * (it returns `str("")`), but option fields need `null` → `str("None")`.
+ * For struct/list fields, recursively converts nested option fields.
  */
-function wrapOptions(
+function jsToValue(
   value: unknown,
   varType: VarType,
   typeAliases?: ReadonlyMap<string, VarType>,
-): unknown {
+): Value {
   // Resolve type aliases before checking
   if (varType.kind === "alias" && typeAliases) {
     const resolved = typeAliases.get(varType.name);
     if (resolved) {
-      return wrapOptions(value, resolved, typeAliases);
+      return jsToValue(value, resolved, typeAliases);
     }
   }
 
+  // Option types: null/undefined → NONE, otherwise convert the inner value
+  if (varType.kind === "option") {
+    if (value === null || value === undefined) {
+      return NONE;
+    }
+    return jsToValue(value, varType.innerType, typeAliases);
+  }
+
+  // Legacy isOption handling
   if (varType.kind === "enum" && varType.isOption) {
     if (value === null || value === undefined) {
-      return "None";
+      return NONE;
     }
-    // String "None" is the None variant (from parseLiteral or user input)
-    if (typeof value === "string" && value === "None") {
-      return "None";
+    const someVariant = varType.variants.find((v) => v.name === "Some");
+    if (someVariant && someVariant.fields.length === 1) {
+      return jsToValue(value, someVariant.fields[0]!.varType, typeAliases);
     }
-    // Variant helper sentinel for None
-    if (
-      typeof value === "object" &&
-      value !== null &&
-      !Array.isArray(value) &&
-      (value as Record<string, unknown>)._prompt_template_tag === "None"
-    ) {
-      return "None";
-    }
-    // Already wrapped (e.g. from variant helpers)?
-    if (
-      typeof value === "object" &&
-      value !== null &&
-      !Array.isArray(value) &&
-      (value as Record<string, unknown>).__kind__ === "Some"
-    ) {
-      return value;
-    }
-    return { __kind__: "Some", val: value };
+    return fromJs(value);
   }
+
+  // Structs: recursively handle nested option fields
   if (
     varType.kind === "struct" &&
     typeof value === "object" &&
@@ -825,55 +875,57 @@ function wrapOptions(
     !Array.isArray(value)
   ) {
     const obj = value as Record<string, unknown>;
-    let changed = false;
-    const result: Record<string, unknown> = {};
+    const entries: [string, Value][] = [];
     for (const field of varType.fields) {
       if (field.name in obj) {
-        const wrapped = wrapOptions(
-          obj[field.name],
-          field.varType,
-          typeAliases,
-        );
-        if (wrapped !== obj[field.name]) changed = true;
-        result[field.name] = wrapped;
+        entries.push([
+          field.name,
+          jsToValue(obj[field.name], field.varType, typeAliases),
+        ]);
       }
     }
-    if (!changed) return value;
     // Preserve non-declared fields
     for (const [k, v] of Object.entries(obj)) {
-      if (!(k in result)) result[k] = v;
+      if (!varType.fields.some((f) => f.name === k)) {
+        entries.push([k, fromJs(v)]);
+      }
     }
-    return result;
+    return dict(entries);
   }
+
+  // Lists with structured items: recursively handle nested option fields
   if (
     varType.kind === "list" &&
     Array.isArray(value) &&
     varType.fields.length > 0
   ) {
-    let changed = false;
-    const result = value.map((item) => {
+    const items = value.map((item) => {
       if (typeof item === "object" && item !== null && !Array.isArray(item)) {
         const obj = item as Record<string, unknown>;
-        const wrapped: Record<string, unknown> = {};
+        const entries: [string, Value][] = [];
         for (const field of varType.fields) {
           if (field.name in obj) {
-            const w = wrapOptions(obj[field.name], field.varType, typeAliases);
-            if (w !== obj[field.name]) changed = true;
-            wrapped[field.name] = w;
+            entries.push([
+              field.name,
+              jsToValue(obj[field.name], field.varType, typeAliases),
+            ]);
           }
         }
-        if (changed) {
-          for (const [k, v] of Object.entries(obj)) {
-            if (!(k in wrapped)) wrapped[k] = v;
+        // Preserve non-declared fields
+        for (const [k, v] of Object.entries(obj)) {
+          if (!varType.fields.some((f) => f.name === k)) {
+            entries.push([k, fromJs(v)]);
           }
-          return wrapped;
         }
+        return dict(entries);
       }
-      return item;
+      return fromJs(item);
     });
-    return changed ? result : value;
+    return { type: "list", items };
   }
-  return value;
+
+  // Default: use standard fromJs conversion
+  return fromJs(value);
 }
 
 // ---------------------------------------------------------------------------
@@ -1139,6 +1191,8 @@ function valueToJs(v: Value): unknown {
       }
       return obj;
     }
+    case "none":
+      return null;
   }
 }
 
@@ -1148,10 +1202,60 @@ function escapeRegex(s: string): string {
 }
 
 /**
+ * Recursively collect parameter paths that are option-typed.
+ *
+ * For a param like `person = struct<name = str, email = option<str>>`,
+ * this adds `"person.email"` to the set.  For a top-level
+ * `x = option<str>`, it adds `"x"`.
+ */
+function collectOptionPaths(
+  prefix: string,
+  varType: VarType,
+  typeAliases: ReadonlyMap<string, VarType>,
+  out: Set<string>,
+): void {
+  // Resolve type aliases
+  if (varType.kind === "alias") {
+    const resolved = typeAliases.get(varType.name);
+    if (resolved) {
+      collectOptionPaths(prefix, resolved, typeAliases, out);
+    }
+    return;
+  }
+
+  if (varType.kind === "option") {
+    out.add(prefix);
+    return;
+  }
+
+  // Legacy isOption enum
+  if (varType.kind === "enum" && varType.isOption) {
+    out.add(prefix);
+    return;
+  }
+
+  // Recurse into struct fields
+  if (varType.kind === "struct") {
+    for (const field of varType.fields) {
+      collectOptionPaths(
+        `${prefix}.${field.name}`,
+        field.varType,
+        typeAliases,
+        out,
+      );
+    }
+  }
+
+  // Note: list item option fields are accessed via loop bindings (e.g.,
+  // `item.field`) whose prefix isn't known at declaration time. The
+  // match/kind heuristic (isOptionMatchNode) handles those cases.
+}
+
+/**
  * Walk AST nodes and reject bare enum literal expressions.
  *
- * A "bare enum literal" is an expression output like `{{ Phase.Explore }}`
- * where `Phase` is an enum type name and the expression is a plain dotted
+ * A "bare enum literal" is an expression output like `{{ Stage.Design }}`
+ * where `Stage` is an enum type name and the expression is a plain dotted
  * path (not wrapped in `kind()` or another function call).
  *
  * @throws {TemplateSyntaxError} On the first bare enum literal found.
@@ -1193,8 +1297,8 @@ function walkNodesForBareEnumAccess(
         for (const arm of node.arms) {
           walkNodesForBareEnumAccess(arm.body, enumTypeNames);
         }
-        if (node.defaultArm) {
-          walkNodesForBareEnumAccess(node.defaultArm, enumTypeNames);
+        if (node.elseArm) {
+          walkNodesForBareEnumAccess(node.elseArm, enumTypeNames);
         }
         if (node.inlineGuard) {
           walkNodesForBareEnumAccess(node.inlineGuard.body, enumTypeNames);
@@ -1210,7 +1314,7 @@ function walkNodesForBareEnumAccess(
  *
  * The "bare path" is the portion before any `|` filter pipe, trimmed.
  * Returns `undefined` if the expression contains a `(` before the first
- * `.`, indicating a function call (e.g., `kind(Phase.Explore)`).
+ * `.`, indicating a function call (e.g., `kind(Stage.Design)`).
  */
 function extractBareDottedPath(expr: string): string | undefined {
   const trimmed = expr.trim();
@@ -1239,12 +1343,12 @@ function extractBareDottedPath(expr: string): string | undefined {
 /**
  * Inject auto-generated constants for enum types declared in `types:`.
  *
- * For each enum type alias (e.g., `Phase = enum<Explore, Build>`), creates
+ * For each enum type alias (e.g., `Stage = enum<Design, Build>`), creates
  * a dict constant mapping variant names to their values:
  * - Unit variants → string with the variant name
  * - Struct variants → tagged dict with `__kind__` key
  *
- * This enables template expressions like `{{ Phase.Explore }}` or
+ * This enables template expressions like `{{ Stage.Design }}` or
  * `{{ kind(Status.Paused) }}`.
  *
  * User-defined constants with the same name are never overwritten.
@@ -1361,7 +1465,47 @@ function resolveImportedConsts(fm: Frontmatter, baseDir: string): Frontmatter {
     return fm;
   }
 
-  return { ...fm, importedConsts: imported };
+  // Post-process: resolve param defaults that reference imported consts.
+  // During parseFrontmatter(), imported consts weren't available yet, so
+  // param defaults like `stem.NAME` were deferred in unresolvedDefaults.
+  if (fm.unresolvedDefaults.size === 0) {
+    return { ...fm, importedConsts: imported };
+  }
+
+  const importedValues = new Map<string, Value>();
+  for (const [key, jsVal] of Object.entries(imported)) {
+    importedValues.set(key, fromJs(jsVal));
+  }
+
+  const newParams: VarDecl[] = [];
+  for (const decl of fm.params) {
+    const unresolved = fm.unresolvedDefaults.get(decl.name);
+    if (!unresolved) {
+      newParams.push(decl);
+      continue;
+    }
+    // Try to resolve the dotted const reference (e.g., stem.NAME)
+    const constVal = importedValues.get(unresolved.text);
+    if (constVal === undefined) {
+      throw new TemplateSyntaxError(
+        `unresolved default '${unresolved.text}' for param '${decl.name}': ` +
+          `no imported const with that name found`,
+      );
+    }
+    // Validate type compatibility
+    newParams.push({
+      name: decl.name,
+      varType: decl.varType,
+      defaultValue: constVal,
+    });
+  }
+
+  return {
+    ...fm,
+    params: newParams,
+    importedConsts: imported,
+    unresolvedDefaults: new Map(),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1406,8 +1550,8 @@ function collectForBindings(nodes: readonly Node[]): Set<string> {
           bindings.add(b);
         }
       }
-      if (node.defaultArm) {
-        for (const b of collectForBindings(node.defaultArm)) {
+      if (node.elseArm) {
+        for (const b of collectForBindings(node.elseArm)) {
           bindings.add(b);
         }
       }

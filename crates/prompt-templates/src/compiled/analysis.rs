@@ -92,7 +92,7 @@ fn collect_refs_inner(
                     vars.insert(root);
                 }
             }
-            Segment::Match { expr, arms } => {
+            Segment::Match { expr, arms, .. } => {
                 if let Some(root) = extract_path_variable(expr, loop_bindings) {
                     vars.insert(root);
                 }

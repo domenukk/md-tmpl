@@ -82,7 +82,11 @@ fn resolve_include_inner_into(
 ) -> Result<(), TemplateError> {
     // 0. Use compile-time precompiled AST if present.
     if let Some(compiled) = inline_compiled {
-        return validate_and_render_into(
+        scope.push_consts(
+            (*compiled.consts).clone(),
+            (*compiled.imported_consts).clone(),
+        );
+        let result = validate_and_render_into(
             &compiled.segments,
             &compiled.declarations,
             directive,
@@ -90,6 +94,8 @@ fn resolve_include_inner_into(
             base_dir,
             output,
         );
+        scope.pop_consts();
+        return result;
     }
 
     // 1. Check inline templates first (defined via {% tmpl name %})
@@ -97,7 +103,11 @@ fn resolve_include_inner_into(
     //    Clone the compiled template to release the immutable borrow on scope,
     //    allowing mutable access for build_overrides/rendering.
     if let Some(compiled) = scope.get_inline_template(directive.path).cloned() {
-        return validate_and_render_into(
+        scope.push_consts(
+            (*compiled.consts).clone(),
+            (*compiled.imported_consts).clone(),
+        );
+        let result = validate_and_render_into(
             &compiled.segments,
             &compiled.declarations,
             directive,
@@ -105,6 +115,8 @@ fn resolve_include_inner_into(
             base_dir,
             output,
         );
+        scope.pop_consts();
+        return result;
     }
 
     // 1b. Check if path is a variable resolving to a template (higher-order).
@@ -364,7 +376,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("header.tmpl.md"),
-            "---\nname: header\nparams: []\n---\n# Header",
+            r"---
+name: header
+params: []
+---
+# Header",
         )
         .unwrap();
 
@@ -384,7 +400,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("greeting.tmpl.md"),
-            "---\nname: greeting\nparams: [name = str]\n---\nHello {{ name }}!",
+            r"---
+name: greeting
+params: [name = str]
+---
+Hello {{ name }}!",
         )
         .unwrap();
 
@@ -404,7 +424,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("row.tmpl.md"),
-            "---\nname: row\nparams: [item = str]\n---\n- {{ item.label }}\n",
+            r"---
+name: row
+params: [item = str]
+---
+- {{ item.label }}
+",
         )
         .unwrap();
 
@@ -438,7 +463,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("needs_vars.tmpl.md"),
-            "---\nname: needs_vars\nparams: [title = str, count = int]\n---\n{{ title }} ({{ count }})",
+            r"---
+name: needs_vars
+params: [title = str, count = int]
+---
+{{ title }} ({{ count }})",
         )
         .unwrap();
 
@@ -462,7 +491,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("greeting.tmpl.md"),
-            "---\nname: greeting\nparams: [name = str]\n---\nHello {{ name }}!",
+            r"---
+name: greeting
+params: [name = str]
+---
+Hello {{ name }}!",
         )
         .unwrap();
 
@@ -483,7 +516,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("row.tmpl.md"),
-            "---\nname: row\nparams: [item = str]\n---\n- {{ item.label }}\n",
+            r"---
+name: row
+params: [item = str]
+---
+- {{ item.label }}
+",
         )
         .unwrap();
 
@@ -512,7 +550,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("static.tmpl.md"),
-            "---\nname: static\nparams: []\n---\nStatic content",
+            r"---
+name: static
+params: []
+---
+Static content",
         )
         .unwrap();
 
@@ -532,7 +574,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("typed.tmpl.md"),
-            "---\nparams: [count = int]\n---\n{{ count }}",
+            r"---
+params: [count = int]
+---
+{{ count }}",
         )
         .unwrap();
 
@@ -556,7 +601,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("typed.tmpl.md"),
-            "---\nparams: [count = int]\n---\n{{ count }}",
+            r"---
+params: [count = int]
+---
+{{ count }}",
         )
         .unwrap();
 
@@ -581,7 +629,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("greet.tmpl.md"),
-            "---\nparams:\n  - name = str\n  - greeting = str := \"Hi\"\n---\n{{ greeting }} {{ name }}!",
+            r#"---
+params:
+  - name = str
+  - greeting = str := "Hi"
+---
+{{ greeting }} {{ name }}!"#,
         )
         .unwrap();
 
@@ -603,7 +656,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("row.tmpl.md"),
-            "---\nparams:\n  - item = str\n  - prefix = str := \"-\"\n---\n{{ prefix }} {{ item.label }}\n",
+            r#"---
+params:
+  - item = str
+  - prefix = str := "-"
+---
+{{ prefix }} {{ item.label }}
+"#,
         )
         .unwrap();
 
@@ -633,7 +692,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("greet.tmpl.md"),
-            "---\nparams:\n  - name = str\n  - greeting = str := \"Hi\"\n---\n{{ greeting }} {{ name }}!",
+            r#"---
+params:
+  - name = str
+  - greeting = str := "Hi"
+---
+{{ greeting }} {{ name }}!"#,
         )
         .unwrap();
 

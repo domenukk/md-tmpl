@@ -601,16 +601,17 @@ fn match_with_no_arms_is_error() {
     let segments = vec![Segment::Match {
         expr: CompiledPath::compile("x"),
         arms: vec![],
+        is_option: false,
     }];
     let errors = validate_field_accesses(&segments, &decls);
     assert_eq!(errors.len(), 1, "expected error: {errors:?}");
     assert!(errors[0].contains("no case arms"), "got: {}", errors[0]);
 }
 
-// -- Default arm (catch-all) -----------------------------------------
+// -- Else arm (catch-all) -----------------------------------------
 
 #[test]
-fn default_arm_satisfies_exhaustiveness() {
+fn else_arm_satisfies_exhaustiveness() {
     let decls = vec![enum_decl(
         "outcome",
         vec![
@@ -620,41 +621,38 @@ fn default_arm_satisfies_exhaustiveness() {
         ],
     )];
     let tmpl = "---\nname: t\nparams:\n  - outcome = enum<Confirmed(evidence = str), Rejected, Pending>\n---\n\
-                     > {% match outcome %}{% case Confirmed %}yes{% default %}other{% /match %}";
+                     > {% match outcome %}{% case Confirmed %}yes{% else %}other{% /match %}";
     let errors = compile_and_check(tmpl, &decls);
     assert!(
         errors.is_empty(),
-        "default should satisfy exhaustiveness: {errors:?}"
+        "else should satisfy exhaustiveness: {errors:?}"
     );
 }
 
 #[test]
-fn default_alone_satisfies_exhaustiveness() {
+fn else_alone_satisfies_exhaustiveness() {
     let decls = vec![enum_decl(
         "status",
         vec![unit_variant("A"), unit_variant("B"), unit_variant("C")],
     )];
     let tmpl = "---\nname: t\nparams:\n  - status = enum<A, B, C>\n---\n\
-                     > {% match status %}{% default %}fallback{% /match %}";
+                     > {% match status %}{% else %}fallback{% /match %}";
     let errors = compile_and_check(tmpl, &decls);
-    assert!(
-        errors.is_empty(),
-        "default-only should be valid: {errors:?}"
-    );
+    assert!(errors.is_empty(), "else-only should be valid: {errors:?}");
 }
 
 #[test]
-fn default_arm_renders_correctly() {
+fn else_arm_renders_correctly() {
     let tmpl = crate::Template::from_source(
         "---\nparams:\n  - status = enum<A, B, C>\n---\n\
-             > {% match status %}{% case A %}alpha{% default %}other{% /match %}",
+             > {% match status %}{% case A %}alpha{% else %}other{% /match %}",
     )
     .unwrap();
     let mut ctx = crate::Context::new();
     ctx.set("status", "B");
-    assert_eq!(tmpl.render(&ctx).unwrap(), "other");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "other");
     ctx.set("status", "A");
-    assert_eq!(tmpl.render(&ctx).unwrap(), "alpha");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "alpha");
 }
 
 // -- For-loop on non-list --------------------------------------------
@@ -782,6 +780,8 @@ fn make_include(
         inline_compiled: Some(CompiledInlineTemplate {
             segments: Arc::from(segments),
             declarations: Arc::from(declarations),
+            consts: std::sync::Arc::new(crate::compat::HashMap::new()),
+            imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
     }
 }
@@ -1089,6 +1089,8 @@ fn self_recursive_include_no_infinite_loop() {
             inline_compiled: Some(CompiledInlineTemplate {
                 segments: std::sync::Arc::from(vec![Segment::Static("leaf".into())]),
                 declarations: std::sync::Arc::from(vec![]),
+                consts: std::sync::Arc::new(crate::compat::HashMap::new()),
+                imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
             }),
         })],
     );
@@ -1111,6 +1113,8 @@ fn flip_flop_includes_no_infinite_loop() {
         inline_compiled: Some(CompiledInlineTemplate {
             segments: std::sync::Arc::from(vec![Segment::Static("leaf".into())]),
             declarations: std::sync::Arc::from(vec![]),
+            consts: std::sync::Arc::new(crate::compat::HashMap::new()),
+            imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
     };
     let inc_a = make_include(
@@ -1146,6 +1150,8 @@ fn self_recursive_include_with_type_mismatch_error() {
             inline_compiled: Some(CompiledInlineTemplate {
                 segments: std::sync::Arc::from(vec![]),
                 declarations: std::sync::Arc::from(vec![int_decl("name")]),
+                consts: std::sync::Arc::new(crate::compat::HashMap::new()),
+                imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
             }),
         })],
     );
@@ -1173,6 +1179,8 @@ fn self_recursive_include_contract_missing_params_error() {
             inline_compiled: Some(CompiledInlineTemplate {
                 segments: std::sync::Arc::from(vec![]),
                 declarations: std::sync::Arc::from(vec![str_decl("msg")]),
+                consts: std::sync::Arc::new(crate::compat::HashMap::new()),
+                imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
             }),
         })],
     );
@@ -1281,6 +1289,7 @@ fn include_inside_match_arm() {
     let segments = vec![Segment::Match {
         expr: CompiledPath::compile("outcome"),
         arms: vec![(vec!["Confirmed".into()], vec![Segment::Include(inc)])],
+        is_option: false,
     }];
     let errors = validate_field_accesses(&segments, &parent_decls);
     assert!(
@@ -1358,6 +1367,8 @@ fn same_name_different_content_both_type_checked() {
                 filters: vec![],
             }]),
             declarations: Arc::from(vec![str_decl("msg")]),
+            consts: std::sync::Arc::new(crate::compat::HashMap::new()),
+            imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
     };
     let inc2 = CompiledInclude {
@@ -1380,6 +1391,8 @@ fn same_name_different_content_both_type_checked() {
                 },
             ]),
             declarations: Arc::from(vec![str_decl("msg")]),
+            consts: std::sync::Arc::new(crate::compat::HashMap::new()),
+            imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
     };
 
@@ -1417,6 +1430,8 @@ fn same_arc_deduplicates_body_walk() {
         inline_compiled: Some(CompiledInlineTemplate {
             segments: Arc::clone(&shared_segments),
             declarations: Arc::clone(&shared_decls),
+            consts: std::sync::Arc::new(crate::compat::HashMap::new()),
+            imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
     };
     let inc2 = CompiledInclude {
@@ -1429,6 +1444,8 @@ fn same_arc_deduplicates_body_walk() {
         inline_compiled: Some(CompiledInlineTemplate {
             segments: Arc::clone(&shared_segments),
             declarations: Arc::clone(&shared_decls),
+            consts: std::sync::Arc::new(crate::compat::HashMap::new()),
+            imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
     };
 
@@ -1595,6 +1612,8 @@ fn same_template_different_sites() {
         inline_compiled: Some(CompiledInlineTemplate {
             segments: Arc::clone(&child_segments),
             declarations: Arc::clone(&child_decls),
+            consts: std::sync::Arc::new(crate::compat::HashMap::new()),
+            imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
     };
     // Site 2: msg=my_int (int→str, ERROR)
@@ -1608,6 +1627,8 @@ fn same_template_different_sites() {
         inline_compiled: Some(CompiledInlineTemplate {
             segments: Arc::clone(&child_segments),
             declarations: Arc::clone(&child_decls),
+            consts: std::sync::Arc::new(crate::compat::HashMap::new()),
+            imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
     };
 
@@ -1749,6 +1770,8 @@ fn nested_include_grandchild_type_error() {
         inline_compiled: Some(CompiledInlineTemplate {
             segments: grandchild_segments,
             declarations: grandchild_decls,
+            consts: std::sync::Arc::new(crate::compat::HashMap::new()),
+            imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
     };
 
@@ -1771,6 +1794,8 @@ fn nested_include_grandchild_type_error() {
         inline_compiled: Some(CompiledInlineTemplate {
             segments: child_segments,
             declarations: child_decls,
+            consts: std::sync::Arc::new(crate::compat::HashMap::new()),
+            imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
     };
 
@@ -1845,7 +1870,7 @@ fn opaque_root_skips_undeclared_error() {
 fn opaque_root_dotted_path_deep() {
     // Deep dotted path on opaque root should also be skipped.
     let errors = compile_and_check_with_opaque(
-        "---\nparams: []\n---\n{{ config.PHASES.EXPLORE }}",
+        "---\nparams: []\n---\n{{ config.STAGES.DESIGN }}",
         &[],
         &["config"],
     );

@@ -19,7 +19,12 @@ Three benchmarks are run per scenario:
 Output correctness is verified before timing to guarantee all engines
 produce equivalent results.
 
-Engine notes:
+Methodology notes:
+
+- ``prompt-templates`` and ``pt-json`` are Rust (PyO3) bindings calling a
+  native compiled engine.  All other engines are pure Python (Jinja2 has
+  optional C extensions for markup escaping, but template rendering is
+  pure Python).  The speed advantage is partly due to native code.
 - Chevron (Mustache) has no pre-compiled form — ``chevron.render()``
   re-tokenises the template string on every call.  Its "render" and
   "compile + render" numbers are therefore the same.
@@ -326,10 +331,9 @@ SIMPLE_KWARGS: dict = {"name": "Alice", "place": "Wonderland"}
 # -- 2. Loop: iterating over a list ----------------------------------------
 #
 #   All engines render the same markdown list:
-#     # Monthly Report
-#     - Alpha: 100
-#     - Beta: 200
-#     ...
+#     - Alpha: 10
+#     - Beta: 20
+#     - Gamma: 30
 #
 #   prompt-templates:  > {% for item in items %} ... > {% /for %}
 #   Jinja2:            {% for item in items -%} ... {% endfor %}
@@ -340,12 +344,8 @@ SIMPLE_KWARGS: dict = {"name": "Alice", "place": "Wonderland"}
 PT_LOOP = """\
 ---
 params:
-  - title = str
-  - items = list<label = str, value = str>
+  - items = list<label = str, value = int>
 ---
-# {{ title }}
-
-
 > {% for item in items %}
 
 - {{ item.label }}: {{ item.value }}
@@ -353,30 +353,22 @@ params:
 > {% /for %}"""
 
 J2_LOOP = """\
-# {{ title }}
-
 {% for item in items -%}
 - {{ item.label }}: {{ item.value }}
 {% endfor %}"""
 
 MAKO_LOOP = """\
-# ${title}
-
 % for item in items:
 - ${item["label"]}: ${item["value"]}
 % endfor
 """
 
 CHEVRON_LOOP = """\
-# {{title}}
-
 {{#items}}\
 - {{label}}: {{value}}
 {{/items}}"""
 
 DJANGO_LOOP = """\
-# {{ title }}
-
 {% for item in items %}\
 - {{ item.label }}: {{ item.value }}
 {% endfor %}"""
@@ -384,21 +376,17 @@ DJANGO_LOOP = """\
 # str.Template: no loop support.
 
 LOOP_KWARGS: dict = {
-    "title": "Monthly Report",
     "items": [
-        {"label": "Alpha", "value": "100"},
-        {"label": "Beta", "value": "200"},
-        {"label": "Gamma", "value": "300"},
-        {"label": "Delta", "value": "400"},
-        {"label": "Epsilon", "value": "500"},
+        {"label": "Alpha", "value": 10},
+        {"label": "Beta", "value": 20},
+        {"label": "Gamma", "value": 30},
     ],
 }
 
 # -- 3. Conditional: if/elif/else branching --------------------------------
 #
-#   All engines render (with level="medium", score=87.456):
-#     Warning: Medium priority.
-#     Score: 87.46
+#   All engines render (with level="medium", score=75):
+#     Rating: Good (score 75)
 #
 #   prompt-templates:  > {% if level == "high" %} ... > {% /if %}
 #   Jinja2:            {% if level == "high" -%} ... {% endif -%}
@@ -411,64 +399,52 @@ PT_CONDITIONAL = """\
 ---
 params:
   - level = str
-  - score = float
+  - score = int
 ---
 > {% if level == "high" %}
 
-ALERT: High priority!
-Score: {{ score | fixed(2) }}
+Rating: Excellent
 
 > {% elif level == "medium" %}
 
-Warning: Medium priority.
-Score: {{ score | fixed(2) }}
+Rating: Good (score {{ score }})
 
 > {% else %}
 
-Info: Low priority.
-Score: {{ score | fixed(2) }}
+Rating: Needs Improvement
 
 > {% /if %}"""
 
 J2_CONDITIONAL = """\
 {% if level == "high" -%}
-ALERT: High priority!
-Score: {{ "%.2f" | format(score) }}
+Rating: Excellent
 {% elif level == "medium" -%}
-Warning: Medium priority.
-Score: {{ "%.2f" | format(score) }}
+Rating: Good (score {{ score }})
 {% else -%}
-Info: Low priority.
-Score: {{ "%.2f" | format(score) }}
+Rating: Needs Improvement
 {% endif -%}
 """
 
 MAKO_CONDITIONAL = """\
 % if level == "high":
-ALERT: High priority!
-Score: ${'%.2f' % score}
+Rating: Excellent
 % elif level == "medium":
-Warning: Medium priority.
-Score: ${'%.2f' % score}
+Rating: Good (score ${score})
 % else:
-Info: Low priority.
-Score: ${'%.2f' % score}
+Rating: Needs Improvement
 % endif
 """
 
 DJANGO_CONDITIONAL = """\
 {% if level == "high" %}\
-ALERT: High priority!
-Score: {{ score|floatformat:2 }}
+Rating: Excellent
 {% elif level == "medium" %}\
-Warning: Medium priority.
-Score: {{ score|floatformat:2 }}
+Rating: Good (score {{ score }})
 {% else %}\
-Info: Low priority.
-Score: {{ score|floatformat:2 }}
+Rating: Needs Improvement
 {% endif %}"""
 
-CONDITIONAL_KWARGS: dict = {"level": "medium", "score": 87.456}
+CONDITIONAL_KWARGS: dict = {"level": "medium", "score": 75}
 
 # -- 4. Hero/Complex: nested loops + conditionals --------------------------
 #
@@ -484,22 +460,13 @@ CONDITIONAL_KWARGS: dict = {"level": "medium", "score": 87.456}
 #   str.Template:      N/A (no loop/conditional support)
 
 
-def _mako_pt_float(value: float) -> str:
-    """Helper for Mako templates: format floats the prompt-templates way."""
-    as_int = int(value)
-    if float(as_int) == value:
-        return str(as_int)
-    return str(value)
-
-
 PT_HERO = """\
 ---
 params:
   - title = str
-  - sections = list<heading = str, entries = list<name = str, active = bool, score = float>>
-  - notes = str
+  - sections = list<heading = str, entries = list<name = str, active = bool, score = float, tags = list<label = str>>>
 ---
-# {{ title | upper }}
+# {{ title }}
 
 
 > {% for section in sections %}
@@ -509,140 +476,121 @@ params:
 
 > {% for entry in section.entries %}
 
-### {{ entry.name | trim }}
+### {{ entry.name }}
 
 
 > {% if entry.active %}
 
-- Status: **active**
+- Status: active
 - Score: {{ entry.score | fixed(1) }}
 
 > {% elif entry.score > 0 %}
 
-- Status: inactive (score {{ entry.score }})
+- Status: inactive (score {{ entry.score | fixed(1) }})
 
 > {% else %}
 
 - Status: inactive
 
 > {% /if %}
+> {% for tag in entry.tags %}
+
+  - tag: {{ tag.label }}
+
 > {% /for %}
 > {% /for %}
-> {% if notes %}
-
-## Notes
-
-{{ notes }}
-
-> {% /if %}"""
+> {% /for %}"""
 
 J2_HERO = """\
-# {{ title | upper }}
+# {{ title }}
 
 {% for section in sections -%}
 ## {{ section.heading }}
 
 {% for entry in section.entries -%}
-### {{ entry.name | trim }}
+### {{ entry.name }}
 
 {% if entry.active -%}
-- Status: **active**
+- Status: active
 - Score: {{ "%.1f" | format(entry.score) }}
 {% elif entry.score > 0 -%}
-- Status: inactive (score {{ entry.score | pt_float }})
+- Status: inactive (score {{ "%.1f" | format(entry.score) }})
 {% else -%}
 - Status: inactive
-{% endif -%}
+{% endif %}{% for tag in entry.tags %}  - tag: {{ tag.label }}
 {% endfor -%}
 {% endfor -%}
-{% if notes -%}
-## Notes
-
-{{ notes }}
-{% endif %}"""
+{% endfor -%}
+"""
 
 MAKO_HERO = """\
-<%!
-def pt_float(value):
-    as_int = int(value)
-    if float(as_int) == value:
-        return str(as_int)
-    return str(value)
-%>\\
-# ${title.upper()}
+# ${title}
 
 % for section in sections:
 ${'##'} ${section["heading"]}
 
 % for entry in section["entries"]:
-${'###'} ${entry["name"].strip()}
+${'###'} ${entry["name"]}
 
 % if entry["active"]:
-- Status: **active**
+- Status: active
 - Score: ${'%.1f' % entry["score"]}
 % elif entry["score"] > 0:
-- Status: inactive (score ${pt_float(entry["score"])})
+- Status: inactive (score ${'%.1f' % entry["score"]})
 % else:
 - Status: inactive
 % endif
+% for tag in entry["tags"]:
+  - tag: ${tag["label"]}
 % endfor
 % endfor
-% if notes:
-${'##'} Notes
-
-${notes}
-% endif
+% endfor
 """
 
 DJANGO_HERO = """\
-# {{ title|upper }}
+# {{ title }}
 
 {% for section in sections %}\
 ## {{ section.heading }}
 
 {% for entry in section.entries %}\
-### {{ entry.name|trim }}
+### {{ entry.name }}
 
 {% if entry.active %}\
-- Status: **active**
+- Status: active
 - Score: {{ entry.score|floatformat:1 }}
 {% elif entry.score|floatformat:0 != "0" %}\
-- Status: inactive (score {{ entry.score|pt_float }})
+- Status: inactive (score {{ entry.score|floatformat:1 }})
 {% else %}\
 - Status: inactive
 {% endif %}\
+{% for tag in entry.tags %}\
+  - tag: {{ tag.label }}
 {% endfor %}\
 {% endfor %}\
-{% if notes %}\
-## Notes
-
-{{ notes }}
-{% endif %}"""
-
-
-def _make_hero_section(heading: str, count: int) -> dict:
-    """Build a section dict with *count* entries for the hero scenario."""
-    return {
-        "heading": heading,
-        "entries": [
-            {
-                "name": f"Entry-{i}",
-                "active": i % 3 == 0,
-                "score": i * 1.5,
-            }
-            for i in range(count)
-        ],
-    }
+{% endfor %}\
+"""
 
 
 HERO_KWARGS: dict = {
-    "title": "Benchmark Report",
+    "title": "System Report",
     "sections": [
-        _make_hero_section("Section A", 10),
-        _make_hero_section("Section B", 10),
-        _make_hero_section("Section C", 10),
+        {
+            "heading": "Overview",
+            "entries": [
+                {"name": "Service-A", "active": True, "score": 98.7, "tags": [{"label": "prod"}, {"label": "critical"}]},
+                {"name": "Service-B", "active": False, "score": 45.2, "tags": [{"label": "staging"}]},
+                {"name": "Service-C", "active": False, "score": 0.0, "tags": [{"label": "deprecated"}]},
+            ],
+        },
+        {
+            "heading": "Metrics",
+            "entries": [
+                {"name": "Latency", "active": True, "score": 12.3, "tags": [{"label": "p99"}]},
+                {"name": "Throughput", "active": False, "score": 0.0, "tags": [{"label": "batch"}]},
+            ],
+        },
     ],
-    "notes": "End of report.",
 }
 
 

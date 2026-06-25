@@ -10,8 +10,27 @@
 //! Each scenario pre-compiles templates and benchmarks only render time.
 //! Before benchmarking, a correctness test asserts all four engines produce
 //! identical output.
+//!
+//! ## Methodology notes
+//!
+//! - **MiniJinja** accepts `&impl Serialize` directly, so its `.render(&data)`
+//!   re-serializes the data struct on every iteration, while the other engines
+//!   use pre-built context objects. The `hero_e2e` / `mega_e2e` benchmarks
+//!   include context construction in the hot loop for all engines to level
+//!   this playing field.
+//!
+//! - **Handlebars** lacks string equality, numeric comparisons, and filters.
+//!   The data structs include pre-computed boolean flags (e.g. `is_high`,
+//!   `has_positive_score`) and pre-formatted strings (e.g. `score_fmt`)
+//!   so Handlebars can produce equivalent output — this means Handlebars
+//!   does slightly less per-render work than the other engines.
+//!
+//! - **prompt-templates** uses `render_ctx_allowing_extra()` because the
+//!   shared data structs carry fields for other engines. This skips strict
+//!   unknown-field rejection but still performs type validation.
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
+use std::hint::black_box;
 use handlebars::Handlebars;
 use minijinja::Environment;
 use prompt_templates::Template;
@@ -403,9 +422,8 @@ impl PromptTemplatesEngine {
     fn render(&self, ctx: &prompt_templates::Context) -> String {
         // Use render_allowing_extra since shared structs may carry fields
         // needed by other engines (e.g. score_fmt, is_high).
-        #[allow(deprecated)]
         self.template
-            .render_allowing_extra(ctx)
+            .render_ctx_allowing_extra(ctx)
             .expect("prompt-templates: render failed")
     }
 }
@@ -1007,7 +1025,7 @@ fn bench_mega(c: &mut Criterion) {
 
     let macro_ctx = macro_data.to_context();
     group.bench_function("prompt_templates_macro", |b| {
-        b.iter(|| macro_tmpl.render(black_box(&macro_ctx)));
+        b.iter(|| macro_tmpl.render_ctx(black_box(&macro_ctx)));
     });
     // -------------------------------------
 

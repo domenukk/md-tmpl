@@ -12,7 +12,7 @@ params:
 ---
 
 User: {{ username }}
-Role: {{ role }}
+Role: {{ kind(role) }}
 Score: {{ score }}
 Active: {{ active }}
 

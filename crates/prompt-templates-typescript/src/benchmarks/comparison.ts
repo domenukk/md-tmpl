@@ -4,6 +4,13 @@
  * Uses the same template logic for each engine so the numbers
  * are directly comparable.
  *
+ * Methodology notes:
+ * - Mustache lacks `elif` and filters. Its conditional template uses a
+ *   simpler boolean check instead of integer equality, doing less work.
+ * - prompt-templates uses `allowExtra: true` in conditional rendering
+ *   because the data object carries extra Handlebars-specific boolean
+ *   fields; this skips strict unknown-field rejection.
+ *
  * Usage:
  *   npm run build && node dist/benchmarks/comparison.js
  */
@@ -75,16 +82,13 @@ const HBS_SIMPLE_SRC = "Hello {{name}}, welcome to {{place}}!";
 const MUS_SIMPLE_SRC = "Hello {{name}}, welcome to {{place}}!";
 
 // ---------------------------------------------------------------------------
-// Loop: for/each with 5 items
+// Loop: for/each with 3 items
 // ---------------------------------------------------------------------------
 
 const PT_LOOP_SRC = `---
 params:
-  - title = str
-  - items = list<label = str, value = str>
+  - items = list<label = str, value = int>
 ---
-# {{ title | upper }}
-
 > {% for item in items %}
 
 - {{ item.label }}: {{ item.value }}
@@ -92,62 +96,58 @@ params:
 > {% /for %}`;
 
 const HBS_LOOP_SRC = [
-  "# {{upper title}}",
-  "",
   "{{#each items}}",
   "- {{this.label}}: {{this.value}}",
   "{{/each}}",
 ].join("\n");
 
 const MUS_LOOP_SRC = [
-  "# {{title}}",
-  "",
   "{{#items}}",
   "- {{label}}: {{value}}",
   "{{/items}}",
 ].join("\n");
 
 // ---------------------------------------------------------------------------
-// Conditional: if/else
+// Conditional: if/elif/else
 // ---------------------------------------------------------------------------
 
 const PT_COND_SRC = `---
 params:
-  - level = int
-  - name = str
+  - level = str
+  - score = int
 ---
-> {% if level == 1 %}
+> {% if level == "high" %}
 
-Beginner: {{ name }}
+Rating: Excellent
 
-> {% elif level == 2 %}
+> {% elif level == "medium" %}
 
-Intermediate: {{ name }}
+Rating: Good (score {{ score }})
 
 > {% else %}
 
-Expert: {{ name }}
+Rating: Needs Improvement
 
 > {% /if %}`;
 
 const HBS_COND_SRC = [
-  "{{#if isBeginner}}",
-  "Beginner: {{name}}",
-  "{{else if isIntermediate}}",
-  "Intermediate: {{name}}",
+  "{{#if isHigh}}",
+  "Rating: Excellent",
+  "{{else if isMedium}}",
+  "Rating: Good (score {{score}})",
   "{{else}}",
-  "Expert: {{name}}",
+  "Rating: Needs Improvement",
   "{{/if}}",
 ].join("\n");
 
 // Mustache has no else-if, so we use a simpler conditional
 const MUS_COND_SRC = [
-  "{{#isBeginner}}",
-  "Beginner: {{name}}",
-  "{{/isBeginner}}",
-  "{{^isBeginner}}",
-  "Expert: {{name}}",
-  "{{/isBeginner}}",
+  "{{#isHigh}}",
+  "Rating: Excellent",
+  "{{/isHigh}}",
+  "{{^isHigh}}",
+  "Rating: Needs Improvement",
+  "{{/isHigh}}",
 ].join("\n");
 
 // ---------------------------------------------------------------------------
@@ -155,19 +155,18 @@ const MUS_COND_SRC = [
 // ---------------------------------------------------------------------------
 
 const simpleData = { name: "Alice", place: "Wonderland" };
-const loopItems = [
-  { label: "Alpha", value: "100" },
-  { label: "Beta", value: "200" },
-  { label: "Gamma", value: "300" },
-  { label: "Delta", value: "400" },
-  { label: "Epsilon", value: "500" },
-];
-const loopData = { title: "Report", items: loopItems };
+const loopData = {
+  items: [
+    { label: "Alpha", value: 10 },
+    { label: "Beta", value: 20 },
+    { label: "Gamma", value: 30 },
+  ],
+};
 const condData = {
-  level: 2,
-  name: "Bob",
-  isBeginner: false,
-  isIntermediate: true,
+  level: "medium",
+  score: 75,
+  isHigh: false,
+  isMedium: true,
 };
 
 // ---------------------------------------------------------------------------

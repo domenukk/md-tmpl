@@ -1,11 +1,11 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![forbid(unsafe_code)]
-#![doc = include_str!("../README.md")]
+#![cfg_attr(feature = "std", doc = include_str!("../README.md"))]
 
 #[macro_use]
 extern crate alloc;
 
-// Run doc-tests from the full language specification.
+#[cfg(feature = "std")]
 #[doc = include_str!("../SPEC.md")]
 #[doc(hidden)]
 pub mod spec {}
@@ -35,7 +35,7 @@ mod template;
 mod types;
 mod value;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod inline_template_tests;
 
 /// Hidden re-exports for use by proc-macro generated code.
@@ -44,9 +44,9 @@ mod inline_template_tests;
 /// via `::prompt_templates::__private::*`.
 #[doc(hidden)]
 pub mod __private {
-    pub use alloc::{borrow::Cow, format, string::String, sync::Arc, vec, vec::Vec};
+    pub use alloc::{borrow::Cow, boxed::Box, format, string::String, sync::Arc, vec, vec::Vec};
 
-    pub use crate::compat::Lazy;
+    pub use crate::compat::LazyLock;
 
     /// FNV-1a hash over raw bytes.
     ///
@@ -82,7 +82,7 @@ pub use frontmatter::{
 pub use serde_support::{DeError, SerError, from_value, to_value};
 #[cfg(feature = "std")]
 pub use template::load_template;
-pub use template::{CompileOptions, RenderOptions, Template};
+pub use template::{CompileOptions, Template};
 pub use types::{
     BUILTIN_TYPE_NAMES, TypeCheckError, VarDecl, VarType, VariantDecl, to_pascal_case,
 };
@@ -105,14 +105,15 @@ pub use value::{Value, ValueTypeError};
 /// use prompt_templates::{Template, ctx};
 ///
 /// let tmpl = Template::from_source(
-///     "---\n\
-///      params: [greeting = str, name = str]\n\
-///      ---\n\
-///      {{ greeting }}, {{ name }}!",
+///     "\
+/// ---
+/// params: [greeting = str, name = str]
+/// ---
+/// {{ greeting }}, {{ name }}!",
 /// )
 /// .unwrap();
 /// let output = tmpl
-///     .render(&ctx! {
+///     .render_ctx(&ctx! {
 ///         greeting: "Hello",
 ///         name: "world",
 ///     })
@@ -125,19 +126,19 @@ pub use value::{Value, ValueTypeError};
 /// use prompt_templates::{Template, ctx};
 ///
 /// let tmpl = Template::from_source(
-///     "---\n\
-///      params: [items = list<label = str>]\n\
-///      ---\n\
-///      \n\
-///      > {% for item in items %}\n\
-///      \n\
-///      {{ item.label }}\n\
-///      \n\
-///      > {% /for %}",
+///     "\
+/// ---
+/// params: [items = list<label = str>]
+/// ---
+/// > {% for item in items %}
+///
+/// {{ item.label }}
+///
+/// > {% /for %}",
 /// )
 /// .unwrap();
 /// let output = tmpl
-///     .render(&ctx! {
+///     .render_ctx(&ctx! {
 ///         items: [
 ///             { label: "alpha" },
 ///             { label: "beta" },

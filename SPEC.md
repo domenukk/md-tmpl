@@ -68,10 +68,13 @@ Some prose.
 
 ## Frontmatter & Type System
 
+All frontmatter keys are **optional** — only the `---` delimiters are
+mandatory. Omitted keys default to empty / absent.
+
 ```yaml
 ---
-name: my_template # optional display name
-description: A summary # optional description
+name: my_template
+description: A summary
 types:
   - Labelled = enum<Known(label = str), Unknown>
   - Priority = enum<High, Medium, Low>
@@ -83,15 +86,15 @@ consts:
 params:
   - name = str
   - count = int
-  - score = float := 0.95 # optional default value
+  - score = float := 0.95
   - active = bool := true
   - items = list<label = str, score = int>
   - config = struct<timeout = int, retries = int>
   - status = enum<Active, Paused, Stopped>
   - outcome = enum<Confirmed(evidence = str), Rejected>
-  - category = Labelled # reference a type alias
-  - ext_type = shared_types.SomeType # reference an imported type
-allow_unused: false # default; set true to suppress unused params/types errors
+  - category = Labelled
+  - ext_type = shared_types.SomeType
+allow_unused: false
 ---
 ```
 
@@ -128,7 +131,7 @@ Compound types can be nested, with one restriction:
 - tags = list<enum<High, Medium, Low>> # list of enum values
 - config = struct<pos = struct<x = int, y = int>, label = str> # nested struct
 - entries = struct<status = enum<Active, Done>, items = list<str>>
-- label = option<str> # optional string
+- label = option<str> # required (caller must provide string or null)
 - scores = list<option<int>> # list of optional ints
 - meta = option<struct<key = str, value = str>> # optional struct
 
@@ -162,8 +165,8 @@ Append `:= {literal}` after the type:
 
 # Option defaults
 
-- label = option<str> := None # absent value
-- label = option<str> := Some(val = "hello") # present value
+- label = option<str> := None # absent value (parameter becomes optional)
+- label = option<str> := "hello" # present value (auto-wraps to Some)
 
 # Struct defaults
 
@@ -173,6 +176,11 @@ Append `:= {literal}` after the type:
 
 - tags = list<str> := ["rust", "go", "python"]
 - items = list<name = str, score = int> := [{name = "a", score = 10}]
+
+# Const-reference defaults — use a const name instead of a literal
+
+- retries = int := MAX_RETRIES
+- output_file = str := config.DEFAULT_PATH
 ```
 
 **Rules:**
@@ -186,6 +194,11 @@ Append `:= {literal}` after the type:
 - Unknown variant names are rejected at parse time.
 - Struct defaults use `{key = value}` syntax (curly braces with `=`).
 - List defaults use `[value, ...]` syntax.
+- **Const-reference defaults**: a default value can reference a local
+  constant (`consts:` entry) or an imported constant (`stem.NAME`) by name.
+  The referenced constant's type must match the parameter's declared type.
+  Local consts are parsed before params, so order within frontmatter does
+  not matter. Imported constants are resolved after import resolution.
 
 Defaults are type-checked at compile/parse time. If a param with a default is
 omitted from the render context, the default is injected automatically.
@@ -195,12 +208,17 @@ Query defaults programmatically:
 ```rust
 use prompt_templates::Template;
 
-let tmpl = Template::from_source("---\nparams:\n  - name = str := \"World\"\n---\nHello {{ name }}!").unwrap();
+let tmpl = Template::from_source(
+"---
+params:
+  - name = str := \"World\"
+---
+Hello {{ name }}!").unwrap();
 let defaults = tmpl.defaults();
 assert_eq!(defaults.len(), 1);
 
 let ctx = prompt_templates::Context::new();
-assert_eq!(tmpl.render(&ctx).unwrap(), "Hello World!");
+assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Hello World!");
 ```
 
 ### Unused Parameters and Type Aliases
@@ -411,11 +429,11 @@ Each entry follows `- NAME = type := value`:
 consts:
   - NOTEBOOK_FILENAME = str := "thought_process.md"
   - MAX_RETRIES = int := 3
-  - PHASES = struct<EXPLORE = str, TRIAGE = str> := {EXPLORE = "Explore", TRIAGE = "Triage"}
+  - STAGES = struct<DESIGN = str, BUILD = str> := {DESIGN = "Design", BUILD = "Build"}
 ---
-Notebook: { { NOTEBOOK_FILENAME } }
-Max retries: { { MAX_RETRIES } }
-Phase: { { PHASES.EXPLORE } }
+Notebook: {{ NOTEBOOK_FILENAME }}
+Max retries: {{ MAX_RETRIES }}
+Stage: {{ STAGES.DESIGN }}
 ```
 
 Constants are type-checked at parse time. The value is mandatory — a
@@ -460,25 +478,25 @@ needed — the type declaration itself populates the template scope.
 
 Enum literal expressions **must** be wrapped in the `kind()` built-in
 function, which returns the variant name as a string. Bare access
-(e.g., `{{ Phase.Explore }}`) is a compile error.
+(e.g., `{{ Stage.Design }}`) is a compile error.
 
 ### Basic Usage
 
 ```yaml
 ---
 types:
-  - Phase = enum<Explore, Triage, Reproduce>
+  - Stage = enum<Design, Build, Deploy>
   - Status = enum<Active, Paused(reason = str)>
 params: []
 ---
-{{ kind(Phase.Explore) }}     {# renders: Explore #}
-{{ kind(Phase.Triage) }}      {# renders: Triage #}
+{{ kind(Stage.Design) }}      {# renders: Design #}
+{{ kind(Stage.Build) }}       {# renders: Build #}
 {{ kind(Status.Paused) }}     {# renders: Paused #}
 ```
 
 Both **unit variants** (no fields) and **struct variants** (with fields)
 work the same way — `kind()` extracts the variant name as a string
-(e.g., `kind(Phase.Explore)` → `"Explore"`,
+(e.g., `kind(Stage.Design)` → `"Design"`,
 `kind(Status.Paused)` → `"Paused"`).
 
 ### Bare Access Is a Compile Error
@@ -486,13 +504,13 @@ work the same way — `kind()` extracts the variant name as a string
 Using an enum literal without `kind()` is rejected at compile time:
 
 ```markdown
-{{ Phase.Explore }} {# ❌ COMPILE ERROR #}
+{{ Stage.Design }} {# ❌ COMPILE ERROR #}
 ```
 
 Error message:
 
-> bare enum literal 'Phase.Explore' is not allowed — use
-> kind(Phase.Explore) to get the variant name as a string
+> bare enum literal 'Stage.Design' is not allowed — use
+> kind(Stage.Design) to get the variant name as a string
 
 **Rationale:** requiring `kind()` prevents confusion between enum type
 namespace access and regular variable dot-access (e.g., `struct.field`).
@@ -510,7 +528,7 @@ imports:
   - "[lib](lib.tmpl.md)"
 params: []
 ---
-{{ kind(lib.Phase.Explore) }}     {# renders: Explore #}
+{{ kind(lib.Stage.Design) }}      {# renders: Design #}
 {{ kind(lib.Status.Paused) }}     {# renders: Paused #}
 ```
 
@@ -526,10 +544,10 @@ name that collides with a `types:` name is a compile error.
 
 ### Compile-Time Guarantees
 
-- **Bare access** — `{{ Phase.Explore }}` without `kind()` is a
+- **Bare access** — `{{ Stage.Design }}` without `kind()` is a
   compile error.
-- **Unknown variant** — `kind(Phase.Nonexistent)` is a compile error.
-- **Unknown type** — `kind(Nonexistent.Explore)` is a compile error.
+- **Unknown variant** — `kind(Stage.Nonexistent)` is a compile error.
+- **Unknown type** — `kind(Nonexistent.Design)` is a compile error.
 - **Non-enum type** — accessing variants on a `struct` or scalar type
   is a compile error.
 
@@ -630,6 +648,37 @@ Variable substitution: `{{ expr }}`
 Dotted paths resolve nested struct and enum fields. Accessing a field that does
 not exist on the resolved type is a compile-time error.
 
+### Renderable Types
+
+Only **scalar types** can appear directly in `{{ }}` expressions:
+
+| Type    | Rendered as                 |
+| ------- | --------------------------- |
+| `str`   | The string value            |
+| `int`   | Decimal integer (e.g. `42`) |
+| `float` | Decimal float (e.g. `3.14`) |
+| `bool`  | `true` or `false`           |
+
+Attempting to render a non-scalar type directly is a **compile-time error**:
+
+```markdown
+{{ items }} {# ❌ ERROR: cannot display list — use {% for %} #}
+{{ config }} {# ❌ ERROR: cannot display struct — access fields #}
+{{ status }} {# ❌ ERROR: cannot display enum — use {% match %} or kind() #}
+{{ widget }} {# ❌ ERROR: cannot display tmpl — use {% include %} #}
+{{ maybe_x }} {# ❌ ERROR: cannot display option — use {% if has(x) %} #}
+```
+
+**How to use non-scalar types:**
+
+| Type     | Correct usage                                                       |
+| -------- | ------------------------------------------------------------------- |
+| `list`   | `{% for item in items %}{{ item.field }}{% /for %}`                 |
+| `struct` | `{{ config.timeout }}` (access individual fields)                   |
+| `enum`   | `{% match status %}` or `{{ kind(status) }}`                        |
+| `tmpl`   | `{% include widget with field = value %}`                           |
+| `option` | `{% if has(x) %}{{ x }}{% /if %}` (narrowing unwraps to inner type) |
+
 Enum types declared in `types:` also support dotted-path access to their
 variants via the `kind()` function — see
 [Enum Literal Expressions](#enum-literal-expressions).
@@ -681,7 +730,7 @@ params:
 ---
 > {% for a in outer %}{% for b in inner %}{{ idx(a) }}.{{ idx(b) }} {% /for %}{% /for %}").unwrap();
 
-let output = tmpl.render(&ctx! {
+let output = tmpl.render_ctx(&ctx! {
     outer: [{ label: "x" }, { label: "y" }],
     inner: [{ label: "p" }, { label: "q" }],
 }).unwrap();
@@ -793,7 +842,7 @@ Not confirmed.
 > {% /match %}
 ```
 
-**Default arm** (catch-all for unmatched variants):
+**Catch-all arm** (fallback for unmatched variants):
 
 <!-- prettier-ignore -->
 ```markdown
@@ -807,15 +856,15 @@ Confirmed with evidence: {{ outcome.evidence }}
 
 Not confirmed.
 
-> {% default %}
+> {% else %}
 
 Outcome pending.
 
 > {% /match %}
 ```
 
-The `{% default %}` arm matches any variant not covered by preceding `{% case %}` arms.
-It must be the last arm — placing `{% case %}` after `{% default %}` is a compile error.
+The `{% else %}` arm matches any variant not covered by preceding `{% case %}` arms.
+It must be the last arm — placing `{% case %}` after `{% else %}` is a compile error.
 
 **Multi-variant arm** (shared body for several variants):
 
@@ -847,7 +896,7 @@ after type narrowing:
 3. **Multi-variant intersection** — only shared fields are accessible.
 4. **Exhaustiveness** — multi-arm matches must cover **all** variants. Adding a
    new variant to the enum and forgetting to handle it is a compile error.
-   Use `{% default %}` as a catch-all if you don't need per-variant handling.
+   Use `{% else %}` as a catch-all if you don't need per-variant handling.
 5. **No `==` on enums** — comparing an enum with `==` or `!=` is a compile error.
    Use `{% match %}` instead, which is exhaustive and supports struct variants.
 
@@ -855,17 +904,32 @@ after type narrowing:
 
 ## Option Types
 
-`option<T>` is syntactic sugar for `enum<Some(val = T), None>` — a first-class
-way to express optional/nullable values.
+`option<T>` is a first-class way to express optional/nullable values.
 
 ### Declaration
 
 ```yaml
 params:
-  - name = option<str> # optional string
-  - score = option<int> := None # defaults to absent
-  - label = option<str> := Some(val = "default")
+  - name = option<str> # required — caller MUST provide a value or null
+  - score = option<int> := None # optional — defaults to absent
+  - label = option<str> := "hello" # optional — defaults to "hello"
 ```
+
+**Important:** `option<T>` without a default is a **required** parameter, just
+like any other type. There is no automatic default to `None`. If you want
+the parameter to be optional, you must explicitly declare `:= None`.
+
+### Transparent Representation
+
+Option values are **transparent** — the inner value is used directly,
+not wrapped in `{__kind__: "Some", val: X}`. This means `{{ name }}` renders
+the value directly, without needing `.val`:
+
+| Input (JS/Python/Go) | Template `Value`    | `{{ x }}` output |
+| -------------------- | ------------------- | ---------------- |
+| `null` / `None`      | `NoneValue`         | `""` (empty)     |
+| `42`                 | `IntValue(42)`      | `42`             |
+| `"hello"`            | `StrValue("hello")` | `hello`          |
 
 ### Checking presence with `has()`
 
@@ -875,7 +939,7 @@ The `has()` built-in function returns `true` when an option holds a value
 ```markdown
 > {% if has(name) %}
 
-Hello {{ name.val }}!
+Hello {{ name }}!
 
 > {% else %}
 
@@ -886,14 +950,13 @@ Hello stranger!
 
 ### Matching with `{% match %}`
 
-Since `option<T>` desugars to an enum, use `{% match %}` for exhaustive
-handling:
+Use `{% match %}` for exhaustive option handling:
 
 ```markdown
 > {% match name %}
 > {% case Some %}
 
-Name: {{ name.val }}
+Name: {{ name }}
 
 > {% case None %}
 
@@ -902,18 +965,18 @@ _(no name provided)_
 > {% /match %}
 ```
 
-Inside `{% case Some %}`, the `name.val` field is accessible. Outside the
-match, `name.val` is a compile error because the `None` variant has no
-`val` field.
+Inside `{% case Some %}`, `{{ name }}` renders the inner value directly.
+Outside the match, `{{ name }}` on a `None` value renders as empty string.
 
 ### Runtime representation
 
-At runtime, option values follow the standard enum representation:
+At runtime, option values use **transparent** representation:
 
-| Template value    | Runtime `Value`                                   |
-| ----------------- | ------------------------------------------------- |
-| `None`            | `Value::Str("None")`                              |
-| `Some(val = "x")` | `Value::Struct({"__kind__": "Some", "val": "x"})` |
+| Template value    | Runtime `Value` | JS representation |
+| ----------------- | --------------- | ----------------- |
+| `None`            | `NoneValue`     | `null`            |
+| `Some(val = "x")` | `StrValue("x")` | `"x"`             |
+| `Some(val = 42)`  | `IntValue(42)`  | `42`              |
 
 ### Nesting
 
@@ -965,7 +1028,9 @@ params:
   ```rust
   let dir = tempfile::tempdir().unwrap();
   let path = dir.path().join("deep.tmpl.md");
-  std::fs::write(&path, "---\nparams: []\n---\nok").unwrap();
+  std::fs::write(
+      &path, "---\nparams: []\n---\nok"
+  ).unwrap();
 
   let tmpl = prompt_templates::Template::from_file(&path)
       .unwrap()
@@ -1143,15 +1208,21 @@ params: []
 > {% /raw %}").unwrap();
 
 let ctx = Context::new();
-assert_eq!(tmpl.render(&ctx).unwrap(), "{{ not_processed }}\n");
+assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "{{ not_processed }}\n");
 ```
 
 Custom delimiter to escape `{% /raw %}` itself:
 
 ```markdown
-> {% raw=DELIM %}
+> {% raw=# %}
 > This outputs {% raw %}...{% /raw %} literally.
-> {% /DELIM %}
+> {% /# %}
+```
+
+Any string works as the delimiter — `#` is a common choice:
+
+```markdown
+> {% raw=# %}{{ not_a_variable }}{% /# %}
 ```
 
 ---
@@ -1201,7 +1272,7 @@ params:
 hello  {{- name -}}
 bye").unwrap();
 
-let output = tmpl.render(&ctx! { name: "world" }).unwrap();
+let output = tmpl.render_ctx(&ctx! { name: "world" }).unwrap();
 assert_eq!(output, "helloworldbye");
 ```
 
@@ -1253,5 +1324,5 @@ assert_eq!(err.actual, "str");
 ---
 
 > **Rust API & SDK Documentation**: For language-specific APIs (macros,
-> `CompileOptions`, `RenderOptions`, loading, caching, serde integration,
+> `CompileOptions`, loading, caching, serde integration,
 > typed-builder), see the [README](README.md).

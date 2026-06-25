@@ -83,8 +83,16 @@ function directDisplay(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value === "boolean") return value ? "true" : "false";
   if (typeof value === "number") return String(value);
-  if (Array.isArray(value)) return `[<list of ${value.length}>]`;
-  if (typeof value === "object") return `{<struct>}`;
+  if (Array.isArray(value)) {
+    throw new Error(
+      "cannot display list value directly — iterate with '{% for item in list %}' instead",
+    );
+  }
+  if (typeof value === "object") {
+    throw new Error(
+      "cannot display struct value directly — access individual fields (e.g. '{{ value.field }}') instead",
+    );
+  }
   return String(value);
 }
 
@@ -138,39 +146,11 @@ function resolveDirectExpr(expr: string, scope: DirectScope): unknown {
     const root = expr.slice(0, dotIdx);
     const resolved = scope.resolve(root);
     if (resolved === undefined) return undefined;
-    const dotResolved = resolveDirectPath(resolved, expr, dotIdx + 1);
-    // Auto-unwrap option Some values from dotted paths
-    if (
-      dotResolved !== null &&
-      typeof dotResolved === "object" &&
-      !Array.isArray(dotResolved)
-    ) {
-      const obj = dotResolved as Record<string, unknown>;
-      if (
-        obj.__kind__ === "Some" &&
-        "val" in obj &&
-        Object.keys(obj).length === 2
-      ) {
-        return obj.val;
-      }
-    }
-    return dotResolved;
+    return resolveDirectPath(resolved, expr, dotIdx + 1);
   }
 
   // Simple variable
-  const val = scope.resolve(expr);
-  // Auto-unwrap option Some values: {__kind__: "Some", val: X} → X
-  if (val !== null && typeof val === "object" && !Array.isArray(val)) {
-    const obj = val as Record<string, unknown>;
-    if (
-      obj.__kind__ === "Some" &&
-      "val" in obj &&
-      Object.keys(obj).length === 2
-    ) {
-      return obj.val;
-    }
-  }
-  return val;
+  return scope.resolve(expr);
 }
 
 /** Handle built-in function calls. */
@@ -186,19 +166,26 @@ function resolveDirectFunction(expr: string, scope: DirectScope): unknown {
       const arg = resolveDirectExpr(argStr, scope);
       if (typeof arg === "string") return arg.length;
       if (Array.isArray(arg)) return arg.length;
-      return 0;
+      if (arg !== null && arg !== undefined && typeof arg === "object")
+        return Object.keys(arg as object).length;
+      throw new TemplateSyntaxError(
+        `len() requires a list, string, or struct, got ${typeof arg}`,
+      );
     }
     case "idx": {
       // idx() or idx(binding) — return current loop index
       const binding = argStr || findLoopBinding(scope);
       if (binding) {
         const idx = scope.getLoopIndex(binding);
-        return idx ?? 0;
+        if (idx !== undefined) return idx;
       }
-      return 0;
+      throw new TemplateSyntaxError(
+        `idx() requires an active loop binding${argStr ? ` for '${argStr}'` : ""}`,
+      );
     }
     case "kind": {
       const arg = resolveDirectExpr(argStr, scope);
+      if (arg === null || arg === undefined) return "None";
       if (
         arg !== null &&
         typeof arg === "object" &&
@@ -207,7 +194,8 @@ function resolveDirectFunction(expr: string, scope: DirectScope): unknown {
         return (arg as Record<string, unknown>).__kind__;
       }
       if (typeof arg === "string") return arg;
-      return "";
+      // For transparent option values that are not enums, the kind is "Some"
+      return "Some";
     }
     case "has": {
       const arg = resolveDirectExpr(argStr, scope);
@@ -410,7 +398,10 @@ function parseDirectLiteral(s: string): unknown {
 // ---------------------------------------------------------------------------
 
 /** Get the variant name from a JS value (enum dispatch). */
-function getDirectVariantName(value: unknown): string {
+function getDirectVariantName(value: unknown, isOption: boolean): string {
+  // Transparent option: null/undefined is "None", anything else is "Some"
+  if (value === null || value === undefined) return "None";
+  if (isOption) return "Some";
   if (typeof value === "string") return value;
   if (value !== null && typeof value === "object") {
     // Check __kind__ protocol
@@ -421,7 +412,23 @@ function getDirectVariantName(value: unknown): string {
       return obj._prompt_template_tag;
     }
   }
-  return "";
+  // Non-None, non-enum values in option match context → "Some"
+  return "Some";
+}
+
+/** Returns true if the match arms/guard use option-style variant names. */
+function isOptionMatch(node: {
+  arms: { variants: string[] }[];
+  inlineGuard?: { variant: string };
+}): boolean {
+  if (node.inlineGuard) {
+    return (
+      node.inlineGuard.variant === "Some" || node.inlineGuard.variant === "None"
+    );
+  }
+  return node.arms.some((arm) =>
+    arm.variants.some((v) => v === "Some" || v === "None"),
+  );
 }
 
 /**
@@ -486,13 +493,17 @@ function renderDirectNodes(nodes: readonly Node[], scope: DirectScope): string {
             `for loop requires a list, got ${typeof listVal}`,
           );
         }
-        for (let idx = 0; idx < listVal.length; idx++) {
-          const item = listVal[idx];
-          const layer = scope.pushLayer();
-          layer.set(node.binding, item);
-          scope.setLoopIndex(node.binding, idx);
-          parts.push(renderDirectNodes(node.body, scope));
-          scope.popLayer();
+        if (listVal.length === 0 && node.elseBody) {
+          parts.push(renderDirectNodes(node.elseBody, scope));
+        } else {
+          for (let idx = 0; idx < listVal.length; idx++) {
+            const item = listVal[idx];
+            const layer = scope.pushLayer();
+            layer.set(node.binding, item);
+            scope.setLoopIndex(node.binding, idx);
+            parts.push(renderDirectNodes(node.body, scope));
+            scope.popLayer();
+          }
         }
         break;
       }
@@ -513,26 +524,30 @@ function renderDirectNodes(nodes: readonly Node[], scope: DirectScope): string {
       }
 
       case "match": {
+        const optMatch = isOptionMatch(node);
         if (node.inlineGuard) {
           const val = evaluateDirectExpr(node.expr, scope);
-          const variantName = getDirectVariantName(val);
+          const variantName = getDirectVariantName(val, optMatch);
           if (variantName === node.inlineGuard.variant) {
             parts.push(renderDirectNodes(node.inlineGuard.body, scope));
           }
         } else {
           const val = evaluateDirectExpr(node.expr, scope);
-          const variantName = getDirectVariantName(val);
+          const variantName = getDirectVariantName(val, optMatch);
 
           let matched = false;
           for (const arm of node.arms) {
-            if (arm.variants.includes(variantName)) {
+            if (
+              arm.variants.includes(variantName) ||
+              arm.variants.includes("_")
+            ) {
               parts.push(renderDirectNodes(arm.body, scope));
               matched = true;
               break;
             }
           }
-          if (!matched && node.defaultArm) {
-            parts.push(renderDirectNodes(node.defaultArm, scope));
+          if (!matched && node.elseArm) {
+            parts.push(renderDirectNodes(node.elseArm, scope));
           }
         }
         break;

@@ -183,13 +183,13 @@ func generateFromTemplate(tmpl *Template, opts *genOptions) (string, error) {
 		for _, f := range fields {
 			goField := toPascalCase(f.name)
 			switch f.typeKind {
-			case typeStr:
+			case kindStr:
 				fmt.Fprintf(&b, "\tif err := ctx.SetStr(%q, string(p.%s)); err != nil {\n\t\treturn \"\", err\n\t}\n", f.name, goField)
-			case typeInt:
+			case kindInt:
 				fmt.Fprintf(&b, "\tif err := ctx.SetInt(%q, int64(p.%s)); err != nil {\n\t\treturn \"\", err\n\t}\n", f.name, goField)
-			case typeFloat:
+			case kindFloat:
 				fmt.Fprintf(&b, "\tif err := ctx.SetFloat(%q, float64(p.%s)); err != nil {\n\t\treturn \"\", err\n\t}\n", f.name, goField)
-			case typeBool:
+			case kindBool:
 				fmt.Fprintf(&b, "\tif err := ctx.SetBool(%q, bool(p.%s)); err != nil {\n\t\treturn \"\", err\n\t}\n", f.name, goField)
 			default:
 				// Complex types (list, struct, enum): use generic Set which
@@ -213,16 +213,16 @@ func generateFromTemplate(tmpl *Template, opts *genOptions) (string, error) {
 // auxiliary type definitions as needed.
 func (c *codegenContext) resolveType(fieldName string, node typeNode) string {
 	switch node.kind {
-	case typeStr:
+	case kindStr:
 		return "string"
-	case typeInt:
+	case kindInt:
 		return "int64"
-	case typeFloat:
+	case kindFloat:
 		return "float64"
-	case typeBool:
+	case kindBool:
 		return "bool"
 
-	case typeList:
+	case kindList:
 		if len(node.fields) == 0 {
 			return "[]any"
 		}
@@ -230,7 +230,7 @@ func (c *codegenContext) resolveType(fieldName string, node typeNode) string {
 		c.emitStruct(itemName, node.fields)
 		return "[]" + itemName
 
-	case typeStruct:
+	case kindStruct:
 		if len(node.fields) == 0 {
 			return "map[string]any"
 		}
@@ -238,12 +238,26 @@ func (c *codegenContext) resolveType(fieldName string, node typeNode) string {
 		c.emitStruct(structName, node.fields)
 		return structName
 
-	case typeEnum:
+	case kindEnum:
 		enumName := toPascalCase(fieldName)
 		c.emitEnum(enumName, node.variants)
 		return enumName
 
-	case typeAlias:
+	case kindOption:
+		if node.innerType == nil {
+			return "any"
+		}
+		inner := c.resolveType(fieldName, *node.innerType)
+		return "*" + inner
+
+	case kindScalarList:
+		if node.innerType == nil {
+			return "[]any"
+		}
+		inner := c.resolveType(fieldName, *node.innerType)
+		return "[]" + inner
+
+	case kindAlias:
 		return "any"
 
 	default:
@@ -358,21 +372,24 @@ func (c *codegenContext) emitMixedEnum(name string, variants []variantNode) {
 type typeKind int
 
 const (
-	typeStr typeKind = iota
-	typeInt
-	typeFloat
-	typeBool
-	typeList
-	typeStruct
-	typeEnum
-	typeAlias // Unresolved type alias — maps to any.
+	kindStr typeKind = iota
+	kindInt
+	kindFloat
+	kindBool
+	kindList
+	kindStruct
+	kindEnum
+	kindOption     // option<T> — nullable wrapper.
+	kindScalarList // scalar_list<T> — homogeneous typed list.
+	kindAlias      // Unresolved type alias — maps to any.
 )
 
 // typeNode is a parsed type specification.
 type typeNode struct {
-	kind     typeKind
-	fields   []fieldNode   // For list and struct.
-	variants []variantNode // For enum.
+	kind      typeKind
+	fields    []fieldNode   // For list and struct.
+	variants  []variantNode // For enum.
+	innerType *typeNode     // For option and scalar_list.
 }
 
 // fieldNode is a name-type pair inside a list/struct/variant.
@@ -414,25 +431,50 @@ func (p *typeParser) parseType() (typeNode, error) {
 
 	switch ident {
 	case "str":
-		return typeNode{kind: typeStr}, nil
+		return typeNode{kind: kindStr}, nil
 	case "int":
-		return typeNode{kind: typeInt}, nil
+		return typeNode{kind: kindInt}, nil
 	case "float":
-		return typeNode{kind: typeFloat}, nil
+		return typeNode{kind: kindFloat}, nil
 	case "bool":
-		return typeNode{kind: typeBool}, nil
+		return typeNode{kind: kindBool}, nil
 	case "list":
-		return p.parseCompound(typeList)
+		return p.parseCompound(kindList)
 	case "struct":
-		return p.parseCompound(typeStruct)
+		return p.parseCompound(kindStruct)
 	case "enum":
 		return p.parseEnum()
+	case "option":
+		return p.parseWrapped(kindOption)
+	case "scalar_list":
+		return p.parseWrapped(kindScalarList)
 	default:
 		// Type alias or unknown type — use any. The engine resolves
 		// aliases at runtime; codegen cannot expand them without the
 		// full type alias map.
-		return typeNode{kind: typeAlias}, nil
+		return typeNode{kind: kindAlias}, nil
 	}
+}
+
+// parseWrapped handles option<T> and scalar_list<T> — types wrapping a single inner type.
+func (p *typeParser) parseWrapped(kind typeKind) (typeNode, error) {
+	p.skipWhitespace()
+	if !p.consume('<') {
+		return typeNode{}, fmt.Errorf("expected '<' after type keyword at position %d in %q", p.pos, p.input)
+	}
+	p.skipWhitespace()
+
+	inner, err := p.parseType()
+	if err != nil {
+		return typeNode{}, fmt.Errorf("parsing inner type: %w", err)
+	}
+
+	p.skipWhitespace()
+	if !p.consume('>') {
+		return typeNode{}, fmt.Errorf("expected '>' at position %d in %q", p.pos, p.input)
+	}
+
+	return typeNode{kind: kind, innerType: &inner}, nil
 }
 
 func (p *typeParser) parseCompound(kind typeKind) (typeNode, error) {
@@ -440,6 +482,27 @@ func (p *typeParser) parseCompound(kind typeKind) (typeNode, error) {
 	if !p.consume('<') {
 		// Bare list/struct without fields.
 		return typeNode{kind: kind}, nil
+	}
+
+	// For list types, check if this is a scalar list (e.g., list<str>)
+	// by peeking ahead: if the first token is a type keyword not followed
+	// by '=', it's a scalar list.
+	if kind == kindList {
+		saved := p.pos
+		p.skipWhitespace()
+		ident := p.readIdent()
+		p.skipWhitespace()
+		if ident != "" && p.peek() == '>' {
+			// It's a scalar list like list<str>.
+			p.pos++ // consume '>'
+			innerNode, err := parseTypeSpec(ident)
+			if err != nil {
+				return typeNode{}, fmt.Errorf("parsing scalar list element type: %w", err)
+			}
+			return typeNode{kind: kindScalarList, innerType: &innerNode}, nil
+		}
+		// Not a scalar list — restore position and parse as normal fields.
+		p.pos = saved
 	}
 
 	fields, err := p.parseFields('>')
@@ -523,7 +586,7 @@ func (p *typeParser) parseEnum() (typeNode, error) {
 		variants = append(variants, variantNode{name: name, fields: fields})
 	}
 
-	return typeNode{kind: typeEnum, variants: variants}, nil
+	return typeNode{kind: kindEnum, variants: variants}, nil
 }
 
 func (p *typeParser) skipWhitespace() {

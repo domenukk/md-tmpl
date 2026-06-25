@@ -57,7 +57,7 @@ fn depth_limit_15_renders_ok() {
     let dir = tempfile::tempdir().unwrap();
     let root = build_include_chain(dir.path(), 15);
     let tmpl = Template::from_file(&root).unwrap();
-    let result = tmpl.render(&Context::new()).unwrap();
+    let result = tmpl.render_ctx(&Context::new()).unwrap();
     // Should contain all intermediate levels and the leaf.
     assert_eq!(result, "0+1+2+3+4+5+6+7+8+9+10+11+12+13+14+LEAF");
 }
@@ -68,7 +68,7 @@ fn depth_limit_16_renders_ok() {
     let dir = tempfile::tempdir().unwrap();
     let root = build_include_chain(dir.path(), 16);
     let tmpl = Template::from_file(&root).unwrap();
-    let result = tmpl.render(&Context::new()).unwrap();
+    let result = tmpl.render_ctx(&Context::new()).unwrap();
     assert_eq!(result, "0+1+2+3+4+5+6+7+8+9+10+11+12+13+14+15+LEAF");
 }
 
@@ -79,7 +79,7 @@ fn depth_limit_17_errors() {
     let root = build_include_chain(dir.path(), 17);
     let tmpl = Template::from_file(&root).unwrap();
     let err = tmpl
-        .render(&Context::new())
+        .render_ctx(&Context::new())
         .expect_err("17-level chain should exceed depth limit 16");
     let msg = err.to_string();
     assert!(
@@ -118,7 +118,7 @@ B> {% include [a](a.tmpl.md) %}",
 
     let tmpl = Template::from_file(&dir.path().join("a.tmpl.md")).unwrap();
     let err = tmpl
-        .render(&Context::new())
+        .render_ctx(&Context::new())
         .expect_err("2-cycle include should hit depth limit");
     let msg = err.to_string();
     assert!(
@@ -161,7 +161,7 @@ C> {% include [a](a.tmpl.md) %}",
 
     let tmpl = Template::from_file(&dir.path().join("a.tmpl.md")).unwrap();
     let err = tmpl
-        .render(&Context::new())
+        .render_ctx(&Context::new())
         .expect_err("3-cycle include should hit depth limit");
     let msg = err.to_string();
     assert!(
@@ -202,7 +202,7 @@ params: [first_name = str, last_name = str]
     let mut ctx = Context::new();
     ctx.set("first_name", "Alice");
     ctx.set("last_name", "Smith");
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(
         result,
         r"Alice Smith
@@ -238,7 +238,7 @@ params: [my_list = str]
     let tmpl = Template::from_source(source).unwrap();
     let mut ctx = Context::new();
     ctx.set("my_list", "items");
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(
         result,
         r"items
@@ -280,7 +280,7 @@ params: [p = Priority, s = Status]
     let mut ctx = Context::new();
     ctx.set("p", "High");
     ctx.set("s", "Active");
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(
         result,
         r"High Active
@@ -320,7 +320,7 @@ params: [level = Priority]
     let tmpl = Template::from_source(source).unwrap();
     let mut ctx = Context::new();
     ctx.set("level", "High");
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(
         result,
         r"High
@@ -391,7 +391,7 @@ params: [x = Priority]
         Template::compile(source, CompileOptions::default().base_dir(dir.path())).unwrap();
     let mut ctx = Context::new();
     ctx.set("x", "High");
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(
         result,
         r"High
@@ -458,7 +458,7 @@ params: [msg = str]
         Template::compile(source, CompileOptions::default().base_dir(dir.path())).unwrap();
     let mut ctx = Context::new();
     ctx.set("msg", "hello");
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(
         result,
         r"hello
@@ -501,7 +501,7 @@ params: [priority = Priority]
     let tmpl = Template::from_source(source).unwrap();
     let mut ctx = Context::new();
     ctx.set("priority", "High");
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(
         result,
         r"High
@@ -541,7 +541,7 @@ params: [s = Status]
     let tmpl = Template::from_source(source).unwrap();
     let mut ctx = Context::new();
     ctx.set("s", "Active");
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(
         result,
         r"Active
@@ -578,7 +578,7 @@ consts:
 {{ X }} {{ Y }}
 ";
     let tmpl = Template::from_source(source).unwrap();
-    let result = tmpl.render(&Context::new()).unwrap();
+    let result = tmpl.render_ctx(&Context::new()).unwrap();
     assert_eq!(
         result,
         r"1 2
@@ -618,7 +618,7 @@ consts:
     let tmpl = Template::from_source(source).unwrap();
     let mut ctx = Context::new();
     ctx.set("user_input", "hello");
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(
         result,
         r"hello v1.0
@@ -686,7 +686,7 @@ params: [{}]
     for i in 0..100 {
         ctx.set(format!("v{i}"), format!("val{i}"));
     }
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     let mut expected_parts = Vec::new();
     for i in 0..100 {
         expected_parts.push(format!("val{i}"));
@@ -710,7 +710,7 @@ params: [items = list<name = str>]
     let tmpl = Template::from_source(source).unwrap();
     let mut ctx = Context::new();
     ctx.set("items", Value::List(Arc::new(vec![])));
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(result.trim(), "", "empty list should produce no output");
 }
 
@@ -725,7 +725,7 @@ params: [text = str]
     let tmpl = Template::from_source(source).unwrap();
     let mut ctx = Context::new();
     ctx.set("text", "  hello world  ");
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(result.trim(), "HELLO WORLD");
 }
 
@@ -748,7 +748,7 @@ params: [flag = bool]
     let tmpl = Template::from_source(&source).unwrap();
     let mut ctx = Context::new();
     ctx.set("flag", Value::Bool(true));
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(result, "> > > > > > > > > DEEP");
 }
 
@@ -760,7 +760,7 @@ params: []
 ---
 ";
     let tmpl = Template::from_source(source).unwrap();
-    let result = tmpl.render(&Context::new()).unwrap();
+    let result = tmpl.render_ctx(&Context::new()).unwrap();
     assert_eq!(result, "", "empty body should produce empty output");
 }
 
@@ -773,7 +773,7 @@ params: []
    
 ";
     let tmpl = Template::from_source(source).unwrap();
-    let result = tmpl.render(&Context::new()).unwrap();
+    let result = tmpl.render_ctx(&Context::new()).unwrap();
     assert!(
         result.trim().is_empty(),
         "whitespace body should produce whitespace: {result:?}"
@@ -791,7 +791,7 @@ params: [msg = str]
     let tmpl = Template::from_source(source).unwrap();
     let mut ctx = Context::new();
     ctx.set("msg", "こんにちは 🦀");
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(
         result,
         r"🎯 こんにちは 🦀 日本語
@@ -814,7 +814,7 @@ hello   {%- if show %}yes{% /if %}
     let tmpl = Template::from_source(source).unwrap();
     let mut ctx = Context::new();
     ctx.set("show", Value::Bool(true));
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     // Trailing whitespace after "hello" should be trimmed by `{%-`.
     assert_eq!(result, "helloyes");
 }
@@ -834,7 +834,7 @@ hello
     let tmpl = Template::from_source(source).unwrap();
     let mut ctx = Context::new();
     ctx.set("show", Value::Bool(true));
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     // `-%}` should strip the newline after the tag.
     assert_eq!(
         result,
@@ -854,7 +854,7 @@ before   {{- x -}}   after
     let tmpl = Template::from_source(source).unwrap();
     let mut ctx = Context::new();
     ctx.set("x", "MID");
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     // `{{-` trims trailing whitespace before expr; `-}}` trims leading after.
     assert_eq!(
         result,
@@ -884,7 +884,7 @@ one
     let mut ctx = Context::new();
     ctx.set("count", Value::Int(42));
     let err = tmpl
-        .render(&ctx)
+        .render_ctx(&ctx)
         .expect_err("matching on integer should fail");
     let msg = err.to_string();
     assert!(
@@ -913,7 +913,7 @@ Paused
     let tmpl = Template::from_source(source).unwrap();
     let mut ctx = Context::new();
     ctx.set("status", "Unknown");
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(
         result.trim(),
         "",
@@ -921,14 +921,14 @@ Paused
     );
 }
 
-/// `{% case %}` after `{% default %}` should be a compile error.
+/// `{% case %}` after `{% else %}` should be a compile error.
 #[test]
-fn match_case_after_default_rejected() {
+fn match_case_after_else_rejected() {
     let source = r"---
 params: [s = str]
 ---
 > {% match s %}
-> {% default %}
+> {% else %}
 
 fallback
 
@@ -938,17 +938,17 @@ active
 
 > {% /match %}
 ";
-    let err = Template::from_source(source).expect_err("case after default should be rejected");
+    let err = Template::from_source(source).expect_err("case after else should be rejected");
     let msg = err.to_string();
     assert!(
-        msg.contains("case") && msg.contains("default"),
-        "error should mention case after default: {msg}"
+        msg.contains("case") && msg.contains("else"),
+        "error should mention case after else: {msg}"
     );
 }
 
-/// Match with `{% default %}` arm catches unmatched variants.
+/// Match with `{% else %}` arm catches unmatched variants.
 #[test]
-fn match_default_arm_catches_unmatched() {
+fn match_else_arm_catches_unmatched() {
     let source = r"---
 params: [status = str]
 ---
@@ -957,7 +957,7 @@ params: [status = str]
 
 Running
 
-> {% default %}
+> {% else %}
 
 Other
 
@@ -966,7 +966,7 @@ Other
     let tmpl = Template::from_source(source).unwrap();
     let mut ctx = Context::new();
     ctx.set("status", "Stopped");
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(
         result,
         r"Other
@@ -1002,7 +1002,7 @@ OuterB
     let mut ctx = Context::new();
     ctx.set("outer", "A");
     ctx.set("inner", "X");
-    let result = tmpl.render(&ctx).unwrap();
+    let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(
         result,
         r"OuterA

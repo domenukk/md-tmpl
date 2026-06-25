@@ -7,25 +7,17 @@ Templates are markdown files with YAML frontmatter declaring typed
 parameters — every variable, list shape, and enum variant is validated
 at render time.
 
-Built with PyO3/maturin on top of the Rust engine. **3–7× faster than
+Built with PyO3/maturin on top of the Rust engine. **3–8× faster than
 Jinja2** for rendering.
 
 ## Why?
 
-LLM prompts grow complex — multi-shot examples, tool schemas, agentic
-workflows — but most Python projects still manage them as inline
-f-strings or untyped Jinja2/Mako templates.
-
-**Inline f-strings** mix prose with code, making prompts unreadable and
-hard to review. **Untyped template engines** push every error to
-runtime: rename a variable, add a field, change a list shape — you
-discover it when the prompt renders garbage in production.
-
+Inline f-strings are unreadable. Untyped Jinja2/Mako templates break at runtime.
 `prompt-templates` gives you:
 
-- **Markdown-native** — prompts live in `.tmpl.md` files, not f-strings. They render as clean markdown in any editor or on GitHub — includes are clickable links, and control flow uses blockquote-prefixed lines so it stays visually separated from prose.
-- **Strict typing** — every parameter declares a type; mismatches are caught at render time with clear error messages.
-- **Agent-safe** — when an LLM writes or edits prompts, the engine catches drift immediately instead of letting it propagate.
+- **Markdown-native** — prompts live in `.tmpl.md` files, readable in any editor or on GitHub.
+- **Strict typing** — every parameter declares a type; mismatches are caught at render time with clear errors.
+- **Agent-safe** — when an LLM edits prompts, the engine catches drift immediately.
 
 ## Installation
 
@@ -43,17 +35,69 @@ maturin develop
 
 ## Quick Start
 
+### Generated Types (recommended)
+
+`template()` auto-generates Python enum classes and item types from
+frontmatter — use them for type-safe rendering:
+
+```python
+from prompt_templates import template
+
+# Loads the template and generates Status enum + Item class from frontmatter
+review = template("prompts/code_review.tmpl.md")
+
+output = review.render(
+    reviewer="Alice",
+    items=[
+        review.Item(file="main.py", status=review.Status.Approved),
+        review.Item(
+            file="lib.py",
+            status=review.Status.NeedsChanges(reason="missing tests"),
+        ),
+    ],
+)
+```
+
+Unit variants are sentinels (no parens), struct variants are callable:
+
+```python
+review.Status.Approved           # unit variant
+review.Status.NeedsChanges(reason="fix tests")  # struct variant
+```
+
+Generated Python classes use PascalCase: param `tasks` → class `Tasks`.
+
+### Inline Templates
+
+For quick prototyping, parse templates inline:
+
 ```python
 from prompt_templates import Template
 
-tmpl = Template.from_source("""
+tmpl = Template.from_source("""\
 ---
 params:
   - name = str
 ---
-Hello {{ name }}!
-""")
+Hello {{ name }}!""")
 print(tmpl.render(name="world"))  # → "Hello world!"
+```
+
+## Import Hook
+
+Use templates as regular Python modules — the most Pythonic approach:
+
+```python
+from prompt_templates import prompt_template_import_hook
+
+prompt_template_import_hook()
+
+from prompts.code_review import CodeReview, Status
+
+output = CodeReview(
+    reviewer="Alice",
+    items=[...],
+).render()
 ```
 
 ## Runtime Loading
@@ -74,12 +118,49 @@ type aliases and compound param types. Use `pick=` to load specific types:
 types = load_types("prompts/review.tmpl.md", pick=["Status"])
 ```
 
+## Static Type Stubs (mypy / pyright)
+
+Generate `.py` files with typed `@dataclass` classes so type checkers
+catch errors at analysis time — no runtime needed:
+
+```python
+from prompt_templates import generate_types_source
+
+source = generate_types_source("prompts/greeting.tmpl.md")
+with open("greeting_types.py", "w") as f:
+    f.write(source)
+```
+
+The generated file contains:
+
+- `@dataclass` params class with typed fields
+- A `render()` method that loads the template and returns `str`
+- Nested `@dataclass` classes for struct/list params
+- `Variants` subclasses for enum params
+- Default values via `field(default=...)`
+- `__all__` export list
+
+Use the generated class like a normal dataclass:
+
+```python
+from greeting_types import Greeting
+
+# mypy / pyright catch missing or mistyped fields here:
+params = Greeting(name="world")
+output = params.render()   # → "Hello world!"
+
+# Pass an explicit template for hot-reload:
+from prompt_templates import Template
+tmpl = Template.from_file("prompts/greeting.tmpl.md")
+output = params.render(template=tmpl)
+```
+
 ## Typed Lists
 
 ```python
 from prompt_templates import Template
 
-tmpl = Template.from_source("""
+tmpl = Template.from_source("""\
 ---
 params:
   - tasks = list<title = str, priority = str>
@@ -89,7 +170,6 @@ params:
 - **{{ task.title }}** ({{ task.priority }})
 
 > {% /for %}
-
 """)
 
 output = tmpl.render(tasks=[
@@ -125,36 +205,6 @@ params:
 
 Accessing `status.summary` outside `{% case Done %}` is a template error.
 
-## Generated Types with `template()`
-
-Auto-generates Python enum classes and item types from frontmatter:
-
-```python
-from prompt_templates import template
-
-review = template("prompts/code_review.tmpl.md")
-
-output = review.render(
-    reviewer="Alice",
-    items=[
-        review.Item(file="main.py", status=review.Status.Approved),
-        review.Item(
-            file="lib.py",
-            status=review.Status.NeedsChanges(reason="missing tests"),
-        ),
-    ],
-)
-```
-
-Unit variants are sentinels (no parens), struct variants are callable:
-
-```python
-review.Status.Approved           # unit variant
-review.Status.NeedsChanges(reason="fix tests")  # struct variant
-```
-
-Generated Python classes use PascalCase: param `tasks` → class `Tasks`.
-
 ## Type Aliases
 
 ```python
@@ -169,23 +219,6 @@ output = tmpl.render(
         {"title": "Add tests", "priority": tmpl.Priority.Medium},
     ],
 )
-```
-
-## Import Hook
-
-Use templates as regular Python modules:
-
-```python
-from prompt_templates import prompt_template_import_hook
-
-prompt_template_import_hook()
-
-from prompts.code_review import CodeReview, Status
-
-output = CodeReview(
-    reviewer="Alice",
-    items=[...],
-).render()
 ```
 
 ## Custom Enum Types
@@ -231,13 +264,12 @@ def handle_review(status):
 Wrong types produce clear errors:
 
 ```python
-tmpl = Template.from_source("""
+tmpl = Template.from_source("""\
 ---
 params:
   - count = int
 ---
-Count: {{ count }}
-""")
+Count: {{ count }}""")
 
 tmpl.render(count="not an int")
 # ValueError: type mismatch for 'count': expected int, got str
@@ -273,7 +305,7 @@ output = tmpl.render_dict(params, allow_extra=True)
 ## Constants
 
 ```python
-tmpl = Template.from_source("""
+tmpl = Template.from_source("""\
 ---
 consts:
   - MAX_RETRIES = int := 3
@@ -281,8 +313,7 @@ consts:
 params:
   - query = str
 ---
-{{ query }}
-""")
+{{ query }}""")
 
 constants = tmpl.consts()  # {"MAX_RETRIES": 3, "MODEL": "gpt-4"}
 ```
@@ -332,8 +363,10 @@ from prompt_templates import (
 
 ## Performance
 
-**3–7× faster than Jinja2** for rendering. PyO3/Rust FFI with direct
-CPython dictionary iteration.
+**3–8× faster than Jinja2** for rendering. Backed by a native Rust
+engine via PyO3 FFI — the speed advantage is partly due to compiled
+code, not template design alone. On the hero render benchmark, Mako
+(which generates Python bytecode) is slightly faster.
 
 ### Render Time (pre-compiled template + data)
 
@@ -342,28 +375,33 @@ CPython dictionary iteration.
 
 | Scenario        | prompt-templates |   Jinja2 |            Mako |       vs Jinja2 |
 | --------------- | ---------------: | -------: | --------------: | --------------: |
-| **simple**      |   **0.94 µs** 🏆 |  6.42 µs |         6.31 µs | **6.8× faster** |
-| **loop**        |   **2.63 µs** 🏆 | 11.48 µs |         7.07 µs | **4.4× faster** |
-| **conditional** |   **1.07 µs** 🏆 |  6.82 µs |         6.45 µs | **6.4× faster** |
-| **hero**        |         23.95 µs | 74.92 µs | **20.46 µs** 🏆 | **3.1× faster** |
+| **simple**      |   **0.82 µs** 🏆 |  6.43 µs |         6.41 µs | **7.8× faster** |
+| **loop**        |   **2.47 µs** 🏆 | 11.96 µs |         7.17 µs | **4.8× faster** |
+| **conditional** |   **1.00 µs** 🏆 |  6.85 µs |         6.63 µs | **6.9× faster** |
+| **hero**        |         24.20 µs | 76.91 µs | **21.50 µs** 🏆 | **3.2× faster** |
 
 ### Compile Time (source → compiled object)
 
 | Scenario        | prompt-templates |    Jinja2 |      Mako |    Django |
 | --------------- | ---------------: | --------: | --------: | --------: |
-| **simple**      |          4.95 µs | 310.90 µs | 391.45 µs |  18.85 µs |
-| **loop**        |          7.11 µs | 645.02 µs | 590.61 µs |  51.48 µs |
-| **conditional** |  **10.04 µs** 🏆 |   1.13 ms | 711.58 µs | 159.81 µs |
-| **hero**        |  **22.07 µs** 🏆 |   2.23 ms |   1.60 ms | 264.83 µs |
+| **simple**      |   **4.19 µs** 🏆 | 316.41 µs | 405.50 µs |  18.73 µs |
+| **loop**        |   **7.38 µs** 🏆 | 668.25 µs | 605.36 µs |  50.48 µs |
+| **conditional** |   **9.98 µs** 🏆 |   1.15 ms | 731.26 µs | 161.04 µs |
+| **hero**        |  **26.21 µs** 🏆 |   2.30 ms |   1.64 ms | 272.07 µs |
 
 ### End-to-End (compile + render)
 
 | Scenario        | prompt-templates |    Jinja2 |      Mako |      Django |
 | --------------- | ---------------: | --------: | --------: | ----------: |
-| **simple**      |          5.36 µs | 332.53 µs | 416.56 µs |    40.32 µs |
-| **loop**        |  **10.88 µs** 🏆 | 680.54 µs | 620.10 µs |   102.71 µs |
-| **conditional** |  **11.48 µs** 🏆 |   1.15 ms | 757.49 µs |   198.62 µs |
-| **hero**        |  **48.90 µs** 🏆 |   2.37 ms |   1.66 ms | 1,163.02 µs |
+| **simple**      |   **5.01 µs** 🏆 | 322.84 µs | 411.91 µs |    26.45 µs |
+| **loop**        |   **9.85 µs** 🏆 | 680.21 µs | 612.53 µs |    86.89 µs |
+| **conditional** |  **10.98 µs** 🏆 |   1.16 ms | 737.89 µs |   189.52 µs |
+| **hero**        |  **50.41 µs** 🏆 |   2.38 ms |   1.66 ms | 1,113.65 µs |
+
+```bash
+just bench-python          # run comparison benchmarks
+just bench-update-python   # run + update these tables
+```
 
 ## Full Reference
 

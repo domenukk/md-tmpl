@@ -9,28 +9,22 @@ Templates are markdown files with YAML frontmatter declaring typed
 parameters — every variable, list shape, and enum variant is validated
 at **compile time** via proc macros.
 
+**MSRV:** 1.85 (Rust 2024 edition) · **`no_std`** compatible (disable default `std` feature)
+
 ## Why?
 
-LLM prompts grow complex — multi-shot examples, tool schemas, agentic
-workflows — but most Rust projects still manage them as inline
-`format!()` strings or untyped Tera/Handlebars templates.
-
-**Inline strings** mix prose with code, making prompts unreadable and
-hard to review. **Untyped template engines** push every error to
-runtime: rename a variable, add a field, change a list shape — you
-discover it when the prompt renders garbage in production.
-
+Inline `format!()` strings are unreadable. Untyped Tera/Handlebars templates break at runtime.
 `prompt-templates` gives you:
 
-- **Markdown-native** — prompts live in `.tmpl.md` files, not `format!()` strings. They render as clean markdown in any editor or on GitHub — includes are clickable links, and control flow uses blockquote-prefixed lines so it stays visually separated from prose.
-- **Compile-time safety** — proc macros validate syntax, types, and variable references at `cargo build`. No runtime surprises.
-- **Agent-safe** — when an LLM writes or edits prompts, the compiler catches drift immediately instead of letting it propagate.
+- **Markdown-native** — prompts live in `.tmpl.md` files, readable in any editor or on GitHub.
+- **Compile-time safety** — proc macros validate syntax, types, and variable references at `cargo build`.
+- **Agent-safe** — when an LLM edits prompts, the compiler catches drift immediately.
 
 ## Installation
 
 ```bash
 cargo add prompt-templates
-# optional: compile-time validation + code generation
+# compile-time validation + code generation:
 cargo add prompt-templates-macros
 ```
 
@@ -47,72 +41,23 @@ params:
 Hello {{ name }}!
 ```
 
-Validate at compile time and generate a typed struct:
+### Compile-Time Typed Structs
+
+`include_template!` validates the template at `cargo build` and generates
+a typed struct — wrong types, missing fields, and unknown variables are
+compile errors:
 
 ```rust
 use prompt_templates_macros::include_template;
 
-// Generates: pub mod simple_greeting { pub struct Params { ... } }
+// Generates: pub mod simple_greeting { pub struct Params { pub name: String } }
 include_template!("prompts/simple_greeting.tmpl.md");
 
 let output = simple_greeting::Params { name: "world".into() }.render().unwrap();
 assert_eq!(output, "\nHello world!\n");
 ```
 
-Or parse at runtime with `ctx!`:
-
-```rust
-use prompt_templates::{ctx, Template};
-
-let tmpl = Template::from_source("
----
-params:
-  - tasks = list<title = str, priority = str>
----
-
-> {% for task in tasks %}
-
-- **{{ task.title }}** ({{ task.priority }})
-
-> {% /for %}"
-).unwrap();
-
-let output = tmpl.render(&ctx! {
-    tasks: [
-        { title: "Write documentation", priority: "High" },
-        { title: "Add unit tests",      priority: "Medium" },
-    ]
-}).unwrap();
-
-assert_eq!(output, "- **Write documentation** (High)\n- **Add unit tests** (Medium)\n");
-```
-
-Syntax errors, unknown variables, and type mismatches are caught at
-`cargo build` — not at runtime.
-
-## Compile-Time Safety
-
-The companion crate `prompt-templates-macros` validates templates at
-`cargo build` time. Syntax errors, unknown variables, and type mismatches
-become compile errors.
-
-### `include_template!`
-
-Generates a module with a pre-compiled template and typed parameter struct:
-
-```rust
-use prompt_templates_macros::include_template;
-
-// Emits: pub mod simple_greeting { pub fn template() -> ...; pub struct Params { ... } }
-include_template!("prompts/simple_greeting.tmpl.md");
-
-let output = simple_greeting::Params { name: "world".into() }.render().unwrap();
-```
-
-### `template!`
-
-Like `include_template!`, but for inline template strings. The
-`=> module_name` is required.
+Use `template!` for inline template strings:
 
 ```rust
 prompt_templates_macros::template!(r#"
@@ -129,38 +74,101 @@ let output = greeting::Params { name: "World".into() }
 assert_eq!(output, "Hello World!\n");
 ```
 
-### Hot-Reload with Contract Validation
+### `TypedBuilder` Integration
 
-Load templates from disk at runtime, validate against the compiled struct:
+Enable `typed-builder` for ergonomic builder patterns:
+
+```bash
+cargo add prompt-templates --features typed-builder
+cargo add prompt-templates-macros --features typed-builder
+```
 
 ```rust
 # prompt_templates_macros::include_template!("prompts/greeting.tmpl.md");
-let tmpl = prompt_templates::Template::from_file(
-    std::path::Path::new("prompts/greeting.tmpl.md")
-).unwrap();
-greeting::Params::validate_template(&tmpl).unwrap();
+let params = greeting::Params::builder()
+    .name("Alice")       // setter(into): accepts &str or String
+    .count(42)
+    .build();            // `items` defaults to vec![]
 
-let output = greeting::Params {
-    name: "Bob".into(),
-    count: 1,
-    items: vec![],
-}.render_with(&tmpl).unwrap();
+let output = params.render().unwrap();
 ```
 
-### Runtime Loading
+| Field type                     | Builder behaviour                                                     |
+| ------------------------------ | --------------------------------------------------------------------- |
+| `String`                       | `setter(into)` — accepts `&str`, `String`, or anything `Into<String>` |
+| `Vec<…>`                       | `default` — omit the field to get an empty `Vec`                      |
+| Scalars (`i64`, `f64`, `bool`) | Required                                                              |
+
+Sub-structs also derive `TypedBuilder`:
 
 ```rust
-use prompt_templates::load_template;
+# prompt_templates_macros::include_template!("prompts/greeting.tmpl.md");
+let item = greeting::ParamsItemsItem::builder()
+    .label("write docs")
+    .build();
 
-let tmpl = load_template(std::path::Path::new("prompts"), "simple_greeting").unwrap();
-
-let mut ctx = prompt_templates::Context::new();
-ctx.set("name", "world");
-let output = tmpl.render(&ctx).unwrap();
-assert!(output.contains("Hello world!"));
+let params = greeting::Params::builder()
+    .name("Alice")
+    .count(1)
+    .items(vec![item])
+    .build();
 ```
 
-## `ctx!` Macro
+### `serde` Integration
+
+Render directly from any `Serialize` struct:
+
+```bash
+cargo add prompt-templates --features serde
+```
+
+```rust
+use prompt_templates::Template;
+use serde::Serialize;
+
+#[derive(Serialize)]
+struct ReviewParams {
+    file_path: String,
+    severity: String,
+    findings: Vec<Finding>,
+}
+
+#[derive(Serialize)]
+struct Finding { line: i64, message: String }
+
+let tmpl = Template::from_source("\
+---
+params:
+  - file_path = str
+  - severity = str
+  - findings = list<line = int, message = str>
+---
+
+# Code Review: {{ file_path }}
+
+Severity: {{ severity }}
+
+> {% for finding in findings %}
+
+- Line {{ finding.line }}: {{ finding.message }}
+
+  > {% /for %}"
+).unwrap();
+
+let output = tmpl.render(&ReviewParams {
+    file_path: "main.rs".into(),
+    severity: "high".into(),
+    findings: vec![
+        Finding { line: 42, message: "unused variable".into() },
+    ],
+}).unwrap();
+```
+
+## Runtime API
+
+For dynamic or scripting use cases, parse templates at runtime:
+
+### `ctx!` Macro
 
 Ergonomic context construction with nested structs and lists:
 
@@ -180,12 +188,46 @@ params:
 > {% /for %}"
 ).unwrap();
 
-let output = tmpl.render(&ctx! {
+let output = tmpl.render_ctx(&ctx! {
     tasks: [
         { title: "Write documentation", priority: "High" },
         { title: "Add unit tests",      priority: "Medium" },
     ]
 }).unwrap();
+
+assert_eq!(output, "- **Write documentation** (High)\n- **Add unit tests** (Medium)\n");
+```
+
+### Runtime Loading
+
+```rust
+use prompt_templates::load_template;
+
+let tmpl = load_template(std::path::Path::new("prompts"), "simple_greeting").unwrap();
+
+let mut ctx = prompt_templates::Context::new();
+ctx.set("name", "world");
+let output = tmpl.render_ctx(&ctx).unwrap();
+assert!(output.contains("Hello world!"));
+```
+
+## Hot-Reload with Contract Validation
+
+Load templates from disk at runtime while keeping compile-time type safety —
+iterate on prompt wording without recompiling:
+
+```rust
+# prompt_templates_macros::include_template!("prompts/greeting.tmpl.md");
+let tmpl = prompt_templates::Template::from_file(
+    std::path::Path::new("prompts/greeting.tmpl.md")
+).unwrap();
+greeting::Params::validate_template(&tmpl).unwrap();
+
+let output = greeting::Params {
+    name: "Bob".into(),
+    count: 1,
+    items: vec![],
+}.render_reloaded(&tmpl).unwrap();
 ```
 
 ## Caching
@@ -211,46 +253,8 @@ let tmpl = cache.load(&path).unwrap();
 
 let mut ctx = prompt_templates::Context::new();
 ctx.set("name", "world");
-let output = tmpl.render_cached(&ctx, &cache).unwrap();
+let output = tmpl.render_ctx_cached(&ctx, &cache).unwrap();
 assert_eq!(output, "Hello world!");
-```
-
-## `TypedBuilder` Integration
-
-Enable `typed-builder` for compile-time-checked builder patterns:
-
-```bash
-cargo add prompt-templates --features typed-builder
-cargo add prompt-templates-macros --features typed-builder
-```
-
-```rust
-# prompt_templates_macros::include_template!("prompts/greeting.tmpl.md");
-let params = greeting::Params::builder()
-    .name("Alice")       // setter(into): accepts &str or String
-    .count(42)
-    .build();            // `items` defaults to vec![]
-```
-
-| Field type                     | Builder behaviour                                                     |
-| ------------------------------ | --------------------------------------------------------------------- |
-| `String`                       | `setter(into)` — accepts `&str`, `String`, or anything `Into<String>` |
-| `Vec<…>`                       | `default` — omit the field to get an empty `Vec`                      |
-| Scalars (`i64`, `f64`, `bool`) | Required                                                              |
-
-Sub-structs also derive `TypedBuilder`:
-
-```rust
-# prompt_templates_macros::include_template!("prompts/greeting.tmpl.md");
-let item = greeting::ParamsItemsItem::builder()
-    .label("write docs")
-    .build();
-
-let params = greeting::Params::builder()
-    .name("Alice")
-    .count(1)
-    .items(vec![item])
-    .build();
 ```
 
 ## Extra Parameters and Defaults
@@ -270,7 +274,7 @@ params:
 Hello {{ name }}!"
 ).unwrap();
 let ctx = ctx! { name: "world", extra_key: "ignored" };
-assert_eq!(tmpl.render_allowing_extra(&ctx).unwrap(), "Hello world!");
+assert_eq!(tmpl.render_ctx_allowing_extra(&ctx).unwrap(), "Hello world!");
 ```
 
 ### `defaults_context()`
@@ -290,32 +294,7 @@ params:
 ).unwrap();
 let mut ctx = tmpl.defaults_context();
 ctx.set("name", "Alice"); // count already has default 5
-assert_eq!(tmpl.render(&ctx).unwrap(), "Alice (5)");
-```
-
-## `serde` Integration
-
-Render directly from any `Serialize` struct:
-
-```bash
-cargo add prompt-templates --features serde
-```
-
-```rust
-use prompt_templates::Template;
-use serde::Serialize;
-
-#[derive(Serialize)]
-struct Data { name: String, count: i64 }
-
-let tmpl = Template::from_source("\
----
-params: [name = str, count = int]
----
-{{ name }} has {{ count }} items"
-).unwrap();
-let output = tmpl.render_serde(&Data { name: "Alice".into(), count: 3 }).unwrap();
-assert_eq!(output, "Alice has 3 items");
+assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Alice (5)");
 ```
 
 ## Performance
@@ -331,7 +310,13 @@ Criterion benchmarks, render only (pre-compiled template + data → output).
 | **hero**        |   **2.08 µs** 🏆 |  2.21 µs |     7.58 µs |    21.0 µs |
 | **mega**        |   **9.93 µs** 🏆 | 10.87 µs |     28.5 µs |    82.4 µs |
 
-_Intel Xeon @ 2.60 GHz, 100 samples._
+_Intel Xeon @ 2.60 GHz, 3 runs × 100 Criterion samples.
+Hero/mega margins are small — treat as comparable to Tera._
+
+```bash
+just bench-rust          # run Criterion benchmarks
+just bench-update-rust   # run + update this table
+```
 
 ## Full Reference
 

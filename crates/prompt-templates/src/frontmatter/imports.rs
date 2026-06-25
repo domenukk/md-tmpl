@@ -201,7 +201,7 @@ pub fn resolve_imports<S: core::hash::BuildHasher>(
     Ok(result)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use std::path::Path;
 

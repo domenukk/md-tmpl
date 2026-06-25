@@ -2,73 +2,17 @@
 
 [![CI](https://github.com/domenukk/prompt-templates/actions/workflows/ci.yml/badge.svg)](https://github.com/domenukk/prompt-templates/actions/workflows/ci.yml)
 
-Strongly-typed prompt templates for LLMs.
-Templates are markdown files with YAML frontmatter declaring typed
+**Strongly-typed prompt templates for LLMs** — write prompts as markdown,
+validate parameters at compile time.
+
+Templates are `.tmpl.md` files with YAML frontmatter declaring typed
 parameters. Every variable, list shape, and enum variant is validated
 before the prompt is rendered — at **compile time** in Rust, or at
-render time in Python / Go / TypeScript.
-
-<!-- prettier-ignore -->
-```markdown
----
-params:
-  - reviewer = str
-  - items = list<
-      file = str,
-      status = enum<
-        Approved,
-        NeedsChanges(reason = str),
-        Skipped,
-      >,
-    >
----
-
-# Code Review — {{ reviewer }}
-
-> {% include [guidelines](review_guidelines.tmpl.md) %}
-
-> {% for item in items %}
-
-- `{{ item.file }}`
-  
-  > {% match item.status %}
-  > {% case Approved %}
-
-  ✅ Approved.
-  
-  > {% case NeedsChanges %}
-
-  ⚠️ Needs changes: {{ item.status.reason }}
-  
-  > {% case Skipped %}
-
-  ⏭️ Skipped.
-  
-  > {% /match %}
-  > {% /for %}
-```
-
-## Why?
-
-LLM prompts grow complex — multi-shot examples, tool schemas, agentic
-workflows — but most teams still manage them as inline format strings
-or untyped Jinja/Handlebars templates.
-
-**Inline strings** mix prose with code, making prompts unreadable and
-hard to review. **Untyped templates** push every error to runtime:
-rename a variable, add a field, change a list shape — you discover it
-when the prompt renders garbage in production.
-
-`prompt-templates` gives you:
-
-- **Markdown-native** — prompts live in `.tmpl.md` files, not format strings. They render as clean markdown in any editor or on GitHub — includes are clickable links, and control flow uses blockquote-prefixed lines so it stays visually separated from prose.
-- **Strict typing** — every parameter declares a type; mismatches are caught before rendering (at compile time in Rust).
-- **Agent-safe** — when an LLM writes or edits prompts, the compiler catches drift immediately instead of letting it propagate.
+render time in Python, Go, and TypeScript.
 
 ## Quick Start
 
-A `.tmpl.md` file is markdown with YAML frontmatter declaring typed
-parameters:
+A prompt template is just markdown with a typed header:
 
 ```markdown
 ---
@@ -79,20 +23,62 @@ params:
 Hello {{ name }}!
 ```
 
-In Rust, validate at compile time and generate a typed struct:
+Render it from any supported language:
 
+<!-- prettier-ignore -->
+````carousel
 ```rust
 use prompt_templates_macros::include_template;
 
-// Generates: pub mod simple_greeting { pub struct Params { ... } }
 include_template!("prompts/simple_greeting.tmpl.md");
 
-let output = simple_greeting::Params { name: "world".into() }.render().unwrap();
-assert_eq!(output, "\nHello world!\n");
+let output = simple_greeting::Params { name: "world".into() }
+    .render().unwrap();
+// → "Hello world!"
 ```
+<!-- slide -->
+```python
+from prompt_templates import Template
 
-Syntax errors, unknown variables, and type mismatches are caught at
-`cargo build` — not at runtime.
+tmpl = Template.from_source("""---
+params:
+  - name = str
+---
+Hello {{ name }}!""")
+print(tmpl.render(name="world"))  # → "Hello world!"
+```
+<!-- slide -->
+```go
+tmpl, _ := pt.FromSource(`---
+params:
+  - name = str
+---
+Hello {{ name }}!`)
+defer tmpl.Close()
+result, _ := tmpl.RenderMap(map[string]any{"name": "world"})
+```
+<!-- slide -->
+```typescript
+import { Template } from "prompt-templates";
+
+const tmpl = Template.fromSource(`---
+params:
+  - name = str
+---
+Hello {{ name }}!`);
+console.log(tmpl.render({ name: "world" }));
+```
+````
+
+## Why?
+
+Inline format strings are unreadable; untyped templates break at runtime.
+
+| Problem                       | Solution                                                                    |
+| ----------------------------- | --------------------------------------------------------------------------- |
+| Prompts buried in code        | **Markdown-native** — `.tmpl.md` files render in any editor or on GitHub    |
+| Errors found in production    | **Strict typing** — mismatches caught at compile time (Rust) or render time |
+| LLMs drift templates silently | **Agent-safe** — the engine catches drift immediately                       |
 
 ## Features
 
@@ -114,6 +100,8 @@ Syntax errors, unknown variables, and type mismatches are caught at
 > and should not use `> `. A content line starting with `> ` is kept
 > verbatim as a literal markdown blockquote in the output.
 
+## Examples
+
 ### Typed Lists
 
 ```markdown
@@ -127,19 +115,6 @@ params:
 - **{{ task.title }}** ({{ task.priority }})
 
   > {% /for %}
-```
-
-```rust
-use prompt_templates::{ctx, Template};
-
-let tmpl = Template::from_source("...").unwrap(); // source above
-
-let output = tmpl.render(&ctx! {
-    tasks: [
-        { title: "Write documentation", priority: "High" },
-        { title: "Add unit tests",      priority: "Medium" },
-    ]
-}).unwrap();
 ```
 
 ### Enum Dispatch
@@ -257,89 +232,28 @@ See the language-specific READMEs or the [benchmarks suite](benchmarks/README.md
 
 ## Language Bindings
 
-### Rust
+### Rust ([README](crates/prompt-templates/README.md))
 
 [![crates.io](https://img.shields.io/crates/v/prompt-templates.svg)](https://crates.io/crates/prompt-templates)
 [![docs.rs](https://docs.rs/prompt-templates/badge.svg)](https://docs.rs/prompt-templates)
 
-Compile-time validation via proc macros. Pre-parsed templates with
-zero-overhead rendering.
+Compile-time validation via proc macros. Pre-parsed templates with zero-overhead rendering. Full API includes `ctx!` macro, `TypedBuilder`, `serde`, hot-reload, caching, and benchmarks.
 
-```rust
-use prompt_templates_macros::include_template;
+### Python ([README](crates/prompt-templates-python/README.md))
 
-include_template!("prompts/simple_greeting.tmpl.md");
+Includes generated types, import hooks, pattern matching, enum construction, caching, and benchmarks.
 
-let output = simple_greeting::Params { name: "world".into() }.render().unwrap();
-```
+### Go ([README](go/prompt_templates/README.md))
 
-📖 **[Rust README](crates/prompt-templates/README.md)** — full API,
-`ctx!` macro, `TypedBuilder`, `serde`, hot-reload, caching,
-benchmarks.
+Includes `RenderStruct`, `TaggedVariant`, codegen, caching, and benchmarks.
 
-### Python
+### TypeScript ([README](crates/prompt-templates-typescript/README.md))
 
-```python
-from prompt_templates import Template
+Includes `TypedTemplate<P>`, `defineVariants`, codegen, WASM backend, and benchmarks.
 
-tmpl = Template.from_source("""\
----
-params:
-  - name = str
----
-Hello {{ name }}!""")
-output = tmpl.render(name="world")
-```
+### WASM ([README](crates/prompt-templates-wasm/README.md))
 
-📖 **[Python README](crates/prompt-templates-python/README.md)** —
-generated types, import hooks, pattern matching, enum construction,
-caching, benchmarks.
-
-### Go
-
-```go
-import pt "github.com/domenukk/prompt-templates/go/prompt_templates"
-
-tmpl, err := pt.FromSource(`---
-params:
-  - name = str
----
-Hello {{ name }}!`)
-if err != nil {
-    log.Fatal(err)
-}
-defer tmpl.Close()
-
-result, err := tmpl.RenderMap(map[string]any{"name": "world"})
-```
-
-📖 **[Go README](go/prompt_templates/README.md)** — `RenderStruct`,
-`TaggedVariant`, codegen, caching, benchmarks.
-
-### TypeScript
-
-```ts
-import { Template } from "prompt-templates";
-
-const tmpl = Template.fromSource(`---
-params:
-  - name = str
----
-Hello {{ name }}!`);
-
-console.log(tmpl.render({ name: "world" }));
-```
-
-📖 **[TypeScript README](crates/prompt-templates-typescript/README.md)** —
-`TypedTemplate<P>`, `defineVariants`, codegen, WASM backend, benchmarks.
-
-### WASM
-
-WebAssembly bindings wrapping the full Rust engine via `wasm-bindgen`.
-Same `ITemplate` interface as the pure-TypeScript package.
-
-📖 **[WASM README](crates/prompt-templates-wasm/README.md)** —
-serialization tiers, performance comparison.
+WebAssembly bindings wrapping the full Rust engine via `wasm-bindgen`. Same `ITemplate` interface as the pure-TypeScript package.
 
 ## Full Reference
 

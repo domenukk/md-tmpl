@@ -12,8 +12,8 @@ categories = ["template-engine", "text-processing"]
 
 [features]
 default = ["std", "serde", "typed-builder"]
-std = ["hashbrown/default", "thiserror/std"]
-serde = ["dep:serde", "dep:flexbuffers", "dep:ciborium", "hashbrown/serde"]
+std = ["hashbrown/default", "thiserror/std", "ciborium/std", "dep:flexbuffers"]
+serde = ["dep:serde", "dep:ciborium", "hashbrown/serde"]
 # typed-builder is not used directly by core source code. It is re-exported
 # as a feature flag so that `prompt-templates-macros` generated code (e.g.
 # `#[derive(TypedBuilder)]`) can activate it via this crate's feature.
@@ -34,7 +34,7 @@ serde = { version = "1", default-features = false, features = [
 flexbuffers = { version = "25.12", optional = true }
 typed-builder = { workspace = true, optional = true }
 spin = { version = "0.12", default-features = false, features = ["lazy"] }
-ciborium = { version = "0.2.2", optional = true }
+ciborium = { version = "0.2.2", default-features = false, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
@@ -48,9 +48,14 @@ typed-builder = { workspace = true }
 criterion = { version = "0.7", features = ["html_reports"] }
 flexbuffers = "25.12"
 
+[[test]]
+name = "yaml_conformance"
+required-features = ["std"]
+
 [[bench]]
 name = "template_bench"
 harness = false
+required-features = ["std"]
 
 [lints]
 workspace = true

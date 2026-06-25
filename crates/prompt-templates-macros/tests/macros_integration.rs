@@ -32,7 +32,7 @@ fn include_template_loads_and_renders() {
         )])),
     );
 
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(output, "\nHello Alice! Count: 42. Items: hello");
 }
 
@@ -45,8 +45,8 @@ fn include_template_produces_equivalent_templates() {
     let mut ctx = prompt_templates::Context::new();
     ctx.set("name", "Test");
     assert_eq!(
-        tmpl1.render(&ctx).unwrap(),
-        tmpl2.render(&ctx).unwrap(),
+        tmpl1.render_ctx(&ctx).unwrap(),
+        tmpl2.render_ctx(&ctx).unwrap(),
         "both invocations should produce identical results"
     );
 }
@@ -59,7 +59,7 @@ fn include_template_hot_loop_pattern() {
     for name in &names {
         let mut ctx = prompt_templates::Context::new();
         ctx.set("name", *name);
-        let output = tmpl.render(&ctx).unwrap();
+        let output = tmpl.render_ctx(&ctx).unwrap();
         assert_eq!(output, format!("\nHello {name}!\n"));
     }
 }
@@ -82,8 +82,8 @@ fn params_struct_renders_template() {
 }
 
 #[test]
-fn params_struct_render_with_external_template() {
-    // Test hot-reload: render_with() accepts an externally-loaded template.
+fn params_struct_render_reloaded_with_external_template() {
+    // Test hot-reload: render_reloaded() accepts an externally-loaded template.
     let params = greeting::Params {
         name: "Bob".into(),
         count: 1,
@@ -95,7 +95,7 @@ fn params_struct_render_with_external_template() {
             .unwrap();
     greeting::Params::validate_template(&tmpl).unwrap();
 
-    let output = params.render_with(&tmpl).unwrap();
+    let output = params.render_reloaded(&tmpl).unwrap();
     assert_eq!(output, "\nHello Bob! Count: 1. Items: ");
 }
 
@@ -109,7 +109,13 @@ fn params_struct_validate_template_succeeds_for_matching() {
 fn params_struct_validate_template_fails_for_mismatched() {
     // Load a different template that has different params.
     let tmpl = prompt_templates::Template::from_source(
-        "---\nname: wrong\nparams: [totally_different = str]\n---\n{{ totally_different }}\n",
+        "\
+---
+name: wrong
+params: [totally_different = str]
+---
+{{ totally_different }}
+",
     )
     .unwrap();
 
@@ -130,7 +136,7 @@ fn params_struct_to_context_produces_valid_context() {
 
     let ctx = params.to_context();
     let tmpl = greeting::template();
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(output, "\nHello Test! Count: 99. Items: ab");
 }
 
@@ -282,7 +288,7 @@ fn template_inline_template_accessor() {
     let tmpl = inline_greeting::template();
     let mut ctx = prompt_templates::Context::new();
     ctx.set("name", "Test");
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(output, "Hello Test!\n");
 }
 
@@ -302,7 +308,7 @@ fn template_inline_with_defaults() {
     let tmpl = defaults_tmpl::template();
     let mut ctx = tmpl.defaults_context();
     ctx.set("name", "Partner");
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(output, "Howdy Partner!\n");
 }
 
@@ -326,7 +332,7 @@ fn template_inline_multi_param_types() {
     ctx.set("user", "Alice");
     ctx.set("count", 42);
     ctx.set("active", true);
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(output, "Alice: 42 (active=true)\n");
 }
 
@@ -373,7 +379,7 @@ fn template_inline_reuse_in_loop() {
     for item in &items {
         let mut ctx = prompt_templates::Context::new();
         ctx.set("item", *item);
-        let output = tmpl.render(&ctx).unwrap();
+        let output = tmpl.render_ctx(&ctx).unwrap();
         assert_eq!(output, format!("Buy: {item}\n"));
     }
 }
@@ -453,7 +459,7 @@ fn option_param_to_context_produces_valid_context() {
 
     let ctx = params.to_context();
     let tmpl = option_test::template();
-    let output = tmpl.render(&ctx).unwrap();
+    let output = tmpl.render_ctx(&ctx).unwrap();
     assert!(output.contains("Hello Dave!"), "output: {output}");
     assert!(output.contains("Nickname: D"), "output: {output}");
     assert!(!output.contains("Age:"), "output: {output}");
@@ -485,7 +491,7 @@ params:
 
 > {% if has(count) %}
 
-({{ count.val }})
+({{ count }})
 
 > {% /if %}
 "# => option_inline
@@ -516,4 +522,97 @@ fn template_inline_option_some() {
     .unwrap();
     assert!(output.contains("test"), "output: {output}");
     assert!(output.contains("(42)"), "output: {output}");
+}
+
+// ── include_template! with filters (parsed_num codegen) ──────────────
+
+prompt_templates_macros::include_template!("prompts/filter_test.tmpl.md");
+
+#[test]
+fn filter_codegen_all_filters_render() {
+    let params = filter_test::Params {
+        name: "  Alice  ".into(),
+        score: 3.45679,
+        count: 7,
+        items: vec![
+            filter_test::ParamsItemsItem {
+                label: "alpha".into(),
+            },
+            filter_test::ParamsItemsItem {
+                label: "beta".into(),
+            },
+        ],
+    };
+
+    let output = params.render().unwrap();
+    // upper
+    assert!(
+        output.contains("Upper:   ALICE  "),
+        "upper filter failed, output: {output}"
+    );
+    // lower
+    assert!(
+        output.contains("Lower:   alice  "),
+        "lower filter failed, output: {output}"
+    );
+    // trim
+    assert!(
+        output.contains("Trim: Alice"),
+        "trim filter failed, output: {output}"
+    );
+    // fixed(2) — this uses parsed_num
+    assert!(
+        output.contains("Fixed: 3.46"),
+        "fixed(2) filter failed (parsed_num codegen), output: {output}"
+    );
+    // add(10) — this uses parsed_num
+    assert!(
+        output.contains("Added: 17"),
+        "add(10) filter failed (parsed_num codegen), output: {output}"
+    );
+    // sub(3) — this uses parsed_num
+    assert!(
+        output.contains("Subtracted: 4"),
+        "sub(3) filter failed (parsed_num codegen), output: {output}"
+    );
+    // filter inside for loop
+    assert!(
+        output.contains("Items: ALPHABETA"),
+        "filter-in-for-loop failed, output: {output}"
+    );
+}
+
+#[test]
+fn filter_codegen_matches_runtime() {
+    // Verify that the compile-time (macro) path and the runtime path
+    // produce identical output for all filters.
+    let tmpl_compiled = filter_test::template();
+    let tmpl_runtime =
+        prompt_templates::Template::from_file(std::path::Path::new("prompts/filter_test.tmpl.md"))
+            .unwrap();
+
+    let mut ctx = prompt_templates::Context::new();
+    ctx.set("name", "  Bob  ");
+    ctx.set("score", prompt_templates::Value::Float(2.98765));
+    ctx.set("count", 100);
+    ctx.set(
+        "items",
+        prompt_templates::Value::List(std::sync::Arc::new(vec![prompt_templates::Value::Struct(
+            std::sync::Arc::new(
+                [(
+                    "label".to_string(),
+                    prompt_templates::Value::Str("x".into()),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+        )])),
+    );
+
+    let compiled_output = tmpl_compiled.render_ctx(&ctx).unwrap();
+    let runtime_output = tmpl_runtime.render_ctx(&ctx).unwrap();
+    assert_eq!(
+        compiled_output, runtime_output,
+        "compile-time and runtime filter outputs must match"
+    );
 }

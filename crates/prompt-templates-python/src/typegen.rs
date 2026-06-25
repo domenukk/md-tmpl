@@ -87,6 +87,15 @@ fn generate_types_for_decl(
         | VarType::Tmpl(_)
         | VarType::List(_)
         | VarType::Struct(_) => {}
+        // Option<T>: generate types for the inner type.
+        VarType::Option(inner) => {
+            let inner_decl = VarDecl {
+                name: decl.name.clone(),
+                var_type: (**inner).clone(),
+                default_value: None,
+            };
+            generate_types_for_decl(py, parent_name, &inner_decl, out)?;
+        }
     }
     Ok(())
 }
@@ -293,7 +302,6 @@ fn build_params_class(
         "if template is None:".into(),
         format!("    template = _NativeTemplate.from_file('{template_path}')"),
         format!("_kwargs = {{{}}}", kwarg_items.join(", ")),
-        "_kwargs = {k: v for k, v in _kwargs.items() if v is not None}".into(),
         "return template.render_dict(_kwargs)".into(),
     ];
 
@@ -370,6 +378,10 @@ fn vartype_to_python_annotation(vt: &VarType, parent_name: &str, field_name: &st
         VarType::Struct(fields) if fields.is_empty() => "dict".into(),
         VarType::Struct(_) | VarType::Enum(_) => to_pascal_case(field_name),
         VarType::Tmpl(_) => "object".into(),
+        VarType::Option(inner) => {
+            let inner_ann = vartype_to_python_annotation(inner, parent_name, field_name);
+            format!("Optional[{inner_ann}]")
+        }
     }
 }
 
@@ -408,6 +420,9 @@ fn generate_types_for_aliases(
 ///
 /// Returns source code that can be written to a `.py` file for mypy/pyright.
 /// Uses `@dataclass` for model classes and `Variants` subclasses for enums.
+///
+/// The generated params class has a typed `render()` method, so type checkers
+/// catch missing or mistyped arguments at analysis time.
 #[pyfunction]
 pub(crate) fn generate_python_source_for_template(path: &str) -> PyResult<String> {
     let tmpl = crate::template::load_template(path)?;
@@ -420,13 +435,37 @@ pub(crate) fn generate_python_source_for_template(path: &str) -> PyResult<String
     let base_name = stem.strip_suffix(".tmpl").unwrap_or(stem);
     let params_class_name = to_pascal_case(base_name);
 
+    // Check what imports we need.
+    let needs_optional = decls_need_optional(decls);
+    let needs_field = decls_need_field(decls);
+
     let mut out = String::new();
+    writeln!(out, "\"\"\"Auto-generated typed stubs for {path}.").expect("write to String");
+    writeln!(out).expect("write to String");
+    writeln!(
+        out,
+        "Do not edit — regenerate with ``generate_types_source()``."
+    )
+    .expect("write to String");
+    writeln!(out, "\"\"\"").expect("write to String");
     writeln!(out, "from __future__ import annotations").expect("write to String");
     writeln!(out).expect("write to String");
-    writeln!(out, "from dataclasses import dataclass").expect("write to String");
-    writeln!(out, "from typing import Any").expect("write to String");
+
+    // Build import line for dataclasses.
+    if needs_field {
+        writeln!(out, "from dataclasses import dataclass, field").expect("write to String");
+    } else {
+        writeln!(out, "from dataclasses import dataclass").expect("write to String");
+    }
+
+    // Build typing imports.
+    let mut typing_imports = vec!["Any"];
+    if needs_optional {
+        typing_imports.push("Optional");
+    }
+    writeln!(out, "from typing import {}", typing_imports.join(", ")).expect("write to String");
     writeln!(out).expect("write to String");
-    writeln!(out, "from prompt_templates import Variants").expect("write to String");
+    writeln!(out, "from prompt_templates import Template, Variants").expect("write to String");
     writeln!(out).expect("write to String");
 
     // Collect nested type definitions first.
@@ -435,13 +474,58 @@ pub(crate) fn generate_python_source_for_template(path: &str) -> PyResult<String
         source_gen_types_for_decl(&params_class_name, decl, &mut nested_defs);
     }
 
+    // Generate types for explicit type aliases from the `types:` block.
+    let existing_names: std::collections::HashSet<String> = nested_defs
+        .iter()
+        .filter_map(|d| {
+            // Extract class name from "class Foo:" or "@dataclass\nclass Foo:"
+            d.lines()
+                .find(|l| l.starts_with("class "))
+                .and_then(|l| l.strip_prefix("class "))
+                .and_then(|l| l.split(['(', ':']).next())
+                .map(String::from)
+        })
+        .collect();
+
+    for (alias_name, var_type) in tmpl.type_aliases() {
+        let class_name = to_pascal_case(alias_name);
+        if existing_names.contains(&class_name) {
+            continue;
+        }
+        let synthetic_decl = VarDecl {
+            name: alias_name.clone(),
+            var_type: var_type.clone(),
+            default_value: None,
+        };
+        source_gen_types_for_decl(&class_name, &synthetic_decl, &mut nested_defs);
+    }
+
     // Write nested types before the params class (forward reference order).
     for def in &nested_defs {
         writeln!(out, "{def}").expect("write to String");
     }
 
     // Write the params class.
-    source_gen_params_class(&mut out, &params_class_name, decls);
+    source_gen_params_class(&mut out, &params_class_name, decls, path);
+
+    // Write __all__.
+    // Also export nested type names.
+    let nested_names: Vec<String> = nested_defs
+        .iter()
+        .filter_map(|d| {
+            d.lines()
+                .find(|l| l.starts_with("class "))
+                .and_then(|l| l.strip_prefix("class "))
+                .and_then(|l| l.split(['(', ':']).next())
+                .map(String::from)
+        })
+        .collect();
+    let mut all_names: Vec<String> = vec![params_class_name.clone()];
+    all_names.extend(nested_names);
+
+    writeln!(out).expect("write to String");
+    let quoted: Vec<String> = all_names.iter().map(|n| format!("\"{n}\"")).collect();
+    writeln!(out, "__all__ = [{}]", quoted.join(", ")).expect("write to String");
 
     Ok(out)
 }
@@ -467,6 +551,14 @@ fn source_gen_types_for_decl(parent_name: &str, decl: &VarDecl, out: &mut Vec<St
                 source_gen_types_for_decl(&struct_name, field, out);
             }
             out.push(source_gen_model_class(&struct_name, fields));
+        }
+        VarType::Option(inner) => {
+            let inner_decl = VarDecl {
+                name: decl.name.clone(),
+                var_type: (**inner).clone(),
+                default_value: None,
+            };
+            source_gen_types_for_decl(parent_name, &inner_decl, out);
         }
         _ => {}
     }
@@ -522,15 +614,30 @@ fn source_gen_model_class(name: &str, fields: &[VarDecl]) -> String {
     s
 }
 
-/// Generate the params `@dataclass` with a `render()` method.
-fn source_gen_params_class(out: &mut String, name: &str, decls: &[VarDecl]) {
+/// Generate the params `@dataclass` with a typed `render()` method.
+fn source_gen_params_class(out: &mut String, name: &str, decls: &[VarDecl], template_path: &str) {
     writeln!(out, "@dataclass").expect("write to String");
     writeln!(out, "class {name}:").expect("write to String");
+    writeln!(
+        out,
+        "    \"\"\"Typed parameters for template ``{template_path}``.\"\"\""
+    )
+    .expect("write to String");
+
     if decls.is_empty() {
-        writeln!(out, "    pass").expect("write to String");
+        writeln!(out).expect("write to String");
+        // Still need render() even with no params.
+        source_gen_render_method(out, template_path);
         return;
     }
-    for d in decls {
+
+    writeln!(out).expect("write to String");
+
+    // Fields without defaults first, then fields with defaults (dataclass rule).
+    let (required, optional): (Vec<&VarDecl>, Vec<&VarDecl>) =
+        decls.iter().partition(|d| d.default_value.is_none());
+
+    for d in &required {
         writeln!(
             out,
             "    {}: {}",
@@ -538,6 +645,96 @@ fn source_gen_params_class(out: &mut String, name: &str, decls: &[VarDecl]) {
             vartype_to_python_source_annotation(&d.var_type, name, &d.name)
         )
         .expect("write to String");
+    }
+
+    for d in &optional {
+        let ann = vartype_to_python_source_annotation(&d.var_type, name, &d.name);
+        let default_repr = default_to_python_repr(d.default_value.as_ref().expect("has default"));
+        writeln!(
+            out,
+            "    {}: {} = field(default={})",
+            d.name, ann, default_repr
+        )
+        .expect("write to String");
+    }
+
+    writeln!(out).expect("write to String");
+    source_gen_render_method(out, template_path);
+}
+
+/// Emit the `render()` method for the params dataclass.
+fn source_gen_render_method(out: &mut String, template_path: &str) {
+    writeln!(
+        out,
+        "    def render(self, template: Template | None = None) -> str:"
+    )
+    .expect("write to String");
+    writeln!(
+        out,
+        "        \"\"\"Render this params object into its template.\"\"\""
+    )
+    .expect("write to String");
+    writeln!(out, "        if template is None:").expect("write to String");
+    writeln!(
+        out,
+        "            template = Template.from_file({template_path:?})"
+    )
+    .expect("write to String");
+    writeln!(out, "        import dataclasses").expect("write to String");
+    writeln!(
+        out,
+        "        return template.render_dict(dataclasses.asdict(self))"
+    )
+    .expect("write to String");
+}
+
+/// Check if any declaration uses `Option<T>`.
+fn decls_need_optional(decls: &[VarDecl]) -> bool {
+    decls
+        .iter()
+        .any(|d| matches!(&d.var_type, VarType::Option(_)))
+}
+
+/// Check if any declaration has a default value (needs `field(default=...)`).
+fn decls_need_field(decls: &[VarDecl]) -> bool {
+    decls.iter().any(|d| d.default_value.is_some())
+}
+
+/// Convert a `Value` default to a Python literal string.
+fn default_to_python_repr(value: &prompt_templates::Value) -> String {
+    use prompt_templates::Value;
+    match value {
+        Value::Str(s) => format!("{s:?}"),
+        Value::Int(n) => n.to_string(),
+        Value::Float(f) => format!("{f}"),
+        Value::Bool(b) => {
+            if *b {
+                "True".into()
+            } else {
+                "False".into()
+            }
+        }
+        Value::List(items) => {
+            if items.is_empty() {
+                "[]".into()
+            } else {
+                let elems: Vec<String> = items.iter().map(default_to_python_repr).collect();
+                format!("[{}]", elems.join(", "))
+            }
+        }
+        Value::Struct(map) => {
+            if map.is_empty() {
+                "{}".into()
+            } else {
+                let entries: Vec<String> = map
+                    .iter()
+                    .map(|(k, v)| format!("{k:?}: {}", default_to_python_repr(v)))
+                    .collect();
+                format!("{{{}}}", entries.join(", "))
+            }
+        }
+        // None and Tmpl can't be represented as Python literals.
+        Value::None | Value::Tmpl(_) => "None".into(),
     }
 }
 
@@ -706,10 +903,184 @@ mod tests {
                     default_value: None,
                 },
             ],
+            "prompts/review.tmpl.md",
         );
         assert!(out.contains("@dataclass"));
         assert!(out.contains("class ReviewParams:"));
         assert!(out.contains("    reviewer: str"));
         assert!(out.contains("    score: float"));
+    }
+
+    #[test]
+    fn source_gen_params_has_render_method() {
+        let mut out = String::new();
+        source_gen_params_class(
+            &mut out,
+            "Greeting",
+            &[VarDecl {
+                name: "name".into(),
+                var_type: VarType::Str,
+                default_value: None,
+            }],
+            "prompts/greeting.tmpl.md",
+        );
+        assert!(
+            out.contains("def render(self, template: Template | None = None) -> str:"),
+            "missing render method, got: {out}"
+        );
+        assert!(
+            out.contains("Template.from_file("),
+            "render should load from file, got: {out}"
+        );
+        assert!(
+            out.contains("render_dict(dataclasses.asdict(self))"),
+            "render should use render_dict, got: {out}"
+        );
+    }
+
+    #[test]
+    fn source_gen_params_empty_still_has_render() {
+        let mut out = String::new();
+        source_gen_params_class(&mut out, "Empty", &[], "empty.tmpl.md");
+        assert!(
+            out.contains("def render(self"),
+            "empty params class should still have render(), got: {out}"
+        );
+    }
+
+    #[test]
+    fn source_gen_params_with_defaults() {
+        let mut out = String::new();
+        source_gen_params_class(
+            &mut out,
+            "Greeting",
+            &[
+                VarDecl {
+                    name: "name".into(),
+                    var_type: VarType::Str,
+                    default_value: Some(prompt_templates::Value::Str("World".into())),
+                },
+                VarDecl {
+                    name: "count".into(),
+                    var_type: VarType::Int,
+                    default_value: Some(prompt_templates::Value::Int(1)),
+                },
+            ],
+            "greeting.tmpl.md",
+        );
+        assert!(
+            out.contains("name: str = field(default=\"World\")"),
+            "missing default for name, got: {out}"
+        );
+        assert!(
+            out.contains("count: int = field(default=1)"),
+            "missing default for count, got: {out}"
+        );
+    }
+
+    #[test]
+    fn source_gen_params_required_before_optional() {
+        let mut out = String::new();
+        source_gen_params_class(
+            &mut out,
+            "Mixed",
+            &[
+                VarDecl {
+                    name: "optional_first".into(),
+                    var_type: VarType::Str,
+                    default_value: Some(prompt_templates::Value::Str("default".into())),
+                },
+                VarDecl {
+                    name: "required".into(),
+                    var_type: VarType::Str,
+                    default_value: None,
+                },
+            ],
+            "mixed.tmpl.md",
+        );
+        // Required fields must come before optional in the output.
+        let req_pos = out.find("required: str").expect("should have required");
+        let opt_pos = out
+            .find("optional_first: str = field")
+            .expect("should have optional");
+        assert!(
+            req_pos < opt_pos,
+            "required field must come before optional, got: {out}"
+        );
+    }
+
+    #[test]
+    fn source_gen_option_type_annotation() {
+        assert_eq!(
+            vartype_to_python_annotation(
+                &VarType::Option(Box::new(VarType::Str)),
+                "Parent",
+                "name"
+            ),
+            "Optional[str]"
+        );
+        assert_eq!(
+            vartype_to_python_annotation(
+                &VarType::Option(Box::new(VarType::Int)),
+                "Parent",
+                "count"
+            ),
+            "Optional[int]"
+        );
+    }
+
+    #[test]
+    fn decls_need_optional_detects_option() {
+        assert!(decls_need_optional(&[VarDecl {
+            name: "x".into(),
+            var_type: VarType::Option(Box::new(VarType::Str)),
+            default_value: None,
+        }]));
+        assert!(!decls_need_optional(&[VarDecl {
+            name: "x".into(),
+            var_type: VarType::Str,
+            default_value: None,
+        }]));
+    }
+
+    #[test]
+    fn decls_need_field_detects_defaults() {
+        assert!(decls_need_field(&[VarDecl {
+            name: "x".into(),
+            var_type: VarType::Str,
+            default_value: Some(prompt_templates::Value::Str("hi".into())),
+        }]));
+        assert!(!decls_need_field(&[VarDecl {
+            name: "x".into(),
+            var_type: VarType::Str,
+            default_value: None,
+        }]));
+    }
+
+    #[test]
+    fn default_to_python_repr_scalars() {
+        use prompt_templates::Value;
+        assert_eq!(
+            default_to_python_repr(&Value::Str("hello".into())),
+            "\"hello\""
+        );
+        assert_eq!(default_to_python_repr(&Value::Int(42)), "42");
+        assert_eq!(default_to_python_repr(&Value::Float(2.72)), "2.72");
+        assert_eq!(default_to_python_repr(&Value::Bool(true)), "True");
+        assert_eq!(default_to_python_repr(&Value::Bool(false)), "False");
+        assert_eq!(default_to_python_repr(&Value::None), "None");
+    }
+
+    #[test]
+    fn default_to_python_repr_collections() {
+        use std::sync::Arc;
+
+        use prompt_templates::Value;
+
+        assert_eq!(
+            default_to_python_repr(&Value::List(Arc::new(vec![Value::Int(1), Value::Int(2),]))),
+            "[1, 2]"
+        );
+        assert_eq!(default_to_python_repr(&Value::List(Arc::new(vec![]))), "[]");
     }
 }

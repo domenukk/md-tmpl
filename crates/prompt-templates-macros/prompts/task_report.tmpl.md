@@ -11,10 +11,10 @@ params:
 
 # Task Report: {{ title }}
 
-Priority: {{ priority }}
+Priority: {{ kind(priority) }}
 
 > {% for task in tasks %}
 
-- {{ task.name }} ({{ task.urgency }})
+- {{ task.name }} ({{ kind(task.urgency) }})
 
   > {% /for %}

@@ -143,10 +143,29 @@ fn walk_segment(
         Segment::Static(_) | Segment::Raw(_) | Segment::Comment(_) => {}
 
         Segment::Expr { expr, .. } => match expr {
-            CompiledExpr::Path(path)
-            | CompiledExpr::Len(path)
-            | CompiledExpr::Kind(path)
-            | CompiledExpr::Has(path) => {
+            CompiledExpr::Path(path) => {
+                validate_compiled_path(path, env, errors);
+                // Displayability check: only scalar types can appear in {{ }}.
+                if let Some(resolved) = resolve_compiled_path_type(path, env) {
+                    if !resolved.is_displayable() {
+                        let hint = match resolved {
+                            VarType::List(_) => "use {% for %} to iterate, or | join()",
+                            VarType::Struct(_) => {
+                                "access fields with dot notation, e.g. {{ x.field }}"
+                            }
+                            VarType::Enum(_) => "use kind(x) for the variant name, or {% match %}",
+                            VarType::Tmpl(_) => "use {% include %} to render a template",
+                            VarType::Option(_) => "use {% if has(x) %} to unwrap, or {% match %}",
+                            _ => "only str, int, float, bool can be displayed",
+                        };
+                        errors.push(format!(
+                            "'{}': cannot display value of type {resolved} — {hint}",
+                            path.as_str()
+                        ));
+                    }
+                }
+            }
+            CompiledExpr::Len(path) | CompiledExpr::Kind(path) | CompiledExpr::Has(path) => {
                 validate_compiled_path(path, env, errors);
             }
             CompiledExpr::Idx(_) => {}
@@ -217,7 +236,7 @@ fn walk_segment(
             walk_segments(else_body, env, errors, visited);
         }
 
-        Segment::Match { expr, arms } => {
+        Segment::Match { expr, arms, .. } => {
             validate_match(expr, arms, env, errors, visited);
         }
 
@@ -257,6 +276,23 @@ fn validate_match(
             // We narrow by the root variable name and replace its type with
             // one where the matched field is narrowed.
             validate_match_arms_with_narrowing(expr, declared, arms, env, errors, visited);
+        }
+        Some(VarType::Option(_)) => {
+            // Option matching: arms should be "Some" and/or "None".
+            // Validate arms contain only valid option variant names.
+            for (variants, arm_body) in arms {
+                for v in variants {
+                    let name = v.as_ref();
+                    if name != "Some" && name != "None" && name != "_" {
+                        errors.push(format!(
+                            "match on '{}': invalid option variant '{name}' — \
+                             expected 'Some', 'None', or '_'",
+                            expr.as_str()
+                        ));
+                    }
+                }
+                walk_segments(arm_body, env, errors, visited);
+            }
         }
         Some(other_type) => {
             // Match on a non-enum type is a compile error.
@@ -372,7 +408,7 @@ fn validate_match_arms_with_narrowing(
 
     // 3) Exhaustiveness: all declared variants must be covered.
     //    Single-arm inline guards ({% match x case Y %}) are exempt.
-    //    A {% default %} arm satisfies exhaustiveness.
+    //    A {% else %} arm satisfies exhaustiveness.
     if arms.len() > 1 && !has_default {
         let missing: Vec<&str> = declared
             .iter()
@@ -508,6 +544,14 @@ fn resolve_field<'a>(ty: &'a VarType, field: &str) -> FieldResult<'a> {
                 reason: format!("cannot access field '{field}' on {ty}"),
             }
         }
+
+        // option<T> — field access on an option is not valid; use has() + match.
+        VarType::Option(_) => FieldResult::NotAvailable {
+            reason: format!(
+                "cannot access field '{field}' on {ty} — \
+                 use {{% if has(...) %}} or {{% match %}} to unwrap first"
+            ),
+        },
     }
 }
 
@@ -601,10 +645,10 @@ fn validate_condition(condition: &Condition, env: &TypeEnv<'_>, errors: &mut Vec
 // ---------------------------------------------------------------------------
 
 /// If the condition is `has(path)` and `path` resolves to an option type,
-/// return `(path_str, narrowed_type)` where `narrowed_type` is the enum
-/// restricted to just the `Some` variant.
+/// return `(path_str, narrowed_type)` where `narrowed_type` is the inner
+/// type of the option (transparent unwrap).
 ///
-/// This enables `{% if has(x) %} {{ x.val }} {% /if %}` to type-check.
+/// This enables `{% if has(x) %} {{ x }} {% /if %}` to type-check.
 fn extract_has_narrowing(condition: &Condition, env: &TypeEnv<'_>) -> Option<(String, VarType)> {
     let Condition::Truthy(ConditionOperand::Has(path)) = condition else {
         return None;
@@ -619,19 +663,23 @@ fn extract_has_narrowing(condition: &Condition, env: &TypeEnv<'_>) -> Option<(St
         return None;
     }
 
-    // Extract just the Some variant from the option enum.
-    if let VarType::Enum(variants) = ty {
-        let some_only: Vec<VariantDecl> = variants
-            .iter()
-            .filter(|v| v.name == crate::consts::OPTION_SOME)
-            .cloned()
-            .collect();
-        if some_only.is_empty() {
-            return None;
+    // Narrow option to its inner type.
+    match ty {
+        // New-style option<T>: unwrap to T directly.
+        VarType::Option(inner) => Some((path_str.to_string(), (**inner).clone())),
+        // Legacy enum-based option: extract just the Some variant.
+        VarType::Enum(variants) => {
+            let some_only: Vec<VariantDecl> = variants
+                .iter()
+                .filter(|v| v.name == crate::consts::OPTION_SOME)
+                .cloned()
+                .collect();
+            if some_only.is_empty() {
+                return None;
+            }
+            Some((path_str.to_string(), VarType::Enum(some_only)))
         }
-        Some((path_str.to_string(), VarType::Enum(some_only)))
-    } else {
-        None
+        _ => None,
     }
 }
 
@@ -880,7 +928,7 @@ fn operand_to_str(operand: &ConditionOperand) -> &str {
         | ConditionOperand::Len(path)
         | ConditionOperand::Kind(path)
         | ConditionOperand::Has(path) => path.as_str(),
-        ConditionOperand::Idx(binding) => binding,
+        ConditionOperand::Idx(binding) => binding.as_ref(),
     }
 }
 
@@ -896,6 +944,6 @@ fn validate_operand(operand: &ConditionOperand, env: &TypeEnv<'_>, errors: &mut 
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 #[path = "type_check_tests.rs"]
 mod type_check_tests;
