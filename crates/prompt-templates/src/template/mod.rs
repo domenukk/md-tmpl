@@ -795,9 +795,14 @@ impl Template {
     /// assert_eq!(tmpl.render_empty().unwrap(), "Hello world!");
     ///
     /// // All params have defaults
-    /// let tmpl =
-    ///     Template::from_source("---\nparams:\n  - greeting = str := \"Hi\"\n---\n{{ greeting }}!")
-    ///         .unwrap();
+    /// let tmpl = Template::from_source(
+    ///     r#"---
+    /// params:
+    ///   - greeting = str := "Hi"
+    /// ---
+    /// {{ greeting }}!"#,
+    /// )
+    /// .unwrap();
     /// assert_eq!(tmpl.render_empty().unwrap(), "Hi!");
     /// ```
     ///

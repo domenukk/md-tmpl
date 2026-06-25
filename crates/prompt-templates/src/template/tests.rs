@@ -2187,7 +2187,13 @@ params:
 
 #[test]
 fn render_empty_no_params() {
-    let tmpl = Template::from_source("---\nparams: []\n---\nHello world!").unwrap();
+    let tmpl = Template::from_source(
+        r#"---
+params: []
+---
+Hello world!"#,
+    )
+    .unwrap();
     assert_eq!(tmpl.render_empty().unwrap(), "Hello world!");
 }
 
@@ -2202,7 +2208,12 @@ fn render_empty_all_defaults() {
 #[test]
 fn render_empty_with_consts() {
     let tmpl = Template::from_source(
-        "---\nconsts:\n  - VERSION = str := \"1.0\"\nparams: []\n---\nv{{ VERSION }}",
+        r#"---
+consts:
+  - VERSION = str := "1.0"
+params: []
+---
+v{{ VERSION }}"#,
     )
     .unwrap();
     assert_eq!(tmpl.render_empty().unwrap(), "v1.0");
@@ -2210,8 +2221,14 @@ fn render_empty_with_consts() {
 
 #[test]
 fn render_empty_required_params_fails() {
-    let tmpl =
-        Template::from_source("---\nparams:\n  - name = str\n---\nHello {{ name }}!").unwrap();
+    let tmpl = Template::from_source(
+        r#"---
+params:
+  - name = str
+---
+Hello {{ name }}!"#,
+    )
+    .unwrap();
     let err = tmpl.render_empty().unwrap_err();
     assert!(
         err.to_string().contains("name"),
@@ -2222,8 +2239,14 @@ fn render_empty_required_params_fails() {
 #[test]
 fn render_empty_mixed_defaults_and_required_fails() {
     let tmpl = Template::from_source(
-        "---\nparams:\n  - greeting = str := \"Hi\"\n  - name = str\n---\n{{ greeting }} {{ name }}!",
-    ).unwrap();
+        r#"---
+params:
+  - greeting = str := "Hi"
+  - name = str
+---
+{{ greeting }} {{ name }}!"#,
+    )
+    .unwrap();
     let err = tmpl.render_empty().unwrap_err();
     assert!(
         err.to_string().contains("name"),
@@ -2233,7 +2256,13 @@ fn render_empty_mixed_defaults_and_required_fails() {
 
 #[test]
 fn render_empty_into_works() {
-    let tmpl = Template::from_source("---\nparams: []\n---\nHello!").unwrap();
+    let tmpl = Template::from_source(
+        r#"---
+params: []
+---
+Hello!"#,
+    )
+    .unwrap();
     let mut buf = String::from("prefix: ");
     tmpl.render_empty_into(&mut buf).unwrap();
     assert_eq!(buf, "prefix: Hello!");
