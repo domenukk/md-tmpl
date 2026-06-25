@@ -2188,10 +2188,10 @@ params:
 #[test]
 fn render_empty_no_params() {
     let tmpl = Template::from_source(
-        r#"---
+        r"---
 params: []
 ---
-Hello world!"#,
+Hello world!",
     )
     .unwrap();
     assert_eq!(tmpl.render_empty().unwrap(), "Hello world!");
@@ -2200,8 +2200,14 @@ Hello world!"#,
 #[test]
 fn render_empty_all_defaults() {
     let tmpl = Template::from_source(
-        "---\nparams:\n  - greeting = str := \"Hi\"\n  - count = int := 5\n---\n{{ greeting }} {{ count }}",
-    ).unwrap();
+        r#"---
+params:
+  - greeting = str := "Hi"
+  - count = int := 5
+---
+{{ greeting }} {{ count }}"#,
+    )
+    .unwrap();
     assert_eq!(tmpl.render_empty().unwrap(), "Hi 5");
 }
 
@@ -2222,11 +2228,11 @@ v{{ VERSION }}"#,
 #[test]
 fn render_empty_required_params_fails() {
     let tmpl = Template::from_source(
-        r#"---
+        r"---
 params:
   - name = str
 ---
-Hello {{ name }}!"#,
+Hello {{ name }}!",
     )
     .unwrap();
     let err = tmpl.render_empty().unwrap_err();
@@ -2257,10 +2263,10 @@ params:
 #[test]
 fn render_empty_into_works() {
     let tmpl = Template::from_source(
-        r#"---
+        r"---
 params: []
 ---
-Hello!"#,
+Hello!",
     )
     .unwrap();
     let mut buf = String::from("prefix: ");

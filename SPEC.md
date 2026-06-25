@@ -424,13 +424,14 @@ being passed via `with`.
 
 Each entry follows `- NAME = type := value`:
 
-```yaml
+```markdown
 ---
 consts:
   - NOTEBOOK_FILENAME = str := "thought_process.md"
   - MAX_RETRIES = int := 3
   - STAGES = struct<DESIGN = str, BUILD = str> := {DESIGN = "Design", BUILD = "Build"}
 ---
+
 Notebook: {{ NOTEBOOK_FILENAME }}
 Max retries: {{ MAX_RETRIES }}
 Stage: {{ STAGES.DESIGN }}
@@ -482,16 +483,17 @@ function, which returns the variant name as a string. Bare access
 
 ### Basic Usage
 
-```yaml
+```markdown
 ---
 types:
   - Stage = enum<Design, Build, Deploy>
   - Status = enum<Active, Paused(reason = str)>
 params: []
 ---
-{{ kind(Stage.Design) }}      {# renders: Design #}
-{{ kind(Stage.Build) }}       {# renders: Build #}
-{{ kind(Status.Paused) }}     {# renders: Paused #}
+
+{{ kind(Stage.Design) }} {# renders: Design #}
+{{ kind(Stage.Build) }} {# renders: Build #}
+{{ kind(Status.Paused) }} {# renders: Paused #}
 ```
 
 Both **unit variants** (no fields) and **struct variants** (with fields)
@@ -522,14 +524,15 @@ Enum types from imported templates are accessible via the import
 stem, following the same dotted-path convention as imported types
 and constants:
 
-```yaml
+```markdown
 ---
 imports:
   - "[lib](lib.tmpl.md)"
 params: []
 ---
-{{ kind(lib.Stage.Design) }}      {# renders: Design #}
-{{ kind(lib.Status.Paused) }}     {# renders: Paused #}
+
+{{ kind(lib.Stage.Design) }} {# renders: Design #}
+{{ kind(lib.Status.Paused) }} {# renders: Paused #}
 ```
 
 The path follows the pattern `stem.TypeName.VariantName`.
@@ -921,9 +924,8 @@ the parameter to be optional, you must explicitly declare `:= None`.
 
 ### Transparent Representation
 
-Option values are **transparent** — the inner value is used directly,
-not wrapped in `{__kind__: "Some", val: X}`. This means `{{ name }}` renders
-the value directly, without needing `.val`:
+Option values are **transparent** — the inner value is used directly. This means `{{ name }}` renders
+the value directly, without needing `.val` (as long it's been checked with match or if has() before).
 
 | Input (JS/Python/Go) | Template `Value`    | `{{ x }}` output |
 | -------------------- | ------------------- | ---------------- |

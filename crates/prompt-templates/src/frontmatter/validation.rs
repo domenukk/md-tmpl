@@ -90,17 +90,12 @@ pub(crate) fn validate_collision_rules(fm: &Frontmatter) -> Result<(), TemplateE
             }
         }
     }
-    // R4: Unused type alias — any explicitly declared types: entry that is never
-    // referenced by any param declaration. Skipped when `allow_unused: true`,
-    // which enables type-library templates defining types for export.
+    // R4: Unused type alias check.
     if !fm.allow_unused
         && !fm.type_aliases.is_empty()
         && (!fm.declarations.is_empty() || !fm.consts.is_empty())
     {
         for (alias_name, alias_type) in &fm.type_aliases {
-            // Enum types are always auto-injected as namespace constants
-            // (for `kind(TypeName.Variant)` expressions), so they are
-            // implicitly used even if no param/const has that type.
             if matches!(alias_type, VarType::Enum(_)) {
                 continue;
             }

@@ -80,6 +80,10 @@ impl CompileOptions<'_> {
 pub struct Template {
     /// The template body text (after stripping frontmatter).
     body: String,
+    /// Template name (from frontmatter).
+    name: Option<String>,
+    /// Template description (from frontmatter).
+    description: Option<String>,
     /// Pre-compiled segment instructions (the fast render path).
     segments: Arc<[Segment]>,
     /// Declared variables from frontmatter.
@@ -307,6 +311,8 @@ impl Template {
         let estimated_capacity = compiled::render::estimate_output_capacity(&segments);
         let tmpl = Self {
             body,
+            name: fm.name.clone(),
+            description: fm.description.clone(),
             segments,
             declared_variables: Arc::from(fm.declarations.clone()),
             base_dir: base_dir.map(Path::to_path_buf),
@@ -361,6 +367,8 @@ impl Template {
         let estimated_capacity = compiled::render::estimate_output_capacity(&segments);
         let tmpl = Self {
             body,
+            name: fm.name.clone(),
+            description: fm.description.clone(),
             segments,
             declared_variables: Arc::from(fm.declarations.clone()),
             inline_templates: Arc::new(inline_templates),
@@ -381,6 +389,7 @@ impl Template {
     ///
     /// [`TemplateCache`]: crate::TemplateCache
     #[cfg(feature = "std")]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_cached(
         segments: Arc<[Segment]>,
         declared_variables: Arc<[VarDecl]>,
@@ -389,11 +398,15 @@ impl Template {
         source_hash: u64,
         consts: Arc<HashMap<String, crate::value::Value>>,
         imported_consts: Arc<HashMap<String, crate::value::Value>>,
+        name: Option<String>,
+        description: Option<String>,
     ) -> Self {
         let has_defaults = declared_variables.iter().any(|d| d.default_value.is_some());
         let estimated_capacity = compiled::render::estimate_output_capacity(&segments);
         Self {
             body: String::new(),
+            name,
+            description,
             segments,
             declared_variables,
             base_dir,
@@ -410,6 +423,7 @@ impl Template {
     /// Construct a `Template` from pre-compiled static structures (used by compile-time macros).
     #[doc(hidden)]
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn from_precompiled(
         segments: &[Segment],
         declared_variables: &[VarDecl],
@@ -417,6 +431,8 @@ impl Template {
         source_hash: u64,
         consts: &[(&str, crate::value::Value)],
         imported_consts: &[(&str, crate::value::Value)],
+        name: Option<&str>,
+        description: Option<&str>,
     ) -> Self {
         let inline_map = inline_templates
             .iter()
@@ -435,6 +451,8 @@ impl Template {
         let estimated_capacity = compiled::render::estimate_output_capacity(&segments);
         Self {
             body: String::new(),
+            name: name.map(String::from),
+            description: description.map(String::from),
             segments,
             declared_variables: Arc::from(declared_variables),
             #[cfg(feature = "std")]
@@ -579,6 +597,18 @@ impl Template {
     #[must_use]
     pub fn body(&self) -> &str {
         &self.body
+    }
+
+    /// Returns the template's name, if defined in frontmatter.
+    #[must_use]
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    /// Returns the template's description, if defined in frontmatter.
+    #[must_use]
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
     }
 
     /// Set the maximum include depth for rendering this template.
@@ -791,7 +821,13 @@ impl Template {
     /// use prompt_templates::Template;
     ///
     /// // No params — renders as-is
-    /// let tmpl = Template::from_source("---\nparams: []\n---\nHello world!").unwrap();
+    /// let tmpl = Template::from_source(
+    ///     r#"---
+    /// params: []
+    /// ---
+    /// Hello world!"#,
+    /// )
+    /// .unwrap();
     /// assert_eq!(tmpl.render_empty().unwrap(), "Hello world!");
     ///
     /// // All params have defaults

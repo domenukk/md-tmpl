@@ -260,7 +260,6 @@ pub(crate) const ERR_TYPE_SHADOWS_IMPORT: &str = "type alias shadows import alia
 /// Error when a param's `PascalCase` name shadows an import alias.
 pub(crate) const ERR_PARAM_SHADOWS_IMPORT: &str =
     "parameter name (PascalCase) shadows import alias";
-/// Error when a `types:` entry is declared but never referenced.
 pub(crate) const ERR_UNUSED_TYPE_ALIAS: &str = "unused type alias";
 /// Error when a constant name is duplicated.
 pub(crate) const ERR_DUPLICATE_CONST: &str = "duplicate constant name";

@@ -102,16 +102,37 @@ impl Parse for IncludeTemplateInput {
 /// from which to derive a module name.
 struct InlineTemplateInput {
     source: LitStr,
+    struct_name: Option<Ident>,
     _arrow: Token![=>],
     name: Ident,
+    crate_path: Option<syn::Path>,
 }
 
 impl Parse for InlineTemplateInput {
     fn parse(input: ParseStream) -> syn::Result<Self> {
+        let source: LitStr = input.parse()?;
+        let struct_name = if input.peek(Token![as]) {
+            let _as: Token![as] = input.parse()?;
+            Some(input.parse()?)
+        } else {
+            None
+        };
+        let _arrow: Token![=>] = input.parse()?;
+        let name: Ident = input.parse()?;
+        let crate_path = if input.peek(Token![,]) {
+            let _comma: Token![,] = input.parse()?;
+            let _kw: Token![crate] = input.parse()?;
+            let _eq: Token![=] = input.parse()?;
+            Some(input.parse()?)
+        } else {
+            None
+        };
         Ok(Self {
-            source: input.parse()?,
-            _arrow: input.parse()?,
-            name: input.parse()?,
+            source,
+            struct_name,
+            _arrow,
+            name,
+            crate_path,
         })
     }
 }
@@ -244,6 +265,17 @@ pub fn include_template(input: TokenStream) -> TokenStream {
         // Type alias codegen.
         let type_alias_tokens = generate_type_alias_tokens(&fm.type_aliases);
 
+        let name_token = if let Some(n) = &fm.name {
+            quote! { Some(#n) }
+        } else {
+            quote! { None }
+        };
+        let desc_token = if let Some(d) = &fm.description {
+            quote! { Some(#d) }
+        } else {
+            quote! { None }
+        };
+
         let expanded = quote! {
             pub mod #mod_ident {
                 const _: &str = include_str!(#path_str);
@@ -257,6 +289,8 @@ pub fn include_template(input: TokenStream) -> TokenStream {
                             #source_hash,
                             &[#(#consts_tokens),*],
                             &[#(#imported_consts_tokens),*],
+                            #name_token,
+                            #desc_token,
                         )
                     });
 
@@ -327,8 +361,10 @@ pub fn template(input: TokenStream) -> TokenStream {
         source_hash,
     } = ast;
 
-    // Crate path: always default for inline templates.
-    let crate_path = quote! { ::prompt_templates };
+    // Crate path: custom or default `::prompt_templates`.
+    let crate_path = parsed
+        .crate_path
+        .map_or_else(|| quote! { ::prompt_templates }, |p| quote! { #p });
 
     with_crate_path(crate_path.clone(), || {
         // Template AST codegen.
@@ -351,7 +387,10 @@ pub fn template(input: TokenStream) -> TokenStream {
         });
 
         // Params struct codegen — uses Module so render() calls super::template().
-        let struct_name = format_ident!("Params");
+        let struct_name = parsed
+            .struct_name
+            .clone()
+            .unwrap_or_else(|| format_ident!("Params"));
         let source = StructGenSource::Module {
             doc_path: "<inline>",
         };
@@ -359,6 +398,17 @@ pub fn template(input: TokenStream) -> TokenStream {
 
         // Type alias codegen.
         let type_alias_tokens = generate_type_alias_tokens(&fm.type_aliases);
+
+        let name_token = if let Some(n) = &fm.name {
+            quote! { Some(#n) }
+        } else {
+            quote! { None }
+        };
+        let desc_token = if let Some(d) = &fm.description {
+            quote! { Some(#d) }
+        } else {
+            quote! { None }
+        };
 
         let expanded = quote! {
             pub mod #mod_ident {
@@ -371,6 +421,8 @@ pub fn template(input: TokenStream) -> TokenStream {
                             #source_hash,
                             &[#(#consts_tokens),*],
                             &[#(#imported_consts_tokens),*],
+                            #name_token,
+                            #desc_token,
                         )
                     });
 

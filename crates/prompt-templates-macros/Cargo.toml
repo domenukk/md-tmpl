@@ -1,6 +1,6 @@
 [package]
 name = "prompt-templates-macros"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.85"
 description = "Proc macros for compile-time template validation and pre-parsing"
@@ -15,16 +15,15 @@ proc-macro = true
 
 [features]
 default = ["serde", "typed-builder"]
-# These feature flags are intentionally minimal — they control *code generation*,
-# not dependency activation.  When enabled, the proc-macros emit
-# `#[derive(Serialize, Deserialize)]` and `#[derive(TypedBuilder)]` on generated
-# structs and enums (using `cfg!(feature = ...)` at macro-expansion time).
-# The actual `serde`/`typed-builder` dependencies live in the user's crate.
 serde = []
 typed-builder = []
 
 [dependencies]
-prompt-templates = { version = "0.2", path = "../prompt-templates" }
+prompt-templates = { version = "0.2", path = "../prompt-templates", default-features = false, features = [
+  "std",
+  "serde",
+  "typed-builder",
+] }
 hashbrown = { version = "0.17", default-features = false, features = [
   "default-hasher",
 ] }
@@ -33,10 +32,6 @@ quote = "1"
 proc-macro2 = "1"
 
 [dev-dependencies]
-prompt-templates = { path = "../prompt-templates", features = [
-  "serde",
-  "typed-builder",
-] }
 serde = { version = "1", features = ["derive"] }
 typed-builder = { workspace = true }
 

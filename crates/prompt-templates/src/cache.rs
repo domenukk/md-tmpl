@@ -303,6 +303,31 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
         Ok((tmpl, fm))
     }
 
+    fn build_template_from_entry(
+        entry: &mut CacheEntry,
+        base_dir: Option<PathBuf>,
+        need_frontmatter: bool,
+    ) -> (crate::Template, Option<Frontmatter>) {
+        entry.last_accessed = Instant::now();
+        let tmpl = crate::Template::from_cached(
+            entry.segments.clone(),
+            entry.declarations.clone(),
+            base_dir,
+            entry.inline_templates.clone(),
+            entry.source_hash,
+            entry.consts.clone(),
+            entry.imported_consts.clone(),
+            entry.frontmatter.name.clone(),
+            entry.frontmatter.description.clone(),
+        );
+        let fm = if need_frontmatter {
+            Some(entry.frontmatter.clone())
+        } else {
+            None
+        };
+        (tmpl, fm)
+    }
+
     /// Shared implementation: stat → mtime check → (read → hash) → cache → compile → store.
     ///
     /// When `need_frontmatter` is false, avoids cloning the cached frontmatter.
@@ -326,22 +351,11 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
             if let Some(entry) = cache.get_mut(&canonical)
                 && entry.last_modified == file_mtime
             {
-                entry.last_accessed = Instant::now();
-                let tmpl = crate::Template::from_cached(
-                    entry.segments.clone(),
-                    entry.declarations.clone(),
+                return Ok(Self::build_template_from_entry(
+                    entry,
                     base_dir,
-                    entry.inline_templates.clone(),
-                    entry.source_hash,
-                    entry.consts.clone(),
-                    entry.imported_consts.clone(),
-                );
-                let fm = if need_frontmatter {
-                    Some(entry.frontmatter.clone())
-                } else {
-                    None
-                };
-                return Ok((tmpl, fm));
+                    need_frontmatter,
+                ));
             }
         }
 
@@ -359,22 +373,11 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
                 && entry.source_hash == source_hash
             {
                 entry.last_modified = file_mtime;
-                entry.last_accessed = Instant::now();
-                let tmpl = crate::Template::from_cached(
-                    entry.segments.clone(),
-                    entry.declarations.clone(),
+                return Ok(Self::build_template_from_entry(
+                    entry,
                     base_dir,
-                    entry.inline_templates.clone(),
-                    source_hash,
-                    entry.consts.clone(),
-                    entry.imported_consts.clone(),
-                );
-                let fm = if need_frontmatter {
-                    Some(entry.frontmatter.clone())
-                } else {
-                    None
-                };
-                return Ok((tmpl, fm));
+                    need_frontmatter,
+                ));
             }
         }
 
@@ -420,6 +423,8 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
             source_hash,
             entry.consts,
             entry.imported_consts,
+            entry.frontmatter.name.clone(),
+            entry.frontmatter.description.clone(),
         );
         Ok((tmpl, Some(fm)))
     }
