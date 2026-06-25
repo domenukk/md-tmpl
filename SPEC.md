@@ -431,9 +431,9 @@ consts:
   - MAX_RETRIES = int := 3
   - STAGES = struct<DESIGN = str, BUILD = str> := {DESIGN = "Design", BUILD = "Build"}
 ---
-Notebook: {{ NOTEBOOK_FILENAME }}
-Max retries: {{ MAX_RETRIES }}
-Stage: {{ STAGES.DESIGN }}
+Notebook: { { NOTEBOOK_FILENAME } }
+Max retries: { { MAX_RETRIES } }
+Stage: { { STAGES.DESIGN } }
 ```
 
 Constants are type-checked at parse time. The value is mandatory — a

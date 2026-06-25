@@ -2187,9 +2187,7 @@ params:
 
 #[test]
 fn render_empty_no_params() {
-    let tmpl = Template::from_source(
-        "---\nparams: []\n---\nHello world!",
-    ).unwrap();
+    let tmpl = Template::from_source("---\nparams: []\n---\nHello world!").unwrap();
     assert_eq!(tmpl.render_empty().unwrap(), "Hello world!");
 }
 
@@ -2205,17 +2203,20 @@ fn render_empty_all_defaults() {
 fn render_empty_with_consts() {
     let tmpl = Template::from_source(
         "---\nconsts:\n  - VERSION = str := \"1.0\"\nparams: []\n---\nv{{ VERSION }}",
-    ).unwrap();
+    )
+    .unwrap();
     assert_eq!(tmpl.render_empty().unwrap(), "v1.0");
 }
 
 #[test]
 fn render_empty_required_params_fails() {
-    let tmpl = Template::from_source(
-        "---\nparams:\n  - name = str\n---\nHello {{ name }}!",
-    ).unwrap();
+    let tmpl =
+        Template::from_source("---\nparams:\n  - name = str\n---\nHello {{ name }}!").unwrap();
     let err = tmpl.render_empty().unwrap_err();
-    assert!(err.to_string().contains("name"), "error should mention the missing param: {err}");
+    assert!(
+        err.to_string().contains("name"),
+        "error should mention the missing param: {err}"
+    );
 }
 
 #[test]
@@ -2224,14 +2225,15 @@ fn render_empty_mixed_defaults_and_required_fails() {
         "---\nparams:\n  - greeting = str := \"Hi\"\n  - name = str\n---\n{{ greeting }} {{ name }}!",
     ).unwrap();
     let err = tmpl.render_empty().unwrap_err();
-    assert!(err.to_string().contains("name"), "error should mention the missing param: {err}");
+    assert!(
+        err.to_string().contains("name"),
+        "error should mention the missing param: {err}"
+    );
 }
 
 #[test]
 fn render_empty_into_works() {
-    let tmpl = Template::from_source(
-        "---\nparams: []\n---\nHello!",
-    ).unwrap();
+    let tmpl = Template::from_source("---\nparams: []\n---\nHello!").unwrap();
     let mut buf = String::from("prefix: ");
     tmpl.render_empty_into(&mut buf).unwrap();
     assert_eq!(buf, "prefix: Hello!");

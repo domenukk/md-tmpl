@@ -23,6 +23,7 @@ The Go binding uses CGo to call the Rust-based engine. You need:
 
 1. **Rust toolchain** — install via [rustup.rs](https://rustup.rs/)
 2. **Build the native library** before `go build`:
+
    ```bash
    # Option A: using just (recommended)
    just build-go-ffi
