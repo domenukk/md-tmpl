@@ -791,7 +791,13 @@ impl Template {
     /// use prompt_templates::Template;
     ///
     /// // No params — renders as-is
-    /// let tmpl = Template::from_source("---\nparams: []\n---\nHello world!").unwrap();
+    /// let tmpl = Template::from_source(
+    ///     r#"---
+    /// params: []
+    /// ---
+    /// Hello world!"#,
+    /// )
+    /// .unwrap();
     /// assert_eq!(tmpl.render_empty().unwrap(), "Hello world!");
     ///
     /// // All params have defaults

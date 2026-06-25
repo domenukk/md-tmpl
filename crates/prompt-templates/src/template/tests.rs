@@ -2200,8 +2200,14 @@ Hello world!"#,
 #[test]
 fn render_empty_all_defaults() {
     let tmpl = Template::from_source(
-        "---\nparams:\n  - greeting = str := \"Hi\"\n  - count = int := 5\n---\n{{ greeting }} {{ count }}",
-    ).unwrap();
+        r#"---
+params:
+  - greeting = str := "Hi"
+  - count = int := 5
+---
+{{ greeting }} {{ count }}"#,
+    )
+    .unwrap();
     assert_eq!(tmpl.render_empty().unwrap(), "Hi 5");
 }
 
