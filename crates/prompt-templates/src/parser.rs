@@ -91,19 +91,35 @@ pub(crate) fn scan_next_tag(input: &str) -> Result<ScanResult<'_>, TemplateError
     let tag_source = &input[tag_start..];
 
     if tag_source.starts_with(COMMENT_START) {
-        // Comment tag: {# ... #}
-        let inner_start = tag_start + COMMENT_START.len();
+        // Comment tag: {# ... #} or {#- ... -#}
+        let trim_left = input[tag_start + COMMENT_START.len()..].starts_with(TRIM_MARKER);
+        let inner_start = tag_start + COMMENT_START.len() + usize::from(trim_left);
         let Some(close) = input[inner_start..].find(COMMENT_END) else {
             return Err(TemplateError::syntax(format!("unclosed `{COMMENT_START}`")));
         };
-        let inner = &input[inner_start..inner_start + close];
+        let raw_inner = &input[inner_start..inner_start + close];
+        let trim_right = raw_inner.ends_with(TRIM_MARKER);
+        let content = if trim_right {
+            &raw_inner[..raw_inner.len() - 1]
+        } else {
+            raw_inner
+        };
+        if !content.is_empty()
+            && (!content.starts_with([' ', '\t', '\n', '\r'])
+                || !content.ends_with([' ', '\t', '\n', '\r']))
+        {
+            return Err(TemplateError::syntax(
+                "Comments must have spaces around the content (e.g. `{# comment #}` or `{#- comment -#}`)",
+            ));
+        }
+        let inner = content.trim();
         let after = &input[inner_start + close + COMMENT_END.len()..];
         Ok(ScanResult::Found {
             before,
             tag: Tag::Comment(inner),
             after,
-            trim_before: false,
-            trim_after: false,
+            trim_before: trim_left,
+            trim_after: trim_right,
         })
     } else if tag_source.starts_with(EXPR_START) {
         // Check for `{{-` (trim-left marker).
@@ -143,11 +159,20 @@ pub(crate) fn scan_next_tag(input: &str) -> Result<ScanResult<'_>, TemplateError
         // Check for `-%}` (trim-right marker).
         let raw_inner = &input[inner_start..inner_start + close];
         let trim_right = raw_inner.ends_with(TRIM_MARKER);
-        let inner = if trim_right {
-            raw_inner[..raw_inner.len() - 1].trim()
+        let content = if trim_right {
+            &raw_inner[..raw_inner.len() - 1]
         } else {
-            raw_inner.trim()
+            raw_inner
         };
+        if !content.is_empty()
+            && (!content.starts_with([' ', '\t', '\n', '\r'])
+                || !content.ends_with([' ', '\t', '\n', '\r']))
+        {
+            return Err(TemplateError::syntax(
+                "Statement tags must have spaces around the content (e.g. `{% if x %}` or `{%- if x -%}`)",
+            ));
+        }
+        let inner = content.trim();
 
         let after = &input[inner_start + close + STMT_END.len()..];
         Ok(ScanResult::Found {

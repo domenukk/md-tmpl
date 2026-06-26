@@ -152,6 +152,38 @@ pub fn parse_frontmatter(source: &str) -> Result<(Frontmatter, &str), TemplateEr
 
     let mut fm = Frontmatter::default();
 
+    // Validate Frontmatter List Termination Rule:
+    // A blank line is strictly required after a block list before starting a new top-level
+    // section keyword, so raw markdown renders correctly.
+    let mut in_block_list = false;
+    let mut had_blank_line = true;
+    for line in yaml_block.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            had_blank_line = true;
+            continue;
+        }
+        let starts_with_section = line.starts_with(FM_NAME_PREFIX)
+            || line.starts_with(FM_DESC_PREFIX)
+            || line.starts_with(FM_TYPES_PREFIX)
+            || line.starts_with(FM_IMPORTS_PREFIX)
+            || line.starts_with(FM_PARAMS_PREFIX)
+            || line.starts_with(FM_CONSTS_PREFIX)
+            || line.starts_with(FM_ALLOW_UNUSED_PREFIX);
+
+        if starts_with_section {
+            if in_block_list && !had_blank_line {
+                return Err(TemplateError::syntax(format!(
+                    "A blank line is required after a block list before '{trimmed}' so raw markdown renders correctly"
+                )));
+            }
+            in_block_list = false;
+        } else if trimmed.starts_with('-') {
+            in_block_list = true;
+        }
+        had_blank_line = false;
+    }
+
     // Collect all raw lines, then join continuation lines (lines starting with
     // whitespace) back onto their parent so that multiline `params:` blocks
     // are handled correctly.
@@ -697,6 +729,19 @@ body";
     }
 
     #[test]
+    fn reject_missing_blank_line_after_block_list() {
+        let source = r"---
+consts:
+  - FOO = str := 'bar'
+params:
+  - x = int
+---
+body";
+        let err = parse_frontmatter(source).unwrap_err();
+        assert!(err.to_string().contains("A blank line is required after a block list"), "got: {err}");
+    }
+
+    #[test]
     fn types_only_template_no_params_block() {
         let source = r"---
 name: types
@@ -1074,10 +1119,13 @@ body";
     fn allow_unused_suppresses_unused_type_alias() {
         let source = "\
 ---
+
 types:
   - Severity = enum<Low, Medium, High>
+
 params:
   - x = str
+
 allow_unused: true
 ---
 type library";
@@ -1092,8 +1140,10 @@ type library";
         // Use a struct type alias to test the unused check.
         let source = "\
 ---
+
 types:
   - Config = struct<host = str, port = int>
+
 params:
   - x = str
 ---
@@ -1109,13 +1159,16 @@ params:
     fn type_library_with_exported_types_and_params() {
         let source = "\
 ---
+
 name: types
 types:
   - Labelled = enum<Known(label = str), Unknown>
   - Severity = enum<Informational, Low, Medium, High, Critical>
+
 params:
   - tasks = list<title = str, category = Labelled, component = Labelled>
   - post_types = list<tag = str>
+
 allow_unused: true
 ---
 {# type library #}";
@@ -1130,5 +1183,31 @@ allow_unused: true
             "Severity should remain in type_aliases with allow_unused: {:?}",
             fm.type_aliases.keys().collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn test_consts_referencing_previous_consts_in_list() {
+        let source = "\
+---
+
+name: test_const_ref
+consts:
+  - SCRATCH = str := \"scratch\"
+  - EVIDENCE = str := \"evidence\"
+  - DIRS = list<str> := [SCRATCH, EVIDENCE]
+---
+hello";
+        let (fm, _) = parse_frontmatter(source).unwrap();
+        assert_eq!(fm.consts.len(), 3);
+        let dirs = fm.consts.iter().find(|d| d.name == "DIRS").unwrap();
+        let val = dirs.default_value.as_ref().unwrap();
+        match val {
+            crate::value::Value::List(items) => {
+                assert_eq!(items.len(), 2);
+                assert_eq!(items[0], crate::value::Value::Str("scratch".to_string()));
+                assert_eq!(items[1], crate::value::Value::Str("evidence".to_string()));
+            }
+            other => panic!("Expected List, got {other:?}"),
+        }
     }
 }

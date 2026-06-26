@@ -1821,7 +1821,7 @@ fn compile_and_check_self(template: &str) -> Vec<String> {
 
 #[test]
 fn list_type_alias_in_types_block() {
-    let tmpl = "---\nname: t\ntypes:\n  - TaskList = list<title = str, score = int>\nparams:\n  - tasks = TaskList\n---\n\
+    let tmpl = "---\nname: t\ntypes:\n  - TaskList = list<title = str, score = int>\n\nparams:\n  - tasks = TaskList\n---\n\
                      > {% for b in tasks %}{{ b.title }}: {{ b.score }}\n> {% /for %}";
     let errors = compile_and_check_self(tmpl);
     assert!(errors.is_empty(), "list type alias should work: {errors:?}");
@@ -1829,7 +1829,7 @@ fn list_type_alias_in_types_block() {
 
 #[test]
 fn chained_type_alias_enum_in_list() {
-    let tmpl = "---\nname: t\ntypes:\n  - Severity = enum<High, Medium, Low>\n  - TaskReport = list<title = str, severity = Severity>\nparams:\n  - tasks = TaskReport\n---\n\
+    let tmpl = "---\nname: t\ntypes:\n  - Severity = enum<High, Medium, Low>\n  - TaskReport = list<title = str, severity = Severity>\n\nparams:\n  - tasks = TaskReport\n---\n\
                      > {% for b in tasks %}{{ b.title }} {% match b.severity %}{% case High %}🔴{% case Medium %}🟡{% case Low %}🟢{% /match %}\n> {% /for %}";
     let errors = compile_and_check_self(tmpl);
     assert!(

@@ -476,7 +476,8 @@ fn comment_reference_suppresses_unused_error() {
 params: [name = str, extra = str]
 ---
 Hello {{ name }}!
-{# {{ extra }} #}",
+
+> {# {{ extra }} #}",
     )
     .unwrap();
     let mut ctx = Context::new();
@@ -1229,6 +1230,7 @@ mod enum_integration {
 
     const ENUM_TEMPLATE: &str = "\
 ---
+
 params:
   - severity = enum<Critical(reason = str), High, Low>
 ---
@@ -1414,6 +1416,7 @@ allow_unused: true
 > {% tmpl helper %}
 
 ---
+
 params: []
 ---
 inner
@@ -1439,6 +1442,7 @@ params: [helper = str]
 ---
 > {% tmpl helper %}
 ---
+
 params: []
 ---
 inner
@@ -1465,6 +1469,7 @@ consts:
 ---
 > {% tmpl helper %}
 ---
+
 params: []
 ---
 inner
@@ -1490,6 +1495,7 @@ fn param_name_conflicts_with_const_name() {
         r#"---
 params:
   - x = str
+
 consts:
   - x = str := "hi"
 ---
@@ -1510,6 +1516,7 @@ fn const_name_conflicts_with_param_name() {
         r#"---
 consts:
   - x = str := "hi"
+
 params:
   - x = str
 ---
@@ -1529,6 +1536,7 @@ fn param_and_const_different_names_ok() {
         "---
 params:
   - x = str
+
 consts:
   - Y = int := 42
 ---
@@ -1570,6 +1578,7 @@ fn for_binding_shadows_const_rejected() {
         r#"---
 consts:
   - x = str := "hi"
+
 params:
   - items = list<name = str>
 ---
@@ -1591,8 +1600,10 @@ fn for_binding_shadows_import_rejected() {
         r#"---
 imports:
   - "[shared](shared.tmpl.md)"
+
 params:
   - items = list<name = str>
+
 allow_unused: true
 ---
 > {% for shared in items %}{{ shared.name }}
@@ -1616,6 +1627,7 @@ allow_unused: true
 ---
 > {% tmpl greeting %}
 ---
+
 params: [name = str]
 ---
 hi {{ name }}
@@ -1666,6 +1678,7 @@ fn sequential_for_loops_same_binding_allowed() {
         "---
 params:
   - items = list<name = str>
+
 allow_unused: true
 ---
 > {% for x in items %}{{ x.name }}
@@ -1698,6 +1711,7 @@ fn fresh_for_binding_allowed() {
         "---
 params:
   - items = list<name = str>
+
 allow_unused: true
 ---
 > {% for item in items %}{{ item.name }}
@@ -1948,7 +1962,7 @@ fn comment_multiple_refs_in_one_comment() {
         "---
 params: [a = str, b = int, c = bool]
 ---
-{# unused: {{ a }}, {{ b }}, {{ c }} #}",
+> {# unused: {{ a }}, {{ b }}, {{ c }} #}",
     )
     .unwrap();
     let referenced = compiled::collect_referenced_params(&tmpl.segments);
@@ -1974,7 +1988,8 @@ fn comment_dotted_path_tracks_root() {
 params: [name = str, item = struct<label = str>]
 ---
 {{ name }}
-{# {{ item.label }} #}",
+
+> {# {{ item.label }} #}",
     )
     .unwrap();
     let referenced = compiled::collect_referenced_params(&tmpl.segments);
@@ -1992,7 +2007,7 @@ fn comment_bare_name_not_tracked() {
 params: [name = str, extra = str]
 ---
 {{ name }}
-{# uses: extra #}",
+> {# uses: extra #}",
     )
     .unwrap_err();
     assert!(
@@ -2009,12 +2024,78 @@ fn comment_descriptive_unused_pattern() {
 params: [name = str, role_type = str, agent_name = str]
 ---
 {{ name }}
-{# unused: {{ role_type }}, {{ agent_name }} #}",
+
+> {# unused: {{ role_type }}, {{ agent_name }} #}",
     )
     .unwrap();
     let referenced = compiled::collect_referenced_params(&tmpl.segments);
     assert!(referenced.contains("role_type"));
     assert!(referenced.contains("agent_name"));
+}
+
+#[test]
+fn comment_blockquote_rules_enforced() {
+    let err = Template::from_source(
+        "---
+params: []
+---
+{# line start #}",
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("blockquote prefix"), "got: {err}");
+
+    let err2 = Template::from_source(
+        "---
+params: []
+---
+> {#nospace#}",
+    )
+    .unwrap_err();
+    assert!(err2.to_string().contains("spaces around the content"), "got: {err2}");
+}
+
+#[test]
+fn statement_tag_spacing_enforced() {
+    let err = Template::from_source(
+        "---
+params: [x = bool]
+---
+> {%if x%}hello{%/if%}",
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("Statement tags must have spaces around the content"), "got: {err}");
+}
+
+#[test]
+fn comment_mixed_with_statement_tag_on_same_line() {
+    let tmpl = Template::from_source(
+        "---
+params: [flag = bool]
+---
+> {# comment explaining complex if #}{% if flag %}hello{% /if %}",
+    )
+    .unwrap();
+    let mut ctx = Context::new();
+    ctx.set("flag", true);
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "hello");
+}
+
+#[test]
+fn multiple_comments_on_same_line() {
+    let tmpl = Template::from_source(
+        "---
+params: [a = str, b = str]
+---
+> {# first comment: {{ a }} #}text{# second comment: {{ b }} #}",
+    )
+    .unwrap();
+    let referenced = compiled::collect_referenced_params(&tmpl.segments);
+    assert!(referenced.contains("a"));
+    assert!(referenced.contains("b"));
+    let mut ctx = Context::new();
+    ctx.set("a", "1");
+    ctx.set("b", "2");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "text");
 }
 
 // -- option<T> required vs optional ----------------------------------------
@@ -2217,6 +2298,7 @@ fn render_empty_with_consts() {
         r#"---
 consts:
   - VERSION = str := "1.0"
+
 params: []
 ---
 v{{ VERSION }}"#,

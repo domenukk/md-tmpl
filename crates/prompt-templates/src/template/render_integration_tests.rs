@@ -24,6 +24,7 @@ fn include_renders_own_constants() {
 name: helper
 consts:
   - GREETING = str := "Hey"
+
 params: [name = str]
 ---
 {{ GREETING }} {{ name }}!"#,
@@ -55,6 +56,7 @@ fn include_constants_do_not_leak_to_parent() {
 name: helper
 consts:
   - LEAKED_CONST = str := "secret"
+
 params: []
 ---
 included"#,
@@ -130,6 +132,7 @@ consts:
     let main_src = r"---
 imports:
   - [colors](colors.tmpl.md)
+
 params: []
 ---
 Color: {{ colors.PRIMARY }}, Count: {{ colors.COUNT }}";
@@ -172,6 +175,7 @@ consts:
 imports:
   - [a](a.tmpl.md)
   - [b](b.tmpl.md)
+
 params: []
 ---
 {{ a.VAL }} {{ b.VAL }}";
@@ -203,6 +207,7 @@ consts:
     let main_src = r"---
 imports:
   - [lib](lib.tmpl.md)
+
 params: []
 ---
 {{ SECRET }}";
@@ -463,6 +468,7 @@ fn nested_includes_each_use_own_constants() {
 name: leaf
 consts:
   - LEAF_TAG = str := "LEAF"
+
 params: []
 ---
 [{{ LEAF_TAG }}]"#,
@@ -475,6 +481,7 @@ params: []
 name: mid
 consts:
   - MID_TAG = str := "MID"
+
 params: []
 ---
 [{{ MID_TAG }}]> {% include [leaf](leaf.tmpl.md) %}"#,
@@ -484,6 +491,7 @@ params: []
     let main_src = r#"---
 consts:
   - TOP_TAG = str := "TOP"
+
 params: []
 ---
 [{{ TOP_TAG }}]> {% include [mid](mid.tmpl.md) %}"#;
@@ -601,6 +609,7 @@ fn filter_on_constant() {
         r#"---
 consts:
   - MSG = str := "hello world"
+
 params: []
 ---
 {{ MSG | upper }}"#,
@@ -640,6 +649,7 @@ fn conditional_on_constant() {
         r"---
 consts:
   - ENABLED = bool := true
+
 params: []
 ---
 > {% if ENABLED %}
@@ -662,6 +672,7 @@ fn conditional_on_constant_false() {
         r"---
 consts:
   - ENABLED = bool := false
+
 params: []
 ---
 > {% if ENABLED %}
@@ -723,6 +734,7 @@ fn match_enum_renders_correct_arm() {
         r"---
 types:
   - Status = enum<Active, Inactive>
+
 params: [status = Status]
 ---
 > {% match status %}
@@ -881,6 +893,7 @@ fn consts_only_template_renders() {
 consts:
   - APP = str := "MyApp"
   - VER = int := 2
+
 params: []
 ---
 {{ APP }} v{{ VER }}"#,
@@ -933,6 +946,7 @@ fn dict_constant_dot_access() {
         r#"---
 consts:
   - CFG = struct<host = str, port = int> := {host = "localhost", port = 8080}
+
 params: []
 ---
 {{ CFG.host }}:{{ CFG.port }}"#,
@@ -951,6 +965,7 @@ fn list_constant_join_filter() {
         r#"---
 consts:
   - LANGS = list<str> := ["Rust", "Go", "Python"]
+
 params: []
 ---
 {{ LANGS | join(", ") }}"#,
@@ -969,6 +984,7 @@ fn bool_constant_in_conditional() {
         r"---
 consts:
   - DEBUG = bool := false
+
 params: []
 ---
 > {% if DEBUG %}
@@ -1013,6 +1029,7 @@ types:
     let main_src = r"---
 imports:
   - [types](types.tmpl.md)
+
 params: [p = types.Priority]
 ---
 Priority: {{ kind(p) }}";
@@ -1035,6 +1052,7 @@ fn constant_accessible_inside_for_loop() {
         r#"---
 consts:
   - BULLET = str := "*"
+
 params: [items = list<str>]
 ---
 > {% for item in items %}
@@ -1144,6 +1162,7 @@ fn constant_wins_over_context() {
         r#"---
 consts:
   - FIXED = str := "immutable"
+
 params: []
 ---
 {{ FIXED }}"#,
@@ -1172,6 +1191,7 @@ fn include_uses_own_consts_and_passed_params() {
 name: card
 consts:
   - BORDER = str := "===="
+
 params: [title = str]
 ---
 {{ BORDER }}
@@ -1212,6 +1232,7 @@ fn for_each_include_with_constants() {
 name: row
 consts:
   - PREFIX = str := ">"
+
 params: [item = str]
 ---
 {{ PREFIX }} {{ item }}"#,

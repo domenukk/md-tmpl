@@ -2001,6 +2001,7 @@ params: [x = str]
 consts:
   - MAX = int := 100
   - GREETING = str := \"hello\"
+
 params: []
 ---
 {{ MAX }} {{ GREETING }}",

@@ -34,7 +34,15 @@ pub(crate) fn parse_types_value(rest: &str) -> Result<HashMap<String, VarType>, 
     let empty_imports = HashMap::new();
 
     for entry in &entries {
-        let trimmed = entry.trim().strip_prefix('-').unwrap_or(entry).trim();
+        let mut trimmed = entry.trim().strip_prefix('-').unwrap_or(entry).trim();
+        if (trimmed.starts_with('"') && trimmed.ends_with('"'))
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+        {
+            if trimmed.len() >= 2 {
+                trimmed = &trimmed[1..trimmed.len() - 1];
+            }
+        }
+        trimmed = trimmed.trim();
         if trimmed.is_empty() {
             continue;
         }

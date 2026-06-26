@@ -285,6 +285,7 @@ fn readme_hero_example_renders_correctly() {
 
     let source = "\
 ---
+
 params:
   - agent_name = str
   - tasks = list<
@@ -448,6 +449,7 @@ fn our_parser_handles_defaults_correctly() {
     // Our custom parser correctly interprets ` := ` as a default value separator.
     let source = "\
 ---
+
 params:
   - items = list<
       name = str,
@@ -474,6 +476,7 @@ body";
 fn our_parser_handles_enum_default_correctly() {
     let source = "\
 ---
+
 params:
   - priority = enum<High, Medium, Low> := Medium
   - verbose = bool := true

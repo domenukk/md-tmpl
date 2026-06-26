@@ -182,6 +182,39 @@ export function stripFrontmatter(source: string): string {
 // ---------------------------------------------------------------------------
 
 function parseFrontmatterYaml(lines: string[]): Frontmatter {
+  // Validate Frontmatter List Termination Rule:
+  // A blank line is strictly required after a block list before starting a new top-level
+  // section keyword, so raw markdown renders correctly.
+  let inBlockList = false;
+  let hadBlankLine = true;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed === "" || trimmed.startsWith("#")) {
+      hadBlankLine = true;
+      continue;
+    }
+    const startsWithSection =
+      trimmed.startsWith("name:") ||
+      trimmed.startsWith("description:") ||
+      trimmed.startsWith("types:") ||
+      trimmed.startsWith("imports:") ||
+      trimmed.startsWith("params:") ||
+      trimmed.startsWith("consts:") ||
+      trimmed.startsWith("allow_unused:");
+
+    if (startsWithSection) {
+      if (inBlockList && !hadBlankLine) {
+        throw new TemplateSyntaxError(
+          `A blank line is required after a block list before '${trimmed}' so raw markdown renders correctly`,
+        );
+      }
+      inBlockList = false;
+    } else if (trimmed.startsWith("-")) {
+      inBlockList = true;
+    }
+    hadBlankLine = false;
+  }
+
   let name: string | undefined;
   let description: string | undefined;
   let allowUnused = false;
@@ -488,12 +521,16 @@ export function parseVarType(typeStr: string): VarType {
           "list with multiple fields must use named fields (e.g. list<name = str, count = int>)",
         );
       }
-      // Simple type list like list<str>, list<int>, list<enum<A, B>>
-      const elementType = parseVarType(inner);
-      if (elementType.kind === "struct") {
+      // Simple type list like list<str>, list<int>, list<enum<A, B>>, list<MyStruct>
+      const innerTrimmed = inner.trim();
+      if (innerTrimmed.startsWith("struct<") || innerTrimmed.startsWith("struct ")) {
         throw new TemplateSyntaxError(
           "list<struct<...>> is redundant; use named fields directly: list<name = str, count = int>",
         );
+      }
+      const elementType = parseVarType(inner);
+      if (elementType.kind === "struct") {
+        return { kind: "list", fields: elementType.fields };
       }
       return { kind: "scalar_list", elementType };
     }

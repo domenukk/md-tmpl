@@ -557,6 +557,7 @@ fn adjacent_inline_ifs_same_line() {
     let tmpl = Template::from_source(
         "\
 ---
+
 params: [a = bool, b = bool]
 ---
 \
@@ -575,6 +576,7 @@ fn adjacent_inline_ifs_first_false() {
     let tmpl = Template::from_source(
         "\
 ---
+
 params: [a = bool, b = bool]
 ---
 \

@@ -41,7 +41,15 @@ pub(crate) fn parse_imports_value(rest: &str) -> Result<Vec<Import>, TemplateErr
     };
 
     for part in parts {
-        let part = part.trim().strip_prefix('-').unwrap_or(part).trim();
+        let mut part = part.trim().strip_prefix('-').unwrap_or(part).trim();
+        if (part.starts_with('"') && part.ends_with('"'))
+            || (part.starts_with('\'') && part.ends_with('\''))
+        {
+            if part.len() >= 2 {
+                part = &part[1..part.len() - 1];
+            }
+        }
+        part = part.trim();
         if part.is_empty() {
             continue;
         }

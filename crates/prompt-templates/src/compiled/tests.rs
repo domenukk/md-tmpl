@@ -673,6 +673,7 @@ fn include_depth_limit_enforced() {
         dir.path().join("self.tmpl.md"),
         "\
 ---
+
 name: self
 params: []
 ---
@@ -699,6 +700,7 @@ fn include_depth_custom_limit_enforced() {
         dir.path().join("child.tmpl.md"),
         "\
 ---
+
 name: child
 params: []
 ---
@@ -709,6 +711,7 @@ child",
         dir.path().join("parent.tmpl.md"),
         "\
 ---
+
 name: parent
 params: []
 ---
@@ -719,6 +722,7 @@ parent+{% include [child](child.tmpl.md) %}",
         dir.path().join("grandparent.tmpl.md"),
         "\
 ---
+
 name: grandparent
 params: []
 ---
@@ -758,6 +762,7 @@ fn deeply_nested_includes_three_levels() {
         dir.path().join("child.tmpl.md"),
         "\
 ---
+
 name: child
 params: [leaf = str]
 ---
@@ -768,6 +773,7 @@ Leaf:{{ leaf }}",
         dir.path().join("parent.tmpl.md"),
         "\
 ---
+
 name: parent
 params: [middle = str]
 ---
@@ -779,6 +785,7 @@ params: [middle = str]
         dir.path().join("grandparent.tmpl.md"),
         "\
 ---
+
 name: grandparent
 params: [top = str]
 ---
@@ -802,6 +809,7 @@ fn deeply_nested_includes_four_levels() {
         dir.path().join("d.tmpl.md"),
         "\
 ---
+
 name: d
 params: []
 ---
@@ -812,6 +820,7 @@ D",
         dir.path().join("c.tmpl.md"),
         "\
 ---
+
 name: c
 params: []
 ---
@@ -822,6 +831,7 @@ C+{% include [d](d.tmpl.md) %}",
         dir.path().join("b.tmpl.md"),
         "\
 ---
+
 name: b
 params: []
 ---
@@ -832,6 +842,7 @@ B+{% include [c](c.tmpl.md) %}",
         dir.path().join("a.tmpl.md"),
         "\
 ---
+
 name: a
 params: []
 ---
@@ -854,6 +865,7 @@ fn include_missing_contract_params_errors() {
         dir.path().join("child.tmpl.md"),
         "\
 ---
+
 name: child
 params: [msg = str]
 ---
@@ -864,6 +876,7 @@ params: [msg = str]
         dir.path().join("parent.tmpl.md"),
         "\
 ---
+
 name: parent
 params: []
 ---
@@ -890,6 +903,7 @@ fn include_with_contract_satisfied_renders() {
         dir.path().join("child.tmpl.md"),
         "\
 ---
+
 name: child
 params: [msg = str]
 ---
@@ -900,6 +914,7 @@ Hello {{ msg }}",
         dir.path().join("parent.tmpl.md"),
         "\
 ---
+
 name: parent
 params: []
 ---
@@ -920,6 +935,7 @@ fn include_no_params_always_ok() {
         dir.path().join("static.tmpl.md"),
         "\
 ---
+
 name: static
 params: []
 ---
@@ -930,6 +946,7 @@ Static!",
         dir.path().join("parent.tmpl.md"),
         "\
 ---
+
 name: parent
 params: []
 ---
@@ -1170,6 +1187,7 @@ fn self_recursive_include_hits_depth_limit() {
         dir.path().join("self.tmpl.md"),
         "\
 ---
+
 name: self
 params: []
 ---
@@ -1195,6 +1213,7 @@ fn mutual_recursive_includes_hit_depth_limit() {
         dir.path().join("a.tmpl.md"),
         "\
 ---
+
 name: a
 params: []
 ---
@@ -1205,6 +1224,7 @@ A> {% include [b](b.tmpl.md) %}",
         dir.path().join("b.tmpl.md"),
         "\
 ---
+
 name: b
 params: []
 ---
@@ -1230,6 +1250,7 @@ fn include_type_mismatch_caught_at_runtime() {
         dir.path().join("child.tmpl.md"),
         "\
 ---
+
 name: child
 params: [count = int]
 ---
@@ -1240,6 +1261,7 @@ params: [count = int]
         dir.path().join("parent.tmpl.md"),
         "\
 ---
+
 name: parent
 params: [name = str]
 ---
@@ -1270,6 +1292,7 @@ fn inline_template_include_renders_test() {
     let src = concat!(
         "\
 ---
+
 params: []
 ---
 ",
@@ -1296,6 +1319,7 @@ fn inline_template_missing_params_errors() {
     let src = concat!(
         "\
 ---
+
 params: []
 ---
 ",
@@ -1338,6 +1362,7 @@ fn same_named_tmpl_in_different_files_render_independently() {
         concat!(
             "\
 ---
+
 params: []
 ---
 ",
@@ -1360,6 +1385,7 @@ params: []
     let parent_src = concat!(
         "\
 ---
+
 params: []
 ---
 ",
@@ -1395,6 +1421,7 @@ fn included_file_uses_own_inline_templates() {
         dir.path().join("child.tmpl.md"),
         "\
 ---
+
 params:
   - name = str
 ---
@@ -1423,6 +1450,7 @@ params:
         dir.path().join("parent.tmpl.md"),
         "\
 ---
+
 params:
   - name = str
 ---
@@ -1449,6 +1477,7 @@ fn parent_tmpl_does_not_leak_to_included_file() {
         dir.path().join("child.tmpl.md"),
         "\
 ---
+
 params: []
 ---
 \
@@ -1460,6 +1489,7 @@ params: []
         dir.path().join("parent.tmpl.md"),
         "\
 ---
+
 params: []
 ---
 \
@@ -1506,6 +1536,7 @@ fn same_named_tmpl_in_parent_and_child_are_independent() {
         dir.path().join("child.tmpl.md"),
         "\
 ---
+
 params: []
 ---
 \
@@ -1532,6 +1563,7 @@ params: []
         dir.path().join("parent.tmpl.md"),
         "\
 ---
+
 params: []
 ---
 \
@@ -1572,6 +1604,7 @@ fn two_included_files_same_tmpl_name_different_content() {
         dir.path().join("alpha.tmpl.md"),
         "\
 ---
+
 params: []
 ---
 \
@@ -1598,6 +1631,7 @@ params: []
         dir.path().join("beta.tmpl.md"),
         "\
 ---
+
 params: []
 ---
 \
@@ -1624,6 +1658,7 @@ params: []
         dir.path().join("parent.tmpl.md"),
         "\
 ---
+
 params: []
 ---
 \
@@ -1652,6 +1687,7 @@ fn same_display_name_different_files_work() {
         dir.path().join("en/greeting.tmpl.md"),
         "\
 ---
+
 params:
   - name = str
 ---
@@ -1663,6 +1699,7 @@ Hello {{ name }}!",
         dir.path().join("de/greeting.tmpl.md"),
         "\
 ---
+
 params:
   - name = str
 ---
@@ -1674,6 +1711,7 @@ Hallo {{ name }}!",
         dir.path().join("parent.tmpl.md"),
         "\
 ---
+
 params:
   - name = str
 ---
@@ -1701,6 +1739,7 @@ fn nested_include_chain_a_b_c() {
         dir.path().join("c.tmpl.md"),
         "\
 ---
+
 params:
   - msg = str
 ---
@@ -1712,6 +1751,7 @@ params:
         dir.path().join("b.tmpl.md"),
         "\
 ---
+
 params:
   - msg = str
 ---
@@ -1727,6 +1767,7 @@ params:
         dir.path().join("a.tmpl.md"),
         "\
 ---
+
 params:
   - msg = str
 ---
@@ -1755,6 +1796,7 @@ fn diamond_include_deduplicates_correctly() {
         dir.path().join("d.tmpl.md"),
         "\
 ---
+
 params:
   - label = str
 ---
@@ -1766,6 +1808,7 @@ params:
         dir.path().join("b.tmpl.md"),
         "\
 ---
+
 params:
   - val = str
 ---
@@ -1781,6 +1824,7 @@ params:
         dir.path().join("c.tmpl.md"),
         "\
 ---
+
 params:
   - val = str
 ---
@@ -1796,6 +1840,7 @@ params:
         dir.path().join("a.tmpl.md"),
         "\
 ---
+
 params:
   - x = str
   - y = str

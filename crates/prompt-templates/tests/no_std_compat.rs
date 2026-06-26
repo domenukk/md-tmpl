@@ -376,6 +376,7 @@ fn parse_frontmatter_with_types() {
         r"---
 types:
   - Priority = enum<Low, High>
+
 params: [p = Priority]
 ---
 body",
@@ -580,6 +581,7 @@ params: [name = str]
 > {% tmpl greeting %}
 
 ---
+
 params: [name = str]
 ---
 Hello, {{ name }}!
@@ -604,6 +606,7 @@ params: [name = str, greeting = str]
 > {% tmpl greet %}
 
 ---
+
 params:
   - name = str
   - greeting = str

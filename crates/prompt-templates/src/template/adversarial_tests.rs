@@ -254,6 +254,7 @@ fn collision_duplicate_type_alias_rejected() {
 types:
   - Foo = enum<A, B>
   - Foo = enum<X, Y>
+
 params: [x = Foo]
 ---
 {{ x }}
@@ -272,6 +273,7 @@ fn collision_distinct_type_aliases_ok() {
 types:
   - Priority = enum<High, Low>
   - Status = enum<Active, Paused>
+
 params: [p = Priority, s = Status]
 ---
 {{ p }} {{ s }}
@@ -295,6 +297,7 @@ fn collision_type_alias_shadows_builtin_rejected() {
     let source = r"---
 types:
   - Str = enum<A, B>
+
 params: [x = Str]
 ---
 {{ x }}
@@ -313,6 +316,7 @@ fn collision_non_builtin_type_alias_ok() {
     let source = r"---
 types:
   - Priority = enum<High, Low>
+
 params: [level = Priority]
 ---
 {{ level }}
@@ -349,8 +353,10 @@ params: []
 name: main
 imports:
   - [mylib](mylib.tmpl.md)
+
 types:
   - mylib = enum<A, B>
+
 params: [x = mylib]
 ---
 {{ x }}
@@ -381,8 +387,10 @@ params: []
 name: main
 imports:
   - [mylib](mylib.tmpl.md)
+
 types:
   - Priority = enum<High, Low>
+
 params: [x = Priority]
 ---
 {{ x }}
@@ -420,6 +428,7 @@ params: []
 name: main
 imports:
   - [Abc](Abc.tmpl.md)
+
 params: [abc = str]
 ---
 {{ abc }}
@@ -450,6 +459,7 @@ params: []
 name: main
 imports:
   - [Abc](Abc.tmpl.md)
+
 params: [msg = str]
 ---
 {{ msg }}
@@ -475,6 +485,7 @@ fn collision_type_param_conflict_rejected() {
     let source = r"---
 types:
   - Priority = enum<High, Low>
+
 params: [priority = str]
 ---
 {{ priority }}
@@ -494,6 +505,7 @@ fn collision_type_param_same_type_ok() {
     let source = r"---
 types:
   - Priority = enum<High, Low>
+
 params: [priority = Priority]
 ---
 {{ priority }}
@@ -517,6 +529,7 @@ fn collision_unused_type_alias_rejected() {
     let source = r"---
 types:
   - Unused = struct<a = str, b = int>
+
 params: [x = str]
 ---
 {{ x }}
@@ -534,6 +547,7 @@ fn collision_used_type_alias_ok() {
     let source = r"---
 types:
   - Status = enum<Active, Paused>
+
 params: [s = Status]
 ---
 {{ s }}
@@ -645,6 +659,7 @@ params: []
 name: main
 imports:
   - [enum](enum.tmpl.md)
+
 params: []
 ---
 hello
@@ -979,6 +994,7 @@ Other
 fn match_nested_matches() {
     let source = "\
 ---
+
 params: [outer = str, inner = str]
 ---
 > {% match outer %}

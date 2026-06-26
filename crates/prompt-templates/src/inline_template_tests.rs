@@ -236,6 +236,7 @@ fn tmpl_definition_produces_no_output() {
 fn comment_in_template_strips_cleanly() {
     let src = "\
 ---
+
 params: [x = str]
 ---
 before{# a comment #}after {{ x }}";

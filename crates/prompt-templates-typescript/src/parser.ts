@@ -233,11 +233,11 @@ export function parseBody(body: string): Node[] {
 function isValidTagNeighbor(line: string): boolean {
   const trimmed = line.trimStart();
   if (trimmed === "" || trimmed.startsWith("---")) return true;
-  // A > line is only valid if it's a blockquote tag line
   if (trimmed.startsWith(">")) {
+    const afterGt = trimmed.replace(/^>\s*/, "");
     return (
-      (trimmed.startsWith("> {%") || trimmed.startsWith(">{%")) &&
-      trimmed.includes("%}")
+      (afterGt.startsWith("{%") && afterGt.endsWith("%}")) ||
+      (afterGt.startsWith("{#") && afterGt.endsWith("#}"))
     );
   }
   return false;
@@ -246,10 +246,6 @@ function isValidTagNeighbor(line: string): boolean {
 /**
  * Strip `> ` prefix from standalone statement lines and consume the
  * trailing newline, matching how the Rust parser treats standalone tags.
- *
- * Lines like `> {% for ... %}` become just `{% for ... %}` with the
- * surrounding newlines removed, so blockquote-prefixed statement tags
- * don't inject extra whitespace into the output.
  */
 function preprocessBlockquotes(body: string): string {
   const lines = body.split("\n");
@@ -260,19 +256,44 @@ function preprocessBlockquotes(body: string): string {
     const line = lines[i]!;
     const trimmed = line.trimStart();
 
-    // Check for standalone blockquote statement line: `> {% ... %}`
+    // Enforce bare statement and comment rules
+    if (trimmed.startsWith("{%") || trimmed.startsWith("{%-")) {
+      throw new TemplateSyntaxError(
+        `Statement tags starting at the beginning of a line must have a blockquote prefix (> {% ... %}) to ensure proper Markdown rendering: '${line.trim()}'`,
+      );
+    }
+    if (trimmed.startsWith("{#")) {
+      throw new TemplateSyntaxError(
+        `Comments starting at the beginning of a line must have a blockquote prefix (> {# ... #}) to ensure proper Markdown rendering: '${line.trim()}'`,
+      );
+    }
+
+    if (trimmed.startsWith(">")) {
+      const afterGt = trimmed.replace(/^>\s*/, "");
+      if (afterGt.startsWith("{#")) {
+        const trimmedEnd = afterGt.trimEnd();
+        if (
+          (!afterGt.startsWith("{# ") && !afterGt.startsWith("{#\t")) ||
+          (!trimmedEnd.endsWith(" #}") && !trimmedEnd.endsWith("\t#}"))
+        ) {
+          throw new TemplateSyntaxError(
+            `Blockquote comments must have spaces around the content (e.g. '> {# comment #}'): '${line.trim()}'`,
+          );
+        }
+      }
+    }
+
+    // Check for standalone blockquote statement line: `> {% ... %}` or `> {# ... #}`
+    const afterGt = trimmed.replace(/^>\s*/, "");
     const isBlockquoteTag =
-      (trimmed.startsWith("> {%") || trimmed.startsWith(">{%")) &&
-      trimmed.includes("%}");
+      trimmed.startsWith(">") &&
+      ((afterGt.startsWith("{%") && afterGt.endsWith("%}")) ||
+        (afterGt.startsWith("{#") && afterGt.endsWith("#}")));
 
     // Strip the `> ` prefix from blockquote tag lines.
     let tagLine = line;
     if (isBlockquoteTag) {
-      if (trimmed.startsWith("> ")) {
-        tagLine = trimmed.slice(2);
-      } else if (trimmed.startsWith(">")) {
-        tagLine = trimmed.slice(1);
-      }
+      tagLine = afterGt;
     }
 
     // Skip blank line immediately after a standalone tag.
@@ -313,7 +334,10 @@ function preprocessBlockquotes(body: string): string {
         result = result.slice(0, -1);
       }
 
-      if (tagLine.trim().startsWith("{%") && tagLine.trim().endsWith("%}")) {
+      if (
+        (tagLine.trim().startsWith("{%") && tagLine.trim().endsWith("%}")) ||
+        (tagLine.trim().startsWith("{#") && tagLine.trim().endsWith("#}"))
+      ) {
         skipNextNewline = true;
       }
     }
@@ -369,10 +393,21 @@ function parseNodes(input: string, closingTags: string[]): Node[] {
     }
 
     if (earliest === commentStart) {
-      // Comment: {# ... #}
-      const endIdx = input.indexOf("#}", earliest + 2);
+      // Comment: {# ... #} or {#- ... -#}
+      const trimBefore = input[earliest + 2] === "-";
+      const offset = trimBefore ? 3 : 2;
+      const endIdx = input.indexOf("#}", earliest + offset);
       if (endIdx === -1) {
         throw new TemplateSyntaxError("unclosed comment {#");
+      }
+      let rawInner = input.slice(earliest + offset, endIdx);
+      const trimAfter = rawInner.endsWith("-");
+      if (trimAfter) rawInner = rawInner.slice(0, -1);
+
+      if (rawInner !== "" && (!/^\s/.test(rawInner) || !/\s$/.test(rawInner))) {
+        throw new TemplateSyntaxError(
+          "Comments must have spaces around the content (e.g. `{# comment #}` or `{#- comment -#}`)",
+        );
       }
       nodes.push({ kind: "comment" });
       pos = endIdx + 2;
@@ -442,12 +477,16 @@ function parseStatement(
   if (endIdx === -1) {
     throw new TemplateSyntaxError("unclosed statement {%");
   }
-  let tag = input.slice(start + offset, endIdx).trim();
-  let trimAfter = false;
-  if (tag.endsWith("-")) {
-    trimAfter = true;
-    tag = tag.slice(0, -1).trim();
+  let rawInner = input.slice(start + offset, endIdx);
+  const trimAfter = rawInner.endsWith("-");
+  const content = trimAfter ? rawInner.slice(0, -1) : rawInner;
+
+  if (content !== "" && (!/^\s/.test(content) || !/\s$/.test(content))) {
+    throw new TemplateSyntaxError(
+      "Statement tags must have spaces around the content (e.g. `{% if x %}` or `{%- if x -%}`)",
+    );
   }
+  const tag = content.trim();
   return [tag, endIdx + 2, trimBefore, trimAfter];
 }
 

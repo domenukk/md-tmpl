@@ -782,6 +782,7 @@ params: [x = str]
             &path_a,
             "\
 ---
+
 params: []
 ---
 A",
@@ -791,6 +792,7 @@ A",
             &path_b,
             "\
 ---
+
 params: []
 ---
 B",
@@ -800,6 +802,7 @@ B",
             &path_c,
             "\
 ---
+
 params: []
 ---
 C",

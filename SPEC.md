@@ -135,13 +135,15 @@ Compound types can be nested, with one restriction:
 - scores = list<option<int>> # list of optional ints
 - meta = option<struct<key = str, value = str>> # optional struct
 
-# ❌ Forbidden — redundant
+# ❌ Forbidden — redundant raw struct wrapper
 
-- items = list<struct<name = str, score = int>> # ERROR: use list<name = str, score = int>
+- items = list<struct<name = str, score = int>> # ERROR: use list<name = str, score = int> or list<MyAlias>
 ```
 
-**`list<struct<...>>` is forbidden** because `list<name = str, score = int>`
-already creates a list of structs. The explicit `struct<>` wrapper is redundant.
+**Raw `list<struct<...>>` is forbidden** because `list<name = str, score = int>`
+already creates a list of structs, making the explicit `struct<>` wrapper redundant.
+However, referencing a strong struct type alias inside a list (e.g., `list<MyStructAlias>`)
+**is allowed** and unwraps the struct fields directly into the list elements.
 
 ### Default Values
 
@@ -238,34 +240,14 @@ Disable both checks with `allow_unused: true` in frontmatter, or call
 
 ---
 
-### Markdown Blockquotes and Statement Tags
+### Markdown Blockquotes, Statement Tags, and Comments
 
-Statement tags (`{% ... %}`) that start a line **must** be prefixed with a
-markdown blockquote `> `. This is enforced at compile time — bare `{% ... %}`
-at line start is a syntax error.
+Statement tags (`{% ... %}`) and comments (`{# ... #}`) that start a line **must** be prefixed with a markdown blockquote `> `. This is enforced at compile time — bare tags or comments at line start are syntax errors.
 
-- **Statement tags at line start** (e.g., `{% for ... %}`) → must be
-  `> {% for ... %}`. The `> ` prefix is stripped before compilation.
-- **Mandatory Blank Lines**: Every standalone statement tag (`> {% ... %}`) on
-  its own line **must** be preceded and followed by a blank line, unless the
-  adjacent line is another blockquote **tag** line (`> {% ... %}`) or
-  frontmatter (`---`). Content lines starting with `> ` that do not contain
-  `{% %}` are **not** valid neighbors — they require a blank line separator.
-  This ensures perfect vertical spacing in CommonMark renderers, preventing
-  lists and paragraphs from being swallowed into blockquote boxes, and
-  prevents agents from using `> ` prefix on content to avoid blank lines.
-- **Statement tags mid-line** (e.g., `text{% match x case Y %}`) → no prefix
-  needed.
-- **Expression tags** (`{{ ... }}`) → never need a `> ` prefix.
-- **Content lines inside blocks are normal text.** The lines between
-  `> {% for ... %}` and `> {% /for %}` (or any other block) are just
-  regular template content — they are **not** prefixed with `> ` and
-  should never be. The `> ` prefix stripping applies **exclusively** to
-  lines where the first non-whitespace content after `> ` is `{% `.
-  If a content line happens to start with `> `, it is **not** stripped —
-  it is kept verbatim in the rendered output as a literal markdown
-  blockquote. This is completely unrelated to the `> {% %}` prefix
-  requirement.
+- **Tags and Comments at line start**: If `{%` or `{#` is at the beginning of a line, it **must** start with `> ` (e.g., `> {% ... %}` or `> {# ... #}`). For comments, spaces are required around the content (`{# comment #}`).
+- **Mandatory Blank Lines**: If `{%` or `{#` is at the beginning of a line, the line before and after **must** be blank unless the adjacent line is frontmatter (`---`) or also starts with a blockquote tag/comment (`> {%` or `> {#`).
+- **Multiple Comments and Mixed Tags on a Line**: `{%` and `{#` in the same line work seamlessly (no matter how many follow). Text on the line is treated normally, and any `{# ... #}` comments are omitted from output while preserving the rest of the line.
+- **Content lines inside blocks are normal text.** The lines between `> {% for ... %}` and `> {% /for %}` (or any other block) are just regular template content. The `> ` prefix stripping applies **exclusively** to lines where the first non-whitespace content after `> ` is `{% ` or `{# `. If a content line starts with `> ` (for example, a standard Markdown blockquote), it is **not** stripped and is kept verbatim in the rendered output.
 
 Example — only the `{% %}` tag lines carry the `> ` prefix; the prose
 lines inside the block do not:

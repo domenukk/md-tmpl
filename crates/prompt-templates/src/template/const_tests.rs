@@ -103,6 +103,7 @@ fn test_constant_with_type_alias() {
     let source = r"---
 types:
   - Level = enum<High, Low>
+
 consts:
   - DEFAULT_LEVEL = Level := High
 ---
@@ -175,6 +176,7 @@ fn enum_literal_bare_access_is_error() {
     let source = r"---
 types:
   - Stage = enum<Design, Build>
+
 params: []
 ---
 {{ Stage.Design }}";
@@ -192,6 +194,7 @@ fn enum_literal_bare_access_all_variants_is_error() {
     let source = r"---
 types:
   - Color = enum<Red, Green, Blue>
+
 params: []
 ---
 {{ Color.Red }}";
@@ -206,6 +209,7 @@ fn enum_literal_kind_unit_variant() {
     let source = r"---
 types:
   - Stage = enum<Design, Build>
+
 params: []
 ---
 {{ kind(Stage.Design) }}";
@@ -219,6 +223,7 @@ fn enum_literal_kind_all_variants() {
     let source = r"---
 types:
   - Color = enum<Red, Green, Blue>
+
 params: []
 ---
 {{ kind(Color.Red) }}, {{ kind(Color.Green) }}, {{ kind(Color.Blue) }}";
@@ -232,6 +237,7 @@ fn enum_literal_kind_struct_variant() {
     let source = r"---
 types:
   - Status = enum<Active, Paused(reason = str)>
+
 params: []
 allow_unused: true
 ---
@@ -252,6 +258,7 @@ fn enum_literal_imported_kind() {
 name: types
 types:
   - Severity = enum<Low, Medium, High>
+
 allow_unused: true
 ---
 ",
@@ -261,6 +268,7 @@ allow_unused: true
     let main_src = r"---
 imports:
   - [types](types.tmpl.md)
+
 params: []
 ---
 {{ kind(types.Severity.High) }}";
@@ -281,6 +289,7 @@ fn enum_literal_imported_bare_is_error() {
 name: types
 types:
   - Severity = enum<Low, Medium, High>
+
 allow_unused: true
 ---
 ",
@@ -290,6 +299,7 @@ allow_unused: true
     let main_src = r"---
 imports:
   - [types](types.tmpl.md)
+
 params: []
 ---
 {{ types.Severity.High }}";
@@ -306,8 +316,10 @@ fn enum_literal_const_name_collision_is_error() {
     let source = r#"---
 types:
   - Stage = enum<Design, Build>
+
 consts:
   - Stage = str := "overridden"
+
 params: []
 ---
 {{ Stage }}"#;
@@ -324,6 +336,7 @@ fn enum_literal_in_condition_kind_is_ok() {
     let source = r"---
 types:
   - Stage = enum<Design, Build>
+
 params: [p = Stage]
 ---
 > {% if kind(p) == kind(Stage.Design) %}

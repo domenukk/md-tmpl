@@ -657,6 +657,7 @@ impl Template {
     ///     r#"---
     /// consts:
     ///   - MAX = int := 100
+    ///
     /// params: []
     /// ---
     /// {{ MAX }}"#,

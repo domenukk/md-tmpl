@@ -6758,6 +6758,29 @@ params: [items = list<struct<name = str, score = int>>]
         ),
     );
   });
+
+  it("list of strong struct alias unwraps cleanly and renders", () => {
+    const tmpl = Template.fromSource(`---
+types: [MyItem = struct<name = str, score = int>]
+params: [items = list<MyItem>]
+---
+{% for item in items %}{{ item.name }}: {{ item.score }}{% endfor %}`);
+    assert.strictEqual(
+      tmpl.render({ items: [{ name: "Alice", score: 10 }] }),
+      "Alice: 10",
+    );
+  });
+
+  it("list of named struct field allowed and renders", () => {
+    const tmpl = Template.fromSource(`---
+params: [items = list<item = struct<name = str, score = int>>]
+---
+{% for i in items %}{{ i.item.name }}: {{ i.item.score }}{% endfor %}`);
+    assert.strictEqual(
+      tmpl.render({ items: [{ item: { name: "Bob", score: 20 } }] }),
+      "Bob: 20",
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -8870,6 +8893,52 @@ before{# this is a comment #}after`);
     assert.ok(result.includes("before"));
     assert.ok(result.includes("after"));
     assert.ok(!result.includes("this is a comment"));
+  });
+
+  it("comment blockquote rules enforced", () => {
+    assert.throws(
+      () =>
+        Template.fromSource(`---
+params: []
+---
+{# line start #}`),
+      /blockquote prefix/,
+    );
+    assert.throws(
+      () =>
+        Template.fromSource(`---
+params: []
+---
+> {#nospace#}`),
+      /spaces around the content/,
+    );
+  });
+
+  it("statement tag spacing enforced", () => {
+    assert.throws(
+      () =>
+        Template.fromSource(`---
+params: [x = bool]
+---
+> {%if x%}hello{%/if%}`),
+      /Statement tags must have spaces around the content/,
+    );
+  });
+
+  it("comment mixed with statement tag on same line", () => {
+    const tmpl = Template.fromSource(`---
+params: [flag = bool]
+---
+> {# comment explaining complex if #}{% if flag %}hello{% /if %}`);
+    assert.strictEqual(tmpl.render({ flag: true }), "hello");
+  });
+
+  it("multiple comments on same line", () => {
+    const tmpl = Template.fromSource(`---
+params: [a = str, b = str]
+---
+> {# first comment: {{ a }} #}text{# second comment: {{ b }} #}`);
+    assert.strictEqual(tmpl.render({ a: "1", b: "2" }), "text");
   });
 });
 

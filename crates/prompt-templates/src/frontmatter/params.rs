@@ -85,8 +85,17 @@ pub(crate) fn parse_declarations(
 
     let mut decls = Vec::new();
     let mut seen_names = crate::compat::HashSet::new();
+    let mut current_consts = available_consts.clone();
     for entry in &entries {
-        let trimmed = entry.trim();
+        let mut trimmed = entry.trim();
+        if (trimmed.starts_with('"') && trimmed.ends_with('"'))
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+        {
+            if trimmed.len() >= 2 {
+                trimmed = &trimmed[1..trimmed.len() - 1];
+            }
+        }
+        trimmed = trimmed.trim();
         if trimmed.is_empty() {
             continue;
         }
@@ -135,13 +144,14 @@ pub(crate) fn parse_declarations(
             .map_err(|e| TemplateError::syntax(format!("declaration '{name}': {e}")))?;
 
         let default_value = if let Some(dp) = default_part {
-            let default = parse_default_value_with_type(dp, &var_type)
-                .or_else(|| resolve_const_default(dp, available_consts))
+            let default = parse_default_value_with_type(dp, &var_type, &current_consts)
+                .or_else(|| resolve_const_default(dp, &current_consts))
                 .ok_or_else(|| {
                     TemplateError::syntax(format!(
                         "invalid default value '{dp}' for declaration '{name}' (strings must be quoted)"
                     ))
                 })?;
+            current_consts.insert(name.clone(), default.clone());
             Some(default)
         } else {
             None
@@ -176,6 +186,19 @@ pub(crate) fn parse_declarations(
 }
 
 // Compatibility wrapper for `params:` removed as it is now unused.
+
+/// Strip enclosing compound type delimiter pairs: `<...>`, `(...)`, or `[...]`.
+pub(crate) fn strip_type_brackets(s: &str) -> Option<&str> {
+    if let (Some(inner), true) = (s.strip_prefix('<'), s.ends_with('>')) {
+        Some(&inner[..inner.len() - 1])
+    } else if let (Some(inner), true) = (s.strip_prefix('('), s.ends_with(')')) {
+        Some(&inner[..inner.len() - 1])
+    } else if let (Some(inner), true) = (s.strip_prefix('['), s.ends_with(']')) {
+        Some(&inner[..inner.len() - 1])
+    } else {
+        None
+    }
+}
 
 /// Split a string on commas at bracket-depth 0.
 pub(crate) fn split_at_depth_zero(input: &str) -> Vec<&str> {
@@ -305,7 +328,7 @@ fn parse_enum_type(
     use crate::{consts::TYPE_ENUM, types::VariantDecl};
 
     let rest = s.strip_prefix(TYPE_ENUM).unwrap_or("").trim();
-    let Some(inner) = rest.strip_prefix('<').and_then(|r| r.strip_suffix('>')) else {
+    let Some(inner) = strip_type_brackets(rest) else {
         return Err(format!("malformed enum type: '{s}'"));
     };
     let entries = split_at_depth_zero(inner);
@@ -360,7 +383,7 @@ fn parse_compound_type_list(
     use crate::consts::TYPE_LIST;
 
     let rest = s.strip_prefix(TYPE_LIST).unwrap_or("").trim();
-    let Some(inner) = rest.strip_prefix('<').and_then(|r| r.strip_suffix('>')) else {
+    let Some(inner) = strip_type_brackets(rest) else {
         return Err(format!("malformed list type: '{s}'"));
     };
     let fields = parse_field_declarations(inner, type_aliases, resolved_imports)?;
@@ -373,15 +396,25 @@ fn parse_compound_type_list(
                 .to_string(),
         );
     }
-    // Reject redundant list<struct<...>> — use list<name = str> instead.
-    if fields.len() == 1
-        && fields[0].name.is_empty()
-        && matches!(fields[0].var_type, VarType::Struct(_))
+    // Reject literal raw struct declarations inside list definitions (e.g. list<struct<name = str, count = int>>).
+    // Users should write named fields directly (e.g. list<name = str, count = int>) or reference a strong Type alias.
+    let inner_trimmed = inner.trim();
+    if inner_trimmed.starts_with("struct<")
+        || inner_trimmed.starts_with("struct(")
+        || inner_trimmed.starts_with("struct[")
+        || inner_trimmed.starts_with("struct ")
     {
         return Err(
             "list<struct<..>> is redundant; use named fields directly: list<name = str, count = int>"
                 .to_string(),
         );
+    }
+    // If the inner type resolved to a strong struct alias (e.g. list<MyStruct>),
+    // unwrap the struct fields directly into the list fields.
+    if fields.len() == 1 && fields[0].name.is_empty() {
+        if let VarType::Struct(ref struct_fields) = fields[0].var_type {
+            return Ok(VarType::List(struct_fields.clone()));
+        }
     }
     Ok(VarType::List(fields))
 }
@@ -395,7 +428,7 @@ fn parse_compound_type_struct(
     use crate::consts::TYPE_STRUCT;
 
     let rest = s.strip_prefix(TYPE_STRUCT).unwrap_or("").trim();
-    let Some(inner) = rest.strip_prefix('<').and_then(|r| r.strip_suffix('>')) else {
+    let Some(inner) = strip_type_brackets(rest) else {
         return Err(format!("malformed struct type: '{s}'"));
     };
     let fields = parse_field_declarations(inner, type_aliases, resolved_imports)?;
@@ -422,7 +455,7 @@ fn parse_tmpl_type(
     use crate::consts::TYPE_TMPL;
 
     let rest = s.strip_prefix(TYPE_TMPL).unwrap_or("").trim();
-    let Some(inner) = rest.strip_prefix('<').and_then(|r| r.strip_suffix('>')) else {
+    let Some(inner) = strip_type_brackets(rest) else {
         return Err(format!("malformed tmpl type: '{s}'"));
     };
     let fields = parse_field_declarations(inner, type_aliases, resolved_imports)?;
@@ -441,7 +474,7 @@ fn parse_option_type(
     use crate::consts::TYPE_OPTION;
 
     let rest = s.strip_prefix(TYPE_OPTION).unwrap_or("").trim();
-    let Some(inner) = rest.strip_prefix('<').and_then(|r| r.strip_suffix('>')) else {
+    let Some(inner) = strip_type_brackets(rest) else {
         return Err(format!("malformed option type: '{s}'"));
     };
     let inner = inner.trim();
@@ -485,7 +518,7 @@ fn parse_field_declarations(
 ///
 /// Uses `=` as the key-value separator (not `:`) and curly braces for
 /// delimiters.
-fn parse_struct_default(inner: &str, fields: &[VarDecl]) -> Value {
+fn parse_struct_default(inner: &str, fields: &[VarDecl], available_consts: &HashMap<String, Value>) -> Value {
     let entries = split_at_depth_zero(inner);
     let mut map = HashMap::new();
     for e in entries {
@@ -500,7 +533,7 @@ fn parse_struct_default(inner: &str, fields: &[VarDecl]) -> Value {
                 .iter()
                 .find(|d| d.name == key)
                 .map_or(&VarType::Str, |d| &d.var_type);
-            if let Some(v) = parse_default_value_with_type(val_str, field_type) {
+            if let Some(v) = parse_default_value_with_type(val_str, field_type, available_consts) {
                 map.insert(key.to_string(), v);
             }
         }
@@ -531,7 +564,7 @@ fn resolve_const_default(name: &str, available_consts: &HashMap<String, Value>) 
 /// - Integers, floats, booleans
 ///
 /// Lists use `[]` and structs use `{}` with `=` as the key-value separator.
-pub(crate) fn parse_default_value_with_type(s: &str, var_type: &VarType) -> Option<Value> {
+pub(crate) fn parse_default_value_with_type(s: &str, var_type: &VarType, available_consts: &HashMap<String, Value>) -> Option<Value> {
     let s = s.trim();
     if s.is_empty() {
         return None;
@@ -556,7 +589,7 @@ pub(crate) fn parse_default_value_with_type(s: &str, var_type: &VarType) -> Opti
             _ => var_type,
         };
         for e in entries {
-            if let Some(v) = parse_default_value_with_type(e, elem_type) {
+            if let Some(v) = parse_default_value_with_type(e, elem_type, available_consts) {
                 list.push(v);
             }
         }
@@ -577,7 +610,7 @@ pub(crate) fn parse_default_value_with_type(s: &str, var_type: &VarType) -> Opti
             VarType::Struct(f) | VarType::List(f) => f.as_slice(),
             _ => &[],
         };
-        return Some(parse_struct_default(inner, fields));
+        return Some(parse_struct_default(inner, fields, available_consts));
     }
 
     // Quoted string
@@ -609,12 +642,16 @@ pub(crate) fn parse_default_value_with_type(s: &str, var_type: &VarType) -> Opti
         if s == crate::consts::OPTION_NONE {
             return Some(Value::None);
         }
-        return parse_default_value_with_type(s, inner);
+        return parse_default_value_with_type(s, inner, available_consts);
     }
 
     // If the expected type is an Enum, handle variant identifiers.
     if let VarType::Enum(variants) = var_type {
-        return parse_enum_default_value(s, variants);
+        return parse_enum_default_value(s, variants, available_consts);
+    }
+
+    if let Some(val) = resolve_const_default(s, available_consts) {
+        return Some(val);
     }
 
     // Intentional removal of fallback: unquoted strings are no longer allowed
@@ -624,7 +661,7 @@ pub(crate) fn parse_default_value_with_type(s: &str, var_type: &VarType) -> Opti
 
 /// Parse a default value for an enum variant — either a unit variant name
 /// (e.g. `Active`) or a struct variant with fields (e.g. `Error(msg = "oops")`).
-fn parse_enum_default_value(s: &str, variants: &[crate::types::VariantDecl]) -> Option<Value> {
+fn parse_enum_default_value(s: &str, variants: &[crate::types::VariantDecl], available_consts: &HashMap<String, Value>) -> Option<Value> {
     // Check for struct variant default: VariantName(field = value, ...)
     // Uses () to match the type declaration syntax and avoid ambiguity
     // with <> which is used for struct/list defaults.
@@ -659,7 +696,7 @@ fn parse_enum_default_value(s: &str, variants: &[crate::types::VariantDecl]) -> 
                                 .iter()
                                 .find(|f| f.name == key)
                                 .map_or(&VarType::Str, |f| &f.var_type);
-                            if let Some(val) = parse_default_value_with_type(val_str, field_type) {
+                            if let Some(val) = parse_default_value_with_type(val_str, field_type, available_consts) {
                                 map.insert(key.to_string(), val);
                             }
                         }
@@ -685,7 +722,7 @@ fn parse_enum_default_value(s: &str, variants: &[crate::types::VariantDecl]) -> 
 
 #[cfg(test)]
 pub(crate) fn parse_default_value(s: &str) -> Option<Value> {
-    parse_default_value_with_type(s, &VarType::Str)
+    parse_default_value_with_type(s, &VarType::Str, &HashMap::new())
 }
 
 #[cfg(test)]
@@ -983,6 +1020,7 @@ mod tests {
                     default_value: None,
                 },
             ]),
+            &HashMap::new(),
         )
         .unwrap();
         match result {
@@ -1021,7 +1059,7 @@ mod tests {
 
     #[test]
     fn parse_default_empty_dict() {
-        let result = parse_default_value_with_type("{}", &VarType::Struct(vec![])).unwrap();
+        let result = parse_default_value_with_type("{}", &VarType::Struct(vec![]), &HashMap::new()).unwrap();
         match result {
             Value::Struct(map) => assert!(map.is_empty()),
             other => panic!("Expected empty Struct, got {other:?}"),
@@ -1067,6 +1105,7 @@ mod tests {
                 var_type: VarType::Int,
                 default_value: None,
             }]),
+            &HashMap::new(),
         )
         .unwrap();
         match result {
@@ -1700,21 +1739,55 @@ mod tests {
     // --- Negative: forbidden nesting ---
 
     #[test]
-    fn list_of_struct_redundant_rejected() {
+    fn list_of_raw_struct_rejected_as_redundant() {
         let err = parse_decls("[items = list<struct<name = str, score = int>>]").unwrap_err();
-        assert!(
-            err.to_string().contains("redundant"),
-            "expected redundant error, got: {err}"
-        );
+        assert!(err.to_string().contains("redundant"), "got: {err}");
     }
 
     #[test]
-    fn list_of_struct_single_field_redundant_rejected() {
-        let err = parse_decls("[items = list<struct<name = str>>]").unwrap_err();
-        assert!(
-            err.to_string().contains("redundant"),
-            "expected redundant error, got: {err}"
+    fn list_of_strong_struct_alias_unwraps_cleanly() {
+        let mut aliases = HashMap::new();
+        aliases.insert(
+            "MyItem".to_string(),
+            VarType::Struct(vec![
+                VarDecl {
+                    name: "name".to_string(),
+                    var_type: VarType::Str,
+                    default_value: None,
+                },
+                VarDecl {
+                    name: "score".to_string(),
+                    var_type: VarType::Int,
+                    default_value: None,
+                },
+            ]),
         );
+        let var_type = parse_type_annotation("list<MyItem>", &aliases, &HashMap::new()).unwrap();
+        if let VarType::List(ref fields) = var_type {
+            assert_eq!(fields.len(), 2);
+            assert_eq!(fields[0].name, "name");
+            assert_eq!(fields[1].name, "score");
+        } else {
+            panic!("expected VarType::List");
+        }
+    }
+
+    #[test]
+    fn list_of_named_struct_field_allowed() {
+        let decls = parse_decls("[items = list<item = struct<name = str, score = int>>]").unwrap();
+        if let VarType::List(ref fields) = decls[0].var_type {
+            assert_eq!(fields.len(), 1);
+            assert_eq!(fields[0].name, "item");
+            if let VarType::Struct(ref inner) = fields[0].var_type {
+                assert_eq!(inner.len(), 2);
+                assert_eq!(inner[0].name, "name");
+                assert_eq!(inner[1].name, "score");
+            } else {
+                panic!("expected inner VarType::Struct");
+            }
+        } else {
+            panic!("expected VarType::List");
+        }
     }
 
     // =========================================================================

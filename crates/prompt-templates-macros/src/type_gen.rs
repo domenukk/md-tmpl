@@ -581,7 +581,7 @@ pub(crate) fn generate_toplevel_list_item(
     name: &str,
     fields: &[prompt_templates::VarDecl],
 ) -> proc_macro2::TokenStream {
-    if fields.is_empty() {
+    if fields.is_empty() || (fields.len() == 1 && fields[0].name.is_empty()) {
         return quote! {};
     }
     // For typed lists, generate an item struct.

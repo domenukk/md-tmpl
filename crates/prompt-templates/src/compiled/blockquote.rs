@@ -82,6 +82,15 @@ pub(super) fn validate_blockquote_prefix(input: &str) -> Result<(), TemplateErro
             continue;
         }
 
+        // Check for comments starting at line beginning without blockquote prefix
+        if trimmed.starts_with(crate::consts::COMMENT_START) {
+            return Err(TemplateError::syntax(
+                "Comments starting at the beginning of a line must have a blockquote prefix (> {# ... #}) to ensure proper Markdown rendering",
+            ));
+        }
+
+
+
         // Main check: line starts with `{%` (or `{%-`) without `>` prefix.
         if trimmed.starts_with(STMT_START) {
             // Truncate for a clean error message.
@@ -124,12 +133,14 @@ fn validate_tag_neighbors(lines: &[&str], i: usize, line: &str) -> Result<(), Te
         }
     }
 
-    if let Some(&next_line) = lines.get(i + 1) {
-        if !is_valid_tag_neighbor(next_line) {
-            return Err(TemplateError::syntax(format!(
-                "Standalone statement tag '{}' must be followed by a blank line or another blockquote tag line (> {{%...%}})",
-                line.trim()
-            )));
+    if i + 1 < lines.len() {
+        if let Some(&next_line) = lines.get(i + 1) {
+            if !is_valid_tag_neighbor(next_line) {
+                return Err(TemplateError::syntax(format!(
+                    "Standalone statement tag '{}' must be followed by a blank line or another blockquote tag line (> {{%...%}})",
+                    line.trim()
+                )));
+            }
         }
     }
 
@@ -148,7 +159,11 @@ fn validate_tag_neighbors(lines: &[&str], i: usize, line: &str) -> Result<(), Te
 /// This function is idempotent — calling it on already-processed text is safe.
 pub(super) fn strip_blockquote_tags(input: &str) -> alloc::borrow::Cow<'_, str> {
     // Fast path: no blockquote tags present.
-    if !input.contains(BLOCKQUOTE_COMPACT_OPEN) && !input.contains(BLOCKQUOTE_SPACED_OPEN) {
+    if !input.contains(BLOCKQUOTE_COMPACT_OPEN)
+        && !input.contains(BLOCKQUOTE_SPACED_OPEN)
+        && !input.contains(">{#")
+        && !input.contains("> {#")
+    {
         return alloc::borrow::Cow::Borrowed(input);
     }
 
@@ -180,12 +195,15 @@ pub(super) fn strip_blockquote_tags(input: &str) -> alloc::borrow::Cow<'_, str> 
 }
 
 /// Returns `true` when the line is a standalone template tag — the entire
-/// line (after trimming) is a single `{% ... %}` with no other content.
+/// line (after trimming) is a single `{% ... %}` or `{# ... #}` with no other content.
 ///
 /// Lines like `{% if x %}yes{% /if %}` are NOT standalone because they
 /// contain content between/around the tags.
 pub(super) fn is_standalone_tag(line: &str) -> bool {
     let trimmed = line.trim();
+    if trimmed.starts_with(crate::consts::COMMENT_START) && trimmed.ends_with(crate::consts::COMMENT_END) {
+        return true;
+    }
     // Must start with `{%` and end with `%}`.
     if !trimmed.starts_with(STMT_START) || !trimmed.ends_with(STMT_END) {
         return false;
@@ -201,18 +219,18 @@ pub(super) fn is_standalone_tag(line: &str) -> bool {
 }
 
 /// Strip a leading `>` or `> ` from a single line if the remainder starts
-/// with `{%` (optionally after whitespace).
+/// with `{%` or `{#` (optionally after whitespace).
 fn strip_blockquote_line(line: &str) -> &str {
     let trimmed = line.trim_start();
-    // Try `> {% ...` (with space after >).
+    // Try `> {% ...` or `> {# ...` (with space after >).
     if let Some(rest) = trimmed.strip_prefix(BLOCKQUOTE_PREFIX_SPACED)
-        && rest.trim_start().starts_with(STMT_START)
+        && (rest.trim_start().starts_with(STMT_START) || rest.trim_start().starts_with(crate::consts::COMMENT_START))
     {
         return rest;
     }
-    // Try `>{% ...` (no space).
+    // Try `>{% ...` or `>{# ...` (no space).
     if let Some(rest) = trimmed.strip_prefix(BLOCKQUOTE_PREFIX)
-        && rest.trim_start().starts_with(STMT_START)
+        && (rest.trim_start().starts_with(STMT_START) || rest.trim_start().starts_with(crate::consts::COMMENT_START))
     {
         return rest;
     }
