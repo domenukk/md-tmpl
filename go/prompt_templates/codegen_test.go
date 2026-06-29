@@ -55,6 +55,7 @@ params:
   - count = int
   - score = float
   - active = bool
+
 allow_unused: true
 ---
 {{ name }} {{ count }} {{ score }} {{ active }}`
@@ -93,7 +94,8 @@ allow_unused: true
 func TestGenerateListParams(t *testing.T) {
 	source := `---
 params:
-  - findings = list<line = int, message = str>
+  - findings = list(line = int, message = str)
+
 allow_unused: true
 ---
 > {% for f in findings %}
@@ -135,7 +137,8 @@ allow_unused: true
 func TestGenerateStructParams(t *testing.T) {
 	source := `---
 params:
-  - config = struct<host = str, port = int>
+  - config = struct(host = str, port = int)
+
 allow_unused: true
 ---
 {{ config.host }}:{{ config.port }}`
@@ -165,7 +168,8 @@ allow_unused: true
 func TestGenerateEnumUnitVariants(t *testing.T) {
 	source := `---
 params:
-  - severity = enum<Critical, High, Medium, Low>
+  - severity = enum(Critical, High, Medium, Low)
+
 allow_unused: true
 ---
 {{ severity }}`
@@ -202,7 +206,8 @@ allow_unused: true
 func TestGenerateEnumStructVariants(t *testing.T) {
 	source := `---
 params:
-  - outcome = enum<Confirmed(evidence = str), Rejected, NeedsWork>
+  - outcome = enum(Confirmed(evidence = str), Rejected, NeedsWork)
+
 allow_unused: true
 ---
 > {% match outcome %}
@@ -260,10 +265,11 @@ func TestGenerateComplexMixed(t *testing.T) {
 	source := `---
 params:
   - file_path = str
-  - severity = enum<Critical, High, Medium, Low>
-  - findings = list<line = int, message = str>
-  - config = struct<host = str, port = int>
+  - severity = enum(Critical, High, Medium, Low)
+  - findings = list(line = int, message = str)
+  - config = struct(host = str, port = int)
   - verbose = bool
+
 allow_unused: true
 ---
 {{ file_path }} {{ severity }} {{ verbose }}
@@ -311,6 +317,7 @@ func TestGenerateRenderHelper(t *testing.T) {
 	source := `---
 params:
   - name = str
+
 allow_unused: true
 ---
 {{ name }}`
@@ -332,6 +339,7 @@ func TestGenerateWithoutRenderHelper(t *testing.T) {
 	source := `---
 params:
   - name = str
+
 allow_unused: true
 ---
 {{ name }}`
@@ -359,7 +367,7 @@ func TestGenerateFromFile(t *testing.T) {
 params:
   - file_path = str
   - severity = str
-  - findings = list<line = int, message = str>
+  - findings = list(line = int, message = str)
 ---
 
 # Code Review: {{ file_path }}
@@ -452,7 +460,7 @@ func TestParseTypeSpecPrimitives(t *testing.T) {
 }
 
 func TestParseTypeSpecList(t *testing.T) {
-	node, err := parseTypeSpec("list<label = str, count = int>")
+	node, err := parseTypeSpec("list(label = str, count = int)")
 	if err != nil {
 		t.Fatalf("parseTypeSpec: %v", err)
 	}
@@ -471,7 +479,7 @@ func TestParseTypeSpecList(t *testing.T) {
 }
 
 func TestParseTypeSpecEnum(t *testing.T) {
-	node, err := parseTypeSpec("enum<Confirmed(evidence = str), Rejected, NeedsWork>")
+	node, err := parseTypeSpec("enum(Confirmed(evidence = str), Rejected, NeedsWork)")
 	if err != nil {
 		t.Fatalf("parseTypeSpec: %v", err)
 	}
@@ -493,7 +501,7 @@ func TestParseTypeSpecEnum(t *testing.T) {
 }
 
 func TestParseTypeSpecStruct(t *testing.T) {
-	node, err := parseTypeSpec("struct<host = str, port = int>")
+	node, err := parseTypeSpec("struct(host = str, port = int)")
 	if err != nil {
 		t.Fatalf("parseTypeSpec: %v", err)
 	}
@@ -507,7 +515,7 @@ func TestParseTypeSpecStruct(t *testing.T) {
 
 func TestParseTypeSpecNested(t *testing.T) {
 	// A list with a nested enum field.
-	node, err := parseTypeSpec("list<title = str, severity = enum<Critical, High, Low>>")
+	node, err := parseTypeSpec("list(title = str, severity = enum(Critical, High, Low))")
 	if err != nil {
 		t.Fatalf("parseTypeSpec: %v", err)
 	}
@@ -609,10 +617,11 @@ func TestGenerateOptionParams(t *testing.T) {
 	source := `---
 params:
   - name = str
-  - email = option<str>
-  - age = option<int>
-  - score = option<float>
-  - active = option<bool>
+  - email = option(str)
+  - age = option(int)
+  - score = option(float)
+  - active = option(bool)
+
 allow_unused: true
 ---
 {{ name }}`
@@ -626,16 +635,16 @@ allow_unused: true
 
 	// Verify pointer types for option fields.
 	if !containsNormalized(code, "Email *string") {
-		t.Errorf("expected 'Email *string' for option<str>:\n%s", code)
+		t.Errorf("expected 'Email *string' for option(str):\n%s", code)
 	}
 	if !containsNormalized(code, "Age *int64") {
-		t.Errorf("expected 'Age *int64' for option<int>:\n%s", code)
+		t.Errorf("expected 'Age *int64' for option(int):\n%s", code)
 	}
 	if !containsNormalized(code, "Score *float64") {
-		t.Errorf("expected 'Score *float64' for option<float>:\n%s", code)
+		t.Errorf("expected 'Score *float64' for option(float):\n%s", code)
 	}
 	if !containsNormalized(code, "Active *bool") {
-		t.Errorf("expected 'Active *bool' for option<bool>:\n%s", code)
+		t.Errorf("expected 'Active *bool' for option(bool):\n%s", code)
 	}
 	// Non-option field should not be a pointer.
 	if !containsNormalized(code, "Name string") {
@@ -650,10 +659,11 @@ allow_unused: true
 func TestGenerateScalarListParams(t *testing.T) {
 	source := `---
 params:
-  - tags = list<str>
-  - scores = list<int>
-  - weights = list<float>
-  - flags = list<bool>
+  - tags = list(str)
+  - scores = list(int)
+  - weights = list(float)
+  - flags = list(bool)
+
 allow_unused: true
 ---
 > {% for t in tags %}
@@ -686,16 +696,16 @@ allow_unused: true
 
 	// Verify typed slices.
 	if !containsNormalized(code, "Tags []string") {
-		t.Errorf("expected 'Tags []string' for scalar_list<str>:\n%s", code)
+		t.Errorf("expected 'Tags []string' for scalar_list(str):\n%s", code)
 	}
 	if !containsNormalized(code, "Scores []int64") {
-		t.Errorf("expected 'Scores []int64' for scalar_list<int>:\n%s", code)
+		t.Errorf("expected 'Scores []int64' for scalar_list(int):\n%s", code)
 	}
 	if !containsNormalized(code, "Weights []float64") {
-		t.Errorf("expected 'Weights []float64' for scalar_list<float>:\n%s", code)
+		t.Errorf("expected 'Weights []float64' for scalar_list(float):\n%s", code)
 	}
 	if !containsNormalized(code, "Flags []bool") {
-		t.Errorf("expected 'Flags []bool' for scalar_list<bool>:\n%s", code)
+		t.Errorf("expected 'Flags []bool' for scalar_list(bool):\n%s", code)
 	}
 }
 
@@ -704,7 +714,7 @@ allow_unused: true
 // ---------------------------------------------------------------------------
 
 func TestParseTypeSpecOption(t *testing.T) {
-	node, err := parseTypeSpec("option<str>")
+	node, err := parseTypeSpec("option(str)")
 	if err != nil {
 		t.Fatalf("parseTypeSpec: %v", err)
 	}
@@ -720,7 +730,7 @@ func TestParseTypeSpecOption(t *testing.T) {
 }
 
 func TestParseTypeSpecScalarList(t *testing.T) {
-	node, err := parseTypeSpec("scalar_list<int>")
+	node, err := parseTypeSpec("scalar_list(int)")
 	if err != nil {
 		t.Fatalf("parseTypeSpec: %v", err)
 	}
@@ -736,13 +746,13 @@ func TestParseTypeSpecScalarList(t *testing.T) {
 }
 
 func TestParseTypeSpecListBareType(t *testing.T) {
-	// list<str> (from Rust FFI for scalar typed lists) should parse as kindScalarList.
-	node, err := parseTypeSpec("list<str>")
+	// list(str) (from Rust FFI for scalar typed lists) should parse as kindScalarList.
+	node, err := parseTypeSpec("list(str)")
 	if err != nil {
 		t.Fatalf("parseTypeSpec: %v", err)
 	}
 	if node.kind != kindScalarList {
-		t.Fatalf("expected kindScalarList for list<str>, got %d", node.kind)
+		t.Fatalf("expected kindScalarList for list(str), got %d", node.kind)
 	}
 	if node.innerType == nil {
 		t.Fatal("expected innerType to be set")
@@ -754,7 +764,7 @@ func TestParseTypeSpecListBareType(t *testing.T) {
 
 func TestParseTypeSpecOptionNested(t *testing.T) {
 	// option wrapping a struct
-	node, err := parseTypeSpec("option<struct<host = str, port = int>>")
+	node, err := parseTypeSpec("option(struct(host = str, port = int))")
 	if err != nil {
 		t.Fatalf("parseTypeSpec: %v", err)
 	}

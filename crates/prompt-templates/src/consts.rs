@@ -65,10 +65,72 @@ pub const PATH_SEP: char = '.';
 pub const PIPE: char = '|';
 /// Opening angle bracket for embed literals: `<file.txt>`.
 pub const ANGLE_OPEN: char = '<';
+/// Closing angle bracket for delimiters: `>`.
+pub const ANGLE_CLOSE: char = '>';
+/// Opening square bracket for delimiters: `[`.
+pub const BRACKET_OPEN: char = '[';
+/// Closing square bracket for delimiters: `]`.
+pub const BRACKET_CLOSE: char = ']';
+/// Opening brace character: `{`.
+pub const BRACE_OPEN: char = '{';
+/// Closing brace character: `}`.
+pub const BRACE_CLOSE: char = '}';
+/// Comma separator: `,`.
+pub const COMMA: char = ',';
+/// Colon separator: `:`.
+pub const COLON: char = ':';
+/// Equals separator: `=`.
+pub const EQUALS: char = '=';
+/// Slash separator: `/`.
+pub const SLASH: char = '/';
+/// Absolute path prefix: `/`.
+pub const PATH_PREFIX_SLASH: &str = "/";
+/// Relative current directory prefix: `./`.
+pub const PATH_PREFIX_CUR: &str = "./";
+/// Relative parent directory prefix: `../`.
+pub const PATH_PREFIX_PARENT: &str = "../";
+/// Windows relative current directory prefix: `.\`.
+pub const PATH_PREFIX_CUR_WIN: &str = ".\\";
+/// Windows relative parent directory prefix: `..\`.
+pub const PATH_PREFIX_PARENT_WIN: &str = "..\\";
+/// Backslash separator: `\`.
+pub const BACKSLASH: char = '\\';
+
+/// Check if a path starts with a valid import or include prefix (`/`, `./`, `../`, `.\`, or `..\`).
+#[must_use]
+pub fn is_valid_include_path(path: &str) -> bool {
+    path.starts_with(PATH_PREFIX_SLASH)
+        || path.starts_with(PATH_PREFIX_CUR)
+        || path.starts_with(PATH_PREFIX_PARENT)
+        || path.starts_with(PATH_PREFIX_CUR_WIN)
+        || path.starts_with(PATH_PREFIX_PARENT_WIN)
+}
+
+/// Template extension: `.tmpl.md`.
+pub const EXT_TMPL_MD: &str = ".tmpl.md";
+/// Template extension: `.tmpl`.
+pub const EXT_TMPL: &str = ".tmpl";
+/// Markdown extension: `.md`.
+pub const EXT_MD: &str = ".md";
+/// Block list item separator: ` - `.
+pub const LIST_BLOCK_SEP: &str = " - ";
+/// Block list item prefix: `- `.
+pub const LIST_ITEM_PREFIX: &str = "- ";
 /// Double-quote character for string literal delimiters.
 pub const QUOTE_DOUBLE: char = '"';
 /// Single-quote character for string literal delimiters.
 pub const QUOTE_SINGLE: char = '\'';
+
+pub const PAREN_OPEN_BYTE: u8 = b'(';
+pub const PAREN_CLOSE_BYTE: u8 = b')';
+pub const ANGLE_OPEN_BYTE: u8 = b'<';
+pub const ANGLE_CLOSE_BYTE: u8 = b'>';
+pub const BRACKET_OPEN_BYTE: u8 = b'[';
+pub const BRACKET_CLOSE_BYTE: u8 = b']';
+pub const BRACE_OPEN_BYTE: u8 = b'{';
+pub const BRACE_CLOSE_BYTE: u8 = b'}';
+pub const COLON_BYTE: u8 = b':';
+pub const EQUALS_BYTE: u8 = b'=';
 
 // -- Template tag delimiters -------------------------------------------------
 
@@ -189,24 +251,24 @@ pub(crate) const TYPE_ENUM: &str = "enum";
 /// Type name for templates: `tmpl`.
 pub(crate) const TYPE_TMPL: &str = "tmpl";
 
-/// Type prefix for lists with angle brackets: `list<`.
-pub(crate) const TYPE_LIST_PREFIX: &str = "list<";
-/// Type prefix for structs with angle brackets: `struct<`.
-pub(crate) const TYPE_STRUCT_PREFIX: &str = "struct<";
-/// Type prefix for enums with angle brackets: `enum<`.
-pub(crate) const TYPE_ENUM_PREFIX: &str = "enum<";
-/// Type prefix for templates with angle brackets: `tmpl<`.
-pub(crate) const TYPE_TMPL_PREFIX: &str = "tmpl<";
+/// Type prefix for lists with parentheses: `list(`.
+pub(crate) const TYPE_LIST_PREFIX: &str = "list(";
+/// Type prefix for structs with parentheses: `struct(`.
+pub(crate) const TYPE_STRUCT_PREFIX: &str = "struct(";
+/// Type prefix for enums with parentheses: `enum(`.
+pub(crate) const TYPE_ENUM_PREFIX: &str = "enum(";
+/// Type prefix for templates with parentheses: `tmpl(`.
+pub(crate) const TYPE_TMPL_PREFIX: &str = "tmpl(";
 /// Type name for options: `option`.
 pub(crate) const TYPE_OPTION: &str = "option";
-/// Type prefix for options with angle brackets: `option<`.
-pub(crate) const TYPE_OPTION_PREFIX: &str = "option<";
+/// Type prefix for options with parentheses: `option(`.
+pub(crate) const TYPE_OPTION_PREFIX: &str = "option(";
 
-/// Variant name for the `Some` variant of `option<T>`.
+/// Variant name for the `Some` variant of `option(T)`.
 pub const OPTION_SOME: &str = "Some";
-/// Variant name for the `None` variant of `option<T>`.
+/// Variant name for the `None` variant of `option(T)`.
 pub const OPTION_NONE: &str = "None";
-/// Field name for the inner value of `option<T>`'s `Some` variant.
+/// Field name for the inner value of `option(T)`'s `Some` variant.
 pub const OPTION_VAL_FIELD: &str = "val";
 
 // -- Literals -----------------------------------------------------------------
@@ -270,6 +332,9 @@ pub(crate) const ERR_FOR_BINDING_SHADOWS: &str = "for loop binding shadows";
 /// Error when a `{% %}` tag starts a line without a blockquote `>` prefix.
 pub(crate) const ERR_BARE_STMT_TAG: &str =
     "statement tag at line start must be blockquote-prefixed with '> '";
+/// Error when compound type uses angle or square brackets instead of parentheses.
+pub(crate) const ERR_COMPOUND_BRACKETS_PROHIBITED: &str =
+    "must use parentheses (...); angle brackets <...> and square brackets [...] are prohibited";
 
 /// Built-in type names and keywords that cannot be used as user-defined names.
 pub(crate) const RESERVED_NAMES: &[&str] = &[
@@ -427,5 +492,16 @@ mod tests {
         assert_eq!(PIPE, '|');
         assert_eq!(QUOTE_DOUBLE, '"');
         assert_eq!(QUOTE_SINGLE, '\'');
+    }
+
+    #[test]
+    fn test_is_valid_include_path() {
+        assert!(is_valid_include_path("./file.tmpl.md"));
+        assert!(is_valid_include_path("../file.tmpl.md"));
+        assert!(is_valid_include_path(".\\file.tmpl.md"));
+        assert!(is_valid_include_path("..\\file.tmpl.md"));
+        assert!(is_valid_include_path("/file.tmpl.md"));
+        assert!(!is_valid_include_path("file.tmpl.md"));
+        assert!(!is_valid_include_path("sub/file.tmpl.md"));
     }
 }

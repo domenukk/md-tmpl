@@ -15,7 +15,7 @@
         "---",
         "params: [num = int]",
         "---",
-        "> {% include [typed](typed.tmpl.md) with count=num %}"
+        "> {% include [typed](./typed.tmpl.md) with count=num %}"
       ],
       "params": {
         "num": 42
@@ -39,7 +39,7 @@
         "---",
         "params: [name = str]",
         "---",
-        "> {% include [greet](greet.tmpl.md) with name=name %}"
+        "> {% include [greet](./greet.tmpl.md) with name=name %}"
       ],
       "params": {
         "name": "World"
@@ -65,7 +65,7 @@
         "  - name = str",
         "  - greeting = str",
         "---",
-        "> {% include [greet](greet.tmpl.md) with name=name, greeting=greeting %}"
+        "> {% include [greet](./greet.tmpl.md) with name=name, greeting=greeting %}"
       ],
       "params": {
         "name": "World",
@@ -88,7 +88,7 @@
         "---",
         "params: []",
         "---",
-        "> {% include [needs_vars](needs_vars.tmpl.md) %}"
+        "> {% include [needs_vars](./needs_vars.tmpl.md) %}"
       ],
       "params": {},
       "expected_error": "title"

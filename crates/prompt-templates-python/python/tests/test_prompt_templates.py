@@ -71,7 +71,7 @@ def list_template_path(tmp_path: Path) -> Path:
     path.write_text(textwrap.dedent("""\
         ---
         params:
-          - tasks = list<title = str, priority = str>
+          - tasks = list(title = str, priority = str)
         ---
         > {% for task in tasks %}
 
@@ -88,7 +88,7 @@ def enum_template_path(tmp_path: Path) -> Path:
     path.write_text(textwrap.dedent("""\
         ---
         params:
-          - outcome = enum<Confirmed(evidence = str), Rejected, NeedsWork>
+          - outcome = enum(Confirmed(evidence = str), Rejected, NeedsWork)
         ---
         > {% match outcome %}
         > {% case Confirmed %}
@@ -128,7 +128,7 @@ def struct_template_path(tmp_path: Path) -> Path:
     path.write_text(textwrap.dedent("""\
         ---
         params:
-          - config = struct<host = str, port = int>
+          - config = struct(host = str, port = int)
         ---
         {{ config.host }}:{{ config.port }}"""))
     return path
@@ -404,7 +404,7 @@ class TestRenderJson:
 
 
 class TestTypedLists:
-    """Tests for list<...> parameters."""
+    """Tests for list(...) parameters."""
 
     def test_render_list_of_structs(self, list_template_path: Path) -> None:
         tmpl = Template.from_file(str(list_template_path))
@@ -436,7 +436,7 @@ class TestTypedLists:
 
 
 class TestStructParams:
-    """Tests for struct<...> parameters."""
+    """Tests for struct(...) parameters."""
 
     def test_render_struct_param(self, struct_template_path: Path) -> None:
         tmpl = Template.from_file(str(struct_template_path))
@@ -469,7 +469,7 @@ class TestMultipleParamTypes:
 
 
 class TestEnumDispatch:
-    """Tests for enum<...> parameters with match/case."""
+    """Tests for enum(...) parameters with match/case."""
 
     def test_unit_variant(self, enum_template_path: Path) -> None:
         tmpl = Template.from_file(str(enum_template_path))
@@ -1085,7 +1085,7 @@ class TestKindFunction:
         tmpl = Template.from_source(textwrap.dedent("""\
             ---
             params:
-              - outcome = enum<Confirmed(evidence = str), Rejected>
+              - outcome = enum(Confirmed(evidence = str), Rejected)
             ---
             {{ kind(outcome) }}"""))
         output = tmpl.render(outcome={"__kind__": "Confirmed", "evidence": "proof"})
@@ -1096,7 +1096,7 @@ class TestKindFunction:
         tmpl = Template.from_source(textwrap.dedent("""\
             ---
             params:
-              - outcome = enum<Confirmed(evidence = str), Rejected>
+              - outcome = enum(Confirmed(evidence = str), Rejected)
             ---
             {{ kind(outcome) }}"""))
         t = template(str(enum_template_path))
@@ -1127,7 +1127,7 @@ class TestKindCollisionProtection:
         tmpl = Template.from_source(textwrap.dedent("""\
             ---
             params:
-              - outcome = struct<evidence = str>
+              - outcome = struct(evidence = str)
             ---
             {{ outcome.__kind__ }}"""))
         with pytest.raises(ValueError):
@@ -1138,7 +1138,7 @@ class TestKindCollisionProtection:
         tmpl = Template.from_source(textwrap.dedent("""\
             ---
             params:
-              - entry = struct<tag = str>
+              - entry = struct(tag = str)
             ---
             {{ entry.tag }}"""))
         output = tmpl.render(entry={"__kind__": "Week", "tag": "Monday"})
@@ -1157,7 +1157,7 @@ class TestArithmeticFilters:
         tmpl = Template.from_source(textwrap.dedent("""\
             ---
             params:
-              - items = list<label = str>
+              - items = list(label = str)
             ---
             > {% for item in items %}
 
@@ -1221,14 +1221,14 @@ class TestStringFilters:
 
     def test_join_filter(self) -> None:
         tmpl = Template.from_source(
-            '---\nparams: [items = list<str>]\n---\n{{ items | join(", ") }}'
+            '---\nparams: [items = list(str)]\n---\n{{ items | join(", ") }}'
         )
         output = tmpl.render(items=["a", "b", "c"])
         assert output == "a, b, c"
 
     def test_limit_filter(self) -> None:
         tmpl = Template.from_source(
-            '---\nparams: [items = list<str>]\n---\n{{ items | limit(2) | join(", ") }}'
+            '---\nparams: [items = list(str)]\n---\n{{ items | limit(2) | join(", ") }}'
         )
         output = tmpl.render(items=["a", "b", "c"])
         assert output == "a, b"
@@ -1244,7 +1244,7 @@ class TestLenFunction:
 
     def test_len_list(self) -> None:
         tmpl = Template.from_source(
-            "---\nparams: [items = list<x = str>]\n---\n{{ len(items) }}"
+            "---\nparams: [items = list(x = str)]\n---\n{{ len(items) }}"
         )
         assert tmpl.render(items=[{"x": "a"}, {"x": "b"}]) == "2"
 
@@ -1258,7 +1258,7 @@ class TestLenFunction:
 
     def test_len_empty_list(self) -> None:
         tmpl = Template.from_source(
-            "---\nparams: [items = list<x = str>]\n---\n{{ len(items) }}"
+            "---\nparams: [items = list(x = str)]\n---\n{{ len(items) }}"
         )
         assert tmpl.render(items=[]) == "0"
 
@@ -1284,7 +1284,7 @@ class TestIncludes:
             params:
               - greeting = str
             ---
-            > {% include [child](child.tmpl.md) with msg=greeting %}"""))
+            > {% include [child](./child.tmpl.md) with msg=greeting %}"""))
         tmpl = Template.from_file(str(parent))
         output = tmpl.render(greeting="hello")
         assert output == "Child: hello"
@@ -1300,10 +1300,10 @@ class TestIncludes:
         parent.write_text(textwrap.dedent("""\
             ---
             params:
-              - items = list<label = str>
+              - items = list(label = str)
             ---
             > {% for item in items %}
-            > {% include [row](row.tmpl.md) with label=item.label %}
+            > {% include [row](./row.tmpl.md) with label=item.label %}
             > {% /for %}"""))
         tmpl = Template.from_file(str(parent))
         output = tmpl.render(items=[{"label": "alpha"}, {"label": "beta"}])
@@ -1313,15 +1313,15 @@ class TestIncludes:
         """Test {% include ... for item in items %} iterated include syntax."""
         row = tmp_path / "row.tmpl.md"
         row.write_text(
-            "---\nparams: [item = struct<label = str>]\n---\n- {{ item.label }}"
+            "---\nparams: [item = struct(label = str)]\n---\n- {{ item.label }}"
         )
         parent = tmp_path / "list.tmpl.md"
         parent.write_text(textwrap.dedent("""\
             ---
             params:
-              - items = list<label = str>
+              - items = list(label = str)
             ---
-            > {% include [row](row.tmpl.md) for item in items %}"""))
+            > {% include [row](./row.tmpl.md) for item in items %}"""))
         tmpl = Template.from_file(str(parent))
         output = tmpl.render(items=[{"label": "alpha"}, {"label": "beta"}])
         assert output == "- alpha- beta"
@@ -1339,7 +1339,7 @@ class TestInlineTemplates:
         tmpl = Template.from_source(textwrap.dedent("""\
             ---
             params:
-              - items = list<name = str>
+              - items = list(name = str)
             ---
             > {% tmpl row %}
 
@@ -1408,6 +1408,7 @@ class TestConstants:
             ---
             consts:
               - APP = str := "MyApp"
+
             params: []
             ---
             {{ APP }}"""))
@@ -1419,6 +1420,7 @@ class TestConstants:
             consts:
               - VERSION = str := "1.0"
               - MAX = int := 100
+
             params: []
             ---
             {{ VERSION }} {{ MAX }}"""))
@@ -1462,7 +1464,8 @@ class TestTypeAliases:
         tmpl = Template.from_source(textwrap.dedent("""\
             ---
             types:
-              - Priority = enum<High, Medium, Low>
+              - Priority = enum(High, Medium, Low)
+
             params:
               - prio = Priority
             ---
@@ -1507,7 +1510,7 @@ class TestFromSourceWithBaseDir:
             params:
               - title = str
             ---
-            > {% include [header](parts/header.tmpl.md) with title=title %}""")
+            > {% include [header](./parts/header.tmpl.md) with title=title %}""")
 
         tmpl = Template.from_source_with_base_dir(source, str(tmp_path))
         output = tmpl.render(title="Hello")
@@ -1557,7 +1560,7 @@ class TestSetMaxIncludeDepth:
             params:
               - greeting = str
             ---
-            > {% include [child](child.tmpl.md) with msg=greeting %}"""))
+            > {% include [child](./child.tmpl.md) with msg=greeting %}"""))
         tmpl = Template.from_file(str(parent))
         tmpl.set_max_include_depth(2)
         output = tmpl.render(greeting="hi")
@@ -1602,12 +1605,12 @@ class TestBody:
 
 
 # ---------------------------------------------------------------------------
-# Template-as-param (tmpl<> type)
+# Template-as-param (tmpl() type)
 # ---------------------------------------------------------------------------
 
 
 class TestTemplateAsParam:
-    """Tests for passing Template objects as tmpl<> parameters."""
+    """Tests for passing Template objects as tmpl() parameters."""
 
     def test_basic_tmpl_param_rendering(self) -> None:
         """A Template passed as a param should be usable via {% include %}."""
@@ -1615,7 +1618,7 @@ class TestTemplateAsParam:
             "---\nparams: [name = str]\n---\nHello {{ name }}!"
         )
         main = Template.from_source(
-            "---\nparams: [greet = tmpl<name = str>]\n---\n"
+            "---\nparams: [greet = tmpl(name = str)]\n---\n"
             '> {% include greet with name="World" %}'
         )
         result = main.render(greet=helper)
@@ -1629,7 +1632,7 @@ class TestTemplateAsParam:
             ---
             Age: {{ age }}"""))
         main = Template.from_source(
-            "---\nparams: [greet = tmpl<name = str>]\n---\n"
+            "---\nparams: [greet = tmpl(name = str)]\n---\n"
             '> {% include greet with name="World" %}'
         )
         with pytest.raises(ValueError, match="type mismatch"):
@@ -1642,7 +1645,7 @@ class TestTemplateAsParam:
             "{{ greeting }} {{ name }}!"
         )
         main = Template.from_source(
-            "---\nparams: [greet = tmpl<name = str>]\n---\n"
+            "---\nparams: [greet = tmpl(name = str)]\n---\n"
             '> {% include greet with name="World" %}'
         )
         result = main.render(greet=helper)
@@ -1657,15 +1660,15 @@ class TestTemplateAsParam:
             Inner: {{ val }}"""))
         middle = Template.from_source(
             "---\n"
-            "params: [target = tmpl<val = str>, value = str]\n"
+            "params: [target = tmpl(val = str), value = str]\n"
             "---\n"
             "> {% include target with val=value %}"
         )
         main = Template.from_source(
             "---\n"
             "params:\n"
-            "  - processor = tmpl<target = tmpl<val = str>, value = str>\n"
-            "  - callback = tmpl<val = str>\n"
+            "  - processor = tmpl(target = tmpl(val = str), value = str)\n"
+            "  - callback = tmpl(val = str)\n"
             "---\n"
             '> {% include processor with target=callback, value="Success" %}'
         )
@@ -1675,7 +1678,7 @@ class TestTemplateAsParam:
     def test_non_template_as_tmpl_param_raises(self) -> None:
         """Passing a non-Template value for a tmpl param should fail."""
         main = Template.from_source(
-            "---\nparams: [greet = tmpl<name = str>]\n---\n"
+            "---\nparams: [greet = tmpl(name = str)]\n---\n"
             '> {% include greet with name="World" %}'
         )
         with pytest.raises(ValueError, match="type mismatch"):
@@ -1684,13 +1687,13 @@ class TestTemplateAsParam:
     def test_tmpl_param_for_each(self) -> None:
         """Template-as-param with {% include ... for item in list %}."""
         row = Template.from_source(
-            "---\nparams: [item = struct<label = str>]\n---\n- {{ item.label }}\n"
+            "---\nparams: [item = struct(label = str)]\n---\n- {{ item.label }}\n"
         )
         parent = Template.from_source(
             "---\n"
             "params:\n"
-            "  - row = tmpl<item = struct<label = str>>\n"
-            "  - items = list<label = str>\n"
+            "  - row = tmpl(item = struct(label = str))\n"
+            "  - items = list(label = str)\n"
             "---\n"
             "> {% include row for item in items %}\n"
         )
@@ -1705,7 +1708,7 @@ class TestTemplateAsParam:
         parent = Template.from_source(
             "---\n"
             "params:\n"
-            "  - widget = tmpl<title = str, count = int>\n"
+            "  - widget = tmpl(title = str, count = int)\n"
             "---\n"
             "> {% include widget %}\n"
         )
@@ -1724,7 +1727,7 @@ class TestTemplateAsParam:
         parent = Template.from_source(
             "---\n"
             "params:\n"
-            "  - widget = tmpl<msg = str>\n"
+            "  - widget = tmpl(msg = str)\n"
             "  - text = str\n"
             "---\n"
             "> {% include widget with msg=text %}\n"
@@ -1743,7 +1746,7 @@ class TestNoneHandling:
 
     Python None maps to the engine's transparent ``Value::None``,
     representing an absent value. Passing None for a non-optional
-    parameter is a type error — only ``option<T>`` params accept None.
+    parameter is a type error — only ``option(T)`` params accept None.
     """
 
     def test_none_value_raises_type_error(self) -> None:
@@ -1759,7 +1762,7 @@ class TestNoneHandling:
     def test_none_in_list_raises_type_error(self) -> None:
         """None inside a list element raises TypeError."""
         tmpl = Template.from_source(
-            "---\nparams:\n  - items = list<name = str>\n---\n"
+            "---\nparams:\n  - items = list(name = str)\n---\n"
             "> {% for item in items %}\n\n{{ item.name }}\n\n> {% /for %}"
         )
         with pytest.raises(Exception):
@@ -1768,7 +1771,7 @@ class TestNoneHandling:
     def test_none_in_struct_value_raises_type_error(self) -> None:
         """None inside a struct field raises TypeMismatchError."""
         tmpl = Template.from_source(
-            "---\nparams:\n  - config = struct<host = str>\n---\n{{ config.host }}"
+            "---\nparams:\n  - config = struct(host = str)\n---\n{{ config.host }}"
         )
         with pytest.raises(Exception, match="type mismatch"):
             tmpl.render(config={"host": None})
@@ -1918,7 +1921,7 @@ class TestChainedFilters:
 
     def test_limit_then_join(self) -> None:
         tmpl = Template.from_source(
-            "---\nparams: [tags = list<name = str>]\n---\n"
+            "---\nparams: [tags = list(name = str)]\n---\n"
             '{{ tags | limit(2) | join(", ") }}'
         )
         output = tmpl.render(
@@ -1948,7 +1951,7 @@ class TestEnumMemberConversion:
             Blue = "Blue"
 
         tmpl = Template.from_source(
-            "---\nparams:\n  - status = enum<Red, Blue>\n---\n"
+            "---\nparams:\n  - status = enum(Red, Blue)\n---\n"
             "> {% match status %}\n"
             "> {% case Red %}\n\nred\n\n"
             "> {% case Blue %}\n\nblue\n\n"
@@ -1967,7 +1970,7 @@ class TestIdxFunction:
 
     def test_idx_in_loop(self) -> None:
         tmpl = Template.from_source(
-            "---\nparams:\n  - items = list<name = str>\n---\n"
+            "---\nparams:\n  - items = list(name = str)\n---\n"
             "> {% for item in items %}\n\n"
             "{{ idx(item) }}: {{ item.name }}\n\n"
             "> {% /for %}"
@@ -1998,12 +2001,12 @@ class TestImportedConsts:
         # Create a constants template
         consts_tmpl = tmp_path / "config.tmpl.md"
         consts_tmpl.write_text(
-            '---\nconsts:\n  - MAX_RETRIES = int := 3\n  - TIMEOUT = str := "30s"\n---\nConfig loaded.\n'
+            '---\nconsts:\n  - MAX_RETRIES = int := 3\n  - TIMEOUT = str := "30s"\n\n---\nConfig loaded.\n'
         )
         # Create a template that imports consts
         main_tmpl = tmp_path / "main.tmpl.md"
         main_tmpl.write_text(
-            f"---\nimports: [config]({consts_tmpl})\nparams: [name = str]\n---\n{{{{ name }}}} (max={{{{ config.MAX_RETRIES }}}})\n"
+            f"---\nimports: [config]({consts_tmpl})\n\nparams: [name = str]\n---\n{{{{ name }}}} (max={{{{ config.MAX_RETRIES }}}})\n"
         )
         tmpl = Template.from_file(main_tmpl)
         consts = tmpl.imported_consts()
@@ -2023,7 +2026,7 @@ class TestCrossTemplateImports:
         # Create a shared types template
         shared = tmp_path / "shared.tmpl.md"
         shared.write_text(
-            "---\ntypes:\n  Status = enum<Active, Inactive>\nparams: [s = Status]\n---\n{{ s }}\n"
+            "---\ntypes:\n  Status = enum(Active, Inactive)\n\nparams: [s = Status]\n---\n{{ s }}\n"
         )
         # Create a template that imports the shared type
         main = tmp_path / "main.tmpl.md"
@@ -2052,7 +2055,7 @@ class TestDictConversionFallback:
                 self.port = port
 
         tmpl = Template.from_source(
-            "---\nparams:\n  - config = struct<host = str, port = int>\n---\n{{ config.host }}:{{ config.port }}"
+            "---\nparams:\n  - config = struct(host = str, port = int)\n---\n{{ config.host }}:{{ config.port }}"
         )
         result = tmpl.render(config=Config(host="localhost", port=8080))
         assert result == "localhost:8080"
@@ -2066,7 +2069,7 @@ class TestDictConversionFallback:
             value: int
 
         tmpl = Template.from_source(
-            "---\nparams:\n  - item = struct<name = str, value = int>\n---\n{{ item.name }}={{ item.value }}"
+            "---\nparams:\n  - item = struct(name = str, value = int)\n---\n{{ item.name }}={{ item.value }}"
         )
         result = tmpl.render(item=Item(name="score", value=42))
         assert result == "score=42"
@@ -2083,7 +2086,7 @@ class TestGeneratedModelDict:
     def test_model_dict_property(self, tmp_path: Path) -> None:
         path = tmp_path / "item.tmpl.md"
         path.write_text(
-            "---\nparams:\n  - items = list<name = str, count = int>\n---\n"
+            "---\nparams:\n  - items = list(name = str, count = int)\n---\n"
             "> {% for item in items %}\n\n{{ item.name }}\n\n> {% /for %}\n"
         )
         types = load_types(path)
@@ -2167,7 +2170,7 @@ class TestRenderCached:
             HEADER: {{ title }}"""))
         main = tmp_path / "page.tmpl.md"
         main.write_text(
-            "---\nparams:\n  - title = str\n---\n> {% include [header](_header.tmpl.md) with title=title %}\n\nBody here."
+            "---\nparams:\n  - title = str\n---\n> {% include [header](./_header.tmpl.md) with title=title %}\n\nBody here."
         )
         cache = TemplateCache()
         tmpl = cache.load(main)
@@ -2378,6 +2381,7 @@ class TestConstantsExtended:
               - MAX = int := 100
               - GREETING = str := "hello"
               - ENABLED = bool := true
+
             params: []
             ---
             {{ MAX }} {{ GREETING }} {{ ENABLED }}"""))
@@ -2491,7 +2495,7 @@ class TestNestedStructs:
         tmpl = Template.from_source(textwrap.dedent("""\
             ---
             params:
-              - config = struct<inner = struct<host = str>>
+              - config = struct(inner = struct(host = str))
             ---
             {{ config.inner.host }}"""))
         result = tmpl.render(config={"inner": {"host": "example.com"}})
@@ -2511,7 +2515,7 @@ class TestNestedStructs:
         tmpl = Template.from_source(textwrap.dedent("""\
             ---
             params:
-              - config = struct<inner = struct<host = str>>
+              - config = struct(inner = struct(host = str))
             ---
             {{ config.inner.host }}"""))
         result = tmpl.render(config=Config(inner=Inner(host="nested.example.com")))
@@ -2597,7 +2601,7 @@ class TestExceptionHierarchyExtended:
             ---
             params: [title = str]
             ---
-            > {% include [missing](does_not_exist.tmpl.md) with title=title %}"""))
+            > {% include [missing](./does_not_exist.tmpl.md) with title=title %}"""))
         # Render should fail with include not found
         with pytest.raises((TemplateSyntaxError, TemplateError)):
             tmpl.render(title="Test")
@@ -2660,7 +2664,7 @@ class TestVariantsMetaclassExtended:
         tmpl = Template.from_source(textwrap.dedent("""\
             ---
             params:
-              - status = enum<Active, Inactive>
+              - status = enum(Active, Inactive)
             ---
             > {% match status %}
             > {% case Active %}
@@ -2685,7 +2689,7 @@ class TestVariantsMetaclassExtended:
         tmpl = Template.from_source(textwrap.dedent("""\
             ---
             params:
-              - outcome = enum<Success(value = str), Failure(code = int)>
+              - outcome = enum(Success(value = str), Failure(code = int))
             ---
             > {% match outcome %}
             > {% case Success %}
@@ -2719,7 +2723,7 @@ class TestVariantDecoratorExtended:
         tmpl = Template.from_source(textwrap.dedent("""\
             ---
             params:
-              - outcome = enum<Approved, NeedsChanges(reason = str)>
+              - outcome = enum(Approved, NeedsChanges(reason = str))
             ---
             > {% match outcome %}
             > {% case Approved %}
@@ -2803,7 +2807,7 @@ class TestCacheIncludeCounting:
             params:
               - title = str
             ---
-            > {% include [header](header.tmpl.md) with title=title %}
+            > {% include [header](./header.tmpl.md) with title=title %}
 
             Body."""))
         cache = TemplateCache()
@@ -2891,7 +2895,7 @@ class TestFromSourceWithBaseDirExtended:
             ---
             params: [title = str]
             ---
-            > {% include [missing](does_not_exist.tmpl.md) with title=title %}""")
+            > {% include [missing](./does_not_exist.tmpl.md) with title=title %}""")
         tmpl = Template.from_source_with_base_dir(source, str(tmp_path))
         with pytest.raises(ValueError):
             tmpl.render(title="Test")
@@ -2910,7 +2914,7 @@ class TestTypeAliasGeneration:
         path.write_text(textwrap.dedent("""\
             ---
             types:
-              - Priority = enum<High, Medium, Low>
+              - Priority = enum(High, Medium, Low)
             params:
               - prio = Priority
             ---
@@ -2938,7 +2942,7 @@ class TestTypeAliasGeneration:
         path.write_text(textwrap.dedent("""\
             ---
             types:
-              - Priority = enum<High, Medium, Low>
+              - Priority = enum(High, Medium, Low)
             params:
               - prio = Priority
             ---
@@ -3088,7 +3092,7 @@ class TestVariantsExecRemoval:
         tmpl = Template.from_source(
             "---\n"
             "params:\n"
-            "  - outcome = enum<Confirmed(evidence = str), Rejected>\n"
+            "  - outcome = enum(Confirmed(evidence = str), Rejected)\n"
             "---\n"
             "> {% match outcome %}\n"
             "> {% case Confirmed %}\n\n"
@@ -3221,7 +3225,7 @@ class TestPatternMatching:
             suffix=".tmpl.md", mode="w", delete=False
         ) as f:
             f.write(
-                "---\nparams:\n  - outcome = enum<Confirmed(evidence = str), Rejected>\n"
+                "---\nparams:\n  - outcome = enum(Confirmed(evidence = str), Rejected)\n"
                 "allow_unused: true\n---\n{{ outcome }}"
             )
             path = f.name
@@ -3242,20 +3246,20 @@ class TestPatternMatching:
             os.unlink(path)
 
 
-# -- option<T> support -------------------------------------------------------
+# -- option(T) support -------------------------------------------------------
 
 
 class TestOptionType:
-    """Tests for option<T> type support in the Python binding.
+    """Tests for option(T) type support in the Python binding.
 
-    option<T> desugars to enum<Some(val=T), None> at parse time.
+    option(T) desugars to enum(Some(val=T), None) at parse time.
     Python None maps to the engine's None variant.
     """
 
     def test_option_none_via_match(self) -> None:
         """Passing Python None renders the None arm of a match block."""
         tmpl = Template.from_source(
-            "---\nparams:\n  - label = option<str>\n---\n"
+            "---\nparams:\n  - label = option(str)\n---\n"
             "> {% match label %}\n"
             "> {% case Some %}\n\n"
             "got: {{ label }}\n\n"
@@ -3269,7 +3273,7 @@ class TestOptionType:
     def test_option_some_via_match(self) -> None:
         """Passing a Some struct renders the Some arm of a match block."""
         tmpl = Template.from_source(
-            "---\nparams:\n  - label = option<str>\n---\n"
+            "---\nparams:\n  - label = option(str)\n---\n"
             "> {% match label %}\n"
             "> {% case Some %}\n\n"
             "got: {{ label }}\n\n"
@@ -3283,7 +3287,7 @@ class TestOptionType:
     def test_option_none_via_has(self) -> None:
         """has() returns false for None, rendering the else branch."""
         tmpl = Template.from_source(
-            "---\nparams:\n  - label = option<str>\n---\n"
+            "---\nparams:\n  - label = option(str)\n---\n"
             "> {% if has(label) %}\n\n"
             "got: {{ label }}\n\n"
             "> {% else %}\n\n"
@@ -3296,7 +3300,7 @@ class TestOptionType:
     def test_option_some_via_has(self) -> None:
         """has() returns true for Some, rendering the if branch."""
         tmpl = Template.from_source(
-            "---\nparams:\n  - label = option<str>\n---\n"
+            "---\nparams:\n  - label = option(str)\n---\n"
             "> {% if has(label) %}\n\n"
             "got: {{ label }}\n\n"
             "> {% else %}\n\n"
@@ -3307,9 +3311,9 @@ class TestOptionType:
         assert "got: world" in result
 
     def test_option_int_none(self) -> None:
-        """option<int> with None renders the None case."""
+        """option(int) with None renders the None case."""
         tmpl = Template.from_source(
-            "---\nparams:\n  - count = option<int>\n---\n"
+            "---\nparams:\n  - count = option(int)\n---\n"
             "> {% if has(count) %}\n\n"
             "count={{ count }}\n\n"
             "> {% else %}\n\n"
@@ -3320,9 +3324,9 @@ class TestOptionType:
         assert result.strip() == "no-count"
 
     def test_option_int_some(self) -> None:
-        """option<int> with a value renders the Some case."""
+        """option(int) with a value renders the Some case."""
         tmpl = Template.from_source(
-            "---\nparams:\n  - count = option<int>\n---\n"
+            "---\nparams:\n  - count = option(int)\n---\n"
             "> {% if has(count) %}\n\n"
             "count={{ count }}\n\n"
             "> {% else %}\n\n"
@@ -3333,9 +3337,9 @@ class TestOptionType:
         assert "count=42" in result
 
     def test_option_default_none(self) -> None:
-        """option<str> with default None works when no value is provided."""
+        """option(str) with default None works when no value is provided."""
         tmpl = Template.from_source(
-            "---\nparams:\n  - label = option<str> := None\n---\n"
+            "---\nparams:\n  - label = option(str) := None\n---\n"
             "> {% if has(label) %}\n\n"
             "{{ label }}\n\n"
             "> {% else %}\n\n"
@@ -3346,11 +3350,11 @@ class TestOptionType:
         assert result.strip() == "default"
 
 
-# -- option<T> regression tests -------------------------------------------
+# -- option(T) regression tests -------------------------------------------
 
 
 class TestOptionTypeRegression:
-    """Regression tests for transparent option<T>.
+    """Regression tests for transparent option(T).
 
     Options are TRANSPARENT:
     - Python None → absent (has() false, renders empty)
@@ -3359,9 +3363,9 @@ class TestOptionTypeRegression:
     """
 
     def test_option_none_is_python_none(self) -> None:
-        """Passing Python None for option<str> → has() false, renders else."""
+        """Passing Python None for option(str) → has() false, renders else."""
         tmpl = Template.from_source(
-            "---\nparams:\n  - name = option<str>\n---\n"
+            "---\nparams:\n  - name = option(str)\n---\n"
             "> {% if has(name) %}\n\n"
             "Hello {{ name }}\n\n"
             "> {% else %}\n\n"
@@ -3373,9 +3377,9 @@ class TestOptionTypeRegression:
         assert result.strip() == "No name"
 
     def test_option_some_is_plain_value(self) -> None:
-        """Passing a plain string for option<str> → has() true, renders value."""
+        """Passing a plain string for option(str) → has() true, renders value."""
         tmpl = Template.from_source(
-            "---\nparams:\n  - name = option<str>\n---\n"
+            "---\nparams:\n  - name = option(str)\n---\n"
             "> {% if has(name) %}\n\n"
             "Hello {{ name }}\n\n"
             "> {% else %}\n\n"
@@ -3387,11 +3391,11 @@ class TestOptionTypeRegression:
         assert "No name" not in result
 
     def test_option_none_in_struct(self) -> None:
-        """A struct field typed as option<str> accepts None."""
+        """A struct field typed as option(str) accepts None."""
         tmpl = Template.from_source(
             "---\n"
             "params:\n"
-            "  - user = struct<name = str, bio = option<str>>\n"
+            "  - user = struct(name = str, bio = option(str))\n"
             "---\n"
             "Name: {{ user.name }}\n\n"
             "> {% if has(user.bio) %}\n\n"
@@ -3413,11 +3417,11 @@ class TestOptionTypeRegression:
         assert "No bio" not in result_some
 
     def test_option_none_in_list(self) -> None:
-        """A list<option<str>> can contain None elements."""
+        """A list(option(str)) can contain None elements."""
         tmpl = Template.from_source(
             "---\n"
             "params:\n"
-            "  - items = list<option<str>>\n"
+            "  - items = list(option(str))\n"
             "---\n"
             "> {% for item in items %}\n"
             "> {% if has(item) %}\n\n"
@@ -3433,9 +3437,9 @@ class TestOptionTypeRegression:
         assert "val=world" in result
 
     def test_option_defaults_to_none(self) -> None:
-        """option<str> with := None default → omitting the param yields empty."""
+        """option(str) with := None default → omitting the param yields empty."""
         tmpl = Template.from_source(
-            "---\nparams:\n  - title = option<str> := None\n---\n"
+            "---\nparams:\n  - title = option(str) := None\n---\n"
             "> {% if has(title) %}\n\n"
             "Title: {{ title }}\n\n"
             "> {% else %}\n\n"
@@ -3452,7 +3456,7 @@ class TestOptionTypeRegression:
     def test_option_match_some_none(self) -> None:
         """{% match %} with {% case Some %} and {% case None %} branches."""
         tmpl = Template.from_source(
-            "---\nparams:\n  - tag = option<str>\n---\n"
+            "---\nparams:\n  - tag = option(str)\n---\n"
             "> {% match tag %}\n"
             "> {% case Some %}\n\n"
             "tagged={{ tag }}\n\n"
@@ -3470,7 +3474,7 @@ class TestOptionTypeRegression:
     def test_option_transparent_no_val(self) -> None:
         """Options are transparent — access the value directly, no .val needed."""
         tmpl = Template.from_source(
-            "---\nparams:\n  - name = option<str>\n---\n"
+            "---\nparams:\n  - name = option(str)\n---\n"
             "> {% if has(name) %}\n\n"
             "{{ name }}\n\n"
             "> {% /if %}"
@@ -3492,7 +3496,7 @@ class TestForElse:
     def test_for_else_empty_list(self) -> None:
         """Empty list renders the else body."""
         tmpl = Template.from_source(
-            "---\nparams:\n  - items = list<name = str>\n---\n"
+            "---\nparams:\n  - items = list(name = str)\n---\n"
             "> {% for item in items %}\n\n"
             "{{ item.name }}\n\n"
             "> {% else %}\n\n"
@@ -3505,7 +3509,7 @@ class TestForElse:
     def test_for_else_non_empty_list(self) -> None:
         """Non-empty list renders the loop body, not else."""
         tmpl = Template.from_source(
-            "---\nparams:\n  - items = list<name = str>\n---\n"
+            "---\nparams:\n  - items = list(name = str)\n---\n"
             "> {% for item in items %}\n\n"
             "{{ item.name }}\n\n"
             "> {% else %}\n\n"
@@ -3519,7 +3523,7 @@ class TestForElse:
     def test_for_without_else_still_works(self) -> None:
         """Basic for-loop without else continues to work."""
         tmpl = Template.from_source(
-            "---\nparams:\n  - items = list<name = str>\n---\n"
+            "---\nparams:\n  - items = list(name = str)\n---\n"
             "> {% for item in items %}\n\n"
             "{{ item.name }}\n\n"
             "> {% /for %}"
@@ -3695,7 +3699,7 @@ class TestGenerateTypesSource:
             ---
             params:
               - name = str
-              - title = option<str>
+              - title = option(str)
             ---
             Hello {{ name }} {{ title }}"""))
 

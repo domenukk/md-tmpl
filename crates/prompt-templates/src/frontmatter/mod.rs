@@ -13,7 +13,7 @@
 //! params:
 //!   - name = str
 //!   - count = int := 42
-//!   - tasks = list<title = str, priority = int>
+//!   - tasks = list(title = str, priority = int)
 //! ---
 //! ```
 
@@ -629,7 +629,7 @@ params:
     #[test]
     fn parse_list_with_fields() {
         let source = r"---
-params: [items = list<title = str, score = float>]
+params: [items = list(title = str, score = float)]
 ---
 body";
         let (fm, _) = parse_frontmatter(source).unwrap();
@@ -650,7 +650,7 @@ body";
     #[test]
     fn parse_struct_type() {
         let source = r"---
-params: [config = struct<key = str, enabled = bool>]
+params: [config = struct(key = str, enabled = bool)]
 ---
 body";
         let (fm, _) = parse_frontmatter(source).unwrap();
@@ -738,7 +738,11 @@ params:
 ---
 body";
         let err = parse_frontmatter(source).unwrap_err();
-        assert!(err.to_string().contains("A blank line is required after a block list"), "got: {err}");
+        assert!(
+            err.to_string()
+                .contains("A blank line is required after a block list"),
+            "got: {err}"
+        );
     }
 
     #[test]
@@ -746,7 +750,7 @@ body";
         let source = r"---
 name: types
 types:
-  - Priority = enum<High, Medium, Low>
+  - Priority = enum(High, Medium, Low)
 ---
 {# no body #}";
         let (fm, body) = parse_frontmatter(source).unwrap();
@@ -807,7 +811,7 @@ no closing delimiter";
 
     #[test]
     fn parse_params_complex() {
-        let rest = "[name = str, items = list<label = str, count = int>, active = bool]";
+        let rest = "[name = str, items = list(label = str, count = int), active = bool]";
         let decls = parse_params_value(rest).unwrap();
         assert_eq!(decls.len(), 3);
         assert_eq!(decls[0].name, "name");
@@ -826,7 +830,7 @@ no closing delimiter";
 
     #[test]
     fn parse_enum_with_associated_data() {
-        let rest = "[outcome = enum<Confirmed(evidence = list<text = str>), Inconclusive>]";
+        let rest = "[outcome = enum(Confirmed(evidence = list(text = str)), Inconclusive)]";
         let decls = parse_params_value(rest).unwrap();
         assert_eq!(decls.len(), 1);
         assert_eq!(decls[0].name, "outcome");
@@ -909,7 +913,7 @@ body";
         // The `:=` inside `<>` should not be treated as a default separator.
         // This is handled by find_assign_default_at_depth_zero.
         let source = r"---
-params: [tasks = list<title = str>]
+params: [tasks = list(title = str)]
 ---
 body";
         let (fm, _) = parse_frontmatter(source).unwrap();
@@ -963,7 +967,7 @@ body"#;
     #[test]
     fn parse_nested_types() {
         let source = r"---
-params: [data = list<item = struct<name = str, tags = list<label = str>>>]
+params: [data = list(item = struct(name = str, tags = list(label = str)))]
 ---
 body";
         let (fm, _) = parse_frontmatter(source).unwrap();
@@ -1121,7 +1125,7 @@ body";
 ---
 
 types:
-  - Severity = enum<Low, Medium, High>
+  - Severity = enum(Low, Medium, High)
 
 params:
   - x = str
@@ -1142,7 +1146,7 @@ type library";
 ---
 
 types:
-  - Config = struct<host = str, port = int>
+  - Config = struct(host = str, port = int)
 
 params:
   - x = str
@@ -1162,12 +1166,12 @@ params:
 
 name: types
 types:
-  - Labelled = enum<Known(label = str), Unknown>
-  - Severity = enum<Informational, Low, Medium, High, Critical>
+  - Labelled = enum(Known(label = str), Unknown)
+  - Severity = enum(Informational, Low, Medium, High, Critical)
 
 params:
-  - tasks = list<title = str, category = Labelled, component = Labelled>
-  - post_types = list<tag = str>
+  - tasks = list(title = str, category = Labelled, component = Labelled)
+  - post_types = list(tag = str)
 
 allow_unused: true
 ---
@@ -1194,7 +1198,7 @@ name: test_const_ref
 consts:
   - SCRATCH = str := \"scratch\"
   - EVIDENCE = str := \"evidence\"
-  - DIRS = list<str> := [SCRATCH, EVIDENCE]
+  - DIRS = list(str) := [SCRATCH, EVIDENCE]
 ---
 hello";
         let (fm, _) = parse_frontmatter(source).unwrap();

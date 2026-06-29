@@ -5,7 +5,7 @@
 //! parser handles it correctly). Cross-validates key values between both.
 //!
 //! Key insight: the `types:` and `imports:` entries in our custom format use
-//! syntax that is valid YAML. `types:` entries like `- Priority = enum<Low, High>`
+//! syntax that is valid YAML. `types:` entries like `- Priority = enum(Low, High)`
 //! are valid YAML plain strings. `imports:` entries like `- [helper](helper.tmpl.md)`
 //! use YAML flow sequences with markdown links. The custom parser reads the
 //! raw line text, so both parsers see valid input.
@@ -53,7 +53,7 @@ fn our_parser_params(source: &str) -> Vec<(String, String)> {
 
 /// Extract type alias names from a YAML block parsed by `serde_yaml`.
 ///
-/// `serde_yaml` sees `- Priority = enum<Low, High>` as a plain string
+/// `serde_yaml` sees `- Priority = enum(Low, High)` as a plain string
 /// (not a mapping), so we extract the name by splitting on `=`.
 fn serde_yaml_type_names(yaml_block: &str) -> Vec<String> {
     let doc = assert_valid_yaml(yaml_block);
@@ -64,7 +64,7 @@ fn serde_yaml_type_names(yaml_block: &str) -> Vec<String> {
     };
     let mut names = Vec::new();
     for entry in types {
-        // Each entry is a plain string like "Priority = enum<...>"
+        // Each entry is a plain string like "Priority = enum(...)"
         if let Some(s) = entry.as_str() {
             if let Some(name) = s.split('=').next() {
                 let name = name.trim();
@@ -102,7 +102,7 @@ fn serde_yaml_params(yaml_block: &str) -> Vec<String> {
 #[test]
 fn types_simple_enum() {
     let yaml = r"types:
-  - Priority = enum<Low, Medium, High>
+  - Priority = enum(Low, Medium, High)
 
 params: [x = Priority]";
     assert_valid_yaml(yaml);
@@ -114,8 +114,8 @@ params: [x = Priority]";
 #[test]
 fn types_multiple_entries() {
     let yaml = r"types:
-  - Priority = enum<Low, High>
-  - Status = enum<Open, Closed>
+  - Priority = enum(Low, High)
+  - Status = enum(Open, Closed)
 
 params: [p = Priority, s = Status]";
     let doc = assert_valid_yaml(yaml);
@@ -130,7 +130,7 @@ params: [p = Priority, s = Status]";
 #[test]
 fn types_complex_enum_with_fields() {
     let yaml = r"types:
-  - Outcome = enum<Confirmed(evidence = str), Rejected, NeedsWork>
+  - Outcome = enum(Confirmed(evidence = str), Rejected, NeedsWork)
 
 params: [result = Outcome]";
     assert_valid_yaml(yaml);
@@ -143,8 +143,8 @@ params: [result = Outcome]";
 fn types_chained_aliases() {
     let yaml = concat!(
         "types:\n",
-        "  - Severity = enum<Critical, High, Medium, Low>\n",
-        "  - TaskEntry = list<title = str, severity = Severity>\n\n",
+        "  - Severity = enum(Critical, High, Medium, Low)\n",
+        "  - TaskEntry = list(title = str, severity = Severity)\n\n",
         "params: [tasks = TaskEntry]"
     );
     let doc = assert_valid_yaml(yaml);
@@ -159,7 +159,7 @@ fn types_chained_aliases() {
 #[test]
 fn types_list_alias() {
     let yaml = r"types:
-  - Tags = list<name = str>
+  - Tags = list(name = str)
 
 params: [items = Tags]";
     assert_valid_yaml(yaml);
@@ -177,14 +177,14 @@ fn imports_single() {
     // Our parser uses `imports: [[stem](path)]` format (bracket links).
     // For YAML validity, the outer brackets form a flow sequence.
     let yaml = r#"imports:
-  - "[helper](helper.tmpl.md)"
+  - "[helper](./helper.tmpl.md)"
 
 params: []
 allow_unused: true"#;
     assert_valid_yaml(yaml);
     // Our custom parser uses inline syntax
     let source = r"---
-imports: [[helper](helper.tmpl.md)]
+imports: [[helper](./helper.tmpl.md)]
 params: []
 allow_unused: true
 ---
@@ -198,14 +198,14 @@ body";
 fn imports_multiple() {
     let yaml = concat!(
         "imports:\n",
-        "  - \"[header](header.tmpl.md)\"\n",
-        "  - \"[footer](footer.tmpl.md)\"\n",
+        "  - \"[header](./header.tmpl.md)\"\n",
+        "  - \"[footer](./footer.tmpl.md)\"\n",
         "params: []\n",
         "allow_unused: true"
     );
     assert_valid_yaml(yaml);
     let source = r"---
-imports: [[header](header.tmpl.md), [footer](footer.tmpl.md)]
+imports: [[header](./header.tmpl.md), [footer](./footer.tmpl.md)]
 params: []
 allow_unused: true
 ---
@@ -237,10 +237,10 @@ body";
 
 #[test]
 fn imports_inline_bracket_syntax() {
-    // Our inline bracket syntax: imports: [[a](a.tmpl.md), [b](b.tmpl.md)]
+    // Our inline bracket syntax: imports: [[a](./a.tmpl.md), [b](./b.tmpl.md)]
     // This is also valid YAML (flow sequence of strings).
     let source = r"---
-imports: [[alpha](alpha.tmpl.md), [beta](beta.tmpl.md)]
+imports: [[alpha](./alpha.tmpl.md), [beta](./beta.tmpl.md)]
 params: []
 allow_unused: true
 ---
@@ -291,7 +291,7 @@ fn params_with_defaults() {
 #[test]
 fn params_alias_reference() {
     let yaml = r"types:
-  - Priority = enum<Low, Medium, High>
+  - Priority = enum(Low, Medium, High)
 
 params:
   - severity = Priority";
@@ -306,7 +306,7 @@ params:
 #[test]
 fn params_compound_list() {
     let yaml = r"params:
-  - items = list<name = str, score = int>";
+  - items = list(name = str, score = int)";
     assert_valid_yaml(yaml);
     let source = source_from_yaml(yaml);
     let our_params = our_parser_params(&source);
@@ -317,7 +317,7 @@ fn params_compound_list() {
 #[test]
 fn params_compound_struct() {
     let yaml = r"params:
-  - meta = struct<key = str, value = int>";
+  - meta = struct(key = str, value = int)";
     assert_valid_yaml(yaml);
     let source = source_from_yaml(yaml);
     let our_params = our_parser_params(&source);
@@ -344,7 +344,7 @@ params: [a = str, b = int]
 #[test]
 fn nested_enum_with_associated_data() {
     let yaml = r"params:
-  - outcome = enum<Confirmed(evidence = str, confidence = float), Rejected>";
+  - outcome = enum(Confirmed(evidence = str, confidence = float), Rejected)";
     assert_valid_yaml(yaml);
     let source = source_from_yaml(yaml);
     let our_params = our_parser_params(&source);
@@ -354,7 +354,7 @@ fn nested_enum_with_associated_data() {
 #[test]
 fn deeply_nested_list_enum() {
     let yaml = r"params:
-  - reports = list<title = str, findings = list<desc = str, severity = enum<Critical, High, Low>>>";
+  - reports = list(title = str, findings = list(desc = str, severity = enum(Critical, High, Low)))";
     assert_valid_yaml(yaml);
     let source = source_from_yaml(yaml);
     let our_params = our_parser_params(&source);
@@ -364,7 +364,7 @@ fn deeply_nested_list_enum() {
 #[test]
 fn triple_nested_types() {
     let yaml = r"params:
-  - data = list<groups = list<items = list<name = str>>>";
+  - data = list(groups = list(items = list(name = str)))";
     assert_valid_yaml(yaml);
     let source = source_from_yaml(yaml);
     let our_params = our_parser_params(&source);
@@ -374,7 +374,7 @@ fn triple_nested_types() {
 #[test]
 fn enum_with_nested_list() {
     let yaml = r"params:
-  - action = enum<Batch(items = list<name = str>), Single(name = str)>";
+  - action = enum(Batch(items = list(name = str)), Single(name = str))";
     assert_valid_yaml(yaml);
     let source = source_from_yaml(yaml);
     let our_params = our_parser_params(&source);
@@ -389,12 +389,12 @@ fn enum_with_nested_list() {
 fn full_realistic_types_imports_params() {
     let yaml = concat!(
         "types:\n",
-        "  - Severity = enum<Critical, High, Medium, Low>\n",
+        "  - Severity = enum(Critical, High, Medium, Low)\n",
         "imports:\n",
-        "  - \"[header](header.tmpl.md)\"\n",
+        "  - \"[header](./header.tmpl.md)\"\n",
         "params:\n",
         "  - title = str\n",
-        "  - tasks = list<name = str, severity = Severity>\n",
+        "  - tasks = list(name = str, severity = Severity)\n",
         "allow_unused: true"
     );
     let doc = assert_valid_yaml(yaml);
@@ -405,12 +405,12 @@ fn full_realistic_types_imports_params() {
 
     let source = r"---
 types:
-  - Severity = enum<Critical, High, Medium, Low>
+  - Severity = enum(Critical, High, Medium, Low)
 
-imports: [[header](header.tmpl.md)]
+imports: [[header](./header.tmpl.md)]
 params:
   - title = str
-  - tasks = list<name = str, severity = Severity>
+  - tasks = list(name = str, severity = Severity)
 
 allow_unused: true
 ---
@@ -424,7 +424,7 @@ body";
 #[test]
 fn types_only_no_imports() {
     let yaml = r"types:
-  - Priority = enum<Low, High>
+  - Priority = enum(Low, High)
 
 params: [x = Priority]";
     assert_valid_yaml(yaml);
@@ -437,7 +437,7 @@ params: [x = Priority]";
 #[test]
 fn imports_only_no_types() {
     let source = r"---
-imports: [[helper](helper.tmpl.md)]
+imports: [[helper](./helper.tmpl.md)]
 params: []
 allow_unused: true
 ---
@@ -489,11 +489,11 @@ fn kitchen_sink() {
         "name: kitchen_sink\n",
         "description: Everything at once\n",
         "types:\n",
-        "  - Priority = enum<Low, Medium, High>\n",
-        "  - TaskList = list<title = str, severity = Priority>\n",
+        "  - Priority = enum(Low, Medium, High)\n",
+        "  - TaskList = list(title = str, severity = Priority)\n",
         "imports:\n",
-        "  - \"[header](header.tmpl.md)\"\n",
-        "  - \"[footer](footer.tmpl.md)\"\n",
+        "  - \"[header](./header.tmpl.md)\"\n",
+        "  - \"[footer](./footer.tmpl.md)\"\n",
         "params:\n",
         "  - agent_name = str\n",
         "  - tasks = TaskList\n",
@@ -510,10 +510,10 @@ fn kitchen_sink() {
 name: kitchen_sink
 description: Everything at once
 types:
-  - Priority = enum<Low, Medium, High>
-  - TaskList = list<title = str, severity = Priority>
+  - Priority = enum(Low, Medium, High)
+  - TaskList = list(title = str, severity = Priority)
 
-imports: [[header](header.tmpl.md), [footer](footer.tmpl.md)]
+imports: [[header](./header.tmpl.md), [footer](./footer.tmpl.md)]
 params:
   - agent_name = str
   - tasks = TaskList
@@ -537,8 +537,8 @@ body";
 #[test]
 fn cross_validate_type_alias_names() {
     let yaml = r"types:
-  - Alpha = enum<A, B>
-  - Beta = list<x = str>
+  - Alpha = enum(A, B)
+  - Beta = list(x = str)
 
 params: [a = Alpha, b = Beta]";
     let serde_names = serde_yaml_type_names(yaml);
@@ -563,7 +563,7 @@ fn cross_validate_param_names() {
     let yaml = r"params:
   - name = str
   - count = int
-  - items = list<label = str>";
+  - items = list(label = str)";
     let serde_params = serde_yaml_params(yaml);
     let source = source_from_yaml(yaml);
     let our_params = our_parser_params(&source);
@@ -581,7 +581,7 @@ fn cross_validate_param_names() {
 fn cross_validate_param_types_match() {
     let yaml = r"params:
   - name = str
-  - items = list<label = str, score = int>";
+  - items = list(label = str, score = int)";
     let serde_params = serde_yaml_params(yaml);
     let source = source_from_yaml(yaml);
     let our_params = our_parser_params(&source);
@@ -599,8 +599,8 @@ fn cross_validate_import_stems() {
     // YAML-side uses quoted form; our parser uses bracket link form.
     // Both should agree on stems.
     let yaml = r#"imports:
-  - "[alpha](alpha.tmpl.md)"
-  - "[beta](beta.tmpl.md)"
+  - "[alpha](./alpha.tmpl.md)"
+  - "[beta](./beta.tmpl.md)"
 
 params: []
 allow_unused: true"#;
@@ -617,7 +617,7 @@ allow_unused: true"#;
         .collect();
 
     let source = r"---
-imports: [[alpha](alpha.tmpl.md), [beta](beta.tmpl.md)]
+imports: [[alpha](./alpha.tmpl.md), [beta](./beta.tmpl.md)]
 params: []
 allow_unused: true
 ---
@@ -637,7 +637,7 @@ body";
 fn special_chars_in_type_expressions() {
     // Characters like <, >, (, ), , are valid in YAML plain scalars in block context
     let yaml = r"params:
-  - result = enum<Success(code = int, msg = str), Failure(reason = str)>";
+  - result = enum(Success(code = int, msg = str), Failure(reason = str))";
     assert_valid_yaml(yaml);
     let source = source_from_yaml(yaml);
     let our_params = our_parser_params(&source);
@@ -684,9 +684,9 @@ params: [x = str]";
 fn stress_multiple_imports_types_params() {
     let yaml = concat!(
         "types:\n",
-        "  - Priority = enum<Critical, High, Medium, Low>\n",
-        "  - Status = enum<Open, Closed, InProgress>\n",
-        "  - Tags = list<name = str>\n\n",
+        "  - Priority = enum(Critical, High, Medium, Low)\n",
+        "  - Status = enum(Open, Closed, InProgress)\n",
+        "  - Tags = list(name = str)\n\n",
         "params:\n",
         "  - title = str\n",
         "  - priority = Priority\n",
@@ -713,9 +713,9 @@ fn stress_multiple_imports_types_params() {
 fn stress_chained_aliases_realistic() {
     let yaml = concat!(
         "types:\n",
-        "  - Severity = enum<Critical(reason = str), High, Medium, Low>\n",
-        "  - Finding = list<title = str, severity = Severity>\n",
-        "  - Report = list<findings = Finding, author = str>\n\n",
+        "  - Severity = enum(Critical(reason = str), High, Medium, Low)\n",
+        "  - Finding = list(title = str, severity = Severity)\n",
+        "  - Report = list(findings = Finding, author = str)\n\n",
         "params:\n",
         "  - reports = Report\n",
         "  - reviewer = str\n",
@@ -758,8 +758,8 @@ body";
 fn duplicate_type_alias_names_rejected() {
     let source = r"---
 types:
-  - Foo = enum<A, B>
-  - Foo = enum<C, D>
+  - Foo = enum(A, B)
+  - Foo = enum(C, D)
 
 params: [x = Foo]
 ---
@@ -778,7 +778,7 @@ fn param_type_collision_different_types_rejected() {
     // PascalCase of `tasks` = `Tasks`, which collides with the alias.
     let source = r"---
 types:
-  - Tasks = enum<A, B>
+  - Tasks = enum(A, B)
 
 params: [tasks = str]
 ---
@@ -796,7 +796,7 @@ fn param_type_collision_same_type_allowed() {
     // Param `tasks` has type `Tasks` which matches the alias — this is OK.
     let source = r"---
 types:
-  - Tasks = enum<A, B>
+  - Tasks = enum(A, B)
 
 params: [tasks = Tasks]
 allow_unused: true
@@ -810,9 +810,9 @@ body";
 #[test]
 fn type_alias_shadows_import_stem_rejected() {
     let source = r"---
-imports: [[helper](helper.tmpl.md)]
+imports: [[helper](./helper.tmpl.md)]
 types:
-  - helper = enum<A>
+  - helper = enum(A)
 
 params: [x = helper]
 allow_unused: true
@@ -830,7 +830,7 @@ body";
 fn param_pascal_case_shadows_import_stem_rejected() {
     // Param `helper` → PascalCase `Helper`, import stem `Helper`
     let source = r"---
-imports: [[Helper](Helper.tmpl.md)]
+imports: [[Helper](./Helper.tmpl.md)]
 params: [helper = str]
 allow_unused: true
 ---
@@ -875,7 +875,7 @@ body";
 fn reserved_keyword_as_type_name_rejected() {
     let source = r"---
 types:
-  - str = enum<A, B>
+  - str = enum(A, B)
 
 params: [x = str]
 ---
@@ -892,7 +892,7 @@ body";
 fn import_stem_mismatch_rejected() {
     // Stem is 'wrong' but file is 'helper.tmpl.md' (expected stem: 'helper')
     let source = r"---
-imports: [[wrong](helper.tmpl.md)]
+imports: [[wrong](./helper.tmpl.md)]
 params: []
 allow_unused: true
 ---
@@ -910,7 +910,7 @@ body";
 #[test]
 fn import_stem_matches_filename_accepted() {
     let source = r"---
-imports: [[helper](helper.tmpl.md)]
+imports: [[helper](./helper.tmpl.md)]
 params: []
 allow_unused: true
 ---
@@ -953,7 +953,7 @@ body";
 fn type_alias_used_in_multiple_params() {
     let source = r"---
 types:
-  - Priority = enum<Low, High>
+  - Priority = enum(Low, High)
 
 params:
   - primary = Priority
@@ -971,7 +971,7 @@ body";
 fn implicit_param_types_generated() {
     let source = r"---
 params:
-  - tasks = list<title = str>
+  - tasks = list(title = str)
   - name = str
 ---
 body";
@@ -995,7 +995,7 @@ fn builtin_type_shadow_case_insensitive() {
     // `List` should be rejected because `list` is a builtin (case-insensitive check)
     let source = r"---
 types:
-  - List = enum<A, B>
+  - List = enum(A, B)
 
 params: [x = List]
 ---
@@ -1033,7 +1033,7 @@ fn extract_template_stem_strips_extensions() {
 fn alternative_brackets_and_quoted_types_supported() {
     let source = r#"---
 types:
-  - "ThreadItem = struct(slug = str, title = option(str), count = option[int])"
+  - "ThreadItem = struct(slug = str, title = option(str), count = option(int))"
   - 'ThreadList = list(ThreadItem)'
 
 params:
@@ -1043,7 +1043,8 @@ params:
 allow_unused: true
 ---
 body"#;
-    let (fm, _) = parse_frontmatter(source).expect("quoted types and alternative brackets should succeed");
+    let (fm, _) =
+        parse_frontmatter(source).expect("quoted types and alternative brackets should succeed");
     assert!(fm.type_aliases.contains_key("ThreadItem"));
     assert!(fm.type_aliases.contains_key("ThreadList"));
     assert_eq!(fm.params.len(), 2);

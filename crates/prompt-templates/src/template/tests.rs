@@ -542,7 +542,7 @@ params: [show = bool]
 fn param_in_for_loop_counts_as_referenced() {
     let tmpl = Template::from_source(
         "---
-params: [items = list<name = str>]
+params: [items = list(name = str)]
 ---
 > {% for item in items %}{{ item.name }}{% /for %}",
     )
@@ -808,7 +808,7 @@ fn syntax_error_display_includes_line() {
 fn type_mismatch_shows_nested_path() {
     let tmpl = Template::from_source(
         "---
-params: [tasks = list<title = str, priority = int>]
+params: [tasks = list(title = str, priority = int)]
 ---
 {{ tasks }}",
     )
@@ -1139,7 +1139,7 @@ Hello {{ name }}!";
         // for loop, idx(), conditionals, filters.
         let tmpl = Template::from_source(
             "---
-params: [items = list<name = str, active = bool>]
+params: [items = list(name = str, active = bool)]
 ---
 > {% for item in items %}{{ idx(item) }}. {% if item.active %}[✓]{% else %}[ ]{% /if %} {{ item.name | upper }}
 
@@ -1232,7 +1232,7 @@ mod enum_integration {
 ---
 
 params:
-  - severity = enum<Critical(reason = str), High, Low>
+  - severity = enum(Critical(reason = str), High, Low)
 ---
 > {% match severity %}
 > {% case Critical %}
@@ -1369,7 +1369,7 @@ LOW
         let tmpl = Template::from_source(
             "---
 params:
-  - r = enum<Ok(msg = str, code = int), Err>
+  - r = enum(Ok(msg = str, code = int), Err)
 ---
 > {% match r %}
 
@@ -1409,7 +1409,7 @@ fn import_stem_conflicts_with_inline_template_name() {
     // If imports: has stem "helper" and there's a {% tmpl helper %} inline,
     // that's an error since they share the same namespace.
     let source = "---
-imports: [[helper](helper.tmpl.md)]
+imports: [[helper](./helper.tmpl.md)]
 params: [x = str]
 allow_unused: true
 ---
@@ -1555,7 +1555,7 @@ fn for_binding_shadows_param_rejected() {
     let err = Template::from_source(
         "---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
   - x = str
 ---
 > {% for x in items %}{{ x.name }}
@@ -1580,7 +1580,7 @@ consts:
   - x = str := "hi"
 
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
 > {% for x in items %}{{ x.name }}
 
@@ -1599,10 +1599,10 @@ fn for_binding_shadows_import_rejected() {
     let err = Template::from_source(
         r#"---
 imports:
-  - "[shared](shared.tmpl.md)"
+  - "[shared](./shared.tmpl.md)"
 
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 
 allow_unused: true
 ---
@@ -1622,7 +1622,7 @@ allow_unused: true
 fn for_binding_shadows_inline_tmpl_rejected() {
     let err = Template::from_source(
         "---
-params: [items = list<name = str>]
+params: [items = list(name = str)]
 allow_unused: true
 ---
 > {% tmpl greeting %}
@@ -1649,7 +1649,7 @@ fn for_binding_in_nested_if_shadows_param_rejected() {
     let err = Template::from_source(
         r"---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
   - x = str
   - show = bool
 ---
@@ -1677,7 +1677,7 @@ fn sequential_for_loops_same_binding_allowed() {
     let tmpl = Template::from_source(
         "---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 
 allow_unused: true
 ---
@@ -1710,7 +1710,7 @@ fn fresh_for_binding_allowed() {
     let tmpl = Template::from_source(
         "---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 
 allow_unused: true
 ---
@@ -1727,7 +1727,7 @@ allow_unused: true
 fn nested_for_loops_different_bindings_allowed() {
     let tmpl = Template::from_source(
         "---
-params: [items = list<children = list<name = str>>]
+params: [items = list(children = list(name = str))]
 allow_unused: true
 ---
 > {% for item in items %}
@@ -1767,7 +1767,7 @@ allow_unused: true
 fn bare_for_tag_at_line_start_rejected() {
     let err = Template::from_source(
         "---
-params: [items = list<name = str>]
+params: [items = list(name = str)]
 allow_unused: true
 ---
 {% for item in items %}{{ item.name }}
@@ -1985,7 +1985,7 @@ fn comment_dotted_path_tracks_root() {
     // {{ item.label }} in a comment tracks the root "item".
     let tmpl = Template::from_source(
         "---
-params: [name = str, item = struct<label = str>]
+params: [name = str, item = struct(label = str)]
 ---
 {{ name }}
 
@@ -2051,7 +2051,10 @@ params: []
 > {#nospace#}",
     )
     .unwrap_err();
-    assert!(err2.to_string().contains("spaces around the content"), "got: {err2}");
+    assert!(
+        err2.to_string().contains("spaces around the content"),
+        "got: {err2}"
+    );
 }
 
 #[test]
@@ -2063,7 +2066,11 @@ params: [x = bool]
 > {%if x%}hello{%/if%}",
     )
     .unwrap_err();
-    assert!(err.to_string().contains("Statement tags must have spaces around the content"), "got: {err}");
+    assert!(
+        err.to_string()
+            .contains("Statement tags must have spaces around the content"),
+        "got: {err}"
+    );
 }
 
 #[test]
@@ -2098,14 +2105,14 @@ params: [a = str, b = str]
     assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "text");
 }
 
-// -- option<T> required vs optional ----------------------------------------
+// -- option(T) required vs optional ----------------------------------------
 
 #[test]
 fn option_without_default_is_required_missing_param_errors() {
     let tmpl = Template::from_source(
         "---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 > {% if has(x) %}
 
@@ -2132,7 +2139,7 @@ fn option_without_default_providing_value_works() {
     let tmpl = Template::from_source(
         "---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 > {% if has(x) %}
 
@@ -2155,7 +2162,7 @@ fn option_without_default_providing_none_works() {
     let tmpl = Template::from_source(
         "---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 > {% if has(x) %}
 
@@ -2182,7 +2189,7 @@ fn option_with_none_default_omitting_param_is_ok() {
     let tmpl = Template::from_source(
         "---
 params:
-  - x = option<int> := None
+  - x = option(int) := None
 ---
 > {% if has(x) %}
 
@@ -2209,7 +2216,7 @@ fn option_with_none_default_can_override_with_value() {
     let tmpl = Template::from_source(
         "---
 params:
-  - x = option<int> := None
+  - x = option(int) := None
 ---
 > {% if has(x) %}
 
@@ -2236,9 +2243,9 @@ fn defaults_does_not_include_option_without_default() {
     let tmpl = Template::from_source(
         r#"---
 params:
-  - x = option<int>
-  - y = option<str> := None
-  - z = option<str> := "hi"
+  - x = option(int)
+  - y = option(str) := None
+  - z = option(str) := "hi"
 ---
 > {% if has(x) %}
 

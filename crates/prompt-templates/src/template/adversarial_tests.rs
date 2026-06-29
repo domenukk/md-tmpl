@@ -35,7 +35,7 @@ LEAF"
 
     // Build intermediate templates from depth-1 down to 0.
     for i in (0..depth).rev() {
-        let next_name = format!("t{}.tmpl.md", i + 1);
+        let next_name = format!("./t{}.tmpl.md", i + 1);
         let this_name = format!("t{i}.tmpl.md");
         let source = format!(
             r"---
@@ -103,7 +103,7 @@ fn circular_include_two_cycle_detected() {
 name: a
 params: []
 ---
-A> {% include [b](b.tmpl.md) %}",
+A> {% include [b](./b.tmpl.md) %}",
     )
     .unwrap();
     std::fs::write(
@@ -112,7 +112,7 @@ A> {% include [b](b.tmpl.md) %}",
 name: b
 params: []
 ---
-B> {% include [a](a.tmpl.md) %}",
+B> {% include [a](./a.tmpl.md) %}",
     )
     .unwrap();
 
@@ -137,7 +137,7 @@ fn circular_include_three_cycle_detected() {
 name: a
 params: []
 ---
-A> {% include [b](b.tmpl.md) %}",
+A> {% include [b](./b.tmpl.md) %}",
     )
     .unwrap();
     std::fs::write(
@@ -146,7 +146,7 @@ A> {% include [b](b.tmpl.md) %}",
 name: b
 params: []
 ---
-B> {% include [c](c.tmpl.md) %}",
+B> {% include [c](./c.tmpl.md) %}",
     )
     .unwrap();
     std::fs::write(
@@ -155,7 +155,7 @@ B> {% include [c](c.tmpl.md) %}",
 name: c
 params: []
 ---
-C> {% include [a](a.tmpl.md) %}",
+C> {% include [a](./a.tmpl.md) %}",
     )
     .unwrap();
 
@@ -252,8 +252,8 @@ params: [my_list = str]
 fn collision_duplicate_type_alias_rejected() {
     let source = r"---
 types:
-  - Foo = enum<A, B>
-  - Foo = enum<X, Y>
+  - Foo = enum(A, B)
+  - Foo = enum(X, Y)
 
 params: [x = Foo]
 ---
@@ -271,8 +271,8 @@ params: [x = Foo]
 fn collision_distinct_type_aliases_ok() {
     let source = r"---
 types:
-  - Priority = enum<High, Low>
-  - Status = enum<Active, Paused>
+  - Priority = enum(High, Low)
+  - Status = enum(Active, Paused)
 
 params: [p = Priority, s = Status]
 ---
@@ -296,7 +296,7 @@ params: [p = Priority, s = Status]
 fn collision_type_alias_shadows_builtin_rejected() {
     let source = r"---
 types:
-  - Str = enum<A, B>
+  - Str = enum(A, B)
 
 params: [x = Str]
 ---
@@ -315,7 +315,7 @@ params: [x = Str]
 fn collision_non_builtin_type_alias_ok() {
     let source = r"---
 types:
-  - Priority = enum<High, Low>
+  - Priority = enum(High, Low)
 
 params: [level = Priority]
 ---
@@ -352,10 +352,10 @@ params: []
     let source = r"---
 name: main
 imports:
-  - [mylib](mylib.tmpl.md)
+  - [mylib](./mylib.tmpl.md)
 
 types:
-  - mylib = enum<A, B>
+  - mylib = enum(A, B)
 
 params: [x = mylib]
 ---
@@ -386,10 +386,10 @@ params: []
     let source = r"---
 name: main
 imports:
-  - [mylib](mylib.tmpl.md)
+  - [mylib](./mylib.tmpl.md)
 
 types:
-  - Priority = enum<High, Low>
+  - Priority = enum(High, Low)
 
 params: [x = Priority]
 ---
@@ -427,7 +427,7 @@ params: []
     let source = r"---
 name: main
 imports:
-  - [Abc](Abc.tmpl.md)
+  - [Abc](./Abc.tmpl.md)
 
 params: [abc = str]
 ---
@@ -458,7 +458,7 @@ params: []
     let source = r"---
 name: main
 imports:
-  - [Abc](Abc.tmpl.md)
+  - [Abc](./Abc.tmpl.md)
 
 params: [msg = str]
 ---
@@ -484,7 +484,7 @@ fn collision_type_param_conflict_rejected() {
     // "Priority" when the param's type is NOT that alias.
     let source = r"---
 types:
-  - Priority = enum<High, Low>
+  - Priority = enum(High, Low)
 
 params: [priority = str]
 ---
@@ -504,7 +504,7 @@ fn collision_type_param_same_type_ok() {
     // When param type IS the alias, this is allowed.
     let source = r"---
 types:
-  - Priority = enum<High, Low>
+  - Priority = enum(High, Low)
 
 params: [priority = Priority]
 ---
@@ -528,7 +528,7 @@ fn collision_unused_type_alias_rejected() {
     // Enum types are exempt from R4 (auto-injected as constants), so use struct.
     let source = r"---
 types:
-  - Unused = struct<a = str, b = int>
+  - Unused = struct(a = str, b = int)
 
 params: [x = str]
 ---
@@ -546,7 +546,7 @@ params: [x = str]
 fn collision_used_type_alias_ok() {
     let source = r"---
 types:
-  - Status = enum<Active, Paused>
+  - Status = enum(Active, Paused)
 
 params: [s = Status]
 ---
@@ -658,7 +658,7 @@ params: []
     let source = r"---
 name: main
 imports:
-  - [enum](enum.tmpl.md)
+  - [enum](./enum.tmpl.md)
 
 params: []
 ---
@@ -718,7 +718,7 @@ params: [{}]
 #[test]
 fn adversarial_empty_list_for_loop() {
     let source = r"---
-params: [items = list<name = str>]
+params: [items = list(name = str)]
 ---
 > {% for item in items %}{{ item.name }}{% /for %}
 ";

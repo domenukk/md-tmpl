@@ -344,7 +344,7 @@ SIMPLE_KWARGS: dict = {"name": "Alice", "place": "Wonderland"}
 PT_LOOP = """\
 ---
 params:
-  - items = list<label = str, value = int>
+  - items = list(label = str, value = int)
 ---
 > {% for item in items %}
 
@@ -464,7 +464,7 @@ PT_HERO = """\
 ---
 params:
   - title = str
-  - sections = list<heading = str, entries = list<name = str, active = bool, score = float, tags = list<label = str>>>
+  - sections = list(heading = str, entries = list(name = str, active = bool, score = float, tags = list(label = str)))
 ---
 # {{ title }}
 

@@ -34,7 +34,7 @@ fn test_error_undefined_variable_message() {
     // top-level keys, so we use a dotted path instead.
     let tmpl = Template::from_source(
         r"---
-params: [data = struct<x = str>]
+params: [data = struct(x = str)]
 ---
 {{ data.missing_field }}",
     )
@@ -159,10 +159,10 @@ params: [count = int]
 
 #[test]
 fn test_error_type_mismatch_nested_path() {
-    // list<score = int>: provide str at the leaf.
+    // list(score = int): provide str at the leaf.
     let tmpl = Template::from_source(
         r"---
-params: [items = list<score = int>]
+params: [items = list(score = int)]
 ---
 {{ items }}",
     )
@@ -223,7 +223,7 @@ fn test_error_include_not_found_message() {
 params: [x = str]
 allow_unused: true
 ---
-> {% include [missing](missing.tmpl.md) %}
+> {% include [missing](./missing.tmpl.md) %}
 
 {{ x }}",
     )
@@ -361,10 +361,10 @@ params: [name = str]
 
 #[test]
 fn test_type_mismatch_dotted_path_for_deeply_nested() {
-    // list<config = struct<timeout = int>>: provide str at deepest level.
+    // list(config = struct(timeout = int)): provide str at deepest level.
     let tmpl = Template::from_source(
         r"---
-params: [items = list<config = struct<timeout = int>>]
+params: [items = list(config = struct(timeout = int))]
 ---
 {{ items }}",
     )

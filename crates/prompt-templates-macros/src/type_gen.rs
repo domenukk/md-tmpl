@@ -5,7 +5,7 @@ use crate::{
     struct_gen::{SetterFn, builder_field_attrs, struct_derive_attrs, var_type_to_rust},
 };
 
-/// Check whether any field in `decls` (recursively) contains a `tmpl<>` type.
+/// Check whether any field in `decls` (recursively) contains a `tmpl()` type.
 ///
 /// Used to decide whether serde derives should be suppressed on generated
 /// sub-structs — `Arc<Template>` does not implement `Serialize` / `Deserialize`.
@@ -27,7 +27,7 @@ fn var_type_has_tmpl(vt: &prompt_templates::VarType) -> bool {
     }
 }
 
-/// Generate a sub-struct and setter for a typed list (`list<field = type, ...>`).
+/// Generate a sub-struct and setter for a typed list (`list(field = type, ...)`).
 pub(crate) fn typed_list_codegen(
     inner_fields: &[prompt_templates::VarDecl],
     parent_struct: &str,
@@ -85,7 +85,7 @@ pub(crate) fn typed_list_codegen(
     )
 }
 
-/// Generate a sub-struct and setter for a typed struct (`struct<field = type, ...>`).
+/// Generate a sub-struct and setter for a typed struct (`struct(field = type, ...)`).
 pub(crate) fn typed_dict_codegen(
     inner_fields: &[prompt_templates::VarDecl],
     parent_struct: &str,
@@ -309,7 +309,7 @@ pub(crate) fn typed_enum_codegen(
     )
 }
 
-/// Generate `Option<T>` and a setter for option-typed variables (`option<T>`).
+/// Generate `Option<T>` and a setter for option-typed variables (`option(T)`).
 ///
 /// Transparent option representation:
 /// - `None` → `Value::None`
@@ -366,7 +366,7 @@ pub(crate) fn typed_option_codegen(
 ///
 /// Unlike `typed_enum_codegen` (which prefixes names with a parent struct),
 /// this function emits types using their **original alias name** from the
-/// template.  For example, `BuildPhase = enum<Compile, Link, Test>`
+/// template.  For example, `BuildPhase = enum(Compile, Link, Test)`
 /// generates `pub enum BuildPhase { Compile, Link, Test }`.
 ///
 /// For **unit-variant-only enums**, this additionally generates:
@@ -574,7 +574,7 @@ pub(crate) fn generate_unit_enum_impls(
     }
 }
 
-/// Generate a top-level struct for a `list<field = type, ...>` type alias.
+/// Generate a top-level struct for a `list(field = type, ...)` type alias.
 ///
 /// The generated struct represents a single item in the list.
 pub(crate) fn generate_toplevel_list_item(
@@ -615,7 +615,7 @@ pub(crate) fn generate_toplevel_list_item(
     }
 }
 
-/// Generate a top-level struct for a `struct<field = type, ...>` type alias.
+/// Generate a top-level struct for a `struct(field = type, ...)` type alias.
 pub(crate) fn generate_toplevel_dict(
     name: &str,
     fields: &[prompt_templates::VarDecl],
@@ -648,7 +648,7 @@ pub(crate) fn generate_toplevel_dict(
     }
 }
 
-/// Generate a top-level type alias for an `option<T>` type alias.
+/// Generate a top-level type alias for an `option(T)` type alias.
 ///
 /// Instead of emitting a full enum, this generates `pub type Name = Option<InnerType>`.
 /// If the inner type is complex (struct, list), sub-types are generated first.

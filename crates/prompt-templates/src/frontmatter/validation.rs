@@ -238,7 +238,7 @@ mod tests {
     #[test]
     fn r1_exception_param_type_is_alias_type() {
         let mut fm = empty_fm();
-        // param `code_review` has type `list<title = str>`
+        // param `code_review` has type `list(title = str)`
         let the_type = list_type(vec![decl("title", VarType::Str)]);
         fm.declarations = vec![decl("code_review", the_type.clone())];
         // type alias `CodeReview` → same type (allowed exception)

@@ -219,7 +219,7 @@ export function getField(v: Value, key: string): Value | undefined {
  */
 export function fromJs(value: unknown): Value {
   // null / undefined → NONE (absent value).  This enables transparent
-  // option<T> representation: null/undefined values map to the NONE
+  // option(T) representation: null/undefined values map to the NONE
   // sentinel, which displays as empty string and is falsy.
   if (value === null || value === undefined) {
     return NONE;

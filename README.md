@@ -2,233 +2,253 @@
 
 [![CI](https://github.com/domenukk/prompt-templates/actions/workflows/ci.yml/badge.svg)](https://github.com/domenukk/prompt-templates/actions/workflows/ci.yml)
 
-**Strongly-typed prompt templates for LLMs** — write prompts as markdown,
-validate parameters at compile time.
+**Strongly-typed prompt templates for LLM Agents**
+Write prompts as markdown, catch errors faster. Vibe harder.
 
-Templates are `.tmpl.md` files with YAML frontmatter declaring typed
-parameters. Every variable, list shape, and enum variant is validated
-before the prompt is rendered — at **compile time** in Rust, or at
-render time in Python, Go, and TypeScript.
-
-## Quick Start
-
-A prompt template is just markdown with a typed header:
-
-```markdown
----
-params:
-  - name = str
----
-
-Hello {{ name }}!
-```
-
-Render it from any supported language:
+## The Template
 
 <!-- prettier-ignore -->
-````carousel
+```markdown
+---
+consts:
+  - MODEL = str := "gemini-3.5-flash"
+  - MAX_FINDINGS = int := 20
+types:
+  - Severity = enum(Critical, High, Medium, Low)
+  - Verdict = enum(Approved, NeedsChanges(reason = str), Rejected(reason = str))
+params:
+  - reviewer = str
+  - file_path = str
+  - severity = Severity
+  - findings = list(line = int, message = str, severity = Severity)
+  - verdict = Verdict
+---
+
+# Code Review: {{ file_path }}
+
+Reviewer: {{ reviewer }} · Model: {{ MODEL }}
+Severity: {{ kind(severity) }} · Findings: {{ len(findings) }}/{{ MAX_FINDINGS }}
+
+> {% for finding in findings %}
+
+- **L{{ finding.line }}** ({{ kind(finding.severity) }}): {{ finding.message }}
+
+  > {% /for %}
+
+> {% match verdict %}
+> {% case Approved %}
+
+✅ **Approved** — ship it.
+
+> {% case NeedsChanges %}
+
+🔄 **Needs changes:** {{ verdict.reason }}
+
+> {% case Rejected %}
+
+❌ **Rejected:** {{ verdict.reason }}
+
+> {% /match %}
+```
+
+Types and fields are validated at build time — rendering happens at runtime:
+
 ```rust
 use prompt_templates_macros::include_template;
 
-include_template!("prompts/simple_greeting.tmpl.md");
+include_template!("prompts/code_review.tmpl.md");
 
-let output = simple_greeting::Params { name: "world".into() }
-    .render().unwrap();
-// → "Hello world!"
+let output = code_review::Params {
+    reviewer: "Alice".into(),
+    file_path: "src/main.rs".into(),
+    severity: code_review::Severity::High,
+    findings: vec![
+        code_review::FindingsItem {
+            line: 42,
+            message: "unused import".into(),
+            severity: code_review::Severity::Low,
+        },
+    ],
+    verdict: code_review::Verdict::NeedsChanges {
+        reason: "remove dead imports".into(),
+    },
+}
+.render()
+.unwrap();
 ```
-<!-- slide -->
-```python
-from prompt_templates import Template
 
-tmpl = Template.from_source("""---
-params:
-  - name = str
----
-Hello {{ name }}!""")
-print(tmpl.render(name="world"))  # → "Hello world!"
-```
-<!-- slide -->
-```go
-tmpl, _ := pt.FromSource(`---
-params:
-  - name = str
----
-Hello {{ name }}!`)
-defer tmpl.Close()
-result, _ := tmpl.RenderMap(map[string]any{"name": "world"})
-```
-<!-- slide -->
-```typescript
-import { Template } from "prompt-templates";
-
-const tmpl = Template.fromSource(`---
-params:
-  - name = str
----
-Hello {{ name }}!`);
-console.log(tmpl.render({ name: "world" }));
-```
-````
+Wrong types, missing fields, non-exhaustive matches — all caught at **build time**.
+Templates can also be loaded and validated at runtime for dynamic or hot-reload use cases.
 
 ## Why?
 
-Inline format strings are unreadable; untyped templates break at runtime.
-
-| Problem                       | Solution                                                                    |
-| ----------------------------- | --------------------------------------------------------------------------- |
-| Prompts buried in code        | **Markdown-native** — `.tmpl.md` files render in any editor or on GitHub    |
-| Errors found in production    | **Strict typing** — mismatches caught at compile time (Rust) or render time |
-| LLMs drift templates silently | **Agent-safe** — the engine catches drift immediately                       |
+| Problem                       | Solution                                                                 |
+| ----------------------------- | ------------------------------------------------------------------------ |
+| Prompts buried in code        | **Markdown-native** — `.tmpl.md` files render in any editor or on GitHub |
+| Errors found in production    | **Strict typing** — caught at build time (Rust) or render time           |
+| LLMs drift templates silently | **Agent-safe** — the engine catches drift immediately                    |
+| Syntax breaks in previews     | **Markdown-safe** — renders cleanly in any viewer, even unrendered       |
 
 ## Features
 
 | Feature                    | Description                                                                              |
 | -------------------------- | ---------------------------------------------------------------------------------------- |
-| **Typed parameters**       | `str`, `int`, `float`, `bool`, `list<…>`, `struct<…>`, `enum<…>`, `option<…>`, `tmpl<…>` |
+| **Typed parameters**       | `str`, `int`, `float`, `bool`, `list(…)`, `struct(…)`, `enum(…)`, `option(…)`, `tmpl(…)` |
 | **Type aliases**           | `types:` defines reusable named types                                                    |
 | **Cross-template imports** | `imports:` pulls types via dotted paths (`stem.TypeName`)                                |
-| **Typed lists**            | `list<title = str, score = int>` — iterate with `{% for %}`, fields validated            |
+| **Typed lists**            | `list(title = str, score = int)` — iterate with `{% for %}`, fields validated            |
 | **Enum dispatch**          | `match`/`case` with exhaustiveness checking and field narrowing                          |
 | **Includes as links**      | `{% include [name](path.tmpl.md) with … %}` — clickable, type-checked                    |
 | **Inline templates**       | `{% tmpl name %}` — reusable fragments without separate files                            |
 | **Constants**              | `consts:` for file-scoped immutable values                                               |
 | **Built-in functions**     | `idx(b)`, `len(x)`, `kind(x)`, `has(x)` + filters (`upper`, `lower`, `trim`, `join`, …)  |
 | **Readable as markdown**   | `> {% %}` blockquote prefix keeps control flow visually separated from prose             |
+| **Markdown-safe syntax**   | Valid YAML frontmatter, clean `()` type syntax — looks good even unrendered              |
 
 > **Note:** The `> ` prefix is required only on `{% %}` tag lines — it is
 > stripped before compilation. Content lines between tags are normal text
 > and should not use `> `. A content line starting with `> ` is kept
 > verbatim as a literal markdown blockquote in the output.
 
-## Examples
-
-### Typed Lists
-
-```markdown
----
-params:
-  - tasks = list<title = str, priority = str>
----
-
-> {% for task in tasks %}
-
-- **{{ task.title }}** ({{ task.priority }})
-
-  > {% /for %}
-```
-
-### Enum Dispatch
-
-Declare enum variants with optional typed fields, then dispatch with
-`match`/`case` — the engine enforces exhaustiveness and narrows fields
-per variant:
+## Quick Start
 
 <!-- prettier-ignore -->
-```markdown
----
-params:
-  - status = enum<Done(summary = str), InProgress, Blocked>
----
+````carousel
+```rust
+use prompt_templates_macros::include_template;
 
-> {% match status %}
-> {% case Done %}
+// Parsed + validated at build time — generates typed structs from frontmatter
+include_template!("prompts/task_report.tmpl.md");
 
-✅ Completed: {{ status.summary }}
-
-> {% case InProgress %}
-
-🔄 Still in progress.
-
-> {% case Blocked %}
-
-❌ Blocked.
-
-> {% /match %}
+let output = task_report::Params {
+    title: "Sprint 42".into(),
+    priority: task_report::Priority::Critical,
+    tasks: vec![
+        task_report::TasksItem {
+            name: "Fix auth bypass".into(),
+            urgency: task_report::Priority::Critical,
+        },
+        task_report::TasksItem {
+            name: "Update dependencies".into(),
+            urgency: task_report::Priority::Low,
+        },
+    ],
+}
+.render()
+.unwrap();
 ```
+<!-- slide -->
+```python
+from prompt_templates import template
 
-Accessing `status.summary` outside `{% case Done %}` is a **compile
-error** — the type system narrows fields per variant.
+# Auto-generates Priority enum + TasksItem class from frontmatter
+report = template("prompts/task_report.tmpl.md")
 
-### Includes and Inline Templates
-
-```markdown
-> {% include [task_card](task_card.tmpl.md) with title=task.title %}
-> {% include [row](row.tmpl.md) for item in items %}
+output = report.render(
+    title="Sprint 42",
+    priority=report.Priority.Critical,
+    tasks=[
+        {"name": "Fix auth bypass", "urgency": report.Priority.Critical},
+        {"name": "Update dependencies", "urgency": report.Priority.Low},
+    ],
+)
 ```
+<!-- slide -->
+```go
+import pt "github.com/domenukk/prompt-templates/go/prompt_templates"
 
-Define reusable fragments inline with `{% tmpl %}`:
-
-```markdown
-> {% tmpl task_row %}
-
----
-
+tmpl, _ := pt.FromSource(`---
+types:
+  - Priority = enum(Critical, High, Medium, Low)
 params:
-
-- title = str
-- priority = str
-
+  - title = str
+  - priority = Priority
+  - tasks = list(name = str, urgency = Priority)
 ---
 
-- **{{ title }}** ({{ priority }})
+# Task Report: {{ title }}
 
-  > {% /tmpl %}
+Priority: {{ priority }}
 
 > {% for task in tasks %}
-> {% include task_row with title=task.title, priority=task.priority %}
-> {% /for %}
+
+- {{ task.name }} ({{ task.urgency }})
+
+  > {% /for %}`)
+defer tmpl.Close()
+
+result, _ := tmpl.RenderMap(map[string]any{
+    "title":    "Sprint 42",
+    "priority": pt.Variant{Kind: "Critical"},
+    "tasks": []map[string]any{
+        {"name": "Fix auth bypass", "urgency": pt.Variant{Kind: "Critical"}},
+        {"name": "Update dependencies", "urgency": pt.Variant{Kind: "Low"}},
+    },
+})
 ```
+<!-- slide -->
+```typescript
+import { Template, defineVariants } from "prompt-templates";
 
-### Type Aliases
+const Priority = defineVariants({
+  Critical: null, High: null, Medium: null, Low: null,
+});
 
-```markdown
----
+const tmpl = Template.fromSource(`---
 types:
-  - Category = enum<Labelled(label = str), Unlabelled>
+  - Priority = enum(Critical, High, Medium, Low)
 params:
-  - tasks = list<title = str, category = Category>
-  - components = list<name = str, category = Category>
+  - title = str
+  - priority = Priority
+  - tasks = list(name = str, urgency = Priority)
 ---
+
+# Task Report: {{ title }}
+
+Priority: {{ priority }}
+
+> {% for task in tasks %}
+
+- {{ task.name }} ({{ task.urgency }})
+
+  > {% /for %}`);
+
+console.log(tmpl.render({
+  title: "Sprint 42",
+  priority: Priority.Critical(),
+  tasks: [
+    { name: "Fix auth bypass", urgency: Priority.Critical() },
+    { name: "Update dependencies", urgency: Priority.Low() },
+  ],
+}));
 ```
-
-### Cross-Template Imports
-
-```markdown
----
-imports:
-  - "[shared_types](shared_types.tmpl.md)"
-params:
-  - items = shared_types.items
-  - priority = shared_types.Priority
----
-```
-
-### Constants
-
-```markdown
----
-consts:
-  - NOTEBOOK_FILENAME = str := "thought_process.md"
-  - MAX_RETRIES = int := 3
-params:
-  - name = str
----
-
-{{ name }}'s notebook: {{ NOTEBOOK_FILENAME }} (max {{ MAX_RETRIES }} retries)
-```
+````
 
 ## Performance
 
-Built for speed with zero-allocation rendering (in Rust). Approximate benchmark results (render-only):
+Built for speed — zero-allocation rendering in Rust, native FFI in all bindings.
 
-| Language                                | simple         | loop           | conditional    | hero            |
-| --------------------------------------- | -------------- | -------------- | -------------- | --------------- |
-| **Rust** (vs Tera/MiniJinja/Handlebars) | **119 ns** 🏆  | **402 ns** 🏆  | **196 ns** 🏆  | **2.08 µs** 🏆  |
-| **Python** (vs Jinja2/Mako)             | **0.94 µs** 🏆 | **2.63 µs** 🏆 | **1.07 µs** 🏆 | 23.95 µs        |
-| **Go** (vs `text/template`)             | 536 ns         | **1.71 µs** 🏆 | N/A            | **24.23 µs** 🏆 |
-| **TypeScript** (vs Handlebars/Mustache) | **690 ns** 🏆  | 6.30 µs        | 1.21 µs        | N/A             |
+### Rust (render-only, pre-parsed)
 
-See the language-specific READMEs or the [benchmarks suite](benchmarks/README.md) for full details, compile-time overhead, and methodology.
+| Scenario        | prompt-templates |    Tera | MiniJinja | Handlebars |
+| --------------- | ---------------: | ------: | --------: | ---------: |
+| **simple**      |    **130 ns** 🏆 |  213 ns |    558 ns |     632 ns |
+| **loop**        |    **445 ns** 🏆 |  618 ns |   2.00 µs |    2.85 µs |
+| **conditional** |    **173 ns** 🏆 |  348 ns |    625 ns |    1.16 µs |
+| **hero**        |   **2.07 µs** 🏆 | 2.09 µs |   7.62 µs |    21.4 µs |
+| **mega**        |   **10.1 µs** 🏆 | 11.1 µs |   30.1 µs |    84.7 µs |
+
+### Cross-Language (render-only)
+
+| Language       |    simple |       loop | conditional |      large |
+| -------------- | --------: | ---------: | ----------: | ---------: |
+| **Rust**       | 196 ns 🏆 | 1.11 µs 🏆 |         N/A | 22.1 µs 🏆 |
+| **Go**         |    525 ns |   1,716 ns |         N/A |  24,808 ns |
+| Go `text/tmpl` |    569 ns |   6,251 ns |         N/A | 140,495 ns |
+| **TypeScript** |    610 ns |   4,135 ns |    2,011 ns |        N/A |
+| **Python**     |   0.84 µs |    1.74 µs |     0.87 µs |    6.62 µs |
+
+See the language-specific READMEs or the [benchmarks suite](benchmarks/README.md) for full details and methodology.
 
 ## Language Bindings
 
@@ -237,7 +257,7 @@ See the language-specific READMEs or the [benchmarks suite](benchmarks/README.md
 [![crates.io](https://img.shields.io/crates/v/prompt-templates.svg)](https://crates.io/crates/prompt-templates)
 [![docs.rs](https://docs.rs/prompt-templates/badge.svg)](https://docs.rs/prompt-templates)
 
-Compile-time validation via proc macros. Pre-parsed templates with zero-overhead rendering. Full API includes `ctx!` macro, `TypedBuilder`, `serde`, hot-reload, caching, and benchmarks.
+Build-time validation via proc macros, plus a full runtime API for dynamic loading. Pre-parsed templates with zero-overhead rendering. Includes `ctx!` macro, `TypedBuilder`, `serde`, hot-reload, caching, and benchmarks.
 
 ### Python ([README](crates/prompt-templates-python/README.md))
 
@@ -249,7 +269,7 @@ Includes `RenderStruct`, `TaggedVariant`, codegen, caching, and benchmarks.
 
 ### TypeScript ([README](crates/prompt-templates-typescript/README.md))
 
-Includes `TypedTemplate<P>`, `defineVariants`, codegen, WASM backend, and benchmarks.
+Includes `TypedTemplate(P)`, `defineVariants`, codegen, WASM backend, and benchmarks.
 
 ### WASM ([README](crates/prompt-templates-wasm/README.md))
 

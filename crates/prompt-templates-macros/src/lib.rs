@@ -103,7 +103,6 @@ impl Parse for IncludeTemplateInput {
 struct InlineTemplateInput {
     source: LitStr,
     struct_name: Option<Ident>,
-    _arrow: Token![=>],
     name: Ident,
     crate_path: Option<syn::Path>,
 }
@@ -117,7 +116,7 @@ impl Parse for InlineTemplateInput {
         } else {
             None
         };
-        let _arrow: Token![=>] = input.parse()?;
+        let _: Token![=>] = input.parse()?;
         let name: Ident = input.parse()?;
         let crate_path = if input.peek(Token![,]) {
             let _comma: Token![,] = input.parse()?;
@@ -130,7 +129,6 @@ impl Parse for InlineTemplateInput {
         Ok(Self {
             source,
             struct_name,
-            _arrow,
             name,
             crate_path,
         })

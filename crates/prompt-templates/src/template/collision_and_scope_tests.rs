@@ -48,7 +48,7 @@ consts:
 
     let src = r"---
 imports:
-  - [lib](lib.tmpl.md)
+  - [lib](./lib.tmpl.md)
 
 params:
   - count = int := lib.LIMIT
@@ -80,7 +80,7 @@ params: []
 
     let src = r"---
 imports:
-  - [Helper](Helper.tmpl.md)
+  - [Helper](./Helper.tmpl.md)
 
 params:
   - helper = str
@@ -111,7 +111,7 @@ params: []
 
     let src = r"---
 imports:
-  - [Config](Config.tmpl.md)
+  - [Config](./Config.tmpl.md)
 
 consts:
   - config = int := 1
@@ -135,7 +135,7 @@ consts:
 fn param_shadows_type_alias_different_type_rejected() {
     let src = r"---
 types:
-  - Level = enum<High, Low>
+  - Level = enum(High, Low)
 
 params:
   - level = str
@@ -155,7 +155,7 @@ params:
 fn param_shadows_type_alias_same_type_allowed() {
     let src = r"---
 types:
-  - Level = enum<High, Low>
+  - Level = enum(High, Low)
 
 params:
   - level = Level
@@ -173,7 +173,7 @@ params:
 fn const_shadows_type_alias_different_type_rejected() {
     let src = r#"---
 types:
-  - Status = enum<Active, Paused>
+  - Status = enum(Active, Paused)
 
 consts:
   - status = str := "override"
@@ -252,10 +252,10 @@ params: []
 
     let src = r"---
 imports:
-  - [Utils](Utils.tmpl.md)
+  - [Utils](./Utils.tmpl.md)
 
 types:
-  - Utils = enum<A, B>
+  - Utils = enum(A, B)
 
 params:
   - x = Utils
@@ -335,7 +335,7 @@ inner
 #[test]
 fn inline_tmpl_shadows_import_stem_rejected() {
     let src = r"---
-imports: [[shared](shared.tmpl.md)]
+imports: [[shared](./shared.tmpl.md)]
 params: [x = str]
 allow_unused: true
 ---
@@ -368,7 +368,7 @@ inner
 fn for_binding_shadows_param_rejected() {
     let src = r"---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
   - item = str
 ---
 > {% for item in items %}{{ item.name }}
@@ -393,7 +393,7 @@ consts:
   - item = str := "fixed"
 
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
 > {% for item in items %}{{ item.name }}
 
@@ -412,10 +412,10 @@ params:
 fn for_binding_shadows_import_stem_rejected() {
     let src = r#"---
 imports:
-  - "[lib](lib.tmpl.md)"
+  - "[lib](./lib.tmpl.md)"
 
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 
 allow_unused: true
 ---
@@ -435,7 +435,7 @@ allow_unused: true
 #[test]
 fn for_binding_shadows_inline_tmpl_rejected() {
     let src = r"---
-params: [items = list<name = str>]
+params: [items = list(name = str)]
 allow_unused: true
 ---
 > {% tmpl card %}
@@ -468,7 +468,7 @@ params: [title = str]
 fn nested_tmpl_inherits_parent_type_aliases() {
     let src = r"---
 types:
-  - Level = enum<High, Low>
+  - Level = enum(High, Low)
 
 params:
   - priority = Level
@@ -654,7 +654,7 @@ consts:
 fn const_pascal_conflicts_with_type_alias_rejected() {
     let src = r#"---
 types:
-  - Stage = enum<Design, Build>
+  - Stage = enum(Design, Build)
 
 consts:
   - Stage = str := "override"
@@ -693,7 +693,7 @@ params: []
 fn const_pascal_matches_type_alias_same_type_allowed() {
     let src = r"---
 types:
-  - DefaultLevel = enum<High, Low>
+  - DefaultLevel = enum(High, Low)
 
 consts:
   - default_level = DefaultLevel := High
@@ -712,8 +712,8 @@ params: []
 fn multiple_types_and_consts_only_conflict_rejected() {
     let src = r#"---
 types:
-  - Color = enum<Red, Blue>
-  - Size = enum<Big, Small>
+  - Color = enum(Red, Blue)
+  - Size = enum(Big, Small)
 
 consts:
   - color = str := "override"

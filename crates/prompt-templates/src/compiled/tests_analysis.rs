@@ -1036,7 +1036,7 @@ Hello!",
 name: main
 params: []
 ---
-> {% include [greeting](greeting.tmpl.md) %}",
+> {% include [greeting](./greeting.tmpl.md) %}",
     )
     .unwrap();
 
@@ -1064,7 +1064,7 @@ Got: {{ msg }}",
 name: parent
 params: []
 ---
-> {% include [child](child.tmpl.md) with msg="hi" %}"#,
+> {% include [child](./child.tmpl.md) with msg="hi" %}"#,
     )
     .unwrap();
 
@@ -1090,9 +1090,9 @@ params: [item = str]
         dir.path().join("list.tmpl.md"),
         r"---
 name: list
-params: [items = list<str>]
+params: [items = list(str)]
 ---
-> {% include [row](row.tmpl.md) for item in items %}",
+> {% include [row](./row.tmpl.md) for item in items %}",
     )
     .unwrap();
 
@@ -1121,11 +1121,11 @@ fn self_recursive_include_renders_tree() {
 name: node
 params:
   - label = str
-  - children = list<label = str, children = list<label = str, children = list<str>>>
+  - children = list(label = str, children = list(label = str, children = list(str)))
 ---
 {{ label }}
 
-> {% for child in children %}> {% include [node](node.tmpl.md) with label=child.label, children=child.children %}> {% /for %}",
+> {% for child in children %}> {% include [node](./node.tmpl.md) with label=child.label, children=child.children %}> {% /for %}",
     )
     .unwrap();
 
@@ -1175,11 +1175,11 @@ fn self_recursive_include_terminates_on_empty_children() {
 name: leaf
 params:
   - label = str
-  - children = list<label = str, children = list<label = str, children = list<str>>>
+  - children = list(label = str, children = list(label = str, children = list(str)))
 ---
 {{ label }}
 
-> {% for child in children %}> {% include [leaf](leaf.tmpl.md) with label=child.label, children=child.children %}> {% /for %}",
+> {% for child in children %}> {% include [leaf](./leaf.tmpl.md) with label=child.label, children=child.children %}> {% /for %}",
     )
     .unwrap();
 

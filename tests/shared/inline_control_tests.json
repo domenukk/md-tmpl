@@ -89,7 +89,7 @@
       "description": "Inline for loop iterates over struct list",
       "template_lines": [
         "---",
-        "params: [items = list<name = str>]",
+        "params: [items = list(name = str)]",
         "---",
         "> {% for item in items %}{{ item.name }} {% /for %}"
       ],
@@ -101,7 +101,7 @@
       "description": "For-else renders else body when list is empty",
       "template_lines": [
         "---",
-        "params: [items = list<str>]",
+        "params: [items = list(str)]",
         "---",
         "> {% for item in items %}{{ item }}{% else %}empty{% /for %}"
       ],
@@ -113,7 +113,7 @@
       "description": "For-else renders items when list is non-empty",
       "template_lines": [
         "---",
-        "params: [items = list<str>]",
+        "params: [items = list(str)]",
         "---",
         "> {% for item in items %}{{ item }} {% else %}empty{% /for %}"
       ],
@@ -261,7 +261,7 @@
       "description": "Filter applied to expression inside inline for loop",
       "template_lines": [
         "---",
-        "params: [items = list<name = str>]",
+        "params: [items = list(name = str)]",
         "---",
         "> {% for item in items %}{{ item.name | lower }} {% /for %}"
       ],
@@ -273,7 +273,7 @@
       "description": "Nested inline for loops iterate over nested lists",
       "template_lines": [
         "---",
-        "params: [groups = list<items = list<str>>]",
+        "params: [groups = list(items = list(str))]",
         "---",
         "> {% for group in groups %}[{% for item in group.items %}{{ item }}{% /for %}]{% /for %}"
       ],
@@ -286,7 +286,7 @@
       "template_lines": [
         "---",
         "types:",
-        "  - Status = enum<Active, Paused, Stopped>",
+        "  - Status = enum(Active, Paused, Stopped)",
         "",
         "params: [s = Status]",
         "---",
@@ -301,7 +301,7 @@
       "template_lines": [
         "---",
         "types:",
-        "  - Status = enum<Active, Paused, Stopped>",
+        "  - Status = enum(Active, Paused, Stopped)",
         "",
         "params: [s = Status]",
         "---",
@@ -488,7 +488,7 @@
       "description": "Inline for loop concatenates items without separator",
       "template_lines": [
         "---",
-        "params: [items = list<str>]",
+        "params: [items = list(str)]",
         "---",
         "> {% for item in items %}{{ item }}{% /for %}"
       ],
@@ -523,7 +523,7 @@
       "description": "Join filter concatenates list items with separator",
       "template_lines": [
         "---",
-        "params: [tags = list<str>]",
+        "params: [tags = list(str)]",
         "---",
         "[{{ tags | join(\", \") }}]"
       ],

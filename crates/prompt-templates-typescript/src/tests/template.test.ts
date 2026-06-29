@@ -324,7 +324,7 @@ describe("renderEmpty", () => {
 
   it("renders with consts only", () => {
     const tmpl = Template.fromSource(
-      '---\nconsts:\n  - VERSION = str := "1.0"\nparams: []\n---\nv{{ VERSION }}',
+      '---\nconsts:\n  - VERSION = str := "1.0"\n\nparams: []\n---\nv{{ VERSION }}',
     );
     assert.strictEqual(tmpl.renderEmpty(), "v1.0");
   });
@@ -357,7 +357,7 @@ describe("renderEmpty", () => {
 describe("Typed lists", () => {
   const SRC = `---
 params:
-  - tasks = list<title = str, priority = str>
+  - tasks = list(title = str, priority = str)
 ---
 > {% for task in tasks %}
 
@@ -396,7 +396,7 @@ params:
 describe("Struct parameters", () => {
   const SRC = `---
 params:
-  - config = struct<host = str, port = int>
+  - config = struct(host = str, port = int)
 ---
 {{ config.host }}:{{ config.port }}`;
 
@@ -425,7 +425,7 @@ describe("Enum dispatch", () => {
   const SRC = [
     `---`,
     "params:",
-    "  - outcome = enum<Confirmed(evidence = str), Rejected, NeedsWork>",
+    "  - outcome = enum(Confirmed(evidence = str), Rejected, NeedsWork)",
     `---`,
     "> {% match outcome %}",
     "> {% case Confirmed %}",
@@ -657,7 +657,7 @@ params: [val = float]
   it("join filter", () => {
     const tmpl = Template.fromSource(
       `---
-params: [items = list<str>]
+params: [items = list(str)]
 ---
 {{ items | join(", ") }}`,
     );
@@ -667,7 +667,7 @@ params: [items = list<str>]
   it("limit filter", () => {
     const tmpl = Template.fromSource(
       `---
-params: [items = list<str>]
+params: [items = list(str)]
 ---
 {{ items | limit(2) | join(", ") }}`,
     );
@@ -703,7 +703,7 @@ describe("Built-in functions", () => {
   it("len() for list", () => {
     const tmpl = Template.fromSource(
       `---
-params: [items = list<x = str>]
+params: [items = list(x = str)]
 ---
 {{ len(items) }}`,
     );
@@ -724,7 +724,7 @@ params: [msg = str]
     const tmpl = Template.fromSource(
       `---
 params:
-  - items = list<label = str>
+  - items = list(label = str)
 ---
 > {% for item in items %}
 
@@ -743,7 +743,7 @@ params:
     const tmpl = Template.fromSource(
       `---
 params:
-  - outcome = enum<Confirmed(evidence = str), Rejected>
+  - outcome = enum(Confirmed(evidence = str), Rejected)
 ---
 {{ kind(outcome) }}`,
     );
@@ -814,7 +814,7 @@ describe("Variant helpers", () => {
       [
         `---`,
         "params:",
-        "  - outcome = enum<Confirmed(evidence = str), Rejected>",
+        "  - outcome = enum(Confirmed(evidence = str), Rejected)",
         `---`,
         "> {% match outcome %}",
         "> {% case Confirmed %}",
@@ -1101,8 +1101,8 @@ describe("Code generation", () => {
     "params:",
     "  - name = str",
     "  - count = int",
-    "  - tasks = list<title = str, priority = str>",
-    "  - outcome = enum<Confirmed(evidence = str), Rejected>",
+    "  - tasks = list(title = str, priority = str)",
+    "  - outcome = enum(Confirmed(evidence = str), Rejected)",
     `---`,
     "Hello {{ name }}!",
   ].join("\n");
@@ -1167,7 +1167,7 @@ describe("Code generation", () => {
     const code = generateTypes(
       `---
 params:
-  - result = enum<Success(value = str), Failure(error = str, code = int), Unknown>
+  - result = enum(Success(value = str), Failure(error = str, code = int), Unknown)
 ---
 {{ result }}`,
     );
@@ -1278,7 +1278,7 @@ params:
     const code = generateTypes(
       `---
 params:
-  - config = struct<host = str, port = int>
+  - config = struct(host = str, port = int)
 ---
 {{ config.host }}`,
     );
@@ -1291,7 +1291,8 @@ params:
     const src = [
       `---`,
       "types:",
-      "  - Status = enum<Active, Inactive, Pending>",
+      "  - Status = enum(Active, Inactive, Pending)",
+      "",
       "params:",
       "  - status = Status",
       `---`,
@@ -1314,7 +1315,8 @@ params:
     const src = [
       `---`,
       "types:",
-      "  - Config = struct<host = str, port = int>",
+      "  - Config = struct(host = str, port = int)",
+      "",
       "params:",
       "  - cfg = Config",
       `---`,
@@ -1331,7 +1333,8 @@ params:
     const src = [
       `---`,
       "types:",
-      "  - Priority = enum<High, Medium, Low>",
+      "  - Priority = enum(High, Medium, Low)",
+      "",
       "params:",
       "  - p = Priority",
       `---`,
@@ -1358,6 +1361,7 @@ describe("Constants", () => {
       `---
 consts:
   - MAX = int := 100
+
 params: []
 ---
 Max: {{ MAX }}`,
@@ -1370,6 +1374,7 @@ Max: {{ MAX }}`,
       `---
 consts:
   - GREETING = str := "hello"
+
 params: []
 ---
 {{ GREETING }}`,
@@ -1382,6 +1387,7 @@ params: []
       `---
 consts:
   - PREFIX = str := "Hello"
+
 params:
   - name = str
 ---
@@ -1396,6 +1402,7 @@ params:
 consts:
   - MAX = int := 100
   - LABEL = str := "test"
+
 params: []
 ---
 {{ MAX }} {{ LABEL }}`,
@@ -1411,6 +1418,7 @@ params: []
       "consts:",
       "  - MAX = int := 100",
       '  - PREFIX = str := "hello"',
+      "",
       "params: [name = str]",
       `---`,
       "{{ PREFIX }} {{ name }} {{ MAX }}",
@@ -1451,6 +1459,7 @@ params: []
       `---`,
       "consts:",
       "  - VERSION = int := 42",
+      "",
       "params: [x = str]",
       `---`,
       "v{{ VERSION }}: {{ x }}",
@@ -1486,6 +1495,7 @@ params: []
       `---
 consts:
   - VER = int := 3
+
 params: [name = str]
 ---
 {{ name }} v{{ VER }}`,
@@ -1500,6 +1510,7 @@ params: [name = str]
       `---
 consts:
   - TAG = str := "v1"
+
 params: [name = str]
 ---
 {{ name }}@{{ TAG }}`,
@@ -1543,7 +1554,8 @@ describe("Type aliases", () => {
     const src = [
       `---`,
       "types:",
-      "  - Status = enum<Active, Inactive>",
+      "  - Status = enum(Active, Inactive)",
+      "",
       "params:",
       "  - user_status = Status",
       `---`,
@@ -1568,7 +1580,8 @@ describe("Type aliases", () => {
     const src = [
       `---`,
       "types:",
-      "  - Status = enum<Active, Inactive>",
+      "  - Status = enum(Active, Inactive)",
+      "",
       "params:",
       "  - status = Status",
       `---`,
@@ -1594,7 +1607,8 @@ describe("Type aliases", () => {
     const src = [
       `---`,
       "types:",
-      "  - Priority = enum<High, Low>",
+      "  - Priority = enum(High, Low)",
+      "",
       "params:",
       "  - p = Priority",
       `---`,
@@ -1620,7 +1634,7 @@ describe("Includes", () => {
       "params:",
       "  - title = str",
       `---`,
-      "> {% include [header](header.tmpl.md) with title=title %}",
+      "> {% include [header](./header.tmpl.md) with title=title %}",
       "",
       "Body: {{ title }}",
     ].join("\n");
@@ -1639,7 +1653,7 @@ describe("Nested types", () => {
     const src = [
       `---`,
       "params:",
-      "  - sections = list<heading = str, items = list<label = str>>",
+      "  - sections = list(heading = str, items = list(label = str))",
       `---`,
       "> {% for section in sections %}",
       "",
@@ -1672,7 +1686,7 @@ describe("Nested types", () => {
     const src = [
       `---`,
       "params:",
-      "  - config = struct<db = struct<host = str, port = int>>",
+      "  - config = struct(db = struct(host = str, port = int))",
       `---`,
       "{{ config.db.host }}:{{ config.db.port }}",
     ].join("\n");
@@ -1832,7 +1846,7 @@ Hello {{ name }}!`,
     const tmpl = Template.fromSource(
       `---
 params:
-  - items = list<name = str, score = int>
+  - items = list(name = str, score = int)
 ---
 > {% for item in items %}
 
@@ -1936,8 +1950,8 @@ describe("End-to-end type workflow", () => {
     "params:",
     "  - title = str",
     "  - count = int",
-    "  - items = list<label = str, done = bool>",
-    "  - outcome = enum<Success(msg = str), Failure>",
+    "  - items = list(label = str, done = bool)",
+    "  - outcome = enum(Success(msg = str), Failure)",
     `---`,
     "# {{ title }} ({{ count }})",
 
@@ -2038,8 +2052,7 @@ describe("End-to-end type workflow", () => {
         readonly done: boolean;
       }[];
       readonly outcome:
-        | { readonly __kind__: "Success"; readonly msg: string }
-        | "Failure";
+        { readonly __kind__: "Success"; readonly msg: string } | "Failure";
     }
 
     const tmpl = TypedTemplate.fromSource<Params>(TEMPLATE_SRC);
@@ -2240,6 +2253,7 @@ params: []
       `---
 consts:
   - NAME = str := "test"
+
 params: []
 ---
 Hello {{ NAME }}!`,
@@ -2256,6 +2270,7 @@ consts:
   - A = int := 1
   - B = str := "two"
   - C = bool := true
+
 params: [x = str]
 ---
 {{ A }} {{ B }} {{ C }} {{ x }}`,
@@ -2274,7 +2289,7 @@ params: [x = str]
         Template.fromSourceAllowingUnused(
           `---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
 {{ items }}`,
         ),
@@ -2355,7 +2370,7 @@ params: [title = str]
         `---`,
         "params: [title = str]",
         `---`,
-        "> {% include [header](header.tmpl.md) with title=title %}",
+        "> {% include [header](./header.tmpl.md) with title=title %}",
         "",
         "Body: {{ title }}",
       ].join("\n");
@@ -2378,7 +2393,7 @@ params: [title = str]
         `---`,
         "params: [title = str]",
         `---`,
-        "> {% include [missing](does_not_exist.tmpl.md) with title=title %}",
+        "> {% include [missing](./does_not_exist.tmpl.md) with title=title %}",
         "",
         "Body: {{ title }}",
       ].join("\n");
@@ -3009,6 +3024,7 @@ params: [x = str]
 consts:
   - MAX = int := 100
   - TAG = str := "v1"
+
 params: []
 ---
 {{ MAX }} {{ TAG }}`,
@@ -3219,7 +3235,7 @@ params: [title = str]
         `---
 params: [title = str]
 ---
-> {% include [header](header.tmpl.md) with title=title %}
+> {% include [header](./header.tmpl.md) with title=title %}
 
 Body: {{ title }}`,
       );
@@ -3318,7 +3334,7 @@ params: [x = str]
     const tmpl = Template.fromSource(
       `---
 params:
-  - items = list<name = str, score = int>
+  - items = list(name = str, score = int)
 ---
 > {% for item in items %}
 
@@ -3336,7 +3352,7 @@ params:
     const tmpl = Template.fromSource(
       `---
 params:
-  - config = struct<host = str, port = int>
+  - config = struct(host = str, port = int)
 ---
 {{ config.host }}`,
     );
@@ -3350,7 +3366,7 @@ params:
     const src = [
       `---`,
       "params:",
-      "  - outcome = enum<Confirmed(evidence = str), Rejected>",
+      "  - outcome = enum(Confirmed(evidence = str), Rejected)",
       `---`,
       "> {% match outcome %}",
       "> {% case Confirmed %}",
@@ -3414,9 +3430,9 @@ describe("Raw blocks", () => {
       `---
 params: []
 ---
-{% raw %}
+> {% raw %}
 {{ not_a_variable }}
-{% /raw %}`,
+> {% /raw %}`,
     );
     const result = tmpl.render({});
     assert.ok(
@@ -3475,7 +3491,7 @@ params: [val = float]
     const tmpl = Template.fromSourceAllowingUnused(
       `---
 params:
-  - items = list<str>
+  - items = list(str)
 ---
 {{ items | join(", ") }}`,
     );
@@ -3489,7 +3505,7 @@ params:
     const tmpl = Template.fromSourceAllowingUnused(
       `---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
 {{ items | join(", ") }}`,
     );
@@ -3508,7 +3524,7 @@ params:
     const tmpl = Template.fromSourceAllowingUnused(
       `---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
 {{ items | limit(2) }}`,
     );
@@ -3565,7 +3581,7 @@ describe("Built-in functions (idx, len, kind)", () => {
     const tmpl = Template.fromSource(
       `---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
 > {% for item in items %}
 
@@ -3585,7 +3601,7 @@ params:
     const tmpl = Template.fromSource(
       `---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
 Count: {{ len(items) }}`,
     );
@@ -3601,7 +3617,7 @@ Count: {{ len(items) }}`,
     const src = [
       `---`,
       "params:",
-      "  - outcome = enum<Confirmed(evidence = str), Rejected>",
+      "  - outcome = enum(Confirmed(evidence = str), Rejected)",
       `---`,
       "Kind: {{ kind(outcome) }}",
     ].join("\n");
@@ -3636,7 +3652,7 @@ describe("Empty list rendering", () => {
     const tmpl = Template.fromSource(
       `---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
 > {% for item in items %}
 
@@ -3714,7 +3730,8 @@ describe("Type alias edge cases", () => {
     const src = [
       `---`,
       "types:",
-      "  - Config = struct<host = str, port = int>",
+      "  - Config = struct(host = str, port = int)",
+      "",
       "params:",
       "  - cfg = Config",
       `---`,
@@ -3731,7 +3748,8 @@ describe("Type alias edge cases", () => {
     const src = [
       `---`,
       "types:",
-      "  - Priority = enum<High, Medium, Low>",
+      "  - Priority = enum(High, Medium, Low)",
+      "",
       "params:",
       "  - p = Priority",
       `---`,
@@ -3751,7 +3769,7 @@ describe("Inline match guard", () => {
     const src = [
       `---`,
       "params:",
-      "  - status = enum<Active, Inactive>",
+      "  - status = enum(Active, Inactive)",
       `---`,
       "> {% match status case Active %}",
       "",
@@ -3836,7 +3854,7 @@ describe("Match else arm", () => {
   const src = [
     `---`,
     "params:",
-    "  - s = enum<A, B, C>",
+    "  - s = enum(A, B, C)",
     `---`,
     "> {% match s %}",
     "> {% case A %}",
@@ -3873,7 +3891,7 @@ describe("Match multi-variant arm", () => {
   const src = [
     `---`,
     "params:",
-    "  - s = enum<A, B, C>",
+    "  - s = enum(A, B, C)",
     `---`,
     "> {% match s %}",
     "> {% case A | B %}",
@@ -3911,8 +3929,8 @@ describe("Nested idx()", () => {
     const src = [
       `---`,
       "params:",
-      "  - outer = list<label = str>",
-      "  - inner = list<label = str>",
+      "  - outer = list(label = str)",
+      "  - inner = list(label = str)",
       `---`,
       "> {% for a in outer %}{% for b in inner %}{{ idx(a) }}.{{ idx(b) }} {% /for %}{% /for %}",
     ].join("\n");
@@ -4034,9 +4052,9 @@ describe("Raw blocks", () => {
       `---
 params: []
 ---
-{% raw %}
+> {% raw %}
 {{ not_processed }}
-{% /raw %}`,
+> {% /raw %}`,
     );
     const result = tmpl.render({});
     assert.ok(result.includes("{{ not_processed }}"));
@@ -4054,7 +4072,7 @@ describe("Comments", () => {
 params:
   - name = str
 ---
-{# This is a comment #}Hello {{ name }}!`,
+> {# This is a comment #}Hello {{ name }}!`,
     );
     assert.strictEqual(tmpl.render({ name: "world" }), "Hello world!");
   });
@@ -4067,7 +4085,7 @@ params:
   - name = str
   - unused = str
 ---
-{# {{ unused }} #}Hello {{ name }}!`,
+> {# {{ unused }} #}Hello {{ name }}!`,
     );
     assert.strictEqual(
       tmpl.render({ name: "world", unused: "x" }),
@@ -4086,8 +4104,9 @@ describe("Constants scoping", () => {
       `---`,
       "consts:",
       '  - PREFIX = str := ">>"',
+      "",
       "params:",
-      "  - items = list<name = str>",
+      "  - items = list(name = str)",
       `---`,
       "> {% for item in items %}",
       "",
@@ -4108,6 +4127,7 @@ describe("Constants scoping", () => {
       `---`,
       "consts:",
       "  - THRESHOLD = int := 10",
+      "",
       "params:",
       "  - x = int",
       `---`,
@@ -4130,8 +4150,9 @@ describe("Constants scoping", () => {
       `---`,
       "consts:",
       '  - LABEL = str := "status"',
+      "",
       "params:",
-      "  - s = enum<A, B>",
+      "  - s = enum(A, B)",
       `---`,
       "> {% match s %}",
       "> {% case A %}",
@@ -4163,7 +4184,7 @@ describe("For loop edge cases", () => {
     const src = [
       `---`,
       "params:",
-      "  - items = list<name = str>",
+      "  - items = list(name = str)",
       `---`,
       "> {% for item in items %}",
       "",
@@ -4180,7 +4201,7 @@ describe("For loop edge cases", () => {
     const src = [
       `---`,
       "params:",
-      "  - items = list<name = str>",
+      "  - items = list(name = str)",
       `---`,
       "> {% for item in items %}",
       "",
@@ -4206,7 +4227,7 @@ describe("Inline templates", () => {
     const src = [
       `---`,
       "params:",
-      "  - tasks = list<title = str, priority = str>",
+      "  - tasks = list(title = str, priority = str)",
       `---`,
       "> {% tmpl task_row %}",
       "",
@@ -4292,7 +4313,7 @@ Child says: {{ msg }}`,
 params:
   - greeting = str
 ---
-> {% include [child](child.tmpl.md) with msg=greeting %}`,
+> {% include [child](./child.tmpl.md) with msg=greeting %}`,
     );
 
     try {
@@ -4314,7 +4335,7 @@ params:
       rowPath,
       `---
 params:
-  - item = struct<name = str>
+  - item = struct(name = str)
 ---
 - {{ item.name }}`,
     );
@@ -4324,9 +4345,9 @@ params:
       mainPath,
       `---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
-> {% include [row](row.tmpl.md) for item in items %}`,
+> {% include [row](./row.tmpl.md) for item in items %}`,
     );
 
     try {
@@ -4353,9 +4374,9 @@ describe("Raw custom delimiter", () => {
       `---
 params: []
 ---
-{% raw=MYDELIM %}
-{% raw %}...{% /raw %}
-{% /MYDELIM %}`,
+> {% raw=MYDELIM %}
+> {% raw %}...{% /raw %}
+> {% /MYDELIM %}`,
     );
     const result = tmpl.render({});
     assert.ok(
@@ -4386,7 +4407,7 @@ params:
 ---
 {{ n }}
 
-> {% include [rec](rec.tmpl.md) with n=n %}`,
+> {% include [rec](./rec.tmpl.md) with n=n %}`,
     );
 
     try {
@@ -4434,7 +4455,7 @@ Hello {{ name }}!`,
     [
       `---`,
       "params:",
-      "  - items = list<name = str>",
+      "  - items = list(name = str)",
       `---`,
       "> {% for item in items %}",
       "",
@@ -4478,7 +4499,7 @@ Hello {{ name }}!`,
     [
       `---`,
       "params:",
-      "  - status = enum<Ok(msg = str), Error(code = int)>",
+      "  - status = enum(Ok(msg = str), Error(code = int))",
       `---`,
       "> {% match status %}",
       "> {% case Ok %}",
@@ -4502,6 +4523,7 @@ Hello {{ name }}!`,
       `---`,
       "consts:",
       '  - PREFIX = str := ">>"',
+      "",
       "params:",
       "  - name = str",
       `---`,
@@ -4528,7 +4550,7 @@ Hello {{ name }}!`,
     [
       `---`,
       "params:",
-      "  - items = list<name = str>",
+      "  - items = list(name = str)",
       `---`,
       "> {% for item in items %}",
       "",
@@ -4556,7 +4578,7 @@ bye`,
     [
       `---`,
       "params:",
-      "  - s = enum<A, B, C>",
+      "  - s = enum(A, B, C)",
       `---`,
       "> {% match s %}",
       "> {% case A %}",
@@ -4579,7 +4601,7 @@ bye`,
     [
       `---`,
       "params:",
-      "  - s = enum<A, B, C>",
+      "  - s = enum(A, B, C)",
       `---`,
       "> {% match s %}",
       "> {% case A | B %}",
@@ -4633,7 +4655,7 @@ params: [name = str]
     [
       `---`,
       "params:",
-      "  - rows = list<cells = list<v = str>>",
+      "  - rows = list(cells = list(v = str))",
       `---`,
       "> {% for row in rows %}> {% for cell in row.cells %}{{ cell.v }} {% /for %}",
       "> {% /for %}",
@@ -4646,7 +4668,7 @@ params: [name = str]
     [
       `---`,
       "params:",
-      "  - items = list<v = str>",
+      "  - items = list(v = str)",
       `---`,
       "> {% for item in items %}",
       "",
@@ -4663,7 +4685,7 @@ params: [name = str]
     `---
 params: [name = str]
 ---
-{# comment #}Hello {{ name }}!`,
+> {# comment #}Hello {{ name }}!`,
     { name: "world" },
   );
 
@@ -4769,7 +4791,7 @@ params: [x = float]
   it("limit on list shorter than N", () => {
     const tmpl = Template.fromSource(
       `---
-params: [items = list<str>]
+params: [items = list(str)]
 ---
 {{ items | limit(10) | join(", ") }}`,
     );
@@ -4779,7 +4801,7 @@ params: [items = list<str>]
   it("join with empty separator", () => {
     const tmpl = Template.fromSource(
       `---
-params: [items = list<str>]
+params: [items = list(str)]
 ---
 {{ items | join("") }}`,
     );
@@ -4789,7 +4811,7 @@ params: [items = list<str>]
   it("chained filters: limit then join", () => {
     const tmpl = Template.fromSource(
       `---
-params: [items = list<str>]
+params: [items = list(str)]
 ---
 {{ items | limit(2) | join(", ") }}`,
     );
@@ -5006,9 +5028,10 @@ consts:
     const [fm] = parseFrontmatter(
       `---
 types:
-  - Item = struct<name = str, score = int>
+  - Item = struct(name = str, score = int)
+
 params:
-  - items = list<Item>
+  - items = list(Item)
 ---
 `,
     );
@@ -5034,17 +5057,17 @@ Hello {{ name }}!`,
   });
 
   it("parseVarType handles typed list", () => {
-    const vt = parseVarType("list<name = str>");
+    const vt = parseVarType("list(name = str)");
     assert.strictEqual(vt.kind, "list");
   });
 
   it("parseVarType handles struct", () => {
-    const vt = parseVarType("struct<name = str, score = int>");
+    const vt = parseVarType("struct(name = str, score = int)");
     assert.strictEqual(vt.kind, "struct");
   });
 
   it("parseVarType handles enum", () => {
-    const vt = parseVarType("enum<A, B(x = str)>");
+    const vt = parseVarType("enum(A, B(x = str))");
     assert.strictEqual(vt.kind, "enum");
   });
 
@@ -5145,7 +5168,7 @@ Hello {{ name }}!`,
     const code = generateTypes(
       `---
 params:
-  - items = list<label = str>
+  - items = list(label = str)
 ---
 {{ items }}`,
     );
@@ -5157,7 +5180,7 @@ params:
     const code = generateTypes(
       `---
 params:
-  - status = enum<Ok, Error(msg = str)>
+  - status = enum(Ok, Error(msg = str))
 ---
 {{ status }}`,
     );
@@ -5465,6 +5488,7 @@ Hello {{ name }}!`,
       `---
 consts:
   - GREETING = str := "Hi"
+
 params: [name = str]
 ---
 {{ GREETING }} {{ name }}!`,
@@ -5637,7 +5661,7 @@ describe("Complex template scenarios", () => {
     const tmpl = Template.fromSource(
       `---
 params:
-  - config = struct<server = struct<host = str, port = int>>
+  - config = struct(server = struct(host = str, port = int))
 ---
 {{ config.server.host }}:{{ config.server.port }}`,
     );
@@ -5653,8 +5677,8 @@ params:
     const src = [
       `---`,
       "params:",
-      "  - fruits = list<name = str>",
-      "  - vegs = list<name = str>",
+      "  - fruits = list(name = str)",
+      "  - vegs = list(name = str)",
       `---`,
       "Fruits:",
 
@@ -5690,7 +5714,7 @@ params:
     const src = [
       `---`,
       "params:",
-      "  - items = list<name = str, active = bool>",
+      "  - items = list(name = str, active = bool)",
       `---`,
       "> {% for item in items %}> {% if item.active %}",
       "",
@@ -5715,7 +5739,7 @@ params:
     const src = [
       `---`,
       "params:",
-      "  - items = list<status = enum<Ok, Error>>",
+      "  - items = list(status = enum(Ok, Error))",
       `---`,
       "> {% for item in items %}> {% match item.status %}> {% case Ok %}",
       "",
@@ -5741,7 +5765,7 @@ params:
     const src = [
       `---`,
       "params:",
-      "  - event = enum<Click(x = int, y = int), Scroll(delta = float)>",
+      "  - event = enum(Click(x = int, y = int), Scroll(delta = float))",
       `---`,
       "> {% match event %}",
       "> {% case Click %}",
@@ -5777,14 +5801,15 @@ params:
       `---`,
       "consts:",
       '  - VERSION = str := "1.0"',
+      "",
       "params:",
       "  - name = str",
       "  - count = int",
       "  - score = float",
       "  - active = bool",
-      "  - tags = list<str>",
-      "  - meta = struct<key = str>",
-      "  - status = enum<Ok, Error>",
+      "  - tags = list(str)",
+      "  - meta = struct(key = str)",
+      "  - status = enum(Ok, Error)",
       `---`,
       "v{{ VERSION }} {{ name }} #{{ count }} ({{ score | fixed(1) }})",
 
@@ -5842,10 +5867,12 @@ describe("Statement whitespace trimming", () => {
     const src = [
       `---`,
       "params:",
-      "  - items = list<name = str>",
+      "  - items = list(name = str)",
       `---`,
       "start   ",
-      "{%- for item in items %}",
+      "",
+      "> {%- for item in items %}",
+      "",
       "{{ item.name }}",
 
       "",
@@ -5864,11 +5891,13 @@ describe("Statement whitespace trimming", () => {
     const src = [
       `---`,
       "params:",
-      "  - items = list<name = str>",
+      "  - items = list(name = str)",
       `---`,
-      "{% for item in items -%}",
+      "> {% for item in items -%}",
+      "",
       "   {{ item.name }}",
-      "{% /for %}",
+      "",
+      "> {% /for %}",
     ].join("\n");
     const result = Template.fromSource(src).renderUnchecked({
       items: [{ name: "hello" }],
@@ -5887,12 +5916,13 @@ describe("Statement whitespace trimming", () => {
     const src = [
       `---`,
       "params:",
-      "  - items = list<name = str>",
+      "  - items = list(name = str)",
       `---`,
       "> {% for item in items %}",
       "",
       "{{ item.name }}   ",
-      "{%- /for %}",
+      "",
+      "> {%- /for %}",
     ].join("\n");
     const result = Template.fromSource(src).render({
       items: [{ name: "x" }],
@@ -5910,7 +5940,9 @@ describe("Statement whitespace trimming", () => {
       "  - flag = bool",
       `---`,
       "before   ",
-      "{%- if flag %}",
+      "",
+      "> {%- if flag %}",
+      "",
       "yes",
 
       "",
@@ -5932,7 +5964,9 @@ describe("Statement whitespace trimming", () => {
       "> {% if flag %}",
       "",
       "yes",
-      "{% /if -%}",
+      "",
+      "> {% /if -%}",
+      "",
       "   after",
     ].join("\n");
     const result = Template.fromSource(src).render({ flag: true });
@@ -5944,14 +5978,14 @@ describe("Statement whitespace trimming", () => {
 });
 
 // ---------------------------------------------------------------------------
-// tmpl<> type parsing
+// tmpl() type parsing
 // ---------------------------------------------------------------------------
-describe("tmpl<> type parsing", () => {
-  it("tmpl<field = type> is parsed as struct-like type", () => {
+describe("tmpl() type parsing", () => {
+  it("tmpl(field = type) is parsed as struct-like type", () => {
     const src = [
       `---`,
       "params:",
-      "  - sub = tmpl<title = str, count = int>",
+      "  - sub = tmpl(title = str, count = int)",
       `---`,
       "{{ sub.title }}: {{ sub.count }}",
     ].join("\n");
@@ -5961,11 +5995,11 @@ describe("tmpl<> type parsing", () => {
     assert.strictEqual(result, "hello: 42");
   });
 
-  it("tmpl<> declarations are accessible", () => {
+  it("tmpl() declarations are accessible", () => {
     const src = [
       `---`,
       "params:",
-      "  - sub = tmpl<title = str>",
+      "  - sub = tmpl(title = str)",
       `---`,
       "{{ sub.title }}",
     ].join("\n");
@@ -6082,6 +6116,7 @@ params:
       const src = `---
 params:
   - level = str
+
 consts:
   - level = int := 5
 ---
@@ -6099,6 +6134,7 @@ consts:
         `---
 params:
   - name = str
+
 consts:
   - VERSION = str := "1.0"
 ---
@@ -6115,7 +6151,8 @@ consts:
       const src = [
         `---`,
         "types:",
-        "  - CodeReview = list<title = str>",
+        "  - CodeReview = list(title = str)",
+        "",
         "params:",
         "  - code_review = str",
         `---`,
@@ -6131,9 +6168,10 @@ consts:
       const src = [
         `---`,
         "types:",
-        "  - CodeReview = list<title = str>",
+        "  - CodeReview = list(title = str)",
+        "",
         "params:",
-        "  - code_review = list<title = str>",
+        "  - code_review = list(title = str)",
         `---`,
         "> {% for item in code_review %}",
         "",
@@ -6152,7 +6190,8 @@ consts:
       const src = [
         `---`,
         "types:",
-        "  - CodeReview = list<x = int>",
+        "  - CodeReview = list(x = int)",
+        "",
         "consts:",
         '  - code_review = str := "hello"',
         `---`,
@@ -6172,9 +6211,11 @@ consts:
       const src = [
         `---`,
         "imports:",
-        '  - "[Utils](utils.tmpl.md)"',
+        '  - "[Utils](./utils.tmpl.md)"',
+        "",
         "types:",
-        "  - Utils = list<x = str>",
+        "  - Utils = list(x = str)",
+        "",
         "params:",
         "  - data = Utils",
         `---`,
@@ -6199,7 +6240,8 @@ consts:
       const src = [
         `---`,
         "imports:",
-        '  - "[CodeReview](cr.tmpl.md)"',
+        '  - "[CodeReview](./cr.tmpl.md)"',
+        "",
         "params:",
         "  - code_review = str",
         `---`,
@@ -6215,7 +6257,8 @@ consts:
       const src = [
         `---`,
         "imports:",
-        '  - "[MyConst](mc.tmpl.md)"',
+        '  - "[MyConst](./mc.tmpl.md)"',
+        "",
         "consts:",
         '  - my_const = str := "val"',
         `---`,
@@ -6231,7 +6274,8 @@ consts:
       const src = [
         `---`,
         "imports:",
-        '  - "[Utils](utils.tmpl.md)"',
+        '  - "[Utils](./utils.tmpl.md)"',
+        "",
         "params:",
         "  - user_name = str",
         `---`,
@@ -6261,7 +6305,8 @@ consts:
         const src = [
           `---`,
           "types:",
-          `  - ${name} = list<x = str>`,
+          `  - ${name} = list(x = str)`,
+          "",
           "params:",
           `  - data = ${name}`,
           `---`,
@@ -6281,7 +6326,8 @@ consts:
       const src = [
         `---`,
         "types:",
-        "  - Priority = list<label = str>",
+        "  - Priority = list(label = str)",
+        "",
         "params:",
         "  - items = Priority",
         `---`,
@@ -6305,7 +6351,8 @@ consts:
       const src = [
         `---`,
         "types:",
-        "  - Unused = list<x = str>",
+        "  - Unused = list(x = str)",
+        "",
         "params:",
         "  - name = str",
         `---`,
@@ -6322,7 +6369,8 @@ consts:
         `---`,
         "allow_unused: true",
         "types:",
-        "  - Unused = list<x = str>",
+        "  - Unused = list(x = str)",
+        "",
         "params:",
         "  - name = str",
         `---`,
@@ -6336,7 +6384,8 @@ consts:
       const src = [
         `---`,
         "types:",
-        "  - Items = list<title = str>",
+        "  - Items = list(title = str)",
+        "",
         "params:",
         "  - items = Items",
         `---`,
@@ -6356,7 +6405,7 @@ consts:
       const src = [
         `---`,
         "types:",
-        "  - SomeType = list<x = str>",
+        "  - SomeType = list(x = str)",
         `---`,
         "Static content",
       ].join("\n");
@@ -6374,6 +6423,7 @@ consts:
       const src = `---
 params:
   - level = str
+
 consts:
   - level = int := 5
 ---
@@ -6565,6 +6615,7 @@ params: [x = str]
         "consts:",
         "  - MAX_RETRIES = int := 3",
         '  - MODEL_NAME = str := "gpt-4"',
+        "",
         "params: [x = str]",
         `---`,
         "{{ x }}",
@@ -6575,7 +6626,8 @@ params: [x = str]
       const parentContent = [
         `---`,
         "imports:",
-        '  - "[child](child.tmpl.md)"',
+        '  - "[child](./child.tmpl.md)"',
+        "",
         "params: [x = str]",
         `---`,
         "{{ x }}",
@@ -6645,25 +6697,25 @@ Template ${i}: {{ x }}`,
     }
   });
 
-  it("untyped list<> fails", () => {
+  it("untyped list() fails", () => {
     assert.throws(
       () =>
         Template.fromSource(`---
-params: [items = list<>]
+params: [items = list()]
 ---
 {{ len(items) }}`),
-      (err: Error) => err.message.includes("untyped list<> is not allowed"),
+      (err: Error) => err.message.includes("untyped list() is not allowed"),
     );
   });
 
-  it("untyped struct<> fails", () => {
+  it("untyped struct() fails", () => {
     assert.throws(
       () =>
         Template.fromSource(`---
-params: [data = struct<>]
+params: [data = struct()]
 ---
 {{ data.x }}`),
-      (err: Error) => err.message.includes("untyped struct<> is not allowed"),
+      (err: Error) => err.message.includes("untyped struct() is not allowed"),
     );
   });
 
@@ -6671,7 +6723,7 @@ params: [data = struct<>]
     assert.throws(
       () =>
         Template.fromSource(`---
-params: [items = list<str, int>]
+params: [items = list(str, int)]
 ---
 {{ len(items) }}`),
       (err: Error) =>
@@ -6690,19 +6742,19 @@ params: [name = str := hello]
     );
   });
 
-  // -- list<struct<...>> rejection ------------------------------------------
+  // -- list(struct(...)) rejection ------------------------------------------
 
-  it("list<str> parses OK (scalar list)", () => {
+  it("list(str) parses OK (scalar list)", () => {
     const tmpl = Template.fromSource(`---
-params: [items = list<str>]
+params: [items = list(str)]
 ---
 {{ items | join(", ") }}`);
     assert.strictEqual(tmpl.render({ items: ["a", "b"] }), "a, b");
   });
 
-  it("list<name = str, score = int> parses OK (named fields / struct items)", () => {
+  it("list(name = str, score = int) parses OK (named fields / struct items)", () => {
     const tmpl = Template.fromSource(`---
-params: [items = list<name = str, score = int>]
+params: [items = list(name = str, score = int)]
 ---
 > {% for item in items %}
 
@@ -6715,56 +6767,56 @@ params: [items = list<name = str, score = int>]
     assert.ok(output.includes("Alice: 100"));
   });
 
-  it("list<list<str>> parses OK (nested list)", () => {
+  it("list(list(str)) parses OK (nested list)", () => {
     const tmpl = Template.fromSource(`---
-params: [matrix = list<list<str>>]
+params: [matrix = list(list(str))]
 ---
 {{ len(matrix) }}`);
     assert.strictEqual(tmpl.render({ matrix: [["a", "b"], ["c"]] }), "2");
   });
 
-  it("list<enum<A, B>> parses OK (list of enums)", () => {
+  it("list(enum(A, B)) parses OK (list of enums)", () => {
     const tmpl = Template.fromSource(`---
-params: [flags = list<enum<On, Off>>]
+params: [flags = list(enum(On, Off))]
 ---
 {{ len(flags) }}`);
     assert.strictEqual(tmpl.render({ flags: ["On", "Off"] }), "2");
   });
 
-  it("list<struct<name = str>> is rejected as redundant", () => {
+  it("list(struct(name = str)) is rejected as redundant", () => {
     assert.throws(
       () =>
         Template.fromSource(`---
-params: [items = list<struct<name = str>>]
+params: [items = list(struct(name = str))]
 ---
 {{ len(items) }}`),
       (err: Error) =>
         err.message.includes(
-          "list<struct<...>> is redundant; use named fields directly",
+          "list(struct(...)) is redundant; use named fields directly",
         ),
     );
   });
 
-  it("list<struct<name = str, score = int>> is rejected as redundant", () => {
+  it("list(struct(name = str, score = int)) is rejected as redundant", () => {
     assert.throws(
       () =>
         Template.fromSource(`---
-params: [items = list<struct<name = str, score = int>>]
+params: [items = list(struct(name = str, score = int))]
 ---
 {{ len(items) }}`),
       (err: Error) =>
         err.message.includes(
-          "list<struct<...>> is redundant; use named fields directly",
+          "list(struct(...)) is redundant; use named fields directly",
         ),
     );
   });
 
   it("list of strong struct alias unwraps cleanly and renders", () => {
     const tmpl = Template.fromSource(`---
-types: [MyItem = struct<name = str, score = int>]
-params: [items = list<MyItem>]
+types: [MyItem = struct(name = str, score = int)]
+params: [items = list(MyItem)]
 ---
-{% for item in items %}{{ item.name }}: {{ item.score }}{% endfor %}`);
+> {% for item in items %}{{ item.name }}: {{ item.score }}{% endfor %}`);
     assert.strictEqual(
       tmpl.render({ items: [{ name: "Alice", score: 10 }] }),
       "Alice: 10",
@@ -6773,9 +6825,9 @@ params: [items = list<MyItem>]
 
   it("list of named struct field allowed and renders", () => {
     const tmpl = Template.fromSource(`---
-params: [items = list<item = struct<name = str, score = int>>]
+params: [items = list(item = struct(name = str, score = int))]
 ---
-{% for i in items %}{{ i.item.name }}: {{ i.item.score }}{% endfor %}`);
+> {% for i in items %}{{ i.item.name }}: {{ i.item.score }}{% endfor %}`);
     assert.strictEqual(
       tmpl.render({ items: [{ item: { name: "Bob", score: 20 } }] }),
       "Bob: 20",
@@ -6792,7 +6844,7 @@ describe("Enum default validation", () => {
     const tmpl = Template.fromSource(
       `---
 params:
-  - status = enum<Active, Paused> := Active
+  - status = enum(Active, Paused) := Active
 ---
 {{ kind(status) }}`,
     );
@@ -6803,7 +6855,7 @@ params:
     const tmpl = Template.fromSource(
       `---
 params:
-  - outcome = enum<Confirmed(evidence = str), Rejected> := Rejected
+  - outcome = enum(Confirmed(evidence = str), Rejected) := Rejected
 ---
 {{ kind(outcome) }}`,
     );
@@ -6814,7 +6866,7 @@ params:
     const tmpl = Template.fromSource(
       `---
 params:
-  - outcome = enum<Confirmed(evidence = str), Rejected> := Confirmed(evidence = "found it")
+  - outcome = enum(Confirmed(evidence = str), Rejected) := Confirmed(evidence = "found it")
 ---
 > {% match outcome %}
 
@@ -6835,7 +6887,7 @@ no
     const tmpl = Template.fromSource(
       `---
 params:
-  - result = enum<Success(msg = str, code = int), Failure> := Success(msg = "ok", code = 200)
+  - result = enum(Success(msg = str, code = int), Failure) := Success(msg = "ok", code = 200)
 ---
 > {% match result %}
 
@@ -6856,7 +6908,7 @@ fail
     const tmpl = Template.fromSource(
       `---
 consts:
-  - DEFAULT = enum<Success(msg = str), Failure> := Success(msg = "done")
+  - DEFAULT = enum(Success(msg = str), Failure) := Success(msg = "done")
 ---
 > {% match DEFAULT %}
 
@@ -6879,7 +6931,7 @@ fail
         Template.fromSource(
           `---
 params:
-  - outcome = enum<Confirmed(evidence = str), Rejected> := Confirmed
+  - outcome = enum(Confirmed(evidence = str), Rejected) := Confirmed
 ---
 {{ outcome }}`,
         ),
@@ -6895,7 +6947,7 @@ params:
         Template.fromSource(
           `---
 params:
-  - status = enum<Active, Paused> := Nonexistent
+  - status = enum(Active, Paused) := Nonexistent
 ---
 {{ status }}`,
         ),
@@ -6909,7 +6961,7 @@ params:
         Template.fromSource(
           `---
 params:
-  - status = enum<Active, Paused> := Active(x = 1)
+  - status = enum(Active, Paused) := Active(x = 1)
 ---
 {{ status }}`,
         ),
@@ -6931,7 +6983,7 @@ describe("Enum variant reserved keyword check", () => {
         Template.fromSource(
           `---
 params:
-  - x = enum<struct, ok>
+  - x = enum(struct, ok)
 ---
 {{ x }}`,
         ),
@@ -6951,7 +7003,7 @@ params:
       "tmpl",
     ]) {
       assert.throws(
-        () => parseVarType(`enum<${keyword}, Ok>`),
+        () => parseVarType(`enum(${keyword}, Ok)`),
         (err: Error) => err.message.includes("shadows a builtin type keyword"),
         `expected variant '${keyword}' to be rejected`,
       );
@@ -6960,7 +7012,7 @@ params:
 
   it("accepts valid variant names", () => {
     // Should not throw
-    const vt = parseVarType("enum<Active, Paused, Done>");
+    const vt = parseVarType("enum(Active, Paused, Done)");
     assert.strictEqual(vt.kind, "enum");
     if (vt.kind === "enum") {
       assert.strictEqual(vt.variants.length, 3);
@@ -6979,7 +7031,8 @@ describe("Enum literal expressions", () => {
         Template.fromSource(
           `---
 types:
-  - Stage = enum<Design, Build, Test>
+  - Stage = enum(Design, Build, Test)
+
 params: [name = str]
 ---
 Stage: {{ Stage.Design }}, name: {{ name }}`,
@@ -6995,7 +7048,8 @@ Stage: {{ Stage.Design }}, name: {{ name }}`,
     const tmpl = Template.fromSource(
       `---
 types:
-  - Stage = enum<Design, Build, Test>
+  - Stage = enum(Design, Build, Test)
+
 params: [name = str]
 ---
 Kind: {{ kind(Stage.Design) }}, name: {{ name }}`,
@@ -7010,7 +7064,8 @@ Kind: {{ kind(Stage.Design) }}, name: {{ name }}`,
     const tmpl = Template.fromSource(
       `---
 types:
-  - Status = enum<Active, Paused(reason = str), Done>
+  - Status = enum(Active, Paused(reason = str), Done)
+
 params: [name = str]
 ---
 Kind: {{ kind(Status.Paused) }}, name: {{ name }}`,
@@ -7025,7 +7080,8 @@ Kind: {{ kind(Status.Paused) }}, name: {{ name }}`,
     const tmpl = Template.fromSource(
       `---
 types:
-  - Color = enum<Red, Green, Blue>
+  - Color = enum(Red, Green, Blue)
+
 params: [x = str]
 ---
 {{ kind(Color.Red) }}, {{ kind(Color.Green) }}, {{ kind(Color.Blue) }} ({{ x }})`,
@@ -7037,9 +7093,11 @@ params: [x = str]
     const tmpl = Template.fromSource(
       `---
 types:
-  - Stage = enum<Design, Build>
+  - Stage = enum(Design, Build)
+
 consts:
   - Stage = str := "custom"
+
 params: [x = str]
 ---
 {{ Stage }}: {{ x }}`,
@@ -7051,7 +7109,8 @@ params: [x = str]
     const tmpl = Template.fromSource(
       `---
 types:
-  - Stage = enum<Design, Build, Test>
+  - Stage = enum(Design, Build, Test)
+
 params: [name = str]
 ---
 {{ kind(Stage.Design) }}: {{ name }}`,
@@ -7065,7 +7124,8 @@ params: [name = str]
         Template.fromSource(
           `---
 types:
-  - Stage = enum<Design, Build>
+  - Stage = enum(Design, Build)
+
 params: [x = str]
 ---
 {{ Stage.Design | upper }}: {{ x }}`,
@@ -7078,40 +7138,40 @@ params: [x = str]
 });
 
 // ---------------------------------------------------------------------------
-// option<T> type support
+// option(T) type support
 // ---------------------------------------------------------------------------
 
-describe("option<T> parsing", () => {
-  it("parses option<int> as dedicated option type", () => {
-    const vt = parseVarType("option<int>");
+describe("option(T) parsing", () => {
+  it("parses option(int) as dedicated option type", () => {
+    const vt = parseVarType("option(int)");
     assert.strictEqual(vt.kind, "option");
     if (vt.kind === "option") {
       assert.deepStrictEqual(vt.innerType, { kind: "int" });
     }
   });
 
-  it("parses option<str>", () => {
-    const vt = parseVarType("option<str>");
+  it("parses option(str)", () => {
+    const vt = parseVarType("option(str)");
     assert.strictEqual(vt.kind, "option");
     if (vt.kind === "option") {
       assert.deepStrictEqual(vt.innerType, { kind: "str" });
     }
   });
 
-  it("formats option<int> back to string", () => {
-    const vt = parseVarType("option<int>");
-    assert.strictEqual(varTypeToString(vt), "option<int>");
+  it("formats option(int) back to string", () => {
+    const vt = parseVarType("option(int)");
+    assert.strictEqual(varTypeToString(vt), "option(int)");
   });
 
-  it("formats option<str> back to string", () => {
-    const vt = parseVarType("option<str>");
-    assert.strictEqual(varTypeToString(vt), "option<str>");
+  it("formats option(str) back to string", () => {
+    const vt = parseVarType("option(str)");
+    assert.strictEqual(varTypeToString(vt), "option(str)");
   });
 
-  it("declarations report option<T> correctly", () => {
+  it("declarations report option(T) correctly", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 > {% if has(x) %}
 
@@ -7119,15 +7179,15 @@ params:
 
 > {% /if %}`);
     const decls = tmpl.declarations();
-    assert.strictEqual(decls[0]![1], "option<int>");
+    assert.strictEqual(decls[0]![1], "option(int)");
   });
 });
 
-describe("option<T> default values", () => {
+describe("option(T) default values", () => {
   it("default None renders correctly", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int> := None
+  - x = option(int) := None
 ---
 > {% if has(x) %}
 
@@ -7145,7 +7205,7 @@ absent
   it("default auto-wrap integer", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int> := 42
+  - x = option(int) := 42
 ---
 > {% if has(x) %}
 
@@ -7159,7 +7219,7 @@ params:
   it("default auto-wrap quoted string None", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<str> := "None"
+  - x = option(str) := "None"
 ---
 > {% if has(x) %}
 
@@ -7178,7 +7238,7 @@ absent
   it("default auto-wrap quoted regular string", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<str> := "hello"
+  - x = option(str) := "hello"
 ---
 > {% if has(x) %}
 
@@ -7191,7 +7251,7 @@ params:
   it("defaults() returns null for None default", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int> := None
+  - x = option(int) := None
 ---
 > {% if has(x) %}
 
@@ -7205,7 +7265,7 @@ params:
   it("defaults() returns unwrapped value for Some default", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int> := 42
+  - x = option(int) := 42
 ---
 > {% if has(x) %}
 
@@ -7217,11 +7277,11 @@ params:
   });
 });
 
-describe("option<T> required vs optional", () => {
+describe("option(T) required vs optional", () => {
   it("option without default is required — missing param throws", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 > {% if has(x) %}
 
@@ -7238,7 +7298,7 @@ params:
   it("option without default — providing value works", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 > {% if has(x) %}
 
@@ -7251,7 +7311,7 @@ params:
   it("option without default — providing null works", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 > {% if has(x) %}
 
@@ -7268,7 +7328,7 @@ absent
   it("option with := None default — omitting param is OK", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int> := None
+  - x = option(int) := None
 ---
 > {% if has(x) %}
 
@@ -7286,7 +7346,7 @@ absent
   it("option with := None default — can override with value", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int> := None
+  - x = option(int) := None
 ---
 > {% if has(x) %}
 
@@ -7303,9 +7363,9 @@ absent
   it("defaults() does not include option without default", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
-  - y = option<str> := None
-  - z = option<str> := "hi"
+  - x = option(int)
+  - y = option(str) := None
+  - z = option(str) := "hi"
 ---
 > {% if has(x) %}
 
@@ -7331,11 +7391,11 @@ params:
   });
 });
 
-describe("option<T> rendering with auto-unwrap", () => {
+describe("option(T) rendering with auto-unwrap", () => {
   it("auto-unwraps Some(val=42) to 42 in {{ x }}", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 > {% if has(x) %}
 
@@ -7348,7 +7408,7 @@ params:
   it("auto-unwraps Some(val=str) to str", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<str>
+  - x = option(str)
 ---
 > {% if has(x) %}
 
@@ -7361,7 +7421,7 @@ params:
   it("renders None as str(None) for kind()", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 {{ kind(x) }}`);
     assert.strictEqual(tmpl.render({ x: null }).trim(), "None");
@@ -7370,18 +7430,18 @@ params:
   it("renders Some kind", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 {{ kind(x) }}`);
     assert.strictEqual(tmpl.render({ x: 42 }).trim(), "Some");
   });
 });
 
-describe("option<T> has() builtin", () => {
+describe("option(T) has() builtin", () => {
   it("has() returns false for None", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 > {% if has(x) %}
 
@@ -7398,7 +7458,7 @@ no
   it("has() returns true for Some", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 > {% if has(x) %}
 
@@ -7426,11 +7486,11 @@ yes
   });
 });
 
-describe("option<T> match/case", () => {
+describe("option(T) match/case", () => {
   it("matches Some case", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 > {% match x %}
 
@@ -7449,7 +7509,7 @@ empty
   it("matches None case", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 > {% match x %}
 
@@ -7466,11 +7526,11 @@ empty
   });
 });
 
-describe("option<T> JSON serde", () => {
+describe("option(T) JSON serde", () => {
   it("null input becomes None", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 {{ kind(x) }}`);
     assert.strictEqual(tmpl.render({ x: null }).trim(), "None");
@@ -7479,7 +7539,7 @@ params:
   it("undefined input becomes None via default", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int> := None
+  - x = option(int) := None
 ---
 {{ kind(x) }}`);
     assert.strictEqual(tmpl.render().trim(), "None");
@@ -7488,18 +7548,18 @@ params:
   it("value input becomes Some", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 {{ kind(x) }}`);
     assert.strictEqual(tmpl.render({ x: 42 }).trim(), "Some");
   });
 });
 
-describe("option<T> codegen", () => {
-  it("generates T | null for option<int>", () => {
+describe("option(T) codegen", () => {
+  it("generates T | null for option(int)", () => {
     const code = generateTypes(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 > {% if has(x) %}
 
@@ -7509,10 +7569,10 @@ params:
     assert.ok(code.includes("number | null"));
   });
 
-  it("generates T | null for option<str>", () => {
+  it("generates T | null for option(str)", () => {
     const code = generateTypes(`---
 params:
-  - x = option<str>
+  - x = option(str)
 ---
 > {% if has(x) %}
 
@@ -7525,7 +7585,7 @@ params:
   it("inferTypes reports option correctly", () => {
     const result = inferTypes(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 > {% if has(x) %}
 
@@ -7538,7 +7598,7 @@ params:
   it("generates null for None default in codegen", () => {
     const code = generateTypes(`---
 params:
-  - x = option<int> := None
+  - x = option(int) := None
 ---
 > {% if has(x) %}
 
@@ -7551,22 +7611,22 @@ params:
   it("option label in JSDoc", () => {
     const code = generateTypes(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 > {% if has(x) %}
 
 {{ x }}
 
 > {% /if %}`);
-    assert.ok(code.includes("option<int>"));
+    assert.ok(code.includes("option(int)"));
   });
 });
 
-describe("option<T> nested in structs and lists", () => {
+describe("option(T) nested in structs and lists", () => {
   it("option inside struct", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - config = struct<name = str, timeout = option<int>>
+  - config = struct(name = str, timeout = option(int))
 ---
 > {% if has(config.timeout) %}
 
@@ -7587,7 +7647,7 @@ no timeout
   it("option in list items", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - items = list<name = str, value = option<int>>
+  - items = list(name = str, value = option(int))
 ---
 > {% for item in items %}
 
@@ -7613,11 +7673,11 @@ params:
   });
 });
 
-describe("option<T> renderUnchecked", () => {
+describe("option(T) renderUnchecked", () => {
   it("renders option value directly in unchecked mode", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 > {% if has(x) %}
 
@@ -7631,7 +7691,7 @@ params:
   it("has() works in unchecked mode", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 > {% if has(x) %}
 
@@ -7647,11 +7707,11 @@ no
   });
 });
 
-describe("option<T> error cases", () => {
+describe("option(T) error cases", () => {
   it("rejects wrong inner type in render", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 > {% if has(x) %}
 
@@ -7681,7 +7741,7 @@ params:
       () =>
         Template.fromSource(`---
 params:
-  - x = enum<option, other>
+  - x = enum(option, other)
 ---
 {{ kind(x) }}`),
       (err: Error) => err.message.includes("shadows a builtin type keyword"),
@@ -7693,7 +7753,8 @@ params:
       () =>
         Template.fromSource(`---
 types:
-  - Option = enum<A, B>
+  - Option = enum(A, B)
+
 params:
   - x = Option
 ---
@@ -7703,11 +7764,12 @@ params:
   });
 });
 
-describe("option<T> type alias support", () => {
+describe("option(T) type alias support", () => {
   it("option type alias in types block", () => {
     const tmpl = Template.fromSource(`---
 types:
-  - MaybeInt = option<int>
+  - MaybeInt = option(int)
+
 params:
   - x = MaybeInt
 ---
@@ -7734,9 +7796,9 @@ describe("for...else", () => {
     const tmpl = Template.fromSource(
       `---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
-{% for item in items %}{{ item.name }}{% else %}No items{% /for %}`,
+> {% for item in items %}{{ item.name }}{% else %}No items{% /for %}`,
     );
     const output = tmpl.render({ items: [] });
     assert.strictEqual(output.trim(), "No items");
@@ -7746,9 +7808,9 @@ params:
     const tmpl = Template.fromSource(
       `---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
-{% for item in items %}{{ item.name }}{% else %}No items{% /for %}`,
+> {% for item in items %}{{ item.name }}{% else %}No items{% /for %}`,
     );
     const output = tmpl.render({ items: [{ name: "Alice" }] });
     assert.ok(output.includes("Alice"));
@@ -7759,10 +7821,10 @@ params:
     const tmpl = Template.fromSource(
       `---
 params:
-  - outer = list<name = str>
-  - inner = list<name = str>
+  - outer = list(name = str)
+  - inner = list(name = str)
 ---
-{% for o in outer %}{% for i in inner %}{{ i.name }}{% else %}no inner{% /for %}{% else %}no outer{% /for %}`,
+> {% for o in outer %}{% for i in inner %}{{ i.name }}{% else %}no inner{% /for %}{% else %}no outer{% /for %}`,
     );
     const output = tmpl.render({
       outer: [{ name: "A" }],
@@ -7776,10 +7838,10 @@ params:
     const tmpl = Template.fromSource(
       `---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
   - show = bool
 ---
-{% for item in items %}{% if show %}{{ item.name }}{% else %}hidden{% /if %}{% else %}No items{% /for %}`,
+> {% for item in items %}{% if show %}{{ item.name }}{% else %}hidden{% /if %}{% else %}No items{% /for %}`,
     );
     const output = tmpl.render({ items: [], show: true });
     assert.strictEqual(output.trim(), "No items");
@@ -7789,9 +7851,9 @@ params:
     const tmpl = Template.fromSource(
       `---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
-{% for item in items %}{{ item.name }}{% /for %}`,
+> {% for item in items %}{{ item.name }}{% /for %}`,
     );
     const output = tmpl.render({ items: [{ name: "Bob" }] });
     assert.strictEqual(output.trim(), "Bob");
@@ -7810,6 +7872,7 @@ describe("Duplicate type alias detection", () => {
 types:
   - Greeting = str
   - Greeting = int
+
 params:
   - msg = Greeting
 ---
@@ -7828,6 +7891,7 @@ params:
 types:
   - Greeting = str
   - Count = int
+
 params:
   - msg = Greeting
   - n = Count
@@ -7878,7 +7942,7 @@ params:
 params:
   - flag = bool
 ---
-{% if flag %}yes{% else %}no{% /if %}`);
+> {% if flag %}yes{% else %}no{% /if %}`);
     assert.throws(
       () => tmpl.render({ flag: "true" }),
       (err: Error) => {
@@ -7891,9 +7955,9 @@ params:
   it("rejects wrong type for list param", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - items = list<str>
+  - items = list(str)
 ---
-{% for item in items %}{{ item }}{% /for %}`);
+> {% for item in items %}{{ item }}{% /for %}`);
     assert.throws(
       () => tmpl.render({ items: "not a list" }),
       (err: Error) => {
@@ -7934,7 +7998,7 @@ params:
   it("rejects wrong struct field type", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - person = struct<name = str, age = int>
+  - person = struct(name = str, age = int)
 ---
 {{ person.name }} is {{ person.age }}`);
     assert.throws(
@@ -7949,7 +8013,7 @@ params:
   it("rejects missing struct field", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - person = struct<name = str, age = int>
+  - person = struct(name = str, age = int)
 ---
 {{ person.name }} is {{ person.age }}`);
     assert.throws(
@@ -7967,9 +8031,9 @@ params:
   it("rejects wrong list element type", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - nums = list<int>
+  - nums = list(int)
 ---
-{% for n in nums %}{{ n }}{% /for %}`);
+> {% for n in nums %}{{ n }}{% /for %}`);
     assert.throws(
       () => tmpl.render({ nums: [1, "two", 3] }),
       (err: Error) => {
@@ -7982,7 +8046,7 @@ params:
   it("rejects unknown enum variant", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - color = enum<Red, Green, Blue>
+  - color = enum(Red, Green, Blue)
 ---
 {{ kind(color) }}`);
     assert.throws(
@@ -8030,7 +8094,7 @@ params:
   it("join filter", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - items = list<str>
+  - items = list(str)
 ---
 {{ items | join(", ") }}`);
     assert.strictEqual(
@@ -8042,7 +8106,7 @@ params:
   it("join filter with empty list", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - items = list<str>
+  - items = list(str)
 ---
 {{ items | join(", ") }}`);
     assert.strictEqual(tmpl.render({ items: [] }).trim(), "");
@@ -8051,7 +8115,7 @@ params:
   it("limit filter truncates long list", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - items = list<str>
+  - items = list(str)
 ---
 {{ items | limit(2) | join(", ") }}`);
     assert.strictEqual(
@@ -8063,7 +8127,7 @@ params:
   it("limit filter keeps short list unchanged", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - items = list<str>
+  - items = list(str)
 ---
 {{ items | limit(50) | join(", ") }}`);
     assert.strictEqual(tmpl.render({ items: ["a", "b"] }).trim(), "a, b");
@@ -8099,7 +8163,7 @@ params:
   it("filter chain: upper then join", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - items = list<str>
+  - items = list(str)
 ---
 {{ items | join(", ") | upper }}`);
     assert.strictEqual(
@@ -8143,7 +8207,7 @@ describe("Comparison operators comprehensive", () => {
 params:
   - x = int
 ---
-{% if x == 5 %}yes{% else %}no{% /if %}`);
+> {% if x == 5 %}yes{% else %}no{% /if %}`);
     assert.strictEqual(tmpl.render({ x: 5 }).trim(), "yes");
   });
 
@@ -8152,7 +8216,7 @@ params:
 params:
   - x = int
 ---
-{% if x == 5 %}yes{% else %}no{% /if %}`);
+> {% if x == 5 %}yes{% else %}no{% /if %}`);
     assert.strictEqual(tmpl.render({ x: 3 }).trim(), "no");
   });
 
@@ -8161,7 +8225,7 @@ params:
 params:
   - x = int
 ---
-{% if x != 5 %}yes{% else %}no{% /if %}`);
+> {% if x != 5 %}yes{% else %}no{% /if %}`);
     assert.strictEqual(tmpl.render({ x: 3 }).trim(), "yes");
   });
 
@@ -8170,7 +8234,7 @@ params:
 params:
   - x = int
 ---
-{% if x != 5 %}yes{% else %}no{% /if %}`);
+> {% if x != 5 %}yes{% else %}no{% /if %}`);
     assert.strictEqual(tmpl.render({ x: 5 }).trim(), "no");
   });
 
@@ -8179,7 +8243,7 @@ params:
 params:
   - x = int
 ---
-{% if x < 5 %}less{% else %}not{% /if %}`);
+> {% if x < 5 %}less{% else %}not{% /if %}`);
     assert.strictEqual(tmpl.render({ x: 3 }).trim(), "less");
     assert.strictEqual(tmpl.render({ x: 5 }).trim(), "not");
   });
@@ -8189,7 +8253,7 @@ params:
 params:
   - x = int
 ---
-{% if x > 5 %}more{% else %}not{% /if %}`);
+> {% if x > 5 %}more{% else %}not{% /if %}`);
     assert.strictEqual(tmpl.render({ x: 7 }).trim(), "more");
     assert.strictEqual(tmpl.render({ x: 5 }).trim(), "not");
   });
@@ -8199,7 +8263,7 @@ params:
 params:
   - x = int
 ---
-{% if x <= 5 %}yes{% else %}no{% /if %}`);
+> {% if x <= 5 %}yes{% else %}no{% /if %}`);
     assert.strictEqual(tmpl.render({ x: 5 }).trim(), "yes");
     assert.strictEqual(tmpl.render({ x: 6 }).trim(), "no");
   });
@@ -8209,7 +8273,7 @@ params:
 params:
   - x = int
 ---
-{% if x >= 5 %}yes{% else %}no{% /if %}`);
+> {% if x >= 5 %}yes{% else %}no{% /if %}`);
     assert.strictEqual(tmpl.render({ x: 5 }).trim(), "yes");
     assert.strictEqual(tmpl.render({ x: 4 }).trim(), "no");
   });
@@ -8219,7 +8283,7 @@ params:
 params:
   - mode = str
 ---
-{% if mode == "debug" %}debugging{% else %}normal{% /if %}`);
+> {% if mode == "debug" %}debugging{% else %}normal{% /if %}`);
     assert.strictEqual(tmpl.render({ mode: "debug" }).trim(), "debugging");
     assert.strictEqual(tmpl.render({ mode: "release" }).trim(), "normal");
   });
@@ -8229,7 +8293,7 @@ params:
 params:
   - flag = bool
 ---
-{% if flag == true %}on{% else %}off{% /if %}`);
+> {% if flag == true %}on{% else %}off{% /if %}`);
     assert.strictEqual(tmpl.render({ flag: true }).trim(), "on");
     assert.strictEqual(tmpl.render({ flag: false }).trim(), "off");
   });
@@ -8245,7 +8309,7 @@ describe("Truthiness comprehensive", () => {
 params:
   - text = str
 ---
-{% if text %}truthy{% else %}falsy{% /if %}`);
+> {% if text %}truthy{% else %}falsy{% /if %}`);
     assert.strictEqual(tmpl.render({ text: "" }).trim(), "falsy");
   });
 
@@ -8254,7 +8318,7 @@ params:
 params:
   - text = str
 ---
-{% if text %}truthy{% else %}falsy{% /if %}`);
+> {% if text %}truthy{% else %}falsy{% /if %}`);
     assert.strictEqual(tmpl.render({ text: "hello" }).trim(), "truthy");
   });
 
@@ -8263,7 +8327,7 @@ params:
 params:
   - n = int
 ---
-{% if n %}truthy{% else %}falsy{% /if %}`);
+> {% if n %}truthy{% else %}falsy{% /if %}`);
     assert.strictEqual(tmpl.render({ n: 0 }).trim(), "falsy");
   });
 
@@ -8272,7 +8336,7 @@ params:
 params:
   - n = int
 ---
-{% if n %}truthy{% else %}falsy{% /if %}`);
+> {% if n %}truthy{% else %}falsy{% /if %}`);
     assert.strictEqual(tmpl.render({ n: 42 }).trim(), "truthy");
   });
 
@@ -8281,7 +8345,7 @@ params:
 params:
   - n = int
 ---
-{% if n %}truthy{% else %}falsy{% /if %}`);
+> {% if n %}truthy{% else %}falsy{% /if %}`);
     assert.strictEqual(tmpl.render({ n: -1 }).trim(), "truthy");
   });
 
@@ -8290,7 +8354,7 @@ params:
 params:
   - x = float
 ---
-{% if x %}truthy{% else %}falsy{% /if %}`);
+> {% if x %}truthy{% else %}falsy{% /if %}`);
     assert.strictEqual(tmpl.render({ x: 0.0 }).trim(), "falsy");
   });
 
@@ -8299,7 +8363,7 @@ params:
 params:
   - x = float
 ---
-{% if x %}truthy{% else %}falsy{% /if %}`);
+> {% if x %}truthy{% else %}falsy{% /if %}`);
     assert.strictEqual(tmpl.render({ x: 0.001 }).trim(), "truthy");
   });
 
@@ -8308,7 +8372,7 @@ params:
 params:
   - flag = bool
 ---
-{% if flag %}truthy{% else %}falsy{% /if %}`);
+> {% if flag %}truthy{% else %}falsy{% /if %}`);
     assert.strictEqual(tmpl.render({ flag: true }).trim(), "truthy");
   });
 
@@ -8317,25 +8381,25 @@ params:
 params:
   - flag = bool
 ---
-{% if flag %}truthy{% else %}falsy{% /if %}`);
+> {% if flag %}truthy{% else %}falsy{% /if %}`);
     assert.strictEqual(tmpl.render({ flag: false }).trim(), "falsy");
   });
 
   it("empty list is falsy", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - items = list<str>
+  - items = list(str)
 ---
-{% if items %}truthy{% else %}falsy{% /if %}`);
+> {% if items %}truthy{% else %}falsy{% /if %}`);
     assert.strictEqual(tmpl.render({ items: [] }).trim(), "falsy");
   });
 
   it("non-empty list is truthy", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - items = list<str>
+  - items = list(str)
 ---
-{% if items %}truthy{% else %}falsy{% /if %}`);
+> {% if items %}truthy{% else %}falsy{% /if %}`);
     assert.strictEqual(tmpl.render({ items: ["a"] }).trim(), "truthy");
   });
 });
@@ -8348,7 +8412,7 @@ describe("Whitespace control comprehensive", () => {
   it("for loop with compact output", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - items = list<str>
+  - items = list(str)
 ---
 [{% for item in items %}{{ item }}{% /for %}]`);
     const result = tmpl.render({ items: ["a", "b", "c"] });
@@ -8374,7 +8438,7 @@ describe("Option transparent access comprehensive", () => {
   it("accesses option value directly (transparent)", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<str>
+  - x = option(str)
 ---
 > {% if has(x) %}
 
@@ -8387,7 +8451,7 @@ params:
   it("kind() returns Some for present option", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 {{ kind(x) }}`);
     assert.strictEqual(tmpl.render({ x: 42 }).trim(), "Some");
@@ -8396,7 +8460,7 @@ params:
   it("kind() returns None for absent option", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 {{ kind(x) }}`);
     assert.strictEqual(tmpl.render({ x: null }).trim(), "None");
@@ -8405,18 +8469,18 @@ params:
   it("has() returns true for present option", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<str>
+  - x = option(str)
 ---
-{% if has(x) %}present{% else %}absent{% /if %}`);
+> {% if has(x) %}present{% else %}absent{% /if %}`);
     assert.strictEqual(tmpl.render({ x: "hi" }).trim(), "present");
   });
 
   it("has() returns false for absent option", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<str>
+  - x = option(str)
 ---
-{% if has(x) %}present{% else %}absent{% /if %}`);
+> {% if has(x) %}present{% else %}absent{% /if %}`);
     assert.strictEqual(tmpl.render({ x: null }).trim(), "absent");
   });
 
@@ -8425,7 +8489,7 @@ params:
       [
         "---",
         "params:",
-        "  - x = option<int>",
+        "  - x = option(int)",
         "---",
         "> {% match x %}",
         "",
@@ -8449,7 +8513,7 @@ params:
       [
         "---",
         "params:",
-        "  - x = option<int>",
+        "  - x = option(int)",
         "---",
         "> {% match x %}",
         "",
@@ -8471,18 +8535,18 @@ params:
   it("option with default None renders correctly", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<str> := None
+  - x = option(str) := None
 ---
-{% if has(x) %}{{ x }}{% else %}default{% /if %}`);
+> {% if has(x) %}{{ x }}{% else %}default{% /if %}`);
     assert.strictEqual(tmpl.render({}).trim(), "default");
   });
 
   it("option with default Some value", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<str> := "hello"
+  - x = option(str) := "hello"
 ---
-{% if has(x) %}{{ x }}{% else %}default{% /if %}`);
+> {% if has(x) %}{{ x }}{% else %}default{% /if %}`);
     assert.strictEqual(tmpl.render({}).trim(), "hello");
   });
 });
@@ -8497,7 +8561,7 @@ describe("Match with {% else %} keyword", () => {
       [
         "---",
         "params:",
-        "  - status = enum<Ok, Err, Pending>",
+        "  - status = enum(Ok, Err, Pending)",
         "---",
         "> {% match status %}",
         "",
@@ -8522,7 +8586,7 @@ describe("Match with {% else %} keyword", () => {
       [
         "---",
         "params:",
-        "  - status = enum<Ok, Err, Pending>",
+        "  - status = enum(Ok, Err, Pending)",
         "---",
         "> {% match status %}",
         "",
@@ -8546,7 +8610,7 @@ describe("Match with {% else %} keyword", () => {
       [
         "---",
         "params:",
-        "  - color = enum<Red, Green, Blue, Yellow>",
+        "  - color = enum(Red, Green, Blue, Yellow)",
         "---",
         "> {% match color %}",
         "",
@@ -8580,9 +8644,9 @@ describe("Built-in function edge cases", () => {
   it("idx() starts at 0", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - items = list<str>
+  - items = list(str)
 ---
-{% for item in items %}{{ idx(item) }}{% /for %}`);
+> {% for item in items %}{{ idx(item) }}{% /for %}`);
     assert.strictEqual(tmpl.render({ items: ["a", "b", "c"] }).trim(), "012");
   });
 
@@ -8607,7 +8671,7 @@ params:
   it("len() on list", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - items = list<str>
+  - items = list(str)
 ---
 {{ len(items) }}`);
     assert.strictEqual(tmpl.render({ items: ["a", "b"] }).trim(), "2");
@@ -8616,7 +8680,7 @@ params:
   it("len() on empty list", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - items = list<str>
+  - items = list(str)
 ---
 {{ len(items) }}`);
     assert.strictEqual(tmpl.render({ items: [] }).trim(), "0");
@@ -8625,7 +8689,7 @@ params:
   it("len() on struct", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - obj = struct<a = str, b = int>
+  - obj = struct(a = str, b = int)
 ---
 {{ len(obj) }}`);
     assert.strictEqual(tmpl.render({ obj: { a: "x", b: 1 } }).trim(), "2");
@@ -8634,7 +8698,7 @@ params:
   it("kind() on unit enum variant", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - color = enum<Red, Green, Blue>
+  - color = enum(Red, Green, Blue)
 ---
 {{ kind(color) }}`);
     assert.strictEqual(tmpl.render({ color: "Red" }).trim(), "Red");
@@ -8658,18 +8722,18 @@ describe("for...else edge cases (additional)", () => {
   it("for...else with single item list", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - items = list<str>
+  - items = list(str)
 ---
-{% for item in items %}{{ item }}{% else %}empty{% /for %}`);
+> {% for item in items %}{{ item }}{% else %}empty{% /for %}`);
     assert.strictEqual(tmpl.render({ items: ["only"] }).trim(), "only");
   });
 
   it("for...else with many items", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - items = list<int>
+  - items = list(int)
 ---
-{% for item in items %}{{ item }},{% else %}empty{% /for %}`);
+> {% for item in items %}{{ item }},{% else %}empty{% /for %}`);
     const result = tmpl.render({ items: [1, 2, 3, 4, 5] }).trim();
     assert.ok(result.includes("1,"));
     assert.ok(result.includes("5,"));
@@ -8679,10 +8743,10 @@ params:
   it("multiple for loops with independent else", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - a = list<str>
-  - b = list<str>
+  - a = list(str)
+  - b = list(str)
 ---
-{% for x in a %}{{ x }}{% else %}noA{% /for %}|{% for y in b %}{{ y }}{% else %}noB{% /for %}`);
+> {% for x in a %}{{ x }}{% else %}noA{% /for %}|{% for y in b %}{{ y }}{% else %}noB{% /for %}`);
     assert.strictEqual(tmpl.render({ a: [], b: ["hi"] }).trim(), "noA|hi");
     assert.strictEqual(tmpl.render({ a: ["hi"], b: [] }).trim(), "hi|noB");
   });
@@ -8697,6 +8761,7 @@ describe("Constants comprehensive (additional)", () => {
     const tmpl = Template.fromSource(`---
 consts:
   - GREETING = str := "Hello"
+
 params:
   - name = str
 ---
@@ -8708,6 +8773,7 @@ params:
     const tmpl = Template.fromSource(`---
 consts:
   - MAX = int := 100
+
 params:
   - n = int
 ---
@@ -8719,6 +8785,7 @@ params:
     const tmpl = Template.fromSource(`---
 consts:
   - ENABLED = bool := true
+
 params:
   - name = str
 ---
@@ -8731,6 +8798,7 @@ params:
 consts:
   - A = str := "alpha"
   - B = int := 42
+
 params:
   - name = str
 ---
@@ -8750,7 +8818,7 @@ describe("If/elif/else comprehensive (additional)", () => {
 params:
   - x = bool
 ---
-{% if x %}yes{% /if %}`);
+> {% if x %}yes{% /if %}`);
     assert.strictEqual(tmpl.render({ x: true }).trim(), "yes");
   });
 
@@ -8759,7 +8827,7 @@ params:
 params:
   - x = bool
 ---
-{% if x %}yes{% /if %}`);
+> {% if x %}yes{% /if %}`);
     assert.strictEqual(tmpl.render({ x: false }).trim(), "");
   });
 
@@ -8768,7 +8836,7 @@ params:
 params:
   - x = int
 ---
-{% if x == 1 %}one{% elif x == 2 %}two{% else %}other{% /if %}`);
+> {% if x == 1 %}one{% elif x == 2 %}two{% else %}other{% /if %}`);
     assert.strictEqual(tmpl.render({ x: 1 }).trim(), "one");
     assert.strictEqual(tmpl.render({ x: 2 }).trim(), "two");
     assert.strictEqual(tmpl.render({ x: 3 }).trim(), "other");
@@ -8779,7 +8847,7 @@ params:
 params:
   - x = int
 ---
-{% if x == 1 %}one{% elif x == 2 %}two{% elif x == 3 %}three{% elif x == 4 %}four{% else %}other{% /if %}`);
+> {% if x == 1 %}one{% elif x == 2 %}two{% elif x == 3 %}three{% elif x == 4 %}four{% else %}other{% /if %}`);
     assert.strictEqual(tmpl.render({ x: 1 }).trim(), "one");
     assert.strictEqual(tmpl.render({ x: 4 }).trim(), "four");
     assert.strictEqual(tmpl.render({ x: 5 }).trim(), "other");
@@ -8791,7 +8859,7 @@ params:
   - x = bool
   - y = bool
 ---
-{% if x %}{% if y %}both{% else %}x only{% /if %}{% else %}{% if y %}y only{% else %}neither{% /if %}{% /if %}`);
+> {% if x %}{% if y %}both{% else %}x only{% /if %}{% else %}{% if y %}y only{% else %}neither{% /if %}{% /if %}`);
     assert.strictEqual(tmpl.render({ x: true, y: true }).trim(), "both");
     assert.strictEqual(tmpl.render({ x: true, y: false }).trim(), "x only");
     assert.strictEqual(tmpl.render({ x: false, y: true }).trim(), "y only");
@@ -8803,7 +8871,7 @@ params:
 params:
   - x = bool
 ---
-{% if not x %}negated{% else %}normal{% /if %}`);
+> {% if not x %}negated{% else %}normal{% /if %}`);
     // "not x" is treated as a variable name, which doesn't exist
     assert.throws(() => tmpl.render({ x: true }));
   });
@@ -8813,7 +8881,7 @@ params:
 params:
   - x = bool
 ---
-{% if x %}normal{% else %}negated{% /if %}`);
+> {% if x %}normal{% else %}negated{% /if %}`);
     assert.strictEqual(tmpl.render({ x: true }).trim(), "normal");
     assert.strictEqual(tmpl.render({ x: false }).trim(), "negated");
   });
@@ -8842,7 +8910,7 @@ params:
   it("throws on undefined nested field", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - obj = struct<name = str>
+  - obj = struct(name = str)
 ---
 {{ obj.nonexistent }}`);
     assert.throws(
@@ -8862,7 +8930,7 @@ describe("Raw block comprehensive (additional)", () => {
 params:
   - x = str
 ---
-{% raw %}{{ x }}{% /raw %}`);
+> {% raw %}{{ x }}{% /raw %}`);
     assert.strictEqual(tmpl.render({ x: "hello" }).trim(), "{{ x }}");
   });
 
@@ -8871,7 +8939,7 @@ params:
 params:
   - x = str
 ---
-{% raw %}{% if x %}yes{% /if %}{% /raw %}`);
+> {% raw %}{% if x %}yes{% /if %}{% /raw %}`);
     assert.strictEqual(
       tmpl.render({ x: "hello" }).trim(),
       "{% if x %}yes{% /if %}",
@@ -9027,32 +9095,32 @@ describe("Value module comprehensive (additional)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Transparent option<T> comprehensive tests
+// Transparent option(T) comprehensive tests
 // ---------------------------------------------------------------------------
 
-describe("Transparent option<T>", () => {
-  it("null renders as empty string for option<str>", () => {
+describe("Transparent option(T)", () => {
+  it("null renders as empty string for option(str)", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<str>
+  - x = option(str)
 ---
 [{% if has(x) %}{{ x }}{% /if %}]`);
     assert.strictEqual(tmpl.render({ x: null }).trim(), "[]");
   });
 
-  it("undefined renders as empty string for option<str>", () => {
+  it("undefined renders as empty string for option(str)", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<str>
+  - x = option(str)
 ---
 [{% if has(x) %}{{ x }}{% /if %}]`);
     assert.strictEqual(tmpl.render({ x: undefined }).trim(), "[]");
   });
 
-  it("value renders directly for option<str>", () => {
+  it("value renders directly for option(str)", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<str>
+  - x = option(str)
 ---
 [{% if has(x) %}{{ x }}{% /if %}]`);
     assert.strictEqual(tmpl.render({ x: "hello" }).trim(), "[hello]");
@@ -9061,7 +9129,7 @@ params:
   it("has() returns false for null option", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<str>
+  - x = option(str)
 ---
 > {% if has(x) %}
 
@@ -9078,7 +9146,7 @@ no
   it("has() returns true for present option", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<str>
+  - x = option(str)
 ---
 > {% if has(x) %}
 
@@ -9095,7 +9163,7 @@ no
   it("has() returns true for option value that is the string 'None'", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<str>
+  - x = option(str)
 ---
 > {% if has(x) %}
 
@@ -9114,7 +9182,7 @@ absent
   it("kind() returns None for null option", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<str>
+  - x = option(str)
 ---
 {{ kind(x) }}`);
     assert.strictEqual(tmpl.render({ x: null }).trim(), "None");
@@ -9123,7 +9191,7 @@ params:
   it("kind() returns Some for present option", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 {{ kind(x) }}`);
     assert.strictEqual(tmpl.render({ x: 42 }).trim(), "Some");
@@ -9132,7 +9200,7 @@ params:
   it("match works with option None", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 > {% match x %}
 
@@ -9151,7 +9219,7 @@ absent
   it("match works with option Some", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 > {% match x %}
 
@@ -9167,10 +9235,10 @@ absent
     assert.strictEqual(tmpl.render({ x: 42 }).trim(), "value: 42");
   });
 
-  it("option<int> accepts number values", () => {
+  it("option(int) accepts number values", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 > {% if has(x) %}
 
@@ -9180,19 +9248,19 @@ params:
     assert.strictEqual(tmpl.render({ x: 7 }).trim(), "7");
   });
 
-  it("option<int> accepts null", () => {
+  it("option(int) accepts null", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 [{% if has(x) %}{{ x }}{% /if %}]`);
     assert.strictEqual(tmpl.render({ x: null }).trim(), "[]");
   });
 
-  it("option<float> accepts number values", () => {
+  it("option(float) accepts number values", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<float>
+  - x = option(float)
 ---
 > {% if has(x) %}
 
@@ -9202,10 +9270,10 @@ params:
     assert.strictEqual(tmpl.render({ x: 3.14 }).trim(), "3.14");
   });
 
-  it("option<bool> accepts boolean values", () => {
+  it("option(bool) accepts boolean values", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<bool>
+  - x = option(bool)
 ---
 > {% if has(x) %}
 
@@ -9215,10 +9283,10 @@ params:
     assert.strictEqual(tmpl.render({ x: true }).trim(), "true");
   });
 
-  it("option<bool> null renders empty", () => {
+  it("option(bool) null renders empty", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<bool>
+  - x = option(bool)
 ---
 [{% if has(x) %}{{ x }}{% /if %}]`);
     assert.strictEqual(tmpl.render({ x: null }).trim(), "[]");
@@ -9227,7 +9295,7 @@ params:
   it("option in struct field — null", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - person = struct<name = str, email = option<str>>
+  - person = struct(name = str, email = option(str))
 ---
 > {% if has(person.email) %}
 
@@ -9247,7 +9315,7 @@ no email
   it("option in struct field — present", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - person = struct<name = str, email = option<str>>
+  - person = struct(name = str, email = option(str))
 ---
 > {% if has(person.email) %}
 
@@ -9267,7 +9335,7 @@ no email
   it("option in list items", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - items = list<name = str, note = option<str>>
+  - items = list(name = str, note = option(str))
 ---
 > {% for item in items %}
 > {% if has(item.note) %}
@@ -9295,7 +9363,7 @@ params:
   it("default None creates null in defaults()", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<str> := None
+  - x = option(str) := None
 ---
 > {% if has(x) %}
 
@@ -9309,7 +9377,7 @@ params:
   it("default value creates the value in defaults()", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<str> := "hello"
+  - x = option(str) := "hello"
 ---
 > {% if has(x) %}
 
@@ -9320,10 +9388,10 @@ params:
     assert.strictEqual(defs.x, "hello");
   });
 
-  it("option<int> default renders correctly", () => {
+  it("option(int) default renders correctly", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int> := 42
+  - x = option(int) := 42
 ---
 > {% if has(x) %}
 
@@ -9333,10 +9401,10 @@ params:
     assert.strictEqual(tmpl.render().trim(), "42");
   });
 
-  it("option<int> default None renders empty", () => {
+  it("option(int) default None renders empty", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int> := None
+  - x = option(int) := None
 ---
 [{% if has(x) %}{{ x }}{% /if %}]`);
     assert.strictEqual(tmpl.render().trim(), "[]");
@@ -9345,7 +9413,7 @@ params:
   it("type checking rejects wrong type for option inner", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 > {% if has(x) %}
 
@@ -9361,10 +9429,10 @@ params:
     );
   });
 
-  it("type checking accepts null for option<int>", () => {
+  it("type checking accepts null for option(int)", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 > {% if has(x) %}
 
@@ -9374,10 +9442,10 @@ params:
     assert.doesNotThrow(() => tmpl.render({ x: null }));
   });
 
-  it("option roundtrip: declarations show option<T>", () => {
+  it("option roundtrip: declarations show option(T)", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<str>
+  - x = option(str)
 ---
 > {% if has(x) %}
 
@@ -9387,13 +9455,13 @@ params:
     const decls = tmpl.declarations();
     assert.strictEqual(decls.length, 1);
     assert.strictEqual(decls[0]![0], "x");
-    assert.strictEqual(decls[0]![1], "option<str>");
+    assert.strictEqual(decls[0]![1], "option(str)");
   });
 
   it("inline match with option Some", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 > {% match x %}
 
@@ -9411,7 +9479,7 @@ got: {{ x }}
   it("match with else arm", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 > {% match x %}
 
@@ -9431,7 +9499,7 @@ default
   it("isTruthy: none is falsy", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<str>
+  - x = option(str)
 ---
 > {% if x %}
 
@@ -9449,7 +9517,7 @@ no
   it("option renderUnchecked with null", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<str>
+  - x = option(str)
 ---
 > {% if has(x) %}
 
@@ -9466,7 +9534,7 @@ none
   it("option renderUnchecked with value", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = option<str>
+  - x = option(str)
 ---
 > {% if has(x) %}
 
@@ -9486,36 +9554,36 @@ none
 // ===========================================================================
 
 describe("Flow-sensitive narrowing", () => {
-  describe("has() narrows option<T> to T", () => {
-    it("option<str> inside has() guard compiles and renders", () => {
+  describe("has() narrows option(T) to T", () => {
+    it("option(str) inside has() guard compiles and renders", () => {
       const tmpl = Template.fromSource(
         `---
 params:
-  - x = option<str>
+  - x = option(str)
 ---
-{% if has(x) %}{{ x }}{% /if %}`,
+> {% if has(x) %}{{ x }}{% /if %}`,
       );
       assert.strictEqual(tmpl.render({ x: "hello" }).trim(), "hello");
     });
 
-    it("option<int> inside has() guard compiles and renders", () => {
+    it("option(int) inside has() guard compiles and renders", () => {
       const tmpl = Template.fromSource(
         `---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
-{% if has(x) %}{{ x }}{% /if %}`,
+> {% if has(x) %}{{ x }}{% /if %}`,
       );
       assert.strictEqual(tmpl.render({ x: 42 }).trim(), "42");
     });
 
-    it("option<str> without has() guard is compile error", () => {
+    it("option(str) without has() guard is compile error", () => {
       assert.throws(
         () =>
           Template.fromSource(
             `---
 params:
-  - x = option<str>
+  - x = option(str)
 ---
 {{ x }}`,
           ),
@@ -9523,13 +9591,13 @@ params:
       );
     });
 
-    it("option<int> without has() guard is compile error", () => {
+    it("option(int) without has() guard is compile error", () => {
       assert.throws(
         () =>
           Template.fromSource(
             `---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 {{ x }}`,
           ),
@@ -9544,9 +9612,9 @@ params:
           Template.fromSource(
             `---
 params:
-  - x = option<str>
+  - x = option(str)
 ---
-{% if has(x) %}present{% else %}{{ x }}{% /if %}`,
+> {% if has(x) %}present{% else %}{{ x }}{% /if %}`,
           ),
         /cannot display.*option/,
       );
@@ -9556,10 +9624,10 @@ params:
       const tmpl = Template.fromSource(
         `---
 params:
-  - a = option<str>
-  - b = option<int>
+  - a = option(str)
+  - b = option(int)
 ---
-{% if has(a) %}{% if has(b) %}{{ a }}-{{ b }}{% /if %}{% /if %}`,
+> {% if has(a) %}{% if has(b) %}{{ a }}-{{ b }}{% /if %}{% /if %}`,
       );
       assert.strictEqual(tmpl.render({ a: "x", b: 5 }).trim(), "x-5");
     });
@@ -9570,7 +9638,7 @@ params:
       const tmpl = Template.fromSource(
         `---
 params:
-  - outcome = enum<Confirmed(evidence = str), Rejected>
+  - outcome = enum(Confirmed(evidence = str), Rejected)
 ---
 > {% match outcome %}
 > {% case Confirmed %}
@@ -9595,7 +9663,7 @@ rejected
           Template.fromSource(
             `---
 params:
-  - status = enum<Active, Inactive>
+  - status = enum(Active, Inactive)
 ---
 {{ status }}`,
           ),
@@ -9607,7 +9675,7 @@ params:
       const tmpl = Template.fromSource(
         `---
 params:
-  - status = enum<Active, Inactive>
+  - status = enum(Active, Inactive)
 ---
 {{ kind(status) }}`,
       );
@@ -9620,9 +9688,9 @@ params:
       const tmpl = Template.fromSource(
         `---
 params:
-  - items = list<str>
+  - items = list(str)
 ---
-{% for item in items %}{{ item }} {% /for %}`,
+> {% for item in items %}{{ item }} {% /for %}`,
       );
       const result = tmpl.render({ items: ["a", "b", "c"] });
       assert.ok(result.includes("a"), `got: ${result}`);
@@ -9632,9 +9700,9 @@ params:
       const tmpl = Template.fromSource(
         `---
 params:
-  - items = list<name = str, score = int>
+  - items = list(name = str, score = int)
 ---
-{% for item in items %}{{ item.name }}: {{ item.score }} {% /for %}`,
+> {% for item in items %}{{ item.name }}: {{ item.score }} {% /for %}`,
       );
       const result = tmpl.render({ items: [{ name: "Alice", score: 95 }] });
       assert.ok(result.includes("Alice"), `got: ${result}`);
@@ -9647,7 +9715,7 @@ params:
           Template.fromSource(
             `---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
 {{ items }}`,
           ),
@@ -9663,7 +9731,7 @@ params:
           Template.fromSource(
             `---
 params:
-  - config = struct<timeout = int, name = str>
+  - config = struct(timeout = int, name = str)
 ---
 {{ config }}`,
           ),
@@ -9675,7 +9743,7 @@ params:
       const tmpl = Template.fromSource(
         `---
 params:
-  - config = struct<timeout = int, name = str>
+  - config = struct(timeout = int, name = str)
 ---
 {{ config.timeout }} {{ config.name }}`,
       );
@@ -9690,7 +9758,7 @@ params:
       const tmpl = Template.fromSource(
         `---
 params:
-  - items = list<str>
+  - items = list(str)
 ---
 {{ items | join(", ") }}`,
       );
@@ -9725,6 +9793,7 @@ describe("Collision and scope tests", () => {
       const tmpl = Template.fromSource(`---
 consts:
   - MAX = int := 10
+
 params:
   - count = int := MAX
 ---
@@ -9741,6 +9810,7 @@ params:
         const childContent = `---
 consts:
   - LIMIT = int := 100
+
 params: [x = str]
 ---
 {{ x }}`;
@@ -9749,7 +9819,8 @@ params: [x = str]
         const tmpl = Template.fromSourceWithBaseDir(
           `---
 imports:
-  - "[Config](Config.tmpl.md)"
+  - "[Config](./Config.tmpl.md)"
+
 params:
   - max_items = int := Config.LIMIT
 ---
@@ -9769,6 +9840,7 @@ params:
           Template.fromSource(`---
 consts:
   - NAME = str := "hello"
+
 params:
   - count = int := NAME
 ---
@@ -9796,7 +9868,8 @@ params: [x = str]
             Template.fromSourceWithBaseDir(
               `---
 imports:
-  - "[Helper](Helper.tmpl.md)"
+  - "[Helper](./Helper.tmpl.md)"
+
 params:
   - helper = str
 ---
@@ -9824,7 +9897,8 @@ params: [x = str]
             Template.fromSourceWithBaseDir(
               `---
 imports:
-  - "[Config](Config.tmpl.md)"
+  - "[Config](./Config.tmpl.md)"
+
 consts:
   - config = str := "val"
 ---
@@ -9847,7 +9921,8 @@ consts:
         () =>
           Template.fromSource(`---
 types:
-  - TaskList = list<title = str>
+  - TaskList = list(title = str)
+
 params:
   - task_list = str
 ---
@@ -9863,7 +9938,8 @@ params:
             [
               `---`,
               "types:",
-              "  - MyItem = list<x = int>",
+              "  - MyItem = list(x = int)",
+              "",
               "consts:",
               '  - my_item = str := "hello"',
               `---`,
@@ -9877,7 +9953,8 @@ params:
     it("allows param PascalCase matching type alias with SAME type", () => {
       const tmpl = Template.fromSource(`---
 types:
-  - CodeReview = list<title = str>
+  - CodeReview = list(title = str)
+
 params:
   - code_review = CodeReview
 ---
@@ -9902,6 +9979,7 @@ params:
           Template.fromSource(`---
 consts:
   - limit = int := 5
+
 params:
   - limit = int
 ---
@@ -9923,9 +10001,11 @@ params:
             [
               `---`,
               "imports:",
-              '  - "[Shared](shared.tmpl.md)"',
+              '  - "[Shared](./shared.tmpl.md)"',
+              "",
               "types:",
-              "  - Shared = list<x = str>",
+              "  - Shared = list(x = str)",
+              "",
               "params:",
               "  - data = Shared",
               `---`,
@@ -10015,7 +10095,8 @@ params:
             [
               `---`,
               "imports:",
-              '  - "[Utils](utils.tmpl.md)"',
+              '  - "[Utils](./utils.tmpl.md)"',
+              "",
               "params:",
               "  - x = str",
               `---`,
@@ -10051,7 +10132,7 @@ params:
           Template.fromSource(`---
 params:
   - item = str
-  - items = list<str>
+  - items = list(str)
 ---
 > {% for item in items %}
 
@@ -10068,8 +10149,9 @@ params:
           Template.fromSource(`---
 consts:
   - x = int := 1
+
 params:
-  - items = list<str>
+  - items = list(str)
 ---
 > {% for x in items %}
 
@@ -10087,9 +10169,10 @@ params:
             [
               `---`,
               "imports:",
-              '  - "[item](item.tmpl.md)"',
+              '  - "[item](./item.tmpl.md)"',
+              "",
               "params:",
-              "  - items = list<str>",
+              "  - items = list(str)",
               `---`,
               "> {% for item in items %}",
               "",
@@ -10110,7 +10193,7 @@ params:
       const src = [
         `---`,
         "params:",
-        "  - items = list<name = str>",
+        "  - items = list(name = str)",
         `---`,
         "> {% tmpl row %}",
         "",
@@ -10145,7 +10228,8 @@ params:
       const src = [
         `---`,
         "types:",
-        "  - Priority = enum<High, Low>",
+        "  - Priority = enum(High, Low)",
+        "",
         "params:",
         "  - p = Priority",
         "  - label = str",
@@ -10222,6 +10306,7 @@ params:
         `---`,
         "consts:",
         '  - LABEL = str := "outer"',
+        "",
         "params:",
         "  - x = str",
         `---`,
@@ -10271,6 +10356,7 @@ params:
 consts:
   - MAX = int := 10
   - MAX = int := 20
+
 params:
   - x = str
 ---
@@ -10290,7 +10376,8 @@ params:
             [
               `---`,
               "types:",
-              "  - MaxSize = list<x = int>",
+              "  - MaxSize = list(x = int)",
+              "",
               "consts:",
               '  - max_size = str := "big"',
               `---`,
@@ -10306,7 +10393,8 @@ params:
       // constant with the same name just takes priority — not a conflict.
       const tmpl = Template.fromSource(`---
 types:
-  - Stage = enum<Design, Build>
+  - Stage = enum(Design, Build)
+
 consts:
   - Stage = str := "override"
 ---
@@ -10314,5 +10402,59 @@ consts:
       const result = tmpl.render();
       assert.strictEqual(result, "override");
     });
+  });
+});
+
+describe("Milestone 2 Enforcement", () => {
+  it("accepts compound types with parens (...)", () => {
+    const tmpl = Template.fromSource(`---
+allow_unused: true
+types:
+  - MyStruct = struct(name = str)
+  - MyEnum = enum(A, B)
+
+params:
+  - items = list(MyStruct)
+  - opt = option(int)
+---
+{{ items.length }}`);
+    assert.ok(tmpl);
+  });
+
+  it("rejects compound types with <...> or [...] throwing TemplateSyntaxError", () => {
+    assert.throws(
+      () => Template.fromSource("---\nparams: [x = list<str>]\n---\n{{ x }}"),
+      (err: any) =>
+        err instanceof TemplateSyntaxError &&
+        err.message.includes("parentheses (...)"),
+    );
+    assert.throws(
+      () => Template.fromSource("---\nparams: [x = list[str]]\n---\n{{ x }}"),
+      (err: any) =>
+        err instanceof TemplateSyntaxError &&
+        err.message.includes("parentheses (...)"),
+    );
+  });
+
+  it("strips outer quotes in declaration lines in frontmatter", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - "name = str"
+  - 'count = int'
+---
+{{ name }}: {{ count }}`);
+    assert.strictEqual(tmpl.render({ name: "test", count: 5 }), "test: 5");
+  });
+
+  it("enforces strict ./ or ../ prefixes for relative file includes", () => {
+    assert.throws(
+      () =>
+        Template.fromSource(
+          "---\nparams: []\n---\n> {% include [header](header.tmpl.md) %}",
+        ),
+      (err: any) =>
+        err instanceof TemplateSyntaxError &&
+        err.message.includes("include path must begin with"),
+    );
   });
 });

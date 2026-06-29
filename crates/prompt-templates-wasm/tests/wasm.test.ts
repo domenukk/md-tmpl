@@ -323,9 +323,9 @@ params:
     const t = WasmTemplate.fromSourceAllowingUnused(
       `---
 params:
-  - items = list<name = str>
-  - meta = struct<author = str, version = int>
-  - status = enum<Active, Paused>
+  - items = list(name = str)
+  - meta = struct(author = str, version = int)
+  - status = enum(Active, Paused)
 ---
 {{ items }}{{ meta }}{{ status }}`,
     );
@@ -444,7 +444,7 @@ describe("For loops", () => {
     const t = WasmTemplate.fromSource(
       `---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
 > {% for item in items %}
 
@@ -463,7 +463,7 @@ params:
     const t = WasmTemplate.fromSource(
       `---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
 before
 
@@ -487,7 +487,7 @@ after`,
     const t = WasmTemplate.fromSource(
       `---
 params:
-  - tasks = list<title = str, priority = str>
+  - tasks = list(title = str, priority = str)
 ---
 > {% for task in tasks %}
 
@@ -685,7 +685,7 @@ small
 describe("Enum/match", () => {
   const enumSource = `---
 params:
-  - outcome = enum<Confirmed(evidence = str), Rejected, NeedsWork>
+  - outcome = enum(Confirmed(evidence = str), Rejected, NeedsWork)
 ---
 > {% match outcome %}
 > {% case Confirmed %}
@@ -803,7 +803,7 @@ describe("Struct parameters", () => {
     const t = WasmTemplate.fromSource(
       `---
 params:
-  - meta = struct<author = str, version = int>
+  - meta = struct(author = str, version = int)
 ---
 By {{ meta.author }}, v{{ meta.version }}`,
     );
@@ -817,7 +817,7 @@ By {{ meta.author }}, v{{ meta.version }}`,
     const t = WasmTemplate.fromSource(
       `---
 params:
-  - config = struct<db = struct<host = str, port = int>>
+  - config = struct(db = struct(host = str, port = int))
 ---
 {{ config.db.host }}:{{ config.db.port }}`,
     );
@@ -831,7 +831,7 @@ params:
     const t = WasmTemplate.fromSource(
       `---
 params:
-  - meta = struct<author = str>
+  - meta = struct(author = str)
 ---
 {{ meta.author }}`,
     );
@@ -949,7 +949,7 @@ params:
   it("for loop content matches (after whitespace normalization)", () => {
     const source = `---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
 > {% for item in items %}
 
@@ -1150,7 +1150,7 @@ Hello {{ name }}!`,
     const t = WasmTemplate.fromSource(
       `---
 params:
-  - config = struct<host = str, port = int>
+  - config = struct(host = str, port = int)
 ---
 {{ config.host }}:{{ config.port }}`,
     );
@@ -1164,7 +1164,7 @@ params:
     const t = WasmTemplate.fromSource(
       `---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
 > {% for item in items %}
 
@@ -1306,14 +1306,14 @@ Static content`,
 });
 
 // ---------------------------------------------------------------------------
-// option<T> support
+// option(T) support
 // ---------------------------------------------------------------------------
 
-describe("option<T>", () => {
+describe("option(T)", () => {
   const matchTemplate = WasmTemplate.fromSource(
     `---
 params:
-  - label = option<str>
+  - label = option(str)
 ---
 > {% match label %}
 > {% case Some %}
@@ -1330,7 +1330,7 @@ empty
   const hasTemplate = WasmTemplate.fromSource(
     `---
 params:
-  - label = option<str>
+  - label = option(str)
 ---
 > {% if has(label) %}
 
@@ -1367,11 +1367,11 @@ empty
     assert.ok(result.includes("got:world"), `expected 'got:world', got '${result}'`);
   });
 
-  it("option<int> with null via has()", () => {
+  it("option(int) with null via has()", () => {
     const t = WasmTemplate.fromSource(
       `---
 params:
-  - count = option<int>
+  - count = option(int)
 ---
 > {% if has(count) %}
 
@@ -1387,11 +1387,11 @@ no-count
     assert.equal(result.trim(), "no-count");
   });
 
-  it("option<int> with value via has()", () => {
+  it("option(int) with value via has()", () => {
     const t = WasmTemplate.fromSource(
       `---
 params:
-  - count = option<int>
+  - count = option(int)
 ---
 > {% if has(count) %}
 
@@ -1419,7 +1419,7 @@ describe("for...else", () => {
     const t = WasmTemplate.fromSource(
       `---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
 > {% for item in items %}
 
@@ -1438,7 +1438,7 @@ No items
     const t = WasmTemplate.fromSource(
       `---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
 > {% for item in items %}
 
@@ -1459,7 +1459,7 @@ No items
     const t = WasmTemplate.fromSource(
       `---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
 > {% for item in items %}
 

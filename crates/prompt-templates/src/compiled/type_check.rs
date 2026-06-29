@@ -545,7 +545,7 @@ fn resolve_field<'a>(ty: &'a VarType, field: &str) -> FieldResult<'a> {
             }
         }
 
-        // option<T> — field access on an option is not valid; use has() + match.
+        // option(T) — field access on an option is not valid; use has() + match.
         VarType::Option(_) => FieldResult::NotAvailable {
             reason: format!(
                 "cannot access field '{field}' on {ty} — \
@@ -665,7 +665,7 @@ fn extract_has_narrowing(condition: &Condition, env: &TypeEnv<'_>) -> Option<(St
 
     // Narrow option to its inner type.
     match ty {
-        // New-style option<T>: unwrap to T directly.
+        // New-style option(T): unwrap to T directly.
         VarType::Option(inner) => Some((path_str.to_string(), (**inner).clone())),
         // Legacy enum-based option: extract just the Some variant.
         VarType::Enum(variants) => {
@@ -839,7 +839,7 @@ fn validate_include_type_match(
 ///
 /// Types are compatible if they are structurally equal. Containers with
 /// empty field lists (which may arise internally) are treated as compatible
-/// with any same-kind type. Note: untyped `list<>` and `struct<>` are
+/// with any same-kind type. Note: untyped `list()` and `struct()` are
 /// rejected at parse time, so this case only applies to internal types.
 fn types_compatible(provided: &VarType, expected: &VarType) -> bool {
     match (provided, expected) {

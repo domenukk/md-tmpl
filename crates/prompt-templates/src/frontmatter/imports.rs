@@ -26,41 +26,40 @@ pub(crate) fn parse_imports_value(rest: &str) -> Result<Vec<Import>, TemplateErr
     }
 
     let inner = rest
-        .strip_prefix('[')
-        .and_then(|s| s.strip_suffix(']'))
+        .strip_prefix(crate::consts::BRACKET_OPEN)
+        .and_then(|s| s.strip_suffix(crate::consts::BRACKET_CLOSE))
         .unwrap_or(rest);
 
     let mut imports = Vec::new();
 
     // Handle block format with `- ` markers.
-    let parts: Vec<&str> = if inner.contains(" - ") || inner.starts_with("- ") {
-        inner.split(" - ").collect()
+    let parts: Vec<&str> = if inner.contains(crate::consts::LIST_BLOCK_SEP)
+        || inner.starts_with(crate::consts::LIST_ITEM_PREFIX)
+    {
+        inner.split(crate::consts::LIST_BLOCK_SEP).collect()
     } else {
         // Comma-separated at depth 0.
         split_at_depth_zero(inner)
     };
 
     for part in parts {
-        let mut part = part.trim().strip_prefix('-').unwrap_or(part).trim();
-        if (part.starts_with('"') && part.ends_with('"'))
-            || (part.starts_with('\'') && part.ends_with('\''))
-        {
-            if part.len() >= 2 {
-                part = &part[1..part.len() - 1];
-            }
-        }
-        part = part.trim();
+        let p = part
+            .trim()
+            .strip_prefix(crate::consts::TRIM_MARKER)
+            .unwrap_or(part)
+            .trim();
+        let part = crate::consts::strip_string_literal(p).unwrap_or(p).trim();
         if part.is_empty() {
             continue;
         }
 
         // Parse markdown link format: `[stem](path.tmpl.md)`.
-        let Some(bracket_open) = part.find('[') else {
+        let Some(bracket_open) = part.find(crate::consts::BRACKET_OPEN) else {
             return Err(TemplateError::syntax(format!(
                 "import entry '{part}' is not in [stem](path) format"
             )));
         };
-        let Some(bracket_close) = part[bracket_open..].find(']') else {
+        let Some(bracket_close) = part[bracket_open..].find(crate::consts::BRACKET_CLOSE) else {
             return Err(TemplateError::syntax(format!(
                 "import entry '{part}' has unclosed bracket"
             )));
@@ -74,13 +73,18 @@ pub(crate) fn parse_imports_value(rest: &str) -> Result<Vec<Import>, TemplateErr
                 "import entry '{part}' missing (path) after [stem]"
             )));
         };
-        let Some(paren_close) = after_bracket[paren_open..].find(')') else {
+        let Some(paren_close) = after_bracket[paren_open..].find(crate::consts::PAREN_CLOSE) else {
             return Err(TemplateError::syntax(format!(
                 "import entry '{part}' has unclosed parenthesis"
             )));
         };
         let paren_close = paren_open + paren_close;
         let path_str = after_bracket[paren_open + 1..paren_close].trim();
+        if !crate::consts::is_valid_include_path(path_str) {
+            return Err(TemplateError::syntax(format!(
+                "import path '{path_str}' must start with './', '../', or '/'"
+            )));
+        }
 
         // Validate: stem must match the file's template stem.
         let expected_stem = extract_template_stem_str(path_str);
@@ -115,12 +119,15 @@ pub(crate) fn parse_imports_value(rest: &str) -> Result<Vec<Import>, TemplateErr
 /// For example, `review.tmpl.md` → `review`, `path/to/check.tmpl.md` → `check`.
 fn extract_template_stem_str(path_str: &str) -> alloc::string::String {
     // Extract filename (after last `/` or `\`).
-    let name = path_str.rsplit(['/', '\\']).next().unwrap_or(path_str);
+    let name = path_str
+        .rsplit([crate::consts::SLASH, crate::consts::BACKSLASH])
+        .next()
+        .unwrap_or(path_str);
     // Strip known extensions: `.tmpl.md`, `.tmpl`, `.md`.
     let stem = name
-        .strip_suffix(".tmpl.md")
-        .or_else(|| name.strip_suffix(".tmpl"))
-        .or_else(|| name.strip_suffix(".md"))
+        .strip_suffix(crate::consts::EXT_TMPL_MD)
+        .or_else(|| name.strip_suffix(crate::consts::EXT_TMPL))
+        .or_else(|| name.strip_suffix(crate::consts::EXT_MD))
         .unwrap_or(name);
     stem.into()
 }
@@ -134,9 +141,9 @@ pub fn extract_template_stem(path: &Path) -> alloc::string::String {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     // Strip known extensions: `.tmpl.md`, `.tmpl`, `.md`.
     let stem = name
-        .strip_suffix(".tmpl.md")
-        .or_else(|| name.strip_suffix(".tmpl"))
-        .or_else(|| name.strip_suffix(".md"))
+        .strip_suffix(crate::consts::EXT_TMPL_MD)
+        .or_else(|| name.strip_suffix(crate::consts::EXT_TMPL))
+        .or_else(|| name.strip_suffix(crate::consts::EXT_MD))
         .unwrap_or(name);
     stem.into()
 }
@@ -219,20 +226,20 @@ mod tests {
 
     #[test]
     fn parse_single_import() {
-        let imports = parse_imports_value("[review](review.tmpl.md)").unwrap();
+        let imports = parse_imports_value("[review](./review.tmpl.md)").unwrap();
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].stem, "review");
-        assert_eq!(imports[0].path, PathBuf::from("review.tmpl.md"));
+        assert_eq!(imports[0].path, PathBuf::from("./review.tmpl.md"));
     }
 
     #[test]
     fn parse_multiple_comma_separated_imports() {
-        let imports = parse_imports_value("[a](a.tmpl.md), [b](b.tmpl.md)").unwrap();
+        let imports = parse_imports_value("[a](./a.tmpl.md), [b](./b.tmpl.md)").unwrap();
         assert_eq!(imports.len(), 2);
         assert_eq!(imports[0].stem, "a");
-        assert_eq!(imports[0].path, PathBuf::from("a.tmpl.md"));
+        assert_eq!(imports[0].path, PathBuf::from("./a.tmpl.md"));
         assert_eq!(imports[1].stem, "b");
-        assert_eq!(imports[1].path, PathBuf::from("b.tmpl.md"));
+        assert_eq!(imports[1].path, PathBuf::from("./b.tmpl.md"));
     }
 
     #[test]
@@ -249,16 +256,16 @@ mod tests {
 
     #[test]
     fn parse_block_format_with_dash_markers() {
-        let imports = parse_imports_value("- [review](review.tmpl.md)").unwrap();
+        let imports = parse_imports_value("- [review](./review.tmpl.md)").unwrap();
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].stem, "review");
-        assert_eq!(imports[0].path, PathBuf::from("review.tmpl.md"));
+        assert_eq!(imports[0].path, PathBuf::from("./review.tmpl.md"));
     }
 
     #[test]
     fn parse_block_format_multiple_entries() {
         let imports =
-            parse_imports_value("- [alpha](alpha.tmpl.md) - [beta](beta.tmpl.md)").unwrap();
+            parse_imports_value("- [alpha](./alpha.tmpl.md) - [beta](./beta.tmpl.md)").unwrap();
         assert_eq!(imports.len(), 2);
         assert_eq!(imports[0].stem, "alpha");
         assert_eq!(imports[1].stem, "beta");
@@ -266,29 +273,29 @@ mod tests {
 
     #[test]
     fn parse_import_with_subdirectory_path() {
-        let imports = parse_imports_value("[check](path/to/check.tmpl.md)").unwrap();
+        let imports = parse_imports_value("[check](./path/to/check.tmpl.md)").unwrap();
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].stem, "check");
-        assert_eq!(imports[0].path, PathBuf::from("path/to/check.tmpl.md"));
+        assert_eq!(imports[0].path, PathBuf::from("./path/to/check.tmpl.md"));
     }
 
     #[test]
     fn parse_import_with_md_extension_only() {
-        let imports = parse_imports_value("[simple](simple.md)").unwrap();
+        let imports = parse_imports_value("[simple](./simple.md)").unwrap();
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].stem, "simple");
     }
 
     #[test]
     fn parse_import_with_tmpl_extension_only() {
-        let imports = parse_imports_value("[name](name.tmpl)").unwrap();
+        let imports = parse_imports_value("[name](./name.tmpl)").unwrap();
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].stem, "name");
     }
 
     #[test]
     fn parse_import_wrapped_in_brackets() {
-        let imports = parse_imports_value("[[review](review.tmpl.md)]").unwrap();
+        let imports = parse_imports_value("[[review](./review.tmpl.md)]").unwrap();
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].stem, "review");
     }
@@ -296,8 +303,18 @@ mod tests {
     // -- parse_imports_value: error cases ------------------------------------
 
     #[test]
+    fn reject_bare_relative_filename() {
+        let err = parse_imports_value("[review](review.tmpl.md)").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("must start with './', '../', or '/'"),
+            "expected prefix error, got: {msg}"
+        );
+    }
+
+    #[test]
     fn reject_stem_mismatch() {
-        let err = parse_imports_value("[wrong](review.tmpl.md)").unwrap_err();
+        let err = parse_imports_value("[wrong](./review.tmpl.md)").unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("does not match"),
@@ -307,7 +324,7 @@ mod tests {
 
     #[test]
     fn reject_missing_brackets() {
-        let err = parse_imports_value("review(review.tmpl.md)").unwrap_err();
+        let err = parse_imports_value("review(./review.tmpl.md)").unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("not in [stem](path) format"),
@@ -317,7 +334,7 @@ mod tests {
 
     #[test]
     fn reject_unclosed_bracket() {
-        let err = parse_imports_value("[review(review.tmpl.md)").unwrap_err();
+        let err = parse_imports_value("[review(./review.tmpl.md)").unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("unclosed bracket"),
@@ -349,7 +366,7 @@ mod tests {
 
     #[test]
     fn reject_reserved_keyword_stem() {
-        let err = parse_imports_value("[list](list.tmpl.md)").unwrap_err();
+        let err = parse_imports_value("[list](./list.tmpl.md)").unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("reserved keyword"),
@@ -359,7 +376,7 @@ mod tests {
 
     #[test]
     fn reject_reserved_keyword_struct() {
-        let err = parse_imports_value("[struct](struct.tmpl.md)").unwrap_err();
+        let err = parse_imports_value("[struct](./struct.tmpl.md)").unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("reserved keyword"),
@@ -369,7 +386,7 @@ mod tests {
 
     #[test]
     fn reject_reserved_keyword_params() {
-        let err = parse_imports_value("[params](params.tmpl.md)").unwrap_err();
+        let err = parse_imports_value("[params](./params.tmpl.md)").unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("reserved keyword"),

@@ -42,7 +42,7 @@ pub(crate) fn join_continuation_lines(block: &str) -> Vec<String> {
 ///
 /// Supports both inline and block list formats:
 /// - Inline: `[name = str, count = int]`
-/// - Block (joined): `- name = str, - count = int` (after continuation joining)
+#[allow(clippy::too_many_lines)]
 pub(crate) fn parse_declarations(
     rest: &str,
     type_aliases: &HashMap<String, VarType>,
@@ -87,15 +87,8 @@ pub(crate) fn parse_declarations(
     let mut seen_names = crate::compat::HashSet::new();
     let mut current_consts = available_consts.clone();
     for entry in &entries {
-        let mut trimmed = entry.trim();
-        if (trimmed.starts_with('"') && trimmed.ends_with('"'))
-            || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
-        {
-            if trimmed.len() >= 2 {
-                trimmed = &trimmed[1..trimmed.len() - 1];
-            }
-        }
-        trimmed = trimmed.trim();
+        let e = entry.trim();
+        let trimmed = crate::consts::strip_string_literal(e).unwrap_or(e).trim();
         if trimmed.is_empty() {
             continue;
         }
@@ -187,13 +180,12 @@ pub(crate) fn parse_declarations(
 
 // Compatibility wrapper for `params:` removed as it is now unused.
 
-/// Strip enclosing compound type delimiter pairs: `<...>`, `(...)`, or `[...]`.
+/// Strip enclosing compound type delimiter pair `(...)`.
 pub(crate) fn strip_type_brackets(s: &str) -> Option<&str> {
-    if let (Some(inner), true) = (s.strip_prefix('<'), s.ends_with('>')) {
-        Some(&inner[..inner.len() - 1])
-    } else if let (Some(inner), true) = (s.strip_prefix('('), s.ends_with(')')) {
-        Some(&inner[..inner.len() - 1])
-    } else if let (Some(inner), true) = (s.strip_prefix('['), s.ends_with(']')) {
+    if let (Some(inner), true) = (
+        s.strip_prefix(crate::consts::PAREN_OPEN),
+        s.ends_with(crate::consts::PAREN_CLOSE),
+    ) {
         Some(&inner[..inner.len() - 1])
     } else {
         None
@@ -202,14 +194,20 @@ pub(crate) fn strip_type_brackets(s: &str) -> Option<&str> {
 
 /// Split a string on commas at bracket-depth 0.
 pub(crate) fn split_at_depth_zero(input: &str) -> Vec<&str> {
+    use crate::consts::{
+        ANGLE_CLOSE, ANGLE_OPEN, BRACE_CLOSE, BRACE_OPEN, BRACKET_CLOSE, BRACKET_OPEN, COMMA,
+        PAREN_CLOSE, PAREN_OPEN,
+    };
     let mut entries = Vec::new();
     let mut depth: u32 = 0;
     let mut start = 0;
     for (i, ch) in input.char_indices() {
         match ch {
-            '<' | '[' | '(' | '{' => depth += 1,
-            '>' | ']' | ')' | '}' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => {
+            ANGLE_OPEN | BRACKET_OPEN | PAREN_OPEN | BRACE_OPEN => depth += 1,
+            ANGLE_CLOSE | BRACKET_CLOSE | PAREN_CLOSE | BRACE_CLOSE => {
+                depth = depth.saturating_sub(1);
+            }
+            COMMA if depth == 0 => {
                 entries.push(&input[start..i]);
                 start = i + 1;
             }
@@ -222,11 +220,17 @@ pub(crate) fn split_at_depth_zero(input: &str) -> Vec<&str> {
 
 /// Find the first occurrence of `target` at bracket-depth 0.
 pub(crate) fn find_char_at_depth_zero(input: &str, target: char) -> Option<usize> {
+    use crate::consts::{
+        ANGLE_CLOSE, ANGLE_OPEN, BRACE_CLOSE, BRACE_OPEN, BRACKET_CLOSE, BRACKET_OPEN, PAREN_CLOSE,
+        PAREN_OPEN,
+    };
     let mut depth: u32 = 0;
     for (i, ch) in input.char_indices() {
         match ch {
-            '<' | '[' | '(' | '{' => depth += 1,
-            '>' | ']' | ')' | '}' => depth = depth.saturating_sub(1),
+            ANGLE_OPEN | BRACKET_OPEN | PAREN_OPEN | BRACE_OPEN => depth += 1,
+            ANGLE_CLOSE | BRACKET_CLOSE | PAREN_CLOSE | BRACE_CLOSE => {
+                depth = depth.saturating_sub(1);
+            }
             c if c == target && depth == 0 => return Some(i),
             _ => {}
         }
@@ -236,13 +240,19 @@ pub(crate) fn find_char_at_depth_zero(input: &str, target: char) -> Option<usize
 
 /// Find the position of `:=` at bracket-depth zero.
 fn find_assign_default_at_depth_zero(input: &str) -> Option<usize> {
+    use crate::consts::{
+        ANGLE_CLOSE_BYTE, ANGLE_OPEN_BYTE, BRACE_CLOSE_BYTE, BRACE_OPEN_BYTE, BRACKET_CLOSE_BYTE,
+        BRACKET_OPEN_BYTE, COLON_BYTE, EQUALS_BYTE, PAREN_CLOSE_BYTE, PAREN_OPEN_BYTE,
+    };
     let mut depth: u32 = 0;
     let bytes = input.as_bytes();
     for (i, &b) in bytes.iter().enumerate() {
         match b {
-            b'<' | b'[' | b'(' | b'{' => depth += 1,
-            b'>' | b']' | b')' | b'}' => depth = depth.saturating_sub(1),
-            b':' if depth == 0 && bytes.get(i + 1) == Some(&b'=') => return Some(i),
+            ANGLE_OPEN_BYTE | BRACKET_OPEN_BYTE | PAREN_OPEN_BYTE | BRACE_OPEN_BYTE => depth += 1,
+            ANGLE_CLOSE_BYTE | BRACKET_CLOSE_BYTE | PAREN_CLOSE_BYTE | BRACE_CLOSE_BYTE => {
+                depth = depth.saturating_sub(1);
+            }
+            COLON_BYTE if depth == 0 && bytes.get(i + 1) == Some(&EQUALS_BYTE) => return Some(i),
             _ => {}
         }
     }
@@ -256,25 +266,51 @@ fn find_assign_default_at_depth_zero(input: &str) -> Option<usize> {
 /// - `bool` → [`VarType::Bool`]
 /// - `int` → [`VarType::Int`]
 /// - `float` → [`VarType::Float`]
-/// - `list<name = str, count = int>` → [`VarType::List`] with field declarations
-/// - `struct<key = str>` → [`VarType::Struct`] with field declarations
-/// - `enum<A, B(field = type)>` → [`VarType::Enum`] with variant declarations
+/// - `list(name = str, count = int)` → [`VarType::List`] with field declarations
+/// - `struct(key = str)` → [`VarType::Struct`] with field declarations
+/// - `enum(A, B(field = type))` → [`VarType::Enum`] with variant declarations
 ///
 /// # Errors
 ///
 /// Returns an error string if the type annotation is malformed or
 /// references an unknown type name.
+fn starts_with_compound_type(s: &str, keyword: &str) -> bool {
+    if let Some(rest) = s.strip_prefix(keyword) {
+        let rest = rest.trim_start();
+        rest.starts_with(crate::consts::PAREN_OPEN)
+    } else {
+        false
+    }
+}
+
+/// Parses a type annotation string into a `VarType`.
+///
+/// # Errors
+/// Returns an error string if the type annotation syntax is invalid or references an unknown type alias.
 pub fn parse_type_annotation(
     s: &str,
     type_aliases: &HashMap<String, VarType>,
     resolved_imports: &HashMap<String, ImportedNamespace>,
 ) -> Result<VarType, String> {
     use crate::consts::{
-        TYPE_BOOL, TYPE_ENUM_PREFIX, TYPE_FLOAT, TYPE_INT, TYPE_LIST_PREFIX, TYPE_OPTION_PREFIX,
-        TYPE_STR, TYPE_STRUCT_PREFIX, TYPE_TMPL_PREFIX,
+        ANGLE_OPEN, BRACKET_OPEN, ERR_COMPOUND_BRACKETS_PROHIBITED, TYPE_BOOL, TYPE_ENUM,
+        TYPE_FLOAT, TYPE_INT, TYPE_LIST, TYPE_OPTION, TYPE_STR, TYPE_STRUCT, TYPE_TMPL,
     };
 
-    let s = s.trim();
+    let s = crate::consts::strip_string_literal(s.trim())
+        .unwrap_or(s.trim())
+        .trim();
+
+    for kw in &[TYPE_LIST, TYPE_STRUCT, TYPE_ENUM, TYPE_TMPL, TYPE_OPTION] {
+        if let Some(rest) = s.strip_prefix(kw) {
+            let rest_trimmed = rest.trim_start();
+            if rest_trimmed.starts_with(ANGLE_OPEN) || rest_trimmed.starts_with(BRACKET_OPEN) {
+                return Err(format!(
+                    "compound type '{kw}': {ERR_COMPOUND_BRACKETS_PROHIBITED}"
+                ));
+            }
+        }
+    }
 
     // Check type aliases first (own or inherited).
     if let Some(ty) = type_aliases.get(s) {
@@ -304,22 +340,22 @@ pub fn parse_type_annotation(
         Ok(VarType::Int)
     } else if s == TYPE_FLOAT {
         Ok(VarType::Float)
-    } else if s.starts_with(TYPE_LIST_PREFIX) {
+    } else if starts_with_compound_type(s, TYPE_LIST) {
         parse_compound_type_list(s, type_aliases, resolved_imports)
-    } else if s.starts_with(TYPE_STRUCT_PREFIX) {
+    } else if starts_with_compound_type(s, TYPE_STRUCT) {
         parse_compound_type_struct(s, type_aliases, resolved_imports)
-    } else if s.starts_with(TYPE_ENUM_PREFIX) {
+    } else if starts_with_compound_type(s, TYPE_ENUM) {
         parse_enum_type(s, type_aliases, resolved_imports)
-    } else if s.starts_with(TYPE_TMPL_PREFIX) {
+    } else if starts_with_compound_type(s, TYPE_TMPL) {
         parse_tmpl_type(s, type_aliases, resolved_imports)
-    } else if s.starts_with(TYPE_OPTION_PREFIX) {
+    } else if starts_with_compound_type(s, TYPE_OPTION) {
         parse_option_type(s, type_aliases, resolved_imports)
     } else {
         Err(format!("unknown type '{s}'"))
     }
 }
 
-/// Parse an enum type like `enum<Confirmed(evidence = list<text = str>), Inconclusive>`.
+/// Parse an enum type like `enum(Confirmed(evidence = list(text = str)), Inconclusive)`.
 fn parse_enum_type(
     s: &str,
     type_aliases: &HashMap<String, VarType>,
@@ -374,7 +410,7 @@ fn parse_enum_type(
     Ok(VarType::Enum(variants))
 }
 
-/// Parse a compound type like `list<name = str, count = int>`.
+/// Parse a compound type like `list(name = str, count = int)`.
 fn parse_compound_type_list(
     s: &str,
     type_aliases: &HashMap<String, VarType>,
@@ -388,16 +424,16 @@ fn parse_compound_type_list(
     };
     let fields = parse_field_declarations(inner, type_aliases, resolved_imports)?;
     if fields.is_empty() {
-        return Err("untyped list<> is not allowed; must specify element type or fields (e.g., list<str> or list<name = str>)".to_string());
+        return Err("untyped list() is not allowed; must specify element type or fields (e.g., list(str) or list(name = str))".to_string());
     }
     if fields.len() > 1 && fields.iter().any(|f| f.name.is_empty()) {
         return Err(
-            "list with multiple fields must use named fields (e.g. list<name = str, count = int>)"
+            "list with multiple fields must use named fields (e.g. list(name = str, count = int))"
                 .to_string(),
         );
     }
-    // Reject literal raw struct declarations inside list definitions (e.g. list<struct<name = str, count = int>>).
-    // Users should write named fields directly (e.g. list<name = str, count = int>) or reference a strong Type alias.
+    // Reject literal raw struct declarations inside list definitions (e.g. list(struct(name = str, count = int))).
+    // Users should write named fields directly (e.g. list(name = str, count = int)) or reference a strong Type alias.
     let inner_trimmed = inner.trim();
     if inner_trimmed.starts_with("struct<")
         || inner_trimmed.starts_with("struct(")
@@ -405,11 +441,11 @@ fn parse_compound_type_list(
         || inner_trimmed.starts_with("struct ")
     {
         return Err(
-            "list<struct<..>> is redundant; use named fields directly: list<name = str, count = int>"
+            "list(struct(..)) is redundant; use named fields directly: list(name = str, count = int)"
                 .to_string(),
         );
     }
-    // If the inner type resolved to a strong struct alias (e.g. list<MyStruct>),
+    // If the inner type resolved to a strong struct alias (e.g. list(MyStruct)),
     // unwrap the struct fields directly into the list fields.
     if fields.len() == 1 && fields[0].name.is_empty() {
         if let VarType::Struct(ref struct_fields) = fields[0].var_type {
@@ -419,7 +455,7 @@ fn parse_compound_type_list(
     Ok(VarType::List(fields))
 }
 
-/// Parse a compound type like `struct<key = str, value = int>`.
+/// Parse a compound type like `struct(key = str, value = int)`.
 fn parse_compound_type_struct(
     s: &str,
     type_aliases: &HashMap<String, VarType>,
@@ -434,19 +470,19 @@ fn parse_compound_type_struct(
     let fields = parse_field_declarations(inner, type_aliases, resolved_imports)?;
     if fields.is_empty() {
         return Err(
-            "untyped struct<> is not allowed; must specify fields (e.g., struct<name = str>)"
+            "untyped struct() is not allowed; must specify fields (e.g., struct(name = str))"
                 .to_string(),
         );
     }
     if fields.iter().any(|f| f.name.is_empty()) {
         return Err(
-            "struct must use named fields (e.g. struct<name = str, count = int>)".to_string(),
+            "struct must use named fields (e.g. struct(name = str, count = int))".to_string(),
         );
     }
     Ok(VarType::Struct(fields))
 }
 
-/// Parse a tmpl type like `tmpl<name = str, count = int>`.
+/// Parse a tmpl type like `tmpl(name = str, count = int)`.
 fn parse_tmpl_type(
     s: &str,
     type_aliases: &HashMap<String, VarType>,
@@ -460,12 +496,12 @@ fn parse_tmpl_type(
     };
     let fields = parse_field_declarations(inner, type_aliases, resolved_imports)?;
     if fields.iter().any(|f| f.name.is_empty()) {
-        return Err("tmpl must use named fields (e.g. tmpl<name = str, count = int>)".to_string());
+        return Err("tmpl must use named fields (e.g. tmpl(name = str, count = int))".to_string());
     }
     Ok(VarType::Tmpl(fields))
 }
 
-/// Parse `option<T>` into [`VarType::Option`].
+/// Parse `option(T)` into [`VarType::Option`].
 fn parse_option_type(
     s: &str,
     type_aliases: &HashMap<String, VarType>,
@@ -479,7 +515,7 @@ fn parse_option_type(
     };
     let inner = inner.trim();
     if inner.is_empty() {
-        return Err("option<> requires an inner type (e.g. option<str>)".to_string());
+        return Err("option() requires an inner type (e.g. option(str))".to_string());
     }
     let inner_type = parse_type_annotation(inner, type_aliases, resolved_imports)?;
     Ok(VarType::Option(Box::new(inner_type)))
@@ -518,7 +554,11 @@ fn parse_field_declarations(
 ///
 /// Uses `=` as the key-value separator (not `:`) and curly braces for
 /// delimiters.
-fn parse_struct_default(inner: &str, fields: &[VarDecl], available_consts: &HashMap<String, Value>) -> Value {
+fn parse_struct_default(
+    inner: &str,
+    fields: &[VarDecl],
+    available_consts: &HashMap<String, Value>,
+) -> Value {
     let entries = split_at_depth_zero(inner);
     let mut map = HashMap::new();
     for e in entries {
@@ -564,7 +604,11 @@ fn resolve_const_default(name: &str, available_consts: &HashMap<String, Value>) 
 /// - Integers, floats, booleans
 ///
 /// Lists use `[]` and structs use `{}` with `=` as the key-value separator.
-pub(crate) fn parse_default_value_with_type(s: &str, var_type: &VarType, available_consts: &HashMap<String, Value>) -> Option<Value> {
+pub(crate) fn parse_default_value_with_type(
+    s: &str,
+    var_type: &VarType,
+    available_consts: &HashMap<String, Value>,
+) -> Option<Value> {
     let s = s.trim();
     if s.is_empty() {
         return None;
@@ -636,7 +680,7 @@ pub(crate) fn parse_default_value_with_type(s: &str, var_type: &VarType, availab
         return Some(Value::Float(n));
     }
 
-    // Handle option<T> defaults: None maps to Value::None, otherwise delegate
+    // Handle option(T) defaults: None maps to Value::None, otherwise delegate
     // to the inner type.
     if let VarType::Option(inner) = var_type {
         if s == crate::consts::OPTION_NONE {
@@ -661,12 +705,16 @@ pub(crate) fn parse_default_value_with_type(s: &str, var_type: &VarType, availab
 
 /// Parse a default value for an enum variant — either a unit variant name
 /// (e.g. `Active`) or a struct variant with fields (e.g. `Error(msg = "oops")`).
-fn parse_enum_default_value(s: &str, variants: &[crate::types::VariantDecl], available_consts: &HashMap<String, Value>) -> Option<Value> {
+fn parse_enum_default_value(
+    s: &str,
+    variants: &[crate::types::VariantDecl],
+    available_consts: &HashMap<String, Value>,
+) -> Option<Value> {
     // Check for struct variant default: VariantName(field = value, ...)
     // Uses () to match the type declaration syntax and avoid ambiguity
     // with <> which is used for struct/list defaults.
-    if let Some(open_pos) = s.find('(') {
-        if s.ends_with(')') {
+    if let Some(open_pos) = s.find(crate::consts::PAREN_OPEN) {
+        if s.ends_with(crate::consts::PAREN_CLOSE) {
             let variant_name = s[..open_pos].trim();
             let inner = &s[open_pos + 1..s.len() - 1];
             // Find the variant declaration.
@@ -696,7 +744,9 @@ fn parse_enum_default_value(s: &str, variants: &[crate::types::VariantDecl], ava
                                 .iter()
                                 .find(|f| f.name == key)
                                 .map_or(&VarType::Str, |f| &f.var_type);
-                            if let Some(val) = parse_default_value_with_type(val_str, field_type, available_consts) {
+                            if let Some(val) =
+                                parse_default_value_with_type(val_str, field_type, available_consts)
+                            {
                                 map.insert(key.to_string(), val);
                             }
                         }
@@ -1059,7 +1109,8 @@ mod tests {
 
     #[test]
     fn parse_default_empty_dict() {
-        let result = parse_default_value_with_type("{}", &VarType::Struct(vec![]), &HashMap::new()).unwrap();
+        let result =
+            parse_default_value_with_type("{}", &VarType::Struct(vec![]), &HashMap::new()).unwrap();
         match result {
             Value::Struct(map) => assert!(map.is_empty()),
             other => panic!("Expected empty Struct, got {other:?}"),
@@ -1147,7 +1198,7 @@ mod tests {
 
     #[test]
     fn type_list() {
-        let result = parse_type("list<name = str>").unwrap();
+        let result = parse_type("list(name = str)").unwrap();
         match result {
             VarType::List(fields) => {
                 assert_eq!(fields.len(), 1);
@@ -1160,7 +1211,7 @@ mod tests {
 
     #[test]
     fn type_list_multiple_fields() {
-        let result = parse_type("list<name = str, count = int>").unwrap();
+        let result = parse_type("list(name = str, count = int)").unwrap();
         match result {
             VarType::List(fields) => {
                 assert_eq!(fields.len(), 2);
@@ -1175,7 +1226,7 @@ mod tests {
 
     #[test]
     fn type_struct() {
-        let result = parse_type("struct<key = str, value = int>").unwrap();
+        let result = parse_type("struct(key = str, value = int)").unwrap();
         match result {
             VarType::Struct(fields) => {
                 assert_eq!(fields.len(), 2);
@@ -1190,7 +1241,7 @@ mod tests {
 
     #[test]
     fn type_enum_simple() {
-        let result = parse_type("enum<A, B, C>").unwrap();
+        let result = parse_type("enum(A, B, C)").unwrap();
         match result {
             VarType::Enum(variants) => {
                 assert_eq!(variants.len(), 3);
@@ -1205,7 +1256,7 @@ mod tests {
 
     #[test]
     fn type_enum_with_fields() {
-        let result = parse_type("enum<A, B(field = str)>").unwrap();
+        let result = parse_type("enum(A, B(field = str))").unwrap();
         match result {
             VarType::Enum(variants) => {
                 assert_eq!(variants.len(), 2);
@@ -1222,7 +1273,7 @@ mod tests {
 
     #[test]
     fn type_tmpl() {
-        let result = parse_type("tmpl<name = str, count = int>").unwrap();
+        let result = parse_type("tmpl(name = str, count = int)").unwrap();
         match result {
             VarType::Tmpl(fields) => {
                 assert_eq!(fields.len(), 2);
@@ -1255,7 +1306,7 @@ mod tests {
 
     #[test]
     fn type_nested_list_in_struct() {
-        let result = parse_type("struct<items = list<name = str>>").unwrap();
+        let result = parse_type("struct(items = list(name = str))").unwrap();
         match result {
             VarType::Struct(fields) => {
                 assert_eq!(fields.len(), 1);
@@ -1374,7 +1425,7 @@ mod tests {
 
     #[test]
     fn enum_variant_reserved_keyword_rejected() {
-        let err = parse_decls("[x = enum<struct, ok>]").unwrap_err();
+        let err = parse_decls("[x = enum(struct, ok)]").unwrap_err();
         assert!(
             err.to_string().contains("shadows a builtin type keyword"),
             "got: {err}"
@@ -1383,7 +1434,7 @@ mod tests {
 
     #[test]
     fn enum_variant_reserved_keyword_list_rejected() {
-        let err = parse_decls("[x = enum<list, enum>]").unwrap_err();
+        let err = parse_decls("[x = enum(list, enum)]").unwrap_err();
         assert!(
             err.to_string().contains("shadows a builtin type keyword"),
             "got: {err}"
@@ -1402,7 +1453,7 @@ mod tests {
     #[test]
     fn decls_with_complex_types() {
         let decls =
-            parse_decls("[items = list<name = str, score = float>, active = bool]").unwrap();
+            parse_decls("[items = list(name = str, score = float), active = bool]").unwrap();
         assert_eq!(decls.len(), 2);
         match &decls[0].var_type {
             VarType::List(fields) => {
@@ -1486,25 +1537,25 @@ mod tests {
 
     #[test]
     fn untyped_list_fails() {
-        let err = parse_decls("[items = list<>]").unwrap_err();
+        let err = parse_decls("[items = list()]").unwrap_err();
         assert!(
-            err.to_string().contains("untyped list<> is not allowed"),
+            err.to_string().contains("untyped list() is not allowed"),
             "got: {err}"
         );
     }
 
     #[test]
     fn untyped_struct_fails() {
-        let err = parse_decls("[data = struct<>]").unwrap_err();
+        let err = parse_decls("[data = struct()]").unwrap_err();
         assert!(
-            err.to_string().contains("untyped struct<> is not allowed"),
+            err.to_string().contains("untyped struct() is not allowed"),
             "got: {err}"
         );
     }
 
     #[test]
     fn unnamed_multiple_fields_list_fails() {
-        let err = parse_decls("[items = list<str, int>]").unwrap_err();
+        let err = parse_decls("[items = list(str, int)]").unwrap_err();
         assert!(
             err.to_string()
                 .contains("list with multiple fields must use named fields"),
@@ -1536,7 +1587,7 @@ mod tests {
 
     #[test]
     fn enum_unit_variant_default() {
-        let decls = parse_decls("[status = enum<Active, Paused> := Active]").unwrap();
+        let decls = parse_decls("[status = enum(Active, Paused) := Active]").unwrap();
         assert_eq!(
             decls[0].default_value,
             Some(Value::Str("Active".to_string()))
@@ -1547,7 +1598,7 @@ mod tests {
     fn enum_unit_variant_default_on_mixed_enum() {
         // Unit variant default on an enum that also has struct variants.
         let decls =
-            parse_decls("[outcome = enum<Confirmed(evidence = str), Rejected> := Rejected]")
+            parse_decls("[outcome = enum(Confirmed(evidence = str), Rejected) := Rejected]")
                 .unwrap();
         assert_eq!(
             decls[0].default_value,
@@ -1559,7 +1610,7 @@ mod tests {
     fn enum_struct_variant_default() {
         // Struct variant default with inline field values.
         let decls = parse_decls(
-            "[outcome = enum<Confirmed(evidence = str), Rejected> := Confirmed(evidence = \"found it\")]",
+            "[outcome = enum(Confirmed(evidence = str), Rejected) := Confirmed(evidence = \"found it\")]",
         )
         .unwrap();
         let default = decls[0].default_value.as_ref().unwrap();
@@ -1583,7 +1634,7 @@ mod tests {
     #[test]
     fn enum_struct_variant_default_multiple_fields() {
         let decls = parse_decls(
-            "[r = enum<Success(msg = str, code = int), Failure> := Success(msg = \"ok\", code = 200)]",
+            "[r = enum(Success(msg = str, code = int), Failure) := Success(msg = \"ok\", code = 200)]",
         )
         .unwrap();
         let default = decls[0].default_value.as_ref().unwrap();
@@ -1600,7 +1651,7 @@ mod tests {
     #[test]
     fn enum_struct_variant_const() {
         let decls =
-            parse_consts("[RESULT = enum<Success(msg = str), Failure> := Success(msg = \"done\")]")
+            parse_consts("[RESULT = enum(Success(msg = str), Failure) := Success(msg = \"done\")]")
                 .unwrap();
         let default = decls[0].default_value.as_ref().unwrap();
         match default {
@@ -1615,7 +1666,7 @@ mod tests {
     #[test]
     fn enum_bare_struct_variant_rejected() {
         // Struct variant without fields → must be rejected.
-        let err = parse_decls("[outcome = enum<Confirmed(evidence = str), Rejected> := Confirmed]")
+        let err = parse_decls("[outcome = enum(Confirmed(evidence = str), Rejected) := Confirmed]")
             .unwrap_err();
         assert!(
             err.to_string().contains("strings must be quoted")
@@ -1626,7 +1677,7 @@ mod tests {
 
     #[test]
     fn enum_unknown_variant_rejected() {
-        let err = parse_decls("[status = enum<Active, Paused> := Nonexistent]").unwrap_err();
+        let err = parse_decls("[status = enum(Active, Paused) := Nonexistent]").unwrap_err();
         assert!(
             err.to_string().contains("invalid default")
                 || err.to_string().contains("strings must be quoted"),
@@ -1637,7 +1688,7 @@ mod tests {
     #[test]
     fn enum_unit_variant_with_fields_rejected() {
         // Trying to give fields to a unit variant.
-        let err = parse_decls("[status = enum<Active, Paused> := Active(x = 1)]").unwrap_err();
+        let err = parse_decls("[status = enum(Active, Paused) := Active(x = 1)]").unwrap_err();
         assert!(
             err.to_string().contains("invalid default"),
             "unit variant with fields should be rejected, got: {err}"
@@ -1652,20 +1703,20 @@ mod tests {
 
     #[test]
     fn list_of_scalars_valid() {
-        let decls = parse_decls("[items = list<str>]").unwrap();
+        let decls = parse_decls("[items = list(str)]").unwrap();
         assert!(matches!(&decls[0].var_type, VarType::List(fields) if fields.len() == 1));
     }
 
     #[test]
     fn list_with_named_fields_valid() {
-        let decls = parse_decls("[items = list<name = str, score = int>]").unwrap();
+        let decls = parse_decls("[items = list(name = str, score = int)]").unwrap();
         assert!(matches!(&decls[0].var_type, VarType::List(fields) if fields.len() == 2));
     }
 
     #[test]
     fn list_of_list_valid() {
         // Nested lists (e.g. matrix, grid, coordinates).
-        let decls = parse_decls("[grid = list<list<str>>]").unwrap();
+        let decls = parse_decls("[grid = list(list(str))]").unwrap();
         if let VarType::List(fields) = &decls[0].var_type {
             assert_eq!(fields.len(), 1);
             assert!(matches!(&fields[0].var_type, VarType::List(_)));
@@ -1677,7 +1728,7 @@ mod tests {
     #[test]
     fn list_of_enum_valid() {
         // List where each element is an enum value.
-        let decls = parse_decls("[statuses = list<enum<Active, Paused>>]").unwrap();
+        let decls = parse_decls("[statuses = list(enum(Active, Paused))]").unwrap();
         if let VarType::List(fields) = &decls[0].var_type {
             assert_eq!(fields.len(), 1);
             assert!(matches!(&fields[0].var_type, VarType::Enum(_)));
@@ -1688,7 +1739,7 @@ mod tests {
 
     #[test]
     fn struct_with_list_field_valid() {
-        let decls = parse_decls("[cfg = struct<tags = list<str>, name = str>]").unwrap();
+        let decls = parse_decls("[cfg = struct(tags = list(str), name = str)]").unwrap();
         if let VarType::Struct(fields) = &decls[0].var_type {
             assert_eq!(fields.len(), 2);
             assert!(matches!(&fields[0].var_type, VarType::List(_)));
@@ -1699,7 +1750,7 @@ mod tests {
 
     #[test]
     fn struct_with_enum_field_valid() {
-        let decls = parse_decls("[cfg = struct<status = enum<On, Off>, name = str>]").unwrap();
+        let decls = parse_decls("[cfg = struct(status = enum(On, Off), name = str)]").unwrap();
         if let VarType::Struct(fields) = &decls[0].var_type {
             assert_eq!(fields.len(), 2);
             assert!(matches!(&fields[0].var_type, VarType::Enum(_)));
@@ -1711,7 +1762,7 @@ mod tests {
     #[test]
     fn struct_with_nested_struct_field_valid() {
         let decls =
-            parse_decls("[cfg = struct<inner = struct<x = int, y = int>, name = str>]").unwrap();
+            parse_decls("[cfg = struct(inner = struct(x = int, y = int), name = str)]").unwrap();
         if let VarType::Struct(fields) = &decls[0].var_type {
             assert_eq!(fields.len(), 2);
             assert!(matches!(&fields[0].var_type, VarType::Struct(_)));
@@ -1723,7 +1774,7 @@ mod tests {
     #[test]
     fn list_of_list_of_int_valid() {
         // Matrix of ints — deeply nested.
-        let decls = parse_decls("[matrix = list<list<int>>]").unwrap();
+        let decls = parse_decls("[matrix = list(list(int))]").unwrap();
         if let VarType::List(outer) = &decls[0].var_type {
             if let VarType::List(inner) = &outer[0].var_type {
                 assert_eq!(inner.len(), 1);
@@ -1740,7 +1791,7 @@ mod tests {
 
     #[test]
     fn list_of_raw_struct_rejected_as_redundant() {
-        let err = parse_decls("[items = list<struct<name = str, score = int>>]").unwrap_err();
+        let err = parse_decls("[items = list(struct(name = str, score = int))]").unwrap_err();
         assert!(err.to_string().contains("redundant"), "got: {err}");
     }
 
@@ -1762,7 +1813,7 @@ mod tests {
                 },
             ]),
         );
-        let var_type = parse_type_annotation("list<MyItem>", &aliases, &HashMap::new()).unwrap();
+        let var_type = parse_type_annotation("list(MyItem)", &aliases, &HashMap::new()).unwrap();
         if let VarType::List(ref fields) = var_type {
             assert_eq!(fields.len(), 2);
             assert_eq!(fields[0].name, "name");
@@ -1774,7 +1825,7 @@ mod tests {
 
     #[test]
     fn list_of_named_struct_field_allowed() {
-        let decls = parse_decls("[items = list<item = struct<name = str, score = int>>]").unwrap();
+        let decls = parse_decls("[items = list(item = struct(name = str, score = int))]").unwrap();
         if let VarType::List(ref fields) = decls[0].var_type {
             assert_eq!(fields.len(), 1);
             assert_eq!(fields[0].name, "item");
@@ -1791,12 +1842,12 @@ mod tests {
     }
 
     // =========================================================================
-    // option<T> type parsing
+    // option(T) type parsing
     // =========================================================================
 
     #[test]
     fn type_option_str() {
-        let result = parse_type("option<str>").unwrap();
+        let result = parse_type("option(str)").unwrap();
         match result {
             VarType::Option(inner) => {
                 assert_eq!(*inner, VarType::Str);
@@ -1807,21 +1858,21 @@ mod tests {
 
     #[test]
     fn type_option_int() {
-        let result = parse_type("option<int>").unwrap();
+        let result = parse_type("option(int)").unwrap();
         assert!(result.is_option());
         assert_eq!(*result.option_inner_type().unwrap(), VarType::Int);
     }
 
     #[test]
     fn type_option_with_spaces() {
-        let result = parse_type("option< str >").unwrap();
+        let result = parse_type("option( str )").unwrap();
         assert!(result.is_option());
         assert_eq!(*result.option_inner_type().unwrap(), VarType::Str);
     }
 
     #[test]
     fn type_option_nested_list() {
-        let result = parse_type("option<list<name = str>>").unwrap();
+        let result = parse_type("option(list(name = str))").unwrap();
         assert!(result.is_option());
         assert!(matches!(
             result.option_inner_type().unwrap(),
@@ -1831,7 +1882,7 @@ mod tests {
 
     #[test]
     fn type_option_nested_struct() {
-        let result = parse_type("option<struct<x = int, y = int>>").unwrap();
+        let result = parse_type("option(struct(x = int, y = int))").unwrap();
         assert!(result.is_option());
         assert!(matches!(
             result.option_inner_type().unwrap(),
@@ -1841,7 +1892,7 @@ mod tests {
 
     #[test]
     fn type_option_nested_option() {
-        let result = parse_type("option<option<str>>").unwrap();
+        let result = parse_type("option(option(str))").unwrap();
         assert!(result.is_option());
         let inner = result.option_inner_type().unwrap();
         assert!(inner.is_option());
@@ -1850,37 +1901,37 @@ mod tests {
 
     #[test]
     fn type_option_display() {
-        let result = parse_type("option<str>").unwrap();
-        assert_eq!(format!("{result}"), "option<str>");
+        let result = parse_type("option(str)").unwrap();
+        assert_eq!(format!("{result}"), "option(str)");
     }
 
     #[test]
     fn type_option_display_nested() {
-        let result = parse_type("option<option<int>>").unwrap();
-        assert_eq!(format!("{result}"), "option<option<int>>");
+        let result = parse_type("option(option(int))").unwrap();
+        assert_eq!(format!("{result}"), "option(option(int))");
     }
 
     #[test]
     fn type_option_empty_rejected() {
-        assert!(parse_type("option<>").is_err());
+        assert!(parse_type("option()").is_err());
     }
 
     #[test]
     fn type_option_malformed_rejected() {
         assert!(parse_type("option").is_err());
-        assert!(parse_type("option<").is_err());
+        assert!(parse_type("option(").is_err());
     }
 
     #[test]
     fn option_default_none() {
-        let decls = parse_decls("[x = option<str> := None]").unwrap();
+        let decls = parse_decls("[x = option(str) := None]").unwrap();
         assert_eq!(decls[0].default_value, Some(Value::None));
     }
 
     #[test]
     fn option_default_some() {
         // Transparent option: := "hello" stores the raw string, not a Some(val=...) struct.
-        let decls = parse_decls("[x = option<str> := \"hello\"]").unwrap();
+        let decls = parse_decls("[x = option(str) := \"hello\"]").unwrap();
         assert_eq!(decls[0].default_value, Some(Value::Str("hello".into())));
     }
 
@@ -1892,7 +1943,7 @@ mod tests {
 
     #[test]
     fn list_of_option() {
-        let result = parse_type("list<option<str>>").unwrap();
+        let result = parse_type("list(option(str))").unwrap();
         match result {
             VarType::List(fields) => {
                 assert_eq!(fields.len(), 1);
@@ -1900,5 +1951,19 @@ mod tests {
             }
             other => panic!("Expected List, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn prohibited_angle_and_square_brackets() {
+        assert!(parse_type("list<str>").is_err());
+        assert!(parse_type("list[str]").is_err());
+        assert!(parse_type("struct<x = int>").is_err());
+        assert!(parse_type("struct[x = int]").is_err());
+        assert!(parse_type("enum<A, B>").is_err());
+        assert!(parse_type("enum[A, B]").is_err());
+        assert!(parse_type("tmpl<x = int>").is_err());
+        assert!(parse_type("tmpl[x = int]").is_err());
+        assert!(parse_type("option<str>").is_err());
+        assert!(parse_type("option[str]").is_err());
     }
 }

@@ -575,7 +575,7 @@ fn resolve_match_variant<'a>(
     match value {
         // Absent option value → "None" variant.
         Value::None => Ok("None"),
-        // For option<T>: any non-None value is the "Some" branch.
+        // For option(T): any non-None value is the "Some" branch.
         _ if is_option => Ok("Some"),
         // Unit enum variant stored as plain string.
         Value::Str(s) => Ok(s.as_str()),

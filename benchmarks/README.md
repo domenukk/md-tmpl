@@ -16,8 +16,8 @@ All benchmarks share four core scenarios (five in Rust):
 | **Hero**        | Nested loops + conditionals                        |
 | **Mega**        | (Rust only) Large-scale template with all features |
 
-Templates are pre-compiled before timing — benchmarks measure
-**render throughput only**, not compilation.
+Templates are pre-parsed before timing — benchmarks measure
+**render throughput only**, not parsing.
 
 ## Rust
 
@@ -31,7 +31,7 @@ cargo bench
 Results in `benchmarks/target/criterion/` with HTML reports.
 
 > The standalone crate at `crates/prompt-templates` also has Criterion
-> benchmarks for internals (compile, render, filters, conditions).
+> benchmarks for internals (parse, render, filters, conditions).
 
 ## Python
 
@@ -51,7 +51,7 @@ python benchmarks/python/bench_templates.py
 ## Go
 
 Go's `testing.B` framework, comparing prompt-templates (Rust/CGo FFI)
-against Go's `text/template` across compile, render, and round-trip
+against Go's `text/template` across parse, render, and round-trip
 scenarios.
 
 ```bash

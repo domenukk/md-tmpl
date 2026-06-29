@@ -120,7 +120,7 @@ params: [flag = bool, a = str, b = str]
 fn inline_for_loop() {
     let tmpl = Template::from_source(
         r"---
-params: [items = list<name = str>]
+params: [items = list(name = str)]
 ---
 > {% for item in items %}{{ item.name }} {% /for %}",
     )
@@ -136,7 +136,7 @@ params: [items = list<name = str>]
 fn inline_for_loop_empty_list() {
     let tmpl = Template::from_source(
         r"---
-params: [items = list<name = str>]
+params: [items = list(name = str)]
 ---
 > {% for item in items %}{{ item.name }}{% /for %}",
     )
@@ -373,7 +373,7 @@ params: [show = bool, name = str]
 fn inline_has_some() {
     let tmpl = Template::from_source(
         r"---
-params: [label = option<str>]
+params: [label = option(str)]
 ---
 > {% if has(label) %}{{ label }}{% else %}none{% /if %}",
     )
@@ -387,7 +387,7 @@ params: [label = option<str>]
 fn inline_has_none() {
     let tmpl = Template::from_source(
         r"---
-params: [label = option<str>]
+params: [label = option(str)]
 ---
 > {% if has(label) %}{{ label }}{% else %}none{% /if %}",
     )
@@ -455,7 +455,7 @@ params: [flag = bool]
 fn inline_for_with_idx() {
     let tmpl = Template::from_source(
         r"---
-params: [items = list<str>]
+params: [items = list(str)]
 ---
 > {% for item in items %}{{ idx(item) }}:{{ item }} {% /for %}",
     )
@@ -488,7 +488,7 @@ params: [flag = bool]
 fn inline_for_empty_body() {
     let tmpl = Template::from_source(
         r"---
-params: [items = list<str>]
+params: [items = list(str)]
 ---
 > {% for item in items %}{% /for %}",
     )
@@ -618,7 +618,7 @@ params: [flag = bool, unused = str]
 fn inline_for_else_empty_list() {
     let tmpl = Template::from_source(
         r"---
-params: [items = list<str>]
+params: [items = list(str)]
 ---
 > {% for item in items %}{{ item }}{% else %}empty{% /for %}",
     )
@@ -633,7 +633,7 @@ params: [items = list<str>]
 fn inline_for_else_nonempty_list() {
     let tmpl = Template::from_source(
         r"---
-params: [items = list<str>]
+params: [items = list(str)]
 ---
 > {% for item in items %}{{ item }} {% else %}empty{% /for %}",
     )
@@ -651,7 +651,7 @@ params: [items = list<str>]
 fn inline_if_struct_field() {
     let tmpl = Template::from_source(
         r"---
-params: [task = struct<title = str, done = bool>]
+params: [task = struct(title = str, done = bool)]
 ---
 > {% if task.done %}[x]{% else %}[ ]{% /if %} {{ task.title }}",
     )
@@ -667,7 +667,7 @@ params: [task = struct<title = str, done = bool>]
 fn inline_if_struct_field_false() {
     let tmpl = Template::from_source(
         r"---
-params: [task = struct<title = str, done = bool>]
+params: [task = struct(title = str, done = bool)]
 ---
 > {% if task.done %}[x]{% else %}[ ]{% /if %} {{ task.title }}",
     )
@@ -687,7 +687,7 @@ params: [task = struct<title = str, done = bool>]
 fn inline_if_inside_for_loop() {
     let tmpl = Template::from_source(
         r"---
-params: [items = list<name = str, active = bool>]
+params: [items = list(name = str, active = bool)]
 ---
 > {% for item in items %}{% if item.active %}{{ item.name }} {% /if %}{% /for %}",
     )
@@ -786,7 +786,7 @@ params: [flag = bool]
 fn unclosed_inline_for_errors() {
     let err = Template::from_source(
         r"---
-params: [items = list<str>]
+params: [items = list(str)]
 ---
 > {% for item in items %}text but no close",
     )
@@ -854,7 +854,7 @@ params: [flag = bool]
 fn inline_if_inside_match_case() {
     let tmpl = Template::from_source(
         r"---
-params: [status = enum<Active, Inactive>, detail = bool]
+params: [status = enum(Active, Inactive), detail = bool]
 ---
 
 > {% match status %}
@@ -939,7 +939,7 @@ params: [flag = bool]
 fn inline_for_concat() {
     let tmpl = Template::from_source(
         r"---
-params: [tags = list<str>]
+params: [tags = list(str)]
 ---
 [> {% for tag in tags %}{{ tag }}{% /for %}]",
     )

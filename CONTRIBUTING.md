@@ -27,7 +27,7 @@ cargo test --workspace --all-features
 ## Project Structure
 
 - `crates/prompt-templates`: The core Rust template engine.
-- `crates/prompt-templates-macros`: Rust procedural macros for compile-time generation.
+- `crates/prompt-templates-macros`: Rust procedural macros for build-time validation and codegen.
 - `crates/prompt-templates-ffi`: C ABI for binding to other languages.
 - `crates/prompt-templates-python`: Python bindings (PyO3).
 - `crates/prompt-templates-wasm`: WASM bindings.

@@ -419,7 +419,7 @@ params: [flag = bool]
 func TestTypedListViaJSON(t *testing.T) {
 	tmpl, err := FromSource(`---
 params:
-  - items = list<label = str>
+  - items = list(label = str)
 ---
 > {% for item in items %}
 
@@ -449,7 +449,7 @@ params:
 func TestTypedListViaSet(t *testing.T) {
 	tmpl, err := FromSource(`---
 params:
-  - tasks = list<title = str, priority = str>
+  - tasks = list(title = str, priority = str)
 ---
 > {% for task in tasks %}
 
@@ -483,7 +483,7 @@ params:
 func TestEmptyList(t *testing.T) {
 	tmpl, err := FromSource(`---
 params:
-  - items = list<label = str>
+  - items = list(label = str)
 ---
 > {% for item in items %}
 
@@ -517,7 +517,7 @@ params:
 func TestStructParam(t *testing.T) {
 	tmpl, err := FromSource(`---
 params:
-  - config = struct<host = str, port = int>
+  - config = struct(host = str, port = int)
 ---
 {{ config.host }}:{{ config.port }}`)
 	if err != nil {
@@ -590,7 +590,7 @@ params:
 func TestEnumUnitVariant(t *testing.T) {
 	src := `---
 params:
-  - outcome = enum<Confirmed(evidence = str), Rejected, NeedsWork>
+  - outcome = enum(Confirmed(evidence = str), Rejected, NeedsWork)
 ---
 > {% match outcome %}
 > {% case Confirmed %}
@@ -630,7 +630,7 @@ MAYBE
 func TestEnumStructVariant(t *testing.T) {
 	src := `---
 params:
-  - outcome = enum<Confirmed(evidence = str), Rejected, NeedsWork>
+  - outcome = enum(Confirmed(evidence = str), Rejected, NeedsWork)
 ---
 > {% match outcome %}
 > {% case Confirmed %}
@@ -670,7 +670,7 @@ MAYBE
 func TestEnumInvalidVariant(t *testing.T) {
 	src := `---
 params:
-  - outcome = enum<Confirmed(evidence = str), Rejected, NeedsWork>
+  - outcome = enum(Confirmed(evidence = str), Rejected, NeedsWork)
 ---
 > {% match outcome %}
 > {% case Confirmed %}
@@ -1199,7 +1199,7 @@ params: [title = str]
 	if err := os.WriteFile(mainPath, []byte(`---
 params: [title = str]
 ---
-> {% include [header](header.tmpl.md) with title=title %}
+> {% include [header](./header.tmpl.md) with title=title %}
 
 Body`), 0644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -1237,6 +1237,7 @@ func TestConstants(t *testing.T) {
 	tmpl, err := FromSource(`---
 consts:
   - MAX = int := 100
+
 params: []
 ---
 Max: {{ MAX }}`)
@@ -1339,9 +1340,9 @@ func TestClosedCacheLoadReturnsError(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDeclarationString(t *testing.T) {
-	d := Declaration{Name: "tasks", Type: "list<title = str>"}
-	if s := d.String(); s != "tasks = list<title = str>" {
-		t.Errorf("got %q, want %q", s, "tasks = list<title = str>")
+	d := Declaration{Name: "tasks", Type: "list(title = str)"}
+	if s := d.String(); s != "tasks = list(title = str)" {
+		t.Errorf("got %q, want %q", s, "tasks = list(title = str)")
 	}
 }
 
@@ -1451,7 +1452,7 @@ params: [title = str]
 	if err := os.WriteFile(mainPath, []byte(`---
 params: [title = str]
 ---
-> {% include [header](header.tmpl.md) with title=title %}
+> {% include [header](./header.tmpl.md) with title=title %}
 
 Body`), 0644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
@@ -1573,7 +1574,7 @@ params: [x = int]
 }
 
 // ---------------------------------------------------------------------------
-// Template-typed parameters (tmpl<>)
+// Template-typed parameters (tmpl())
 // ---------------------------------------------------------------------------
 
 func TestSetTmplParam(t *testing.T) {
@@ -1588,11 +1589,11 @@ params: [title = str]
 	}
 	defer card.Close()
 
-	// Main template: takes card as tmpl<> param
+	// Main template: takes card as tmpl() param
 	main, err := FromSource(`---
 params:
-  - card = tmpl<title = str>
-  - items = list<name = str>
+  - card = tmpl(title = str)
+  - items = list(name = str)
 ---
 > {% for item in items %}
 > {% include card with title=item.name %}
@@ -1826,7 +1827,7 @@ Result: {{ id }}`)
 func TestNestedStructViaJSON(t *testing.T) {
 	tmpl, err := FromSource(`---
 params:
-  - config = struct<inner = struct<host = str>>
+  - config = struct(inner = struct(host = str))
 ---
 {{ config.inner.host }}`)
 	if err != nil {
@@ -1856,7 +1857,7 @@ params:
 func TestVariantUnit(t *testing.T) {
 	src := `---
 params:
-  - outcome = enum<Confirmed(evidence = str), Rejected, NeedsWork>
+  - outcome = enum(Confirmed(evidence = str), Rejected, NeedsWork)
 ---
 > {% match outcome %}
 > {% case Confirmed %}
@@ -1896,7 +1897,7 @@ MAYBE
 func TestVariantStruct(t *testing.T) {
 	src := `---
 params:
-  - outcome = enum<Confirmed(evidence = str), Rejected, NeedsWork>
+  - outcome = enum(Confirmed(evidence = str), Rejected, NeedsWork)
 ---
 > {% match outcome %}
 > {% case Confirmed %}
@@ -1992,7 +1993,7 @@ params: [name = str]
 func TestRenderStructWithNestedStruct(t *testing.T) {
 	tmpl, err := FromSource(`---
 params:
-  - config = struct<host = str, port = int>
+  - config = struct(host = str, port = int)
 ---
 {{ config.host }}:{{ config.port }}`)
 	if err != nil {
@@ -2021,7 +2022,7 @@ func TestRenderStructWithEnum(t *testing.T) {
 	src := `---
 params:
   - name = str
-  - outcome = enum<Confirmed(evidence = str), Rejected>
+  - outcome = enum(Confirmed(evidence = str), Rejected)
 ---
 {{ name }}: > {% match outcome %}
 
@@ -2060,7 +2061,7 @@ NO
 func TestRenderStructWithSlice(t *testing.T) {
 	tmpl, err := FromSource(`---
 params:
-  - items = list<label = str>
+  - items = list(label = str)
 ---
 > {% for item in items %}
 
@@ -2141,6 +2142,7 @@ func TestConstantsMap(t *testing.T) {
 consts:
   - MAX = int := 100
   - GREETING = str := "hello"
+
 params: []
 ---
 {{ MAX }} {{ GREETING }}`)
@@ -2552,7 +2554,7 @@ params: [title = str]
 		`---
 params: [title = str]
 ---
-> {% include [header](header.tmpl.md) with title=title %}
+> {% include [header](./header.tmpl.md) with title=title %}
 
 Body`,
 		dir,
@@ -2578,7 +2580,7 @@ func TestFromSourceWithBaseDirMissingInclude(t *testing.T) {
 		`---
 params: [title = str]
 ---
-> {% include [missing](does_not_exist.tmpl.md) with title=title %}
+> {% include [missing](./does_not_exist.tmpl.md) with title=title %}
 
 Body`,
 		t.TempDir(),
@@ -2720,7 +2722,7 @@ func TestReadmeHeroExample(t *testing.T) {
 	tmpl, err := FromSource(`---
 params:
   - reviewer = str
-  - tasks = list<title = str, priority = enum<Critical, High, Low>>
+  - tasks = list(title = str, priority = enum(Critical, High, Low))
 ---
 
 # Code Review — {{ reviewer }}
@@ -3199,7 +3201,7 @@ params: [a = str, b = int]
 func TestTaggedVariantEmbedding(t *testing.T) {
 	src := `---
 params:
-  - outcome = enum<Confirmed(evidence = str), Rejected, NeedsWork>
+  - outcome = enum(Confirmed(evidence = str), Rejected, NeedsWork)
 ---
 > {% match outcome %}
 > {% case Confirmed %}
@@ -3248,7 +3250,7 @@ MAYBE
 func TestTaggedVariantUnitWithRenderStruct(t *testing.T) {
 	src := `---
 params:
-  - outcome = enum<Confirmed(evidence = str), Rejected, NeedsWork>
+  - outcome = enum(Confirmed(evidence = str), Rejected, NeedsWork)
 ---
 > {% match outcome %}
 > {% case Confirmed %}
@@ -3357,7 +3359,7 @@ func TestVariantMarshalJSONEmptyFields(t *testing.T) {
 func TestVariantUnitWithRenderMap(t *testing.T) {
 	src := `---
 params:
-  - outcome = enum<Confirmed(evidence = str), Rejected>
+  - outcome = enum(Confirmed(evidence = str), Rejected)
 ---
 > {% match outcome %}
 > {% case Confirmed %}
@@ -3389,7 +3391,7 @@ NO
 func TestVariantStructWithRenderMap(t *testing.T) {
 	src := `---
 params:
-  - outcome = enum<Confirmed(evidence = str), Rejected>
+  - outcome = enum(Confirmed(evidence = str), Rejected)
 ---
 > {% match outcome %}
 > {% case Confirmed %}
@@ -3425,7 +3427,7 @@ func TestVariantStructWithRenderStruct(t *testing.T) {
 	src := `---
 params:
   - name = str
-  - outcome = enum<Confirmed(evidence = str), Rejected>
+  - outcome = enum(Confirmed(evidence = str), Rejected)
 ---
 {{ name }}: > {% match outcome %}
 
@@ -3468,7 +3470,8 @@ NO
 func TestCodegenEnumProducesCorrectGoTypes(t *testing.T) {
 	source := `---
 params:
-  - outcome = enum<Confirmed(evidence = str), Rejected, NeedsWork>
+  - outcome = enum(Confirmed(evidence = str), Rejected, NeedsWork)
+
 allow_unused: true
 ---
 > {% match outcome %}
@@ -3523,13 +3526,13 @@ MAYBE
 }
 
 // ---------------------------------------------------------------------------
-// option<T> support
+// option(T) support
 // ---------------------------------------------------------------------------
 
 func TestOptionNoneViaMatch(t *testing.T) {
 	tmpl, err := FromSource(`---
 params:
-  - label = option<str>
+  - label = option(str)
 ---
 > {% match label %}
 > {% case Some %}
@@ -3558,7 +3561,7 @@ empty
 func TestOptionSomeViaMatch(t *testing.T) {
 	tmpl, err := FromSource(`---
 params:
-  - label = option<str>
+  - label = option(str)
 ---
 > {% match label %}
 > {% case Some %}
@@ -3589,7 +3592,7 @@ empty
 func TestOptionNoneViaHas(t *testing.T) {
 	tmpl, err := FromSource(`---
 params:
-  - label = option<str>
+  - label = option(str)
 ---
 > {% if has(label) %}
 
@@ -3617,7 +3620,7 @@ empty
 func TestOptionSomeViaHas(t *testing.T) {
 	tmpl, err := FromSource(`---
 params:
-  - label = option<str>
+  - label = option(str)
 ---
 > {% if has(label) %}
 
@@ -3647,7 +3650,7 @@ empty
 func TestOptionIntNoneViaJSON(t *testing.T) {
 	tmpl, err := FromSource(`---
 params:
-  - count = option<int>
+  - count = option(int)
 ---
 > {% if has(count) %}
 
@@ -3681,7 +3684,7 @@ no-count
 func TestOptionIntSomeViaJSON(t *testing.T) {
 	tmpl, err := FromSource(`---
 params:
-  - count = option<int>
+  - count = option(int)
 ---
 > {% if has(count) %}
 
@@ -3713,13 +3716,13 @@ no-count
 }
 
 // ---------------------------------------------------------------------------
-// option<T> regression tests — transparent API
+// option(T) regression tests — transparent API
 // ---------------------------------------------------------------------------
 
 func TestOptionSetNoneDirect(t *testing.T) {
 	tmpl, err := FromSource(`---
 params:
-  - label = option<str>
+  - label = option(str)
 ---
 > {% if has(label) %}
 
@@ -3753,7 +3756,7 @@ empty
 func TestOptionSetNilViaSet(t *testing.T) {
 	tmpl, err := FromSource(`---
 params:
-  - label = option<str>
+  - label = option(str)
 ---
 > {% if has(label) %}
 
@@ -3788,8 +3791,8 @@ empty
 func TestOptionNilInRenderMap(t *testing.T) {
 	tmpl, err := FromSource(`---
 params:
-  - name = option<str>
-  - score = option<int>
+  - name = option(str)
+  - score = option(int)
 ---
 > {% if has(name) %}
 
@@ -3829,7 +3832,7 @@ anon
 func TestOptionNilPointerInRenderStruct(t *testing.T) {
 	tmpl, err := FromSource(`---
 params:
-  - label = option<str>
+  - label = option(str)
 ---
 > {% if has(label) %}
 
@@ -3872,7 +3875,7 @@ empty
 func TestOptionMatchNilViaRenderMap(t *testing.T) {
 	tmpl, err := FromSource(`---
 params:
-  - x = option<int>
+  - x = option(int)
 ---
 > {% match x %}
 > {% case Some %}

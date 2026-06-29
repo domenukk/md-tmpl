@@ -100,7 +100,7 @@ pub enum Segment {
         expr: CompiledPath,
         /// `(variant_name, body)` pairs.
         arms: MatchArms,
-        /// `true` when matching on `option<T>` — resolved via `Value::None`
+        /// `true` when matching on `option(T)` — resolved via `Value::None`
         /// discriminant rather than string-based variant tag lookup.
         /// Computed once at compile time from arm names.
         is_option: bool,

@@ -1,36 +1,101 @@
 # prompt-templates for Go
 
 Strongly-typed prompt templates for LLMs.
-Templates are markdown files with YAML frontmatter declaring typed
-parameters — every variable, list shape, and enum variant is validated
-at render time.
-
-Up to **5.8× faster** than Go's `text/template` with **258× fewer
-allocations**.
 
 ## Why?
-
-Inline `fmt.Sprintf` strings are unreadable. `text/template` has no type checking — rename a variable and you find out when it panics.
-`prompt-templates` gives you:
 
 - **Markdown-native** — prompts live in `.tmpl.md` files, readable in any editor or on GitHub.
 - **Strict typing** — every parameter declares a type; mismatches are caught at render time with clear errors.
 - **Agent-safe** — when an LLM edits prompts, the engine catches drift immediately.
+- **Fast** — native Rust engine via CGo FFI, 3–6× faster than `text/template` on medium/large templates.
+
+## Quick Example
+
+The template — a plain `.tmpl.md` file:
+
+<!-- prettier-ignore -->
+```markdown
+---
+params:
+  - model = str
+  - steps = list(tool = str, status = enum(Search(reason = str), Done))
+---
+
+# Run: {{ model }}
+
+> {% for step in steps %}
+
+## Step {{ idx(step) }}: {{ step.tool }}
+
+> {% match step.status %}
+> {% when Search %}
+
+Searching — {{ step.status.reason }}
+
+> {% when Done %}
+
+✅ Complete
+
+> {% /match %}
+> {% /for %}
+```
+
+Render it from Go:
+
+```go
+import pt "github.com/domenukk/prompt-templates/go/prompt_templates"
+
+// Typed structs map directly to template parameters.
+type AgentAction struct {
+    pt.TaggedVariant
+    Reason string `json:"reason"`
+}
+
+func Search(reason string) AgentAction {
+    return AgentAction{TaggedVariant: pt.NewTaggedVariant("Search"), Reason: reason}
+}
+
+type Step struct {
+    Tool   string `json:"tool"`
+    Status any    `json:"status"` // Go lacks sum types — use any for enum slots
+}
+
+type RunParams struct {
+    Model string `json:"model"`
+    Steps []Step `json:"steps"`
+}
+
+tmpl, _ := pt.FromFile("prompts/run.tmpl.md")
+defer tmpl.Close()
+
+result, _ := tmpl.RenderStruct(RunParams{
+    Model: "gemini-3.5-flash",
+    Steps: []Step{
+        {Tool: "web", Status: Search("latest Go release")},
+        {Tool: "code", Status: pt.Variant{Kind: "Done"}},
+    },
+})
+```
+
+> **On `Status any`:** Go has no sum types or tagged unions, so enum-typed
+> fields use `any`. The template engine validates the variant kind and fields
+> at render time — you still get clear errors for mismatches. For static
+> typing within Go, embed [`TaggedVariant`](#taggedvariant-static-typing) in
+> custom structs.
 
 ## Prerequisites
 
-The Go binding uses CGo to call the Rust-based engine. You need:
+The Go binding calls a native library via CGo. Build it first:
 
-1. **Rust toolchain** — install via [rustup.rs](https://rustup.rs/)
-2. **Build the native library** before `go build`:
+```bash
+# Option A: using just (recommended)
+just build-go-ffi
 
-   ```bash
-   # Option A: using just (recommended)
-   just build-go-ffi
+# Option B: manual
+cargo build -p prompt-templates-ffi --release
+```
 
-   # Option B: manual
-   cargo build -p prompt-templates-ffi --release
-   ```
+You need a working [Rust toolchain](https://rustup.rs/) for the build step.
 
 ## Installation
 
@@ -38,32 +103,19 @@ The Go binding uses CGo to call the Rust-based engine. You need:
 go get github.com/domenukk/prompt-templates/go/prompt_templates
 ```
 
-## Quick Start
+## Struct-Based Rendering
 
-### Struct-Based Rendering (recommended)
-
-Define Go structs that match your template parameters — fields are
-mapped by `json` tags, falling back to lowercased field name:
+Define Go structs that match your template parameters. Fields are mapped
+by `json` tag, falling back to lowercased field name:
 
 ```go
-import pt "github.com/domenukk/prompt-templates/go/prompt_templates"
-
 type ReviewParams struct {
     Reviewer string `json:"reviewer"`
     FilePath string `json:"file_path"`
     Severity string `json:"severity"`
 }
 
-tmpl, err := pt.FromSource(`---
-params:
-  - reviewer = str
-  - file_path = str
-  - severity = str
----
-# Code Review by {{ reviewer }}
-
-File: {{ file_path }}
-Severity: {{ severity }}`)
+tmpl, err := pt.FromFile("prompts/code_review.tmpl.md")
 if err != nil {
     log.Fatal(err)
 }
@@ -76,7 +128,7 @@ result, err := tmpl.RenderStruct(ReviewParams{
 })
 ```
 
-### Map-Based Rendering
+## Map-Based Rendering
 
 For dynamic use cases, pass a `map[string]any`:
 
@@ -88,58 +140,13 @@ result, err := tmpl.RenderMap(map[string]any{
 })
 ```
 
-### Context API (fine-grained control)
-
-```go
-ctx := pt.NewContext()
-defer ctx.Close()
-ctx.SetStr("reviewer", "Alice")
-ctx.SetStr("file_path", "main.go")
-ctx.SetStr("severity", "high")
-result, err := tmpl.Render(ctx)
-```
-
-## Typed Lists
-
-```go
-type TaskParams struct {
-    Tasks []Task `json:"tasks"`
-}
-
-type Task struct {
-    Title    string `json:"title"`
-    Priority string `json:"priority"`
-}
-
-tmpl, err := pt.FromSource(`---
-params:
-  - tasks = list<title = str, priority = str>
----
-> {% for task in tasks %}
-
-- {{ task.title }}: {{ task.priority }}
-> {% /for %}`)
-if err != nil {
-    log.Fatal(err)
-}
-defer tmpl.Close()
-
-result, err := tmpl.RenderStruct(TaskParams{
-    Tasks: []Task{
-        {Title: "Write documentation", Priority: "High"},
-        {Title: "Add unit tests",      Priority: "Medium"},
-    },
-})
-```
-
 ## Enum Dispatch
 
 Typed variants with exhaustiveness checking and field narrowing.
 
-### TaggedVariant (static typing, recommended)
+### TaggedVariant (static typing)
 
-Embed `TaggedVariant` in Go structs for compile-time typed enum variants
-with zero allocations:
+Embed `TaggedVariant` in Go structs for statically typed variants:
 
 ```go
 type DoneVariant struct {
@@ -165,7 +172,7 @@ result, err := tmpl.RenderStruct(StatusParams{
 
 ### Dynamic Variant
 
-For cases where the variant is determined at runtime:
+When the variant is determined at runtime:
 
 ```go
 result, err := tmpl.RenderMap(map[string]any{
@@ -181,33 +188,67 @@ result, err = tmpl.RenderMap(map[string]any{
 })
 ```
 
-### Codegen
+## Features
 
-`GenerateTypes` produces sealed interfaces and concrete structs with
-direct FFI setters for scalar fields — bypassing reflection and
-FlexBuffers serialization.
+### Typed Lists
 
-## Default Values
+Template:
+
+<!-- prettier-ignore -->
+```markdown
+---
+params:
+  - tasks = list(title = str, priority = str)
+---
+
+> {% for task in tasks %}
+
+- {{ task.title }}: {{ task.priority }}
+
+> {% /for %}
+```
+
+Go:
 
 ```go
-tmpl, err := pt.FromSource(`---
+type Task struct {
+    Title    string `json:"title"`
+    Priority string `json:"priority"`
+}
+
+tmpl, _ := pt.FromFile("prompts/task_list.tmpl.md")
+defer tmpl.Close()
+
+result, _ := tmpl.RenderStruct(struct {
+    Tasks []Task `json:"tasks"`
+}{
+    Tasks: []Task{
+        {Title: "Write docs", Priority: "High"},
+        {Title: "Add tests", Priority: "Medium"},
+    },
+})
+```
+
+### Default Values
+
+```markdown
+---
 params:
   - name = str
   - greeting = str := "Hello"
 ---
-{{ greeting }}, {{ name }}!`)
 
-result, err := tmpl.RenderMap(map[string]any{"name": "Alice"})
-// → "Hello, Alice!"
-
-// Pre-fill with defaults:
-ctx := tmpl.DefaultsContext()
-defer ctx.Close()
-ctx.SetStr("name", "Alice")
-result, err = tmpl.Render(ctx)
+{{ greeting }}, {{ name }}!
 ```
 
-## Filters
+```go
+tmpl, _ := pt.FromFile("prompts/greeting.tmpl.md")
+
+result, _ := tmpl.RenderMap(map[string]any{"name": "Alice"})
+// → "Hello, Alice!"
+```
+
+### Filters
 
 ```
 {{ name | upper }}        → ALICE
@@ -221,25 +262,25 @@ result, err = tmpl.Render(ctx)
 {{ name | trim | upper }} → chains work
 ```
 
-## Built-in Functions
+### Built-in Functions
 
 ```
 {{ idx(item) }}           → 0, 1, 2, … (loop index)
 {{ len(items) }}          → 3 (list length)
 {{ len(name) }}           → 5 (string length)
 {{ kind(status) }}        → "Done" (variant name)
-{{ has(field) }}          → true if option<T> is present
+{{ has(field) }}          → true if option(T) is present
 ```
 
 `idx(binding)` tracks each loop variable independently in nested loops.
 
-## Includes
+### Includes
 
 ```markdown
 > {% include [header](header.tmpl.md) with title=title %}
 ```
 
-## Constants
+### Constants
 
 ```markdown
 ---
@@ -251,7 +292,7 @@ params: []
 Max retries: {{ MAX_RETRIES }}
 ```
 
-## Caching
+### Caching
 
 ```go
 cache := pt.NewCache()
@@ -261,30 +302,6 @@ tmpl, err := cache.Load("prompts/greeting.tmpl.md")
 defer tmpl.Close()
 cache.TemplateCount()
 cache.Clear()
-```
-
-## Declaration Validation
-
-Detect template contract changes at load time:
-
-```go
-expected := tmpl.Declarations()
-
-reloaded, _ := pt.FromFile("prompt.tmpl.md")
-defer reloaded.Close()
-if err := reloaded.ValidateDeclarations(expected); err != nil {
-    log.Fatalf("template contract changed: %v", err)
-}
-```
-
-## Extra Parameters
-
-`AllowingExtra` variants silently ignore undeclared parameters:
-
-```go
-result, err := tmpl.RenderMapAllowingExtra(sharedParams)
-result, err = tmpl.RenderStructAllowingExtra(sharedStruct)
-result, err = tmpl.RenderAllowingExtra(sharedCtx)
 ```
 
 ## API Reference
@@ -303,6 +320,7 @@ pt.FromFile(path string) (*Template, error)
 tmpl.Render(ctx *Context) (string, error)
 tmpl.RenderMap(params map[string]any) (string, error)
 tmpl.RenderStruct(v any) (string, error)
+tmpl.RenderJSON(jsonStr string) (string, error)
 
 // Metadata
 tmpl.Declarations() []Declaration
@@ -342,37 +360,37 @@ var pt.ErrNilContext // rendering with nil context
 
 ## Performance
 
-vs Go's `text/template`, Intel Xeon @ 2.60 GHz, median of 3 runs
+vs Go's `text/template`, median of 3 runs
 ([source](prompt_templates_vs_go_test.go)).
 
-**Render only** (pre-compiled template + data → output):
+**Render** (pre-parsed template + data → output):
 
-| Scenario   | prompt-templates | Go `text/template` | speedup |
-| ---------- | ---------------: | -----------------: | ------: |
-| **small**  |    **506 ns** 🏆 |           1,035 ns |    2.0× |
-| **medium** |  **1,523 ns** 🏆 |           6,349 ns |    4.2× |
-| **large**  | **24,257 ns** 🏆 |         137,271 ns |    5.7× |
+| Scenario | prompt-templates | Go `text/template` | Speedup |
+| -------- | ---------------: | -----------------: | ------: |
+| small    |    **525 ns** 🏆 |             569 ns |    1.1× |
+| medium   |  **1,716 ns** 🏆 |           6,251 ns |    3.6× |
+| large    | **24,808 ns** 🏆 |         140,495 ns |    5.7× |
 
-**Round-trip** (compile + render):
+**Round-trip** (parse + render):
 
-| Scenario   | prompt-templates | Go `text/template` | speedup |
-| ---------- | ---------------: | -----------------: | ------: |
-| **small**  |         5,603 ns |           5,802 ns |   ~1.0× |
-| **medium** | **19,313 ns** 🏆 |          21,452 ns |   1.11× |
-| **large**  | **63,594 ns** 🏆 |         168,819 ns |    2.7× |
+| Scenario | prompt-templates | Go `text/template` | Speedup |
+| -------- | ---------------: | -----------------: | ------: |
+| small    |         5,330 ns |  4,735 ns + 569 ns |   ~1.0× |
+| medium   | **19,438 ns** 🏆 |          20,509 ns |    1.1× |
+| large    | **61,531 ns** 🏆 |         165,633 ns |    2.7× |
 
 **Filters:**
 
-| Filter         | prompt-templates | Go `text/template` | speedup |
-| -------------- | ---------------: | -----------------: | ------: |
-| **upper**      |    **435 ns** 🏆 |             938 ns |    2.2× |
-| **trim+upper** |    **450 ns** 🏆 |           1,297 ns |    2.9× |
+| Filter     | prompt-templates | Go `text/template` | Speedup |
+| ---------- | ---------------: | -----------------: | ------: |
+| upper      |    **489 ns** 🏆 |             907 ns |    1.9× |
+| trim+upper |    **441 ns** 🏆 |           1,312 ns |    3.0× |
+
+Allocations: 2 per render (small/medium/large) vs 3–517 for `text/template`.
 
 ```bash
 just test-go     # 144 tests
 just bench-go    # 24 benchmarks
-just lint-go     # go vet
-just fmt-go      # gofmt
 ```
 
 ## Full Reference

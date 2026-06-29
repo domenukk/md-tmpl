@@ -46,7 +46,7 @@ fn match_valid_variant_names() {
         "outcome",
         vec![unit_variant("Confirmed"), unit_variant("NotConfirmed")],
     )];
-    let tmpl = "---\nname: t\nparams:\n  - outcome = enum<Confirmed, NotConfirmed>\n---\n\
+    let tmpl = "---\nname: t\nparams:\n  - outcome = enum(Confirmed, NotConfirmed)\n---\n\
                      > {% match outcome %}{% case Confirmed %}yes{% case NotConfirmed %}no{% /match %}";
     let errors = compile_and_check(tmpl, &decls);
     assert!(errors.is_empty(), "unexpected errors: {errors:?}");
@@ -58,7 +58,7 @@ fn match_unknown_variant_name() {
         "outcome",
         vec![unit_variant("Confirmed"), unit_variant("NotConfirmed")],
     )];
-    let tmpl = "---\nname: t\nparams:\n  - outcome = enum<Confirmed, NotConfirmed>\n---\n\
+    let tmpl = "---\nname: t\nparams:\n  - outcome = enum(Confirmed, NotConfirmed)\n---\n\
                      > {% match outcome %}{% case Confrimed %}yes{% /match %}";
     let errors = compile_and_check(tmpl, &decls);
     assert_eq!(errors.len(), 1, "expected 1 error, got: {errors:?}");
@@ -85,7 +85,7 @@ fn field_on_all_variants_ok() {
             variant("Rejected", vec![("reason", VarType::Str)]),
         ],
     )];
-    let tmpl = "---\nname: t\nparams:\n  - outcome = enum<Confirmed(reason = str), Rejected(reason = str)>\n---\n\
+    let tmpl = "---\nname: t\nparams:\n  - outcome = enum(Confirmed(reason = str), Rejected(reason = str))\n---\n\
                      {{ outcome.reason }}";
     let errors = compile_and_check(tmpl, &decls);
     assert!(errors.is_empty(), "unexpected: {errors:?}");
@@ -100,7 +100,7 @@ fn field_not_on_all_variants_error() {
             unit_variant("NotConfirmed"),
         ],
     )];
-    let tmpl = "---\nname: t\nparams:\n  - outcome = enum<Confirmed(evidence = str), NotConfirmed>\n---\n\
+    let tmpl = "---\nname: t\nparams:\n  - outcome = enum(Confirmed(evidence = str), NotConfirmed)\n---\n\
                      {{ outcome.evidence }}";
     let errors = compile_and_check(tmpl, &decls);
     assert_eq!(errors.len(), 1, "expected 1 error, got: {errors:?}");
@@ -120,7 +120,7 @@ fn tag_field_is_error() {
             unit_variant("NotConfirmed"),
         ],
     )];
-    let tmpl = "---\nname: t\nparams:\n  - outcome = enum<Confirmed(evidence = str), NotConfirmed>\n---\n\
+    let tmpl = "---\nname: t\nparams:\n  - outcome = enum(Confirmed(evidence = str), NotConfirmed)\n---\n\
                      {{ outcome.tag }}";
     let errors = compile_and_check(tmpl, &decls);
     assert_eq!(errors.len(), 1, ".tag should be an error: {errors:?}");
@@ -142,7 +142,7 @@ fn field_in_matching_arm_ok() {
             unit_variant("NotConfirmed"),
         ],
     )];
-    let tmpl = "---\nname: t\nparams:\n  - outcome = enum<Confirmed(evidence = str), NotConfirmed>\n---\n\
+    let tmpl = "---\nname: t\nparams:\n  - outcome = enum(Confirmed(evidence = str), NotConfirmed)\n---\n\
                      > {% match outcome %}{% case Confirmed %}{{ outcome.evidence }}{% case NotConfirmed %}none{% /match %}";
     let errors = compile_and_check(tmpl, &decls);
     assert!(errors.is_empty(), "narrowed access should work: {errors:?}");
@@ -157,7 +157,7 @@ fn field_in_wrong_arm_error() {
             unit_variant("NotConfirmed"),
         ],
     )];
-    let tmpl = "---\nname: t\nparams:\n  - outcome = enum<Confirmed(evidence = str), NotConfirmed>\n---\n\
+    let tmpl = "---\nname: t\nparams:\n  - outcome = enum(Confirmed(evidence = str), NotConfirmed)\n---\n\
                      > {% match outcome %}{% case NotConfirmed %}{{ outcome.evidence }}{% /match %}";
     let errors = compile_and_check(tmpl, &decls);
     assert_eq!(errors.len(), 1, "expected error: {errors:?}");
@@ -183,7 +183,7 @@ fn multi_variant_shared_field_ok() {
             unit_variant("Rejected"),
         ],
     )];
-    let tmpl = "---\nname: t\nparams:\n  - outcome = enum<Confirmed(reason = str, evidence = str), ConfirmedWithCaveats(reason = str), Rejected>\n---\n\
+    let tmpl = "---\nname: t\nparams:\n  - outcome = enum(Confirmed(reason = str, evidence = str), ConfirmedWithCaveats(reason = str), Rejected)\n---\n\
                      > {% match outcome %}{% case Confirmed | ConfirmedWithCaveats %}{{ outcome.reason }}{% /match %}";
     let errors = compile_and_check(tmpl, &decls);
     assert!(
@@ -205,7 +205,7 @@ fn multi_variant_non_shared_field_error() {
             unit_variant("Rejected"),
         ],
     )];
-    let tmpl = "---\nname: t\nparams:\n  - outcome = enum<Confirmed(reason = str, evidence = str), ConfirmedWithCaveats(reason = str), Rejected>\n---\n\
+    let tmpl = "---\nname: t\nparams:\n  - outcome = enum(Confirmed(reason = str, evidence = str), ConfirmedWithCaveats(reason = str), Rejected)\n---\n\
                      > {% match outcome %}{% case Confirmed | ConfirmedWithCaveats %}{{ outcome.evidence }}{% /match %}";
     let errors = compile_and_check(tmpl, &decls);
     assert_eq!(errors.len(), 1, "expected error: {errors:?}");
@@ -227,7 +227,7 @@ fn inline_match_case_field_ok() {
             unit_variant("Unknown"),
         ],
     )];
-    let tmpl = "---\nname: t\nparams:\n  - vt = enum<Known(label = str), Unknown>\n---\n\
+    let tmpl = "---\nname: t\nparams:\n  - vt = enum(Known(label = str), Unknown)\n---\n\
                      > {% match vt case Known %}{{ vt.label }}{% /match %}";
     let errors = compile_and_check(tmpl, &decls);
     assert!(errors.is_empty(), "inline narrowing: {errors:?}");
@@ -253,7 +253,7 @@ fn nested_match_narrows_independently() {
             ],
         ),
     ];
-    let tmpl = "---\nname: t\nparams:\n  - a = enum<X(x_val = str), Y>\n  - b = enum<P(p_val = str), Q>\n---\n\
+    let tmpl = "---\nname: t\nparams:\n  - a = enum(X(x_val = str), Y)\n  - b = enum(P(p_val = str), Q)\n---\n\
                      > {% match a %}{% case X %}\
                      > {% match b %}{% case P %}{{ a.x_val }} {{ b.p_val }}{% /match %}\
                      {% /match %}";
@@ -328,7 +328,7 @@ fn condition_inside_match_arm_validated() {
             unit_variant("NotConfirmed"),
         ],
     )];
-    let tmpl = "---\nname: t\nparams:\n  - outcome = enum<Confirmed(evidence = str), NotConfirmed>\n---\n\
+    let tmpl = "---\nname: t\nparams:\n  - outcome = enum(Confirmed(evidence = str), NotConfirmed)\n---\n\
                      > {% match outcome %}{% case Confirmed %}{% if outcome.evidence %}yes{% /if %}{% /match %}";
     let errors = compile_and_check(tmpl, &decls);
     assert!(errors.is_empty(), "condition in arm: {errors:?}");
@@ -346,7 +346,7 @@ fn eq_on_unit_enum_is_compile_error() {
             unit_variant("Chainer"),
         ],
     )];
-    let tmpl = "---\nname: t\nparams:\n  - role = enum<Builder, Analyst, Chainer>\n---\n\
+    let tmpl = "---\nname: t\nparams:\n  - role = enum(Builder, Analyst, Chainer)\n---\n\
                      > {% if role == Builder %}yes{% /if %}";
     let errors = compile_and_check(tmpl, &decls);
     assert_eq!(errors.len(), 1, "expected error: {errors:?}");
@@ -366,7 +366,7 @@ fn eq_on_struct_enum_is_compile_error() {
             unit_variant("Rejected"),
         ],
     )];
-    let tmpl = "---\nname: t\nparams:\n  - outcome = enum<Confirmed(evidence = str), Rejected>\n---\n\
+    let tmpl = "---\nname: t\nparams:\n  - outcome = enum(Confirmed(evidence = str), Rejected)\n---\n\
                      > {% if outcome == Confirmed %}yes{% /if %}";
     let errors = compile_and_check(tmpl, &decls);
     assert_eq!(errors.len(), 1, "expected error: {errors:?}");
@@ -383,7 +383,7 @@ fn ne_on_enum_is_compile_error() {
         "status",
         vec![unit_variant("Active"), unit_variant("Inactive")],
     )];
-    let tmpl = "---\nname: t\nparams:\n  - status = enum<Active, Inactive>\n---\n\
+    let tmpl = "---\nname: t\nparams:\n  - status = enum(Active, Inactive)\n---\n\
                      > {% if status != Active %}no{% /if %}";
     let errors = compile_and_check(tmpl, &decls);
     assert_eq!(errors.len(), 1, "expected error: {errors:?}");
@@ -401,7 +401,7 @@ fn eq_enum_string_literal_is_compile_error() {
         "role",
         vec![unit_variant("Builder"), unit_variant("Analyst")],
     )];
-    let tmpl = "---\nname: t\nparams:\n  - role = enum<Builder, Analyst>\n---\n\
+    let tmpl = "---\nname: t\nparams:\n  - role = enum(Builder, Analyst)\n---\n\
                      > {% if role == \"Builder\" %}yes{% /if %}";
     let errors = compile_and_check(tmpl, &decls);
     assert_eq!(errors.len(), 1, "expected error: {errors:?}");
@@ -423,7 +423,7 @@ fn elif_on_enum_is_compile_error() {
             unit_variant("Support"),
         ],
     )];
-    let tmpl = "---\nname: t\nparams:\n  - role = enum<Builder, Analyst, Support>\n---\n\
+    let tmpl = "---\nname: t\nparams:\n  - role = enum(Builder, Analyst, Support)\n---\n\
                      > {% if role == Builder %}b{% elif role == Analyst %}a{% /if %}";
     let errors = compile_and_check(tmpl, &decls);
     assert_eq!(errors.len(), 2, "expected 2 errors (if + elif): {errors:?}");
@@ -444,7 +444,7 @@ fn field_nonexistent_on_all_variants() {
             variant("B", vec![("y", VarType::Str)]),
         ],
     )];
-    let tmpl = "---\nname: t\nparams:\n  - outcome = enum<A(x = str), B(y = str)>\n---\n\
+    let tmpl = "---\nname: t\nparams:\n  - outcome = enum(A(x = str), B(y = str))\n---\n\
                      > {% match outcome %}{% case A %}{{ outcome.z }}{% /match %}";
     let errors = compile_and_check(tmpl, &decls);
     assert_eq!(errors.len(), 1);
@@ -478,7 +478,7 @@ fn for_loop_binding_typed_from_list() {
         ]),
         default_value: None,
     }];
-    let tmpl = "---\nname: t\nparams:\n  - tasks = list<title = str, vt = enum<Known(label = str), Unknown>>\n---\n\
+    let tmpl = "---\nname: t\nparams:\n  - tasks = list(title = str, vt = enum(Known(label = str), Unknown))\n---\n\
                      > {% for task in tasks %}{% match task.vt case Known %}{{ task.vt.label }}{% /match %}{% /for %}";
     let errors = compile_and_check(tmpl, &decls);
     assert!(
@@ -509,7 +509,7 @@ fn for_loop_binding_field_access_validated() {
         default_value: None,
     }];
     // Access .label outside match — should fail since Unknown has no label.
-    let tmpl = "---\nname: t\nparams:\n  - tasks = list<title = str, vt = enum<Known(label = str), Unknown>>\n---\n\
+    let tmpl = "---\nname: t\nparams:\n  - tasks = list(title = str, vt = enum(Known(label = str), Unknown))\n---\n\
                      > {% for task in tasks %}{{ task.vt.label }}{% /for %}";
     let errors = compile_and_check(tmpl, &decls);
     assert_eq!(errors.len(), 1, "expected error: {errors:?}");
@@ -554,7 +554,7 @@ fn multi_arm_match_exhaustive_ok() {
             unit_variant("NotConfirmed"),
         ],
     )];
-    let tmpl = "---\nname: t\nparams:\n  - outcome = enum<Confirmed(evidence = str), NotConfirmed>\n---\n\
+    let tmpl = "---\nname: t\nparams:\n  - outcome = enum(Confirmed(evidence = str), NotConfirmed)\n---\n\
                      > {% match outcome %}{% case Confirmed %}yes{% case NotConfirmed %}no{% /match %}";
     let errors = compile_and_check(tmpl, &decls);
     assert!(errors.is_empty(), "exhaustive match: {errors:?}");
@@ -570,7 +570,7 @@ fn multi_arm_match_non_exhaustive_error() {
             unit_variant("C"),
         ],
     )];
-    let tmpl = "---\nname: t\nparams:\n  - outcome = enum<A(x = str), B, C>\n---\n\
+    let tmpl = "---\nname: t\nparams:\n  - outcome = enum(A(x = str), B, C)\n---\n\
                      > {% match outcome %}{% case A %}a{% case B %}b{% /match %}";
     let errors = compile_and_check(tmpl, &decls);
     assert_eq!(errors.len(), 1, "expected exhaustiveness error: {errors:?}");
@@ -588,7 +588,7 @@ fn single_arm_inline_not_exhaustive_ok() {
         vec![unit_variant("A"), unit_variant("B")],
     )];
     // Single inline arm — intentionally non-exhaustive guard.
-    let tmpl = "---\nname: t\nparams:\n  - outcome = enum<A, B>\n---\n\
+    let tmpl = "---\nname: t\nparams:\n  - outcome = enum(A, B)\n---\n\
                      > {% match outcome case A %}a{% /match %}";
     let errors = compile_and_check(tmpl, &decls);
     assert!(errors.is_empty(), "inline guard: {errors:?}");
@@ -620,7 +620,7 @@ fn else_arm_satisfies_exhaustiveness() {
             unit_variant("Pending"),
         ],
     )];
-    let tmpl = "---\nname: t\nparams:\n  - outcome = enum<Confirmed(evidence = str), Rejected, Pending>\n---\n\
+    let tmpl = "---\nname: t\nparams:\n  - outcome = enum(Confirmed(evidence = str), Rejected, Pending)\n---\n\
                      > {% match outcome %}{% case Confirmed %}yes{% else %}other{% /match %}";
     let errors = compile_and_check(tmpl, &decls);
     assert!(
@@ -635,7 +635,7 @@ fn else_alone_satisfies_exhaustiveness() {
         "status",
         vec![unit_variant("A"), unit_variant("B"), unit_variant("C")],
     )];
-    let tmpl = "---\nname: t\nparams:\n  - status = enum<A, B, C>\n---\n\
+    let tmpl = "---\nname: t\nparams:\n  - status = enum(A, B, C)\n---\n\
                      > {% match status %}{% else %}fallback{% /match %}";
     let errors = compile_and_check(tmpl, &decls);
     assert!(errors.is_empty(), "else-only should be valid: {errors:?}");
@@ -644,7 +644,7 @@ fn else_alone_satisfies_exhaustiveness() {
 #[test]
 fn else_arm_renders_correctly() {
     let tmpl = crate::Template::from_source(
-        "---\nparams:\n  - status = enum<A, B, C>\n---\n\
+        "---\nparams:\n  - status = enum(A, B, C)\n---\n\
              > {% match status %}{% case A %}alpha{% else %}other{% /match %}",
     )
     .unwrap();
@@ -724,7 +724,7 @@ fn dict_unknown_field_is_error() {
         }]),
         default_value: None,
     }];
-    let tmpl = "---\nname: t\nparams:\n  - config = struct<host = str>\n---\n{{ config.port }}";
+    let tmpl = "---\nname: t\nparams:\n  - config = struct(host = str)\n---\n{{ config.port }}";
     let errors = compile_and_check(tmpl, &decls);
     assert_eq!(errors.len(), 1, "expected error: {errors:?}");
     assert!(
@@ -745,7 +745,7 @@ fn dict_known_field_ok() {
         }]),
         default_value: None,
     }];
-    let tmpl = "---\nname: t\nparams:\n  - config = struct<host = str>\n---\n{{ config.host }}";
+    let tmpl = "---\nname: t\nparams:\n  - config = struct(host = str)\n---\n{{ config.host }}";
     let errors = compile_and_check(tmpl, &decls);
     assert!(errors.is_empty(), "declared field: {errors:?}");
 }
@@ -1821,7 +1821,7 @@ fn compile_and_check_self(template: &str) -> Vec<String> {
 
 #[test]
 fn list_type_alias_in_types_block() {
-    let tmpl = "---\nname: t\ntypes:\n  - TaskList = list<title = str, score = int>\n\nparams:\n  - tasks = TaskList\n---\n\
+    let tmpl = "---\nname: t\ntypes:\n  - TaskList = list(title = str, score = int)\n\nparams:\n  - tasks = TaskList\n---\n\
                      > {% for b in tasks %}{{ b.title }}: {{ b.score }}\n> {% /for %}";
     let errors = compile_and_check_self(tmpl);
     assert!(errors.is_empty(), "list type alias should work: {errors:?}");
@@ -1829,7 +1829,7 @@ fn list_type_alias_in_types_block() {
 
 #[test]
 fn chained_type_alias_enum_in_list() {
-    let tmpl = "---\nname: t\ntypes:\n  - Severity = enum<High, Medium, Low>\n  - TaskReport = list<title = str, severity = Severity>\n\nparams:\n  - tasks = TaskReport\n---\n\
+    let tmpl = "---\nname: t\ntypes:\n  - Severity = enum(High, Medium, Low)\n  - TaskReport = list(title = str, severity = Severity)\n\nparams:\n  - tasks = TaskReport\n---\n\
                      > {% for b in tasks %}{{ b.title }} {% match b.severity %}{% case High %}🔴{% case Medium %}🟡{% case Low %}🟢{% /match %}\n> {% /for %}";
     let errors = compile_and_check_self(tmpl);
     assert!(
@@ -1952,4 +1952,54 @@ fn empty_opaque_set_behaves_like_normal() {
     // Empty opaque set = normal validation.
     let errors = compile_and_check_with_opaque("---\nparams: []\n---\n{{ unknown }}", &[], &[]);
     assert_eq!(errors.len(), 1, "empty opaque set should not help");
+}
+
+// -- tmpl() displayability rejection ---------------------------------
+
+#[test]
+fn display_tmpl_param_is_compile_error() {
+    let decls = vec![VarDecl {
+        name: "widget".to_string(),
+        var_type: VarType::Tmpl(vec![]),
+        default_value: None,
+    }];
+    let tmpl = r"---
+name: t
+params:
+  - widget = tmpl()
+---
+{{ widget }}";
+    let errors = compile_and_check(tmpl, &decls);
+    assert_eq!(errors.len(), 1, "expected displayability error: {errors:?}");
+    assert!(
+        errors[0].contains("cannot display") && errors[0].contains("tmpl"),
+        "got: {}",
+        errors[0]
+    );
+}
+
+#[test]
+fn display_tmpl_param_with_signature_is_compile_error() {
+    let decls = vec![VarDecl {
+        name: "formatter".to_string(),
+        var_type: VarType::Tmpl(vec![VarDecl {
+            name: "name".to_string(),
+            var_type: VarType::Str,
+            default_value: None,
+        }]),
+        default_value: None,
+    }];
+    let tmpl = r"---
+name: t
+params:
+  - formatter = tmpl(name = str)
+---
+{{ formatter }}";
+    let errors = compile_and_check(tmpl, &decls);
+    assert_eq!(errors.len(), 1, "expected displayability error: {errors:?}");
+    assert!(
+        errors[0].contains("cannot display") && errors[0].contains("include"),
+        "should suggest using include, got: {}",
+        errors[0]
+    );
 }

@@ -403,7 +403,7 @@ impl PyTemplate {
     ///
     /// ```python
     /// tmpl.declarations()
-    /// # => [('reviewer', 'str'), ('status', 'enum<...>')]
+    /// # => [('reviewer', 'str'), ('status', 'enum(...)')]
     /// ```
     fn declarations(&self) -> Vec<(String, String)> {
         self.inner

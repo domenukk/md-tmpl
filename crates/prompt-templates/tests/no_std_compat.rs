@@ -243,7 +243,7 @@ params: [greeting = str]
 fn template_render_with_list() {
     let tmpl = Template::from_source(
         r"---
-params: [items = list<label = str>]
+params: [items = list(label = str)]
 ---
 
 > {% for item in items %}
@@ -315,7 +315,7 @@ params: [name = str]
 fn template_render_with_nested_dict() {
     let tmpl = Template::from_source(
         r"---
-params: [user = struct<name = str, role = str>]
+params: [user = struct(name = str, role = str)]
 ---
 {{ user.name }} is a {{ user.role }}",
     )
@@ -332,7 +332,7 @@ params: [user = struct<name = str, role = str>]
 fn template_render_enum_match() {
     let tmpl = Template::from_source(
         r"---
-params: [status = enum<Open, Closed>]
+params: [status = enum(Open, Closed)]
 ---
 
 > {% match status %}
@@ -375,7 +375,7 @@ fn parse_frontmatter_with_types() {
     let (fm, _) = prompt_templates::parse_frontmatter(
         r"---
 types:
-  - Priority = enum<Low, High>
+  - Priority = enum(Low, High)
 
 params: [p = Priority]
 ---
@@ -640,7 +640,7 @@ params: [msg = str]
     // Create a "parent" template that includes the child via a tmpl parameter.
     let parent = Template::from_source(
         r"---
-params: [widget = tmpl<msg = str>, text = str]
+params: [widget = tmpl(msg = str), text = str]
 ---
 before
 
@@ -672,7 +672,7 @@ params: [item = str]
 
     let parent = Template::from_source(
         r"---
-params: [row = tmpl<item = str>, items = list<label = str>]
+params: [row = tmpl(item = str), items = list(label = str)]
 ---
 > {% include row for item in items %}
 ",
@@ -706,7 +706,7 @@ params: [count = int]
 
     let parent = Template::from_source(
         r"---
-params: [widget = tmpl<count = int>, val = str]
+params: [widget = tmpl(count = int), val = str]
 ---
 > {% include widget with count=val %}
 ",
@@ -736,7 +736,7 @@ params: [title = str, count = int]
 
     let parent = Template::from_source(
         r"---
-params: [widget = tmpl<title = str, count = int>]
+params: [widget = tmpl(title = str, count = int)]
 ---
 > {% include widget %}
 ",
@@ -767,7 +767,7 @@ params: [msg = str]
     .unwrap();
     let parent = Template::from_source(
         r"---
-params: [widget = tmpl<msg = str>, text = str]
+params: [widget = tmpl(msg = str), text = str]
 ---
 > {% include widget with msg=text %}
 ",
@@ -794,7 +794,7 @@ params: [msg = str]
     .unwrap();
     let parent = Template::from_source(
         r"---
-params: [widget = tmpl<msg = str>, text = str]
+params: [widget = tmpl(msg = str), text = str]
 ---
 > {% include widget with msg=text %}
 ",
@@ -822,7 +822,7 @@ params: [msg = str]
     .0;
     let parent = Template::from_source(
         r"---
-params: [widget = tmpl<msg = str>, text = str]
+params: [widget = tmpl(msg = str), text = str]
 ---
 > {% include widget with msg=text %}
 ",
@@ -847,7 +847,7 @@ params: [msg = str]
     .unwrap();
     let parent = Template::from_source(
         r"---
-params: [widget = tmpl<msg = str>, text = str]
+params: [widget = tmpl(msg = str), text = str]
 ---
 > {% include widget with msg=text %}
 ",
@@ -865,7 +865,7 @@ fn tmpl_param_from_source_inline() {
     // One-liner: create and pass a template in one expression
     let parent = Template::from_source(
         r"---
-params: [widget = tmpl<name = str>, who = str]
+params: [widget = tmpl(name = str), who = str]
 ---
 > {% include widget with name=who %}
 ",

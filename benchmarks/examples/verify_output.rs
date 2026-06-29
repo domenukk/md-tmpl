@@ -27,7 +27,7 @@ Hello {{ name }}, welcome to {{ place }}!"#).unwrap();
     let hero_pt = Template::from_source(r#"---
 params:
   - title = str
-  - sections = list<heading = str, entries = list<name = str, active = bool, score = float, tags = list<label = str>>>
+  - sections = list(heading = str, entries = list(name = str, active = bool, score = float, tags = list(label = str)))
 ---
 # {{ title }}
 

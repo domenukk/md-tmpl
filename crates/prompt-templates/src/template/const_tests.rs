@@ -45,8 +45,8 @@ Version: {{ VERSION }}
 fn test_complex_constants() {
     let source = r#"---
 consts:
-  - CONFIG = struct<env = str, debug = bool> := {env = "prod", debug = false}
-  - TAGS = list<str> := ["ai", "automation"]
+  - CONFIG = struct(env = str, debug = bool) := {env = "prod", debug = false}
+  - TAGS = list(str) := ["ai", "automation"]
 ---
 Env: {{ CONFIG.env }} (debug={{ CONFIG.debug }})
 Tags: {{ TAGS | join(", ") }}
@@ -72,7 +72,7 @@ fn test_imported_constants() {
 name: lib
 consts:
   - DEFAULT_TIMEOUT = int := 30
-  - COLORS = struct<primary = str> := {primary = "blue"}
+  - COLORS = struct(primary = str) := {primary = "blue"}
 ---
 "#;
     std::fs::write(base_dir.join("lib.tmpl.md"), library_source).unwrap();
@@ -80,7 +80,7 @@ consts:
     let main_source = r"---
 name: main
 imports:
-  - [lib](lib.tmpl.md)
+  - [lib](./lib.tmpl.md)
 ---
 Timeout: {{ lib.DEFAULT_TIMEOUT }}
 Primary Color: {{ lib.COLORS.primary }}
@@ -102,7 +102,7 @@ Primary Color: blue
 fn test_constant_with_type_alias() {
     let source = r"---
 types:
-  - Level = enum<High, Low>
+  - Level = enum(High, Low)
 
 consts:
   - DEFAULT_LEVEL = Level := High
@@ -152,7 +152,7 @@ Sub Value: {{ lib.VAL }}
 name: main
 params: []
 ---
-> {% include [template](sub/template.tmpl.md) %}
+> {% include [template](./sub/template.tmpl.md) %}
 ";
 
     let (tmpl, _fm) =
@@ -175,7 +175,7 @@ fn enum_literal_bare_access_is_error() {
     // Bare {{ Stage.Design }} should produce a compile error.
     let source = r"---
 types:
-  - Stage = enum<Design, Build>
+  - Stage = enum(Design, Build)
 
 params: []
 ---
@@ -193,7 +193,7 @@ params: []
 fn enum_literal_bare_access_all_variants_is_error() {
     let source = r"---
 types:
-  - Color = enum<Red, Green, Blue>
+  - Color = enum(Red, Green, Blue)
 
 params: []
 ---
@@ -208,7 +208,7 @@ params: []
 fn enum_literal_kind_unit_variant() {
     let source = r"---
 types:
-  - Stage = enum<Design, Build>
+  - Stage = enum(Design, Build)
 
 params: []
 ---
@@ -222,7 +222,7 @@ params: []
 fn enum_literal_kind_all_variants() {
     let source = r"---
 types:
-  - Color = enum<Red, Green, Blue>
+  - Color = enum(Red, Green, Blue)
 
 params: []
 ---
@@ -236,7 +236,7 @@ params: []
 fn enum_literal_kind_struct_variant() {
     let source = r"---
 types:
-  - Status = enum<Active, Paused(reason = str)>
+  - Status = enum(Active, Paused(reason = str))
 
 params: []
 allow_unused: true
@@ -257,7 +257,7 @@ fn enum_literal_imported_kind() {
         r"---
 name: types
 types:
-  - Severity = enum<Low, Medium, High>
+  - Severity = enum(Low, Medium, High)
 
 allow_unused: true
 ---
@@ -267,7 +267,7 @@ allow_unused: true
 
     let main_src = r"---
 imports:
-  - [types](types.tmpl.md)
+  - [types](./types.tmpl.md)
 
 params: []
 ---
@@ -288,7 +288,7 @@ fn enum_literal_imported_bare_is_error() {
         r"---
 name: types
 types:
-  - Severity = enum<Low, Medium, High>
+  - Severity = enum(Low, Medium, High)
 
 allow_unused: true
 ---
@@ -298,7 +298,7 @@ allow_unused: true
 
     let main_src = r"---
 imports:
-  - [types](types.tmpl.md)
+  - [types](./types.tmpl.md)
 
 params: []
 ---
@@ -315,7 +315,7 @@ fn enum_literal_const_name_collision_is_error() {
     // A constant with the same name as a type alias is rejected at compile time.
     let source = r#"---
 types:
-  - Stage = enum<Design, Build>
+  - Stage = enum(Design, Build)
 
 consts:
   - Stage = str := "overridden"
@@ -335,7 +335,7 @@ fn enum_literal_in_condition_kind_is_ok() {
     // kind() in conditions should work.
     let source = r"---
 types:
-  - Stage = enum<Design, Build>
+  - Stage = enum(Design, Build)
 
 params: [p = Stage]
 ---

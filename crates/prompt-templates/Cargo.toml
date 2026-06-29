@@ -52,6 +52,10 @@ flexbuffers = "25.12"
 name = "yaml_conformance"
 required-features = ["std"]
 
+[[test]]
+name = "adv_m1_tests"
+required-features = ["std"]
+
 [[bench]]
 name = "template_bench"
 harness = false

@@ -31,6 +31,7 @@ const INLINE_CONTROL_FIXTURES = path.join(
   FIXTURES_DIR,
   "inline_control_tests.json",
 );
+const TMPL_PARAM_FIXTURES = path.join(FIXTURES_DIR, "tmpl_param_tests.json");
 
 // ---------------------------------------------------------------------------
 // Types
@@ -162,6 +163,49 @@ describe("Shared: File-based include tests", () => {
 
 describe("Shared: Inline control flow tests", () => {
   const raw = fs.readFileSync(INLINE_CONTROL_FIXTURES, "utf-8");
+  const { tests } = JSON.parse(raw) as { tests: InlineTmplTestCase[] };
+
+  for (const tc of tests) {
+    it(tc.name, () => {
+      const templateSrc = joinLines(tc.template_lines);
+
+      if (tc.expected_output !== undefined) {
+        const tmpl = Template.fromSource(templateSrc);
+        const output = tmpl.render(tc.params);
+        assert.strictEqual(
+          output,
+          tc.expected_output,
+          `${tc.description}: output mismatch`,
+        );
+      } else if (tc.expected_error !== undefined) {
+        const expectedSubstring = tc.expected_error;
+        assert.throws(
+          () => {
+            const tmpl = Template.fromSource(templateSrc);
+            tmpl.render(tc.params);
+          },
+          (err: Error) => {
+            assert.ok(
+              err.message
+                .toLowerCase()
+                .includes(expectedSubstring.toLowerCase()),
+              `expected error containing "${expectedSubstring}", got: "${err.message}"`,
+            );
+            return true;
+          },
+          `${tc.description}: expected error`,
+        );
+      }
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Shared tmpl() parameter tests
+// ---------------------------------------------------------------------------
+
+describe("Shared: tmpl() parameter tests", () => {
+  const raw = fs.readFileSync(TMPL_PARAM_FIXTURES, "utf-8");
   const { tests } = JSON.parse(raw) as { tests: InlineTmplTestCase[] };
 
   for (const tc of tests) {

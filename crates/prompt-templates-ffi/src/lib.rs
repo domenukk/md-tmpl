@@ -310,7 +310,7 @@ pub unsafe extern "C" fn pt_context_set_bool(
 
 /// Set a None (absent/null) value in the context.
 ///
-/// Use this for `option<T>` parameters to indicate an absent value.
+/// Use this for `option(T)` parameters to indicate an absent value.
 ///
 /// # Safety
 ///
@@ -598,7 +598,7 @@ fn parse_json_bool(s: &str) -> Result<(Value, &str), String> {
 fn parse_json_null(s: &str) -> Result<(Value, &str), String> {
     if let Some(rest) = s.strip_prefix("null") {
         // Map JSON null to the template engine's `Value::None`, used by
-        // `option<T>` types.
+        // `option(T)` types.
         Ok((Value::None, rest))
     } else {
         Err(format!("unexpected token: {}", &s[..s.len().min(10)]))
@@ -1585,7 +1585,7 @@ no
             "\
 ---
 params:
-  - items = list<label = str>
+  - items = list(label = str)
 ---
 > {% for item in items %}
 
@@ -1853,7 +1853,7 @@ Body: {{ x }}",
 
     #[test]
     fn test_context_set_tmpl_render() {
-        // Template that takes a tmpl<> param: card = tmpl<title = str>
+        // Template that takes a tmpl() param: card = tmpl(title = str)
         // and iterates over items, including card for each
         let card_source = CString::new(
             "\
@@ -1874,8 +1874,8 @@ params: [title = str]
             "\
 ---
 params:
-  - card = tmpl<title = str>
-  - items = list<name = str>
+  - card = tmpl(title = str)
+  - items = list(name = str)
 ---
 > {% for item in items %}
 > {% include card with title=item.name %}
@@ -2140,7 +2140,7 @@ params: [title = str]
 ---
 params: [title = str]
 ---
-> {% include [header](header.tmpl.md) with title=title %}
+> {% include [header](./header.tmpl.md) with title=title %}
 
 Body",
         )
@@ -2512,7 +2512,7 @@ params: [name = str, count = int]
         }
     }
 
-    // -- option<T> tests --
+    // -- option(T) tests --
 
     #[test]
     fn test_option_json_null_renders_none_via_match() {
@@ -2520,7 +2520,7 @@ params: [name = str, count = int]
             "\
 ---
 params:
-  - label = option<str>
+  - label = option(str)
 ---
 ",
             "> {% match label %}\n",
@@ -2555,7 +2555,7 @@ params:
             "\
 ---
 params:
-  - label = option<str>
+  - label = option(str)
 ---
 ",
             "> {% match label %}\n",
@@ -2593,7 +2593,7 @@ params:
             "\
 ---
 params:
-  - label = option<str>
+  - label = option(str)
 ---
 ",
             "> {% if has(label) %}\n\n",
@@ -2627,7 +2627,7 @@ params:
             "\
 ---
 params:
-  - label = option<str>
+  - label = option(str)
 ---
 ",
             "> {% if has(label) %}\n\n",
@@ -2663,7 +2663,7 @@ params:
             "\
 ---
 params:
-  - label = option<str>
+  - label = option(str)
 ---
 ",
             "> {% if has(label) %}\n\n",
@@ -2703,7 +2703,7 @@ params:
             "\
 ---
 params:
-  - label = option<str>
+  - label = option(str)
 ---
 ",
             "> {% if has(label) %}\n\n",

@@ -5,8 +5,8 @@
  * Given a template source, it generates:
  *
  * - A `Params` interface with all parameter fields properly typed
- * - Nested interfaces for `struct<...>` and `list<...>` item types
- * - Discriminated union types for `enum<...>` variants
+ * - Nested interfaces for `struct(...)` and `list(...)` item types
+ * - Discriminated union types for `enum(...)` variants
  * - A typed `render(tmpl: Template, params: Params)` signature
  *
  * @example
@@ -18,8 +18,8 @@
  * ---
  * params:
  *   - name = str
- *   - tasks = list<title = str, priority = str>
- *   - outcome = enum<Confirmed(evidence = str), Rejected>
+ *   - tasks = list(title = str, priority = str)
+ *   - outcome = enum(Confirmed(evidence = str), Rejected)
  * ---
  * Hello {{ name }}!
  * `);
@@ -526,25 +526,25 @@ function varTypeToLabel(vt: VarType): string {
     case "float":
       return vt.kind;
     case "scalar_list":
-      return `list<${varTypeToLabel(vt.elementType)}>`;
+      return `list(${varTypeToLabel(vt.elementType)})`;
     case "list":
-      return "list<…>";
+      return "list(…)";
     case "struct":
-      return "struct<…>";
+      return "struct(…)";
     case "enum":
       if (vt.isOption) {
         const someVariant = vt.variants.find((v) => v.name === "Some");
         if (someVariant && someVariant.fields.length === 1) {
-          return `option<${varTypeToLabel(someVariant.fields[0]!.varType)}>`;
+          return `option(${varTypeToLabel(someVariant.fields[0]!.varType)})`;
         }
       }
-      return `enum<${vt.variants.map((v) => v.name).join(", ")}>`;
+      return `enum(${vt.variants.map((v) => v.name).join(", ")})`;
     case "alias":
       return vt.name;
     case "untyped_list":
-      return "list<>";
+      return "list()";
     case "option":
-      return `option<${varTypeToLabel(vt.innerType)}>`;
+      return `option(${varTypeToLabel(vt.innerType)})`;
   }
 }
 

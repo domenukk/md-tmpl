@@ -20,6 +20,42 @@ import {
   float,
   bool,
 } from "./value.js";
+import {
+  TYPE_STR,
+  TYPE_BOOL,
+  TYPE_INT,
+  TYPE_FLOAT,
+  TYPE_LIST,
+  TYPE_STRUCT,
+  TYPE_ENUM,
+  TYPE_TMPL,
+  TYPE_OPTION,
+  PAREN_OPEN,
+  PAREN_CLOSE,
+  ANGLE_OPEN,
+  ANGLE_CLOSE,
+  BRACKET_OPEN,
+  BRACKET_CLOSE,
+  BRACE_OPEN,
+  BRACE_CLOSE,
+  COMMA,
+  EQUALS,
+  SLASH,
+  PATH_PREFIX_CUR,
+  PATH_PREFIX_PARENT,
+  PATH_PREFIX_CUR_WIN,
+  PATH_PREFIX_PARENT_WIN,
+  QUOTE_DOUBLE,
+  QUOTE_SINGLE,
+  FM_NAME_PREFIX,
+  FM_DESC_PREFIX,
+  FM_PARAMS_PREFIX,
+  FM_TYPES_PREFIX,
+  FM_IMPORTS_PREFIX,
+  FM_CONSTS_PREFIX,
+  FM_ALLOW_UNUSED_PREFIX,
+  ERR_COMPOUND_BRACKETS_PROHIBITED,
+} from "./consts.js";
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -87,38 +123,38 @@ export interface ImportDecl {
 /** Format a VarType as a string (for declarations output). */
 export function varTypeToString(vt: VarType): string {
   switch (vt.kind) {
-    case "str":
-    case "bool":
-    case "int":
-    case "float":
+    case TYPE_STR:
+    case TYPE_BOOL:
+    case TYPE_INT:
+    case TYPE_FLOAT:
       return vt.kind;
-    case "list":
-      if (vt.fields.length === 0) return "list<>";
-      return `list<${vt.fields.map((f) => `${f.name} = ${varTypeToString(f.varType)}`).join(", ")}>`;
+    case TYPE_LIST:
+      if (vt.fields.length === 0) return "list()";
+      return `list(${vt.fields.map((f) => `${f.name} = ${varTypeToString(f.varType)}`).join(", ")})`;
     case "scalar_list":
-      return `list<${varTypeToString(vt.elementType)}>`;
-    case "struct":
-      if (vt.fields.length === 0) return "struct<>";
-      return `struct<${vt.fields.map((f) => `${f.name} = ${varTypeToString(f.varType)}`).join(", ")}>`;
-    case "enum": {
+      return `list(${varTypeToString(vt.elementType)})`;
+    case TYPE_STRUCT:
+      if (vt.fields.length === 0) return "struct()";
+      return `struct(${vt.fields.map((f) => `${f.name} = ${varTypeToString(f.varType)}`).join(", ")})`;
+    case TYPE_ENUM: {
       if (vt.isOption) {
         const someVariant = vt.variants.find((v) => v.name === "Some");
         if (someVariant && someVariant.fields.length === 1) {
-          return `option<${varTypeToString(someVariant.fields[0]!.varType)}>`;
+          return `option(${varTypeToString(someVariant.fields[0]!.varType)})`;
         }
       }
       const parts = vt.variants.map((v) => {
         if (v.fields.length === 0) return v.name;
         return `${v.name}(${v.fields.map((f) => `${f.name} = ${varTypeToString(f.varType)}`).join(", ")})`;
       });
-      return `enum<${parts.join(", ")}>`;
+      return `enum(${parts.join(", ")})`;
     }
-    case "option":
-      return `option<${varTypeToString(vt.innerType)}>`;
+    case TYPE_OPTION:
+      return `option(${varTypeToString(vt.innerType)})`;
     case "alias":
       return vt.name;
     case "untyped_list":
-      return "list<>";
+      return "list()";
   }
 }
 
@@ -194,13 +230,13 @@ function parseFrontmatterYaml(lines: string[]): Frontmatter {
       continue;
     }
     const startsWithSection =
-      trimmed.startsWith("name:") ||
-      trimmed.startsWith("description:") ||
-      trimmed.startsWith("types:") ||
-      trimmed.startsWith("imports:") ||
-      trimmed.startsWith("params:") ||
-      trimmed.startsWith("consts:") ||
-      trimmed.startsWith("allow_unused:");
+      trimmed.startsWith(FM_NAME_PREFIX) ||
+      trimmed.startsWith(FM_DESC_PREFIX) ||
+      trimmed.startsWith(FM_TYPES_PREFIX) ||
+      trimmed.startsWith(FM_IMPORTS_PREFIX) ||
+      trimmed.startsWith(FM_PARAMS_PREFIX) ||
+      trimmed.startsWith(FM_CONSTS_PREFIX) ||
+      trimmed.startsWith(FM_ALLOW_UNUSED_PREFIX);
 
     if (startsWithSection) {
       if (inBlockList && !hadBlankLine) {
@@ -235,48 +271,49 @@ function parseFrontmatterYaml(lines: string[]): Frontmatter {
     if (trimmed === "" || trimmed.startsWith("#")) continue;
 
     // Top-level keys
-    if (trimmed.startsWith("name:")) {
+    if (trimmed.startsWith(FM_NAME_PREFIX)) {
       name = trimmed
-        .slice(5)
+        .slice(FM_NAME_PREFIX.length)
         .trim()
         .replace(/^["']|["']$/g, "");
       currentBlock = "none";
       continue;
     }
-    if (trimmed.startsWith("description:")) {
+    if (trimmed.startsWith(FM_DESC_PREFIX)) {
       description = trimmed
-        .slice(12)
+        .slice(FM_DESC_PREFIX.length)
         .trim()
         .replace(/^["']|["']$/g, "");
       currentBlock = "none";
       continue;
     }
-    if (trimmed.startsWith("allow_unused:")) {
-      allowUnused = trimmed.slice(13).trim() === "true";
+    if (trimmed.startsWith(FM_ALLOW_UNUSED_PREFIX)) {
+      allowUnused =
+        trimmed.slice(FM_ALLOW_UNUSED_PREFIX.length).trim() === "true";
       currentBlock = "none";
       continue;
     }
 
     // Block starts
-    if (trimmed.startsWith("params:")) {
+    if (trimmed.startsWith(FM_PARAMS_PREFIX)) {
       currentBlock = "params";
       // Inline params: [x = str, y = int]
-      const rest = trimmed.slice(7).trim();
+      const rest = trimmed.slice(FM_PARAMS_PREFIX.length).trim();
       if (rest.startsWith("[")) {
         inlineParamsRaw = parseInlineList(rest);
         currentBlock = "none";
       }
       continue;
     }
-    if (trimmed.startsWith("types:")) {
+    if (trimmed.startsWith(FM_TYPES_PREFIX)) {
       currentBlock = "types";
       continue;
     }
-    if (trimmed.startsWith("consts:")) {
+    if (trimmed.startsWith(FM_CONSTS_PREFIX)) {
       currentBlock = "consts";
       continue;
     }
-    if (trimmed.startsWith("imports:")) {
+    if (trimmed.startsWith(FM_IMPORTS_PREFIX)) {
       currentBlock = "imports";
       continue;
     }
@@ -366,21 +403,47 @@ function parseFrontmatterYaml(lines: string[]): Frontmatter {
  * `param = int := MY_CONST` where `MY_CONST` is a previously
  * declared constant.
  */
+export function stripStringLiteral(s: string): string {
+  const trimmed = s.trim();
+  if (
+    (trimmed.startsWith(QUOTE_DOUBLE) &&
+      trimmed.endsWith(QUOTE_DOUBLE) &&
+      trimmed.length >= 2) ||
+    (trimmed.startsWith(QUOTE_SINGLE) &&
+      trimmed.endsWith(QUOTE_SINGLE) &&
+      trimmed.length >= 2)
+  ) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+export function isValidPathPrefix(path: string): boolean {
+  return (
+    path.startsWith(PATH_PREFIX_CUR) ||
+    path.startsWith(PATH_PREFIX_PARENT) ||
+    path.startsWith(PATH_PREFIX_CUR_WIN) ||
+    path.startsWith(PATH_PREFIX_PARENT_WIN) ||
+    path.startsWith(SLASH)
+  );
+}
+
 function parseParamDecl(
   raw: string,
   constValues?: ReadonlyMap<string, Value>,
 ): VarDecl {
-  const defaultSplit = splitDefault(raw);
+  const cleaned = stripStringLiteral(raw);
+  const defaultSplit = splitDefault(cleaned);
   const [nameType, defaultLiteral] = defaultSplit;
 
-  const eqIdx = nameType!.indexOf("=");
+  const eqIdx = nameType!.indexOf(EQUALS);
   if (eqIdx === -1) {
     throw new TemplateSyntaxError(
       `parameter must have explicit type: '${raw}'`,
     );
   }
 
-  const name = nameType!.slice(0, eqIdx).trim();
+  const name = stripStringLiteral(nameType!.slice(0, eqIdx).trim());
   const typeStr = nameType!.slice(eqIdx + 1).trim();
 
   const varType = parseVarType(typeStr);
@@ -404,17 +467,18 @@ function parseParamDeclDeferred(
   raw: string,
   constValues?: ReadonlyMap<string, Value>,
 ): [VarDecl, { text: string; varType: VarType } | undefined] {
-  const defaultSplit = splitDefault(raw);
+  const cleaned = stripStringLiteral(raw);
+  const defaultSplit = splitDefault(cleaned);
   const [nameType, defaultLiteral] = defaultSplit;
 
-  const eqIdx = nameType!.indexOf("=");
+  const eqIdx = nameType!.indexOf(EQUALS);
   if (eqIdx === -1) {
     throw new TemplateSyntaxError(
       `parameter must have explicit type: '${raw}'`,
     );
   }
 
-  const name = nameType!.slice(0, eqIdx).trim();
+  const name = stripStringLiteral(nameType!.slice(0, eqIdx).trim());
   const typeStr = nameType!.slice(eqIdx + 1).trim();
 
   const varType = parseVarType(typeStr);
@@ -455,14 +519,15 @@ function parseParamDeclDeferred(
 
 /** Parse `Name = type` for type aliases. */
 function parseTypeAlias(raw: string): [string, VarType] {
-  const eqIdx = raw.indexOf("=");
+  const cleaned = stripStringLiteral(raw);
+  const eqIdx = cleaned.indexOf(EQUALS);
   if (eqIdx === -1) {
     throw new TemplateSyntaxError(
       `type alias must have form 'Name = type': '${raw}'`,
     );
   }
-  const name = raw.slice(0, eqIdx).trim();
-  const typeStr = raw.slice(eqIdx + 1).trim();
+  const name = stripStringLiteral(cleaned.slice(0, eqIdx).trim());
+  const typeStr = cleaned.slice(eqIdx + 1).trim();
   return [name, parseVarType(typeStr)];
 }
 
@@ -473,15 +538,21 @@ function parseConstDecl(raw: string): VarDecl {
 
 /** Parse `"[stem](path.tmpl.md)"` for imports. */
 function parseImportDecl(raw: string): ImportDecl {
-  // Remove surrounding quotes
-  const unquoted = raw.replace(/^["']|["']$/g, "");
+  const unquoted = stripStringLiteral(raw);
   const match = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(unquoted);
   if (!match || !match[1] || !match[2]) {
     throw new TemplateSyntaxError(
       `import must be in format "[stem](path.tmpl.md)": '${raw}'`,
     );
   }
-  return { stem: match[1], path: match[2] };
+  const stem = match[1];
+  const path = match[2].trim();
+  if (!isValidPathPrefix(path)) {
+    throw new TemplateSyntaxError(
+      `import path must begin with './', '../', or '/': '${path}'`,
+    );
+  }
+  return { stem, path };
 }
 
 // ---------------------------------------------------------------------------
@@ -489,47 +560,61 @@ function parseImportDecl(raw: string): ImportDecl {
 // ---------------------------------------------------------------------------
 
 /** Parse a type annotation string into a VarType. */
+function startsWithCompoundType(s: string, keyword: string): boolean {
+  if (!s.startsWith(keyword)) return false;
+  const rest = s.slice(keyword.length).trimStart();
+  if (rest.startsWith(ANGLE_OPEN) || rest.startsWith(BRACKET_OPEN)) {
+    throw new TemplateSyntaxError(
+      `compound type '${keyword}': ${ERR_COMPOUND_BRACKETS_PROHIBITED}`,
+    );
+  }
+  return rest.startsWith(PAREN_OPEN);
+}
+
 export function parseVarType(typeStr: string): VarType {
-  const t = typeStr.trim();
+  const t = stripStringLiteral(typeStr);
 
-  if (t === "str") return { kind: "str" };
-  if (t === "bool") return { kind: "bool" };
-  if (t === "int") return { kind: "int" };
-  if (t === "float") return { kind: "float" };
+  if (t === TYPE_STR) return { kind: "str" };
+  if (t === TYPE_BOOL) return { kind: "bool" };
+  if (t === TYPE_INT) return { kind: "int" };
+  if (t === TYPE_FLOAT) return { kind: "float" };
 
-  if (t.startsWith("list<")) {
-    const inner = extractAngleBrackets(t, "list");
+  if (startsWithCompoundType(t, TYPE_LIST)) {
+    const inner = stripTypeBrackets(t, TYPE_LIST);
     if (inner === "") {
       throw new TemplateSyntaxError(
-        "untyped list<> is not allowed; must specify element type or fields (e.g., list<str> or list<name = str>)",
+        "untyped list() is not allowed; must specify element type or fields (e.g., list(str) or list(name = str))",
       );
     }
-    // Check if it's a simple type list (list<str>) or structured (list<name = str>)
-    // We must check for `=` at the top level only, not inside nested <> brackets.
-    const topItems = splitTopLevel(inner, ",");
+    // Reject literal raw struct declarations inside list definitions (e.g. list(struct(name = str, count = int))).
+    // Users should write named fields directly (e.g. list(name = str, count = int)) or reference a strong Type alias.
+    const topItems = splitTopLevel(inner, COMMA);
     const hasTopLevelEquals = topItems.some(
       (item) =>
-        item.indexOf("=") !== -1 &&
-        !item.trim().startsWith("struct<") &&
-        !item.trim().startsWith("enum<") &&
-        !item.trim().startsWith("list<") &&
-        !item.trim().startsWith("tmpl<"),
+        item.indexOf(EQUALS) !== -1 &&
+        !startsWithCompoundType(item.trim(), TYPE_STRUCT) &&
+        !startsWithCompoundType(item.trim(), TYPE_ENUM) &&
+        !startsWithCompoundType(item.trim(), TYPE_LIST) &&
+        !startsWithCompoundType(item.trim(), TYPE_TMPL),
     );
     if (!hasTopLevelEquals) {
       if (topItems.length > 1) {
         throw new TemplateSyntaxError(
-          "list with multiple fields must use named fields (e.g. list<name = str, count = int>)",
+          "list with multiple fields must use named fields (e.g. list(name = str, count = int))",
         );
       }
-      // Simple type list like list<str>, list<int>, list<enum<A, B>>, list<MyStruct>
+      // Simple type list like list(str), list(int), list(enum(A, B)), list(MyStruct)
       const innerTrimmed = inner.trim();
-      if (innerTrimmed.startsWith("struct<") || innerTrimmed.startsWith("struct ")) {
+      if (
+        startsWithCompoundType(innerTrimmed, TYPE_STRUCT) ||
+        innerTrimmed.startsWith(TYPE_STRUCT + " ")
+      ) {
         throw new TemplateSyntaxError(
-          "list<struct<...>> is redundant; use named fields directly: list<name = str, count = int>",
+          "list(struct(...)) is redundant; use named fields directly: list(name = str, count = int)",
         );
       }
-      const elementType = parseVarType(inner);
-      if (elementType.kind === "struct") {
+      const elementType = parseVarType(innerTrimmed);
+      if (elementType.kind === TYPE_STRUCT) {
         return { kind: "list", fields: elementType.fields };
       }
       return { kind: "scalar_list", elementType };
@@ -538,37 +623,37 @@ export function parseVarType(typeStr: string): VarType {
     return { kind: "list", fields };
   }
 
-  if (t.startsWith("struct<")) {
-    const inner = extractAngleBrackets(t, "struct");
+  if (startsWithCompoundType(t, TYPE_STRUCT)) {
+    const inner = stripTypeBrackets(t, TYPE_STRUCT);
     if (inner === "") {
       throw new TemplateSyntaxError(
-        "untyped struct<> is not allowed; must specify fields (e.g., struct<name = str>)",
+        "untyped struct() is not allowed; must specify fields (e.g., struct(name = str))",
       );
     }
     const fields = parseFieldList(inner);
     return { kind: "struct", fields };
   }
 
-  if (t.startsWith("option<")) {
-    const inner = extractAngleBrackets(t, "option");
+  if (startsWithCompoundType(t, TYPE_OPTION)) {
+    const inner = stripTypeBrackets(t, TYPE_OPTION);
     const innerType = parseVarType(inner);
     return { kind: "option", innerType };
   }
 
-  if (t.startsWith("enum<")) {
-    const inner = extractAngleBrackets(t, "enum");
+  if (startsWithCompoundType(t, TYPE_ENUM)) {
+    const inner = stripTypeBrackets(t, TYPE_ENUM);
     const variants = parseVariantList(inner);
     // Reject variant names that shadow builtin type keywords.
     const RESERVED_TYPE_KEYWORDS = [
-      "str",
-      "bool",
-      "int",
-      "float",
-      "list",
-      "struct",
-      "enum",
-      "tmpl",
-      "option",
+      TYPE_STR,
+      TYPE_INT,
+      TYPE_FLOAT,
+      TYPE_BOOL,
+      TYPE_LIST,
+      TYPE_STRUCT,
+      TYPE_ENUM,
+      TYPE_OPTION,
+      TYPE_TMPL,
     ];
     for (const v of variants) {
       if (RESERVED_TYPE_KEYWORDS.includes(v.name)) {
@@ -580,8 +665,8 @@ export function parseVarType(typeStr: string): VarType {
     return { kind: "enum", variants };
   }
 
-  if (t.startsWith("tmpl<")) {
-    const inner = extractAngleBrackets(t, "tmpl");
+  if (startsWithCompoundType(t, TYPE_TMPL)) {
+    const inner = stripTypeBrackets(t, TYPE_TMPL);
     if (inner === "") return { kind: "struct", fields: [] };
     const fields = parseFieldList(inner);
     return { kind: "struct", fields };
@@ -591,32 +676,43 @@ export function parseVarType(typeStr: string): VarType {
   return { kind: "alias", name: t };
 }
 
-/** Extract content between angle brackets: `list<...>` → `...`. */
-function extractAngleBrackets(s: string, prefix: string): string {
-  const start = prefix.length + 1; // skip "prefix<"
-  // Find matching closing >
+/** Extract content between parentheses: `list(...)` → `...`. */
+function stripTypeBrackets(s: string, keyword: string): string {
+  const keywordIdx = s.indexOf(keyword);
+  if (keywordIdx === -1) return "";
+  let openIdx = -1;
+  for (let i = keywordIdx + keyword.length; i < s.length; i++) {
+    const ch = s[i]!;
+    if (ch === PAREN_OPEN) {
+      openIdx = i;
+      break;
+    }
+    if (ch !== " " && ch !== "\t") break;
+  }
+  if (openIdx === -1) return "";
+
   let depth = 1;
-  let i = start;
+  let i = openIdx + 1;
   while (i < s.length && depth > 0) {
-    if (s[i] === "<") depth++;
-    else if (s[i] === ">") depth--;
+    if (s[i] === PAREN_OPEN) depth++;
+    else if (s[i] === PAREN_CLOSE) depth--;
     i++;
   }
-  return s.slice(start, i - 1).trim();
+  return s.slice(openIdx + 1, i - 1).trim();
 }
 
 /** Parse a comma-separated field list: `name = str, score = int`. */
 function parseFieldList(inner: string): VarDecl[] {
-  const items = splitTopLevel(inner, ",");
+  const items = splitTopLevel(inner, COMMA);
   return items.map((item) => {
-    const trimmed = item.trim();
-    const eqIdx = trimmed.indexOf("=");
+    const trimmed = stripStringLiteral(item);
+    const eqIdx = trimmed.indexOf(EQUALS);
     if (eqIdx === -1) {
       throw new TemplateSyntaxError(
         `field must have form 'name = type': '${trimmed}'`,
       );
     }
-    const name = trimmed.slice(0, eqIdx).trim();
+    const name = stripStringLiteral(trimmed.slice(0, eqIdx).trim());
     const typeStr = trimmed.slice(eqIdx + 1).trim();
     return { name, varType: parseVarType(typeStr) };
   });
@@ -624,14 +720,14 @@ function parseFieldList(inner: string): VarDecl[] {
 
 /** Parse a comma-separated variant list: `Confirmed(evidence = str), Rejected`. */
 function parseVariantList(inner: string): VariantDecl[] {
-  const items = splitTopLevel(inner, ",");
+  const items = splitTopLevel(inner, COMMA);
   return items.map((item) => {
-    const trimmed = item.trim();
+    const trimmed = stripStringLiteral(item);
     const parenIdx = trimmed.indexOf("(");
     if (parenIdx === -1) {
       return { name: trimmed, fields: [] };
     }
-    const name = trimmed.slice(0, parenIdx).trim();
+    const name = stripStringLiteral(trimmed.slice(0, parenIdx).trim());
     const fieldsStr = trimmed.slice(parenIdx + 1, -1).trim();
     const fields = parseFieldList(fieldsStr);
     return { name, fields };
@@ -648,10 +744,20 @@ function splitTopLevel(s: string, delimiter: string): string[] {
 
   for (let i = 0; i < s.length; i++) {
     const ch = s[i]!;
-    if (ch === "<" || ch === "(" || ch === "{") {
+    if (
+      ch === ANGLE_OPEN ||
+      ch === PAREN_OPEN ||
+      ch === BRACE_OPEN ||
+      ch === BRACKET_OPEN
+    ) {
       depth++;
       current += ch;
-    } else if (ch === ">" || ch === ")" || ch === "}") {
+    } else if (
+      ch === ANGLE_CLOSE ||
+      ch === PAREN_CLOSE ||
+      ch === BRACE_CLOSE ||
+      ch === BRACKET_CLOSE
+    ) {
       depth--;
       current += ch;
     } else if (ch === delimiter && depth === 0) {
@@ -670,12 +776,12 @@ function splitTopLevel(s: string, delimiter: string): string[] {
 /** Parse inline list like `[x = str, y = int]`. */
 function parseInlineList(s: string): string[] {
   const trimmed = s.trim();
-  if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) {
+  if (!trimmed.startsWith(BRACKET_OPEN) || !trimmed.endsWith(BRACKET_CLOSE)) {
     throw new TemplateSyntaxError(`expected inline list: ${s}`);
   }
   const inner = trimmed.slice(1, -1).trim();
   if (inner === "") return [];
-  return splitTopLevel(inner, ",");
+  return splitTopLevel(inner, COMMA);
 }
 
 /** Split `name = type := default` into `["name = type", "default"]`. */
@@ -738,14 +844,14 @@ function validateConstDefaultType(
     const expected = typeMap[expectedKind]!;
     if (constVal.type !== expected) {
       // Allow int → float promotion.
-      if (expected === "float" && constVal.type === "int") return;
+      if (expected === TYPE_FLOAT && constVal.type === TYPE_INT) return;
       throw new TemplateSyntaxError(
         `const '${constName}' has type '${constVal.type}' but param expects '${expected}'`,
       );
     }
   }
-  // For option<T>, validate against the inner type (const can't be None).
-  if (expectedKind === "option") {
+  // For option(T), validate against the inner type (const can't be None).
+  if (expectedKind === TYPE_OPTION) {
     validateConstDefaultType(
       constName,
       constVal,
@@ -759,7 +865,7 @@ export function parseLiteral(literal: string, varType: VarType): Value {
   // Option types need to be checked first so that quoted strings like
   // "None" are correctly parsed as Some(val="None") rather than being
   // consumed by the generic string literal handler as str("None").
-  if (varType.kind === "option") {
+  if (varType.kind === TYPE_OPTION) {
     // Bare None → Value.None
     if (literal === "None") {
       return NONE;
@@ -769,7 +875,7 @@ export function parseLiteral(literal: string, varType: VarType): Value {
   }
 
   // Legacy isOption handling (for backward compatibility with old enum-based options)
-  if (varType.kind === "enum" && varType.isOption) {
+  if (varType.kind === TYPE_ENUM && varType.isOption) {
     if (literal === "None") {
       return NONE;
     }
@@ -781,8 +887,8 @@ export function parseLiteral(literal: string, varType: VarType): Value {
 
   // String literals
   if (
-    (literal.startsWith('"') && literal.endsWith('"')) ||
-    (literal.startsWith("'") && literal.endsWith("'"))
+    (literal.startsWith(QUOTE_DOUBLE) && literal.endsWith(QUOTE_DOUBLE)) ||
+    (literal.startsWith(QUOTE_SINGLE) && literal.endsWith(QUOTE_SINGLE))
   ) {
     return str(literal.slice(1, -1));
   }
@@ -792,14 +898,14 @@ export function parseLiteral(literal: string, varType: VarType): Value {
   if (literal === "false") return bool(false);
 
   // Struct literals: {KEY = "val", KEY2 = 42}
-  if (varType.kind === "struct" && literal.startsWith("{")) {
+  if (varType.kind === TYPE_STRUCT && literal.startsWith(BRACE_OPEN)) {
     return parseStructLiteral(literal, varType);
   }
 
   // Integer
   if (
-    varType.kind === "int" ||
-    (varType.kind !== "float" && /^-?\d+$/.test(literal))
+    varType.kind === TYPE_INT ||
+    (varType.kind !== TYPE_FLOAT && /^-?\d+$/.test(literal))
   ) {
     const n = parseInt(literal, 10);
     if (!isNaN(n)) return int(n);
@@ -810,10 +916,10 @@ export function parseLiteral(literal: string, varType: VarType): Value {
   if (!isNaN(f)) return float(f);
 
   // If the expected type is an Enum, validate variant identifiers.
-  if (varType.kind === "enum") {
+  if (varType.kind === TYPE_ENUM) {
     // Check for struct variant default: VariantName(field = value, ...)
-    const openParen = literal.indexOf("(");
-    if (openParen !== -1 && literal.endsWith(")")) {
+    const openParen = literal.indexOf(PAREN_OPEN);
+    if (openParen !== -1 && literal.endsWith(PAREN_CLOSE)) {
       const variantName = literal.slice(0, openParen).trim();
       const innerFields = literal.slice(openParen + 1, -1).trim();
       const variant = varType.variants.find((v) => v.name === variantName);
@@ -826,7 +932,7 @@ export function parseLiteral(literal: string, varType: VarType): Value {
         );
       }
       // Parse field values and build a tagged dict.
-      const fieldEntries = splitTopLevel(innerFields, ",");
+      const fieldEntries = splitTopLevel(innerFields, COMMA);
       const entries: [string, Value][] = [[ENUM_TAG_KEY, str(variantName)]];
       // Build a lookup for field types.
       const fieldTypeMap = new Map<string, VarType>();
@@ -836,7 +942,7 @@ export function parseLiteral(literal: string, varType: VarType): Value {
       for (const entry of fieldEntries) {
         const trimmedEntry = entry.trim();
         if (trimmedEntry === "") continue;
-        const eqPos = trimmedEntry.indexOf("=");
+        const eqPos = trimmedEntry.indexOf(EQUALS);
         if (eqPos === -1) continue;
         const key = trimmedEntry.slice(0, eqPos).trim();
         const valStr = trimmedEntry.slice(eqPos + 1).trim();
@@ -891,10 +997,10 @@ function parseStructLiteral(
 
   const entries: [string, Value][] = [];
   // Split top-level by comma, respecting nested brackets/quotes
-  const pairs = splitTopLevel(inner, ",");
+  const pairs = splitTopLevel(inner, COMMA);
   for (const pair of pairs) {
     const trimmed = pair.trim();
-    const eqIdx = trimmed.indexOf("=");
+    const eqIdx = trimmed.indexOf(EQUALS);
     if (eqIdx === -1) continue;
     const key = trimmed.slice(0, eqIdx).trim();
     const valStr = trimmed.slice(eqIdx + 1).trim();

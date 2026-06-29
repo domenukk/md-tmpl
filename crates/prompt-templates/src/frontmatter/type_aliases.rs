@@ -1,6 +1,6 @@
 //! Type alias parsing for frontmatter `types:` blocks.
 //!
-//! Parses declarations like `types: [Priority = enum<High, Medium, Low>]`
+//! Parses declarations like `types: [Priority = enum(High, Medium, Low)]`
 //! into a map of alias name → [`VarType`].
 //!
 //! Uses `=` as the separator between alias name and type expression,
@@ -16,7 +16,7 @@ use crate::{compat::HashMap, error::TemplateError, types::VarType};
 
 /// Parse the value part after `types:` into a map of alias name → [`VarType`].
 ///
-/// Format: `[Priority = enum<High, Medium, Low>, Items = list<text = str>]`
+/// Format: `[Priority = enum(High, Medium, Low), Items = list(text = str)]`
 /// or block list format similar to `params:`. Uses `=` as separator.
 pub(crate) fn parse_types_value(rest: &str) -> Result<HashMap<String, VarType>, TemplateError> {
     let rest = rest.trim();
@@ -25,8 +25,8 @@ pub(crate) fn parse_types_value(rest: &str) -> Result<HashMap<String, VarType>, 
     }
 
     let inner = rest
-        .strip_prefix('[')
-        .and_then(|s| s.strip_suffix(']'))
+        .strip_prefix(crate::consts::BRACKET_OPEN)
+        .and_then(|s| s.strip_suffix(crate::consts::BRACKET_CLOSE))
         .unwrap_or(rest);
 
     let entries = split_type_entries(inner);
@@ -34,20 +34,17 @@ pub(crate) fn parse_types_value(rest: &str) -> Result<HashMap<String, VarType>, 
     let empty_imports = HashMap::new();
 
     for entry in &entries {
-        let mut trimmed = entry.trim().strip_prefix('-').unwrap_or(entry).trim();
-        if (trimmed.starts_with('"') && trimmed.ends_with('"'))
-            || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
-        {
-            if trimmed.len() >= 2 {
-                trimmed = &trimmed[1..trimmed.len() - 1];
-            }
-        }
-        trimmed = trimmed.trim();
+        let e = entry
+            .trim()
+            .strip_prefix(crate::consts::TRIM_MARKER)
+            .unwrap_or(entry)
+            .trim();
+        let trimmed = crate::consts::strip_string_literal(e).unwrap_or(e).trim();
         if trimmed.is_empty() {
             continue;
         }
 
-        let Some(eq_pos) = find_char_at_depth_zero(trimmed, '=') else {
+        let Some(eq_pos) = find_char_at_depth_zero(trimmed, crate::consts::EQUALS) else {
             return Err(TemplateError::syntax(format!(
                 "type entry '{trimmed}' is missing a type definition (expected 'Name = TypeExpr')"
             )));
@@ -91,7 +88,11 @@ fn split_type_entries(input: &str) -> Vec<String> {
     if input.contains(" - ") || input.starts_with("- ") {
         let mut result = Vec::new();
         for part in input.split(" - ") {
-            let part = part.trim().strip_prefix('-').unwrap_or(part).trim();
+            let part = part
+                .trim()
+                .strip_prefix(crate::consts::TRIM_MARKER)
+                .unwrap_or(part)
+                .trim();
             if !part.is_empty() {
                 result.push(part.to_string());
             }
@@ -113,14 +114,14 @@ mod tests {
 
     #[test]
     fn list_type_alias() {
-        let aliases = parse_types_value("[TaskList = list<title = str, score = int>]").unwrap();
+        let aliases = parse_types_value("[TaskList = list(title = str, score = int)]").unwrap();
         assert!(aliases.contains_key("TaskList"));
         assert!(matches!(aliases["TaskList"], VarType::List(_)));
     }
 
     #[test]
     fn dict_type_alias() {
-        let aliases = parse_types_value("[Config = struct<timeout = int, retries = int>]").unwrap();
+        let aliases = parse_types_value("[Config = struct(timeout = int, retries = int)]").unwrap();
         assert!(aliases.contains_key("Config"));
         assert!(matches!(aliases["Config"], VarType::Struct(_)));
     }
@@ -128,7 +129,7 @@ mod tests {
     #[test]
     fn chained_alias_enum_inside_list() {
         // Declare Severity enum first, then use it in TaskReport list.
-        let input = "- Severity = enum<High, Medium, Low>\n  - TaskReport = list<title = str, severity = Severity>";
+        let input = "- Severity = enum(High, Medium, Low)\n  - TaskReport = list(title = str, severity = Severity)";
         let aliases = parse_types_value(input).unwrap();
         assert!(aliases.contains_key("Severity"));
         assert!(aliases.contains_key("TaskReport"));
@@ -142,7 +143,7 @@ mod tests {
 
     #[test]
     fn chained_alias_list_inside_dict() {
-        let input = "[Items = list<name = str>, Config = struct<items = Items, version = int>]";
+        let input = "[Items = list(name = str), Config = struct(items = Items, version = int)]";
         let aliases = parse_types_value(input).unwrap();
         assert!(aliases.contains_key("Config"));
         if let VarType::Struct(fields) = &aliases["Config"] {
@@ -155,7 +156,7 @@ mod tests {
 
     #[test]
     fn str_type_alias_rejected_as_builtin_shadow() {
-        let err = parse_types_value("[str = enum<A, B>]").unwrap_err();
+        let err = parse_types_value("[str = enum(A, B)]").unwrap_err();
         assert!(
             err.to_string().contains("shadow") || err.to_string().contains("builtin"),
             "shadowing builtin should error: {err}"

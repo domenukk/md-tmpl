@@ -71,7 +71,7 @@ params:
 
 const LIST_SRC = `---
 params:
-  - tasks = list<title = str, priority = str>
+  - tasks = list(title = str, priority = str)
 ---
 > {% for task in tasks %}
 
@@ -81,7 +81,7 @@ params:
 
 const ENUM_SRC = `---
 params:
-  - outcome = enum<Confirmed(evidence = str), Rejected, NeedsWork>
+  - outcome = enum(Confirmed(evidence = str), Rejected, NeedsWork)
 ---
 > {% match outcome %}
 
@@ -101,7 +101,7 @@ MAYBE
 
 const FILTER_SRC = `---
 params:
-  - items = list<label = str>
+  - items = list(label = str)
 ---
 > {% for item in items %}
 

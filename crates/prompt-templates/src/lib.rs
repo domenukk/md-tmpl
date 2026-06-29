@@ -128,7 +128,7 @@ pub use value::{Value, ValueTypeError};
 /// let tmpl = Template::from_source(
 ///     "\
 /// ---
-/// params: [items = list<label = str>]
+/// params: [items = list(label = str)]
 /// ---
 /// > {% for item in items %}
 ///

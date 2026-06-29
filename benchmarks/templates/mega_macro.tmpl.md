@@ -1,7 +1,7 @@
 ---
 params:
   - org = str
-  - teams = list<name = str, lead = str, active = bool, idx = int, members = list<name = str, role = str, score = float, skills = list<name = str>>>
+  - teams = list(name = str, lead = str, active = bool, idx = int, members = list(name = str, role = str, score = float, skills = list(name = str)))
 ---
 
 # {{ org }} Organization Report

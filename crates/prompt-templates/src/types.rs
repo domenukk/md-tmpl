@@ -20,15 +20,15 @@ pub enum VarType {
     Int,
     /// `float` — expects a floating-point value.
     Float,
-    /// `list<field = type, ...>` — required fields per item.
+    /// `list(field = type, ...)` — required fields per item.
     List(Vec<VarDecl>),
-    /// `struct<field = type, ...>` — required fields.
+    /// `struct(field = type, ...)` — required fields.
     Struct(Vec<VarDecl>),
-    /// `enum<Option1, Option2, ...>` — expects one of these variants.
+    /// `enum(Option1, Option2, ...)` — expects one of these variants.
     Enum(Vec<VariantDecl>),
-    /// `tmpl<field = type, ...>` — expects a template with matching params.
+    /// `tmpl(field = type, ...)` — expects a template with matching params.
     Tmpl(Vec<VarDecl>),
-    /// `option<T>` — syntactic sugar for `enum<Some(val = T), None>`.
+    /// `option(T)` — syntactic sugar for `enum(Some(val = T), None)`.
     /// Accepts `Value::None` or the inner `T` type directly.
     Option(Box<VarType>),
 }
@@ -58,17 +58,17 @@ impl fmt::Display for VarType {
             Self::List(fields) => {
                 f.write_str(crate::consts::TYPE_LIST_PREFIX)?;
                 fmt_fields(fields, f)?;
-                write!(f, ">")
+                write!(f, ")")
             }
             Self::Struct(fields) => {
                 f.write_str(crate::consts::TYPE_STRUCT_PREFIX)?;
                 fmt_fields(fields, f)?;
-                write!(f, ">")
+                write!(f, ")")
             }
             Self::Enum(variants) => {
-                // Detect desugared option<T> pattern and display as `option<T>`.
+                // Detect desugared option(T) pattern and display as `option(T)`.
                 if let Some(inner_ty) = Self::detect_option_inner(variants) {
-                    write!(f, "option<{inner_ty}>")
+                    write!(f, "{}{inner_ty})", crate::consts::TYPE_OPTION_PREFIX)
                 } else {
                     f.write_str(crate::consts::TYPE_ENUM_PREFIX)?;
                     for (i, var) in variants.iter().enumerate() {
@@ -82,15 +82,15 @@ impl fmt::Display for VarType {
                             write!(f, ")")?;
                         }
                     }
-                    write!(f, ">")
+                    write!(f, ")")
                 }
             }
             Self::Tmpl(fields) => {
-                write!(f, "tmpl<")?;
+                f.write_str(crate::consts::TYPE_TMPL_PREFIX)?;
                 fmt_fields(fields, f)?;
-                write!(f, ">")
+                write!(f, ")")
             }
-            Self::Option(inner) => write!(f, "option<{inner}>"),
+            Self::Option(inner) => write!(f, "{}{inner})", crate::consts::TYPE_OPTION_PREFIX),
         }
     }
 }
@@ -383,7 +383,7 @@ impl VarType {
                         variants.iter().map(|v| v.name.as_str()).collect();
                     Err(TypeCheckError {
                         path,
-                        expected: format!("enum<{}>", variant_names.join(", ")),
+                        expected: format!("enum({})", variant_names.join(", ")),
                         actual: format!("str({s})"),
                         actual_value: s.clone(),
                     })
@@ -589,8 +589,8 @@ impl VarDecl {
 }
 
 impl VarType {
-    /// Returns `true` if this type is an `option<T>`, either as the dedicated
-    /// `Option` variant or the desugared `enum<Some(val = T), None>` form.
+    /// Returns `true` if this type is an `option(T)`, either as the dedicated
+    /// `Option` variant or the desugared `enum(Some(val = T), None)` form.
     #[must_use]
     pub fn is_option(&self) -> bool {
         match self {
@@ -600,7 +600,7 @@ impl VarType {
         }
     }
 
-    /// If this type is `option<T>`, returns the inner `T` type.
+    /// If this type is `option(T)`, returns the inner `T` type.
     #[must_use]
     pub fn option_inner_type(&self) -> Option<&VarType> {
         match self {
@@ -610,7 +610,7 @@ impl VarType {
         }
     }
 
-    /// Detect the `option<T>` pattern: exactly two variants named `Some` and
+    /// Detect the `option(T)` pattern: exactly two variants named `Some` and
     /// `None`, where `Some` has exactly one field named `val` and `None` has
     /// no fields.
     fn detect_option_inner(variants: &[VariantDecl]) -> Option<&VarType> {
@@ -718,7 +718,7 @@ mod tests {
                 default_value: None,
             },
         ]);
-        assert_eq!(var_type.to_string(), "list<name = str, score = int>");
+        assert_eq!(var_type.to_string(), "list(name = str, score = int)");
     }
 
     #[test]
@@ -728,7 +728,7 @@ mod tests {
             var_type: VarType::Str,
             default_value: None,
         }]);
-        assert_eq!(var_type.to_string(), "struct<label = str>");
+        assert_eq!(var_type.to_string(), "struct(label = str)");
     }
 
     // -- matches --
@@ -884,7 +884,7 @@ mod tests {
 
     #[test]
     fn struct_nested_type_checking() {
-        // struct<meta = struct<version = int>>
+        // struct(meta = struct(version = int))
         let var_type = VarType::Struct(vec![VarDecl {
             name: "meta".into(),
             var_type: VarType::Struct(vec![VarDecl {
@@ -939,7 +939,7 @@ mod tests {
         ]);
         assert_eq!(
             var_type.to_string(),
-            "enum<Confirmed(evidence = str), Inconclusive>"
+            "enum(Confirmed(evidence = str), Inconclusive)"
         );
     }
 

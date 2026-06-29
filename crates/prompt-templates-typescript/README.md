@@ -1,24 +1,107 @@
-# prompt-templates for TypeScript
+# prompt-templates
 
-[![CI](https://github.com/domenukk/prompt-templates/actions/workflows/ci.yml/badge.svg)](https://github.com/domenukk/prompt-templates/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/prompt-templates.svg)](https://www.npmjs.com/package/prompt-templates)
 
 Strongly-typed prompt templates for LLMs.
-Templates are markdown files with YAML frontmatter declaring typed
-parameters — every variable, list shape, and enum variant is validated
-before rendering.
 
-A [WASM backend](../prompt-templates-wasm/README.md) wrapping the full
-Rust engine is also available for exact feature parity.
+## The Cool Part
+
+Define a prompt as a `.tmpl.md` file — readable markdown with typed frontmatter:
+
+```markdown
+---
+consts:
+  - MAX_RETRIES = int := 3
+types:
+  - Priority = enum(High, Medium, Low)
+params:
+  - role = str
+  - tasks = list(title = str, priority = Priority)
+  - outcome = enum(Confirmed(evidence = str), Rejected)
+---
+
+You are {{ role }}. You have {{ len(tasks) }} tasks:
+
+> {% for task in tasks %}
+
+- **{{ task.title }}** ({{ task.priority | upper }})
+
+> {% /for %}
+
+> {% match outcome %}
+> {% when Confirmed %}
+
+✅ Confirmed — {{ outcome.evidence }}
+
+> {% when Rejected %}
+
+❌ Rejected. Retry up to {{ MAX_RETRIES }} times.
+
+> {% /match %}
+```
+
+Generate TypeScript types from that file, then render with full type safety:
+
+```ts
+import type { Params } from "./generated/agent_task.js";
+import { TypedTemplate, defineVariants, match } from "prompt-templates";
+
+const tmpl = TypedTemplate.fromFile<Params>("prompts/agent_task.tmpl.md");
+
+const Outcome = defineVariants({
+  Confirmed: ["evidence"],
+  Rejected: null,
+});
+
+const result = tmpl.render({
+  role: "a code review agent",
+  tasks: [
+    { title: "Check error handling", priority: "High" },
+    { title: "Verify test coverage", priority: "Medium" },
+  ],
+  outcome: Outcome.Confirmed({ evidence: "All edge cases covered" }),
+});
+
+// Pattern-match the outcome later
+const summary = match(outcome, {
+  Confirmed: (f) => `✅ ${f.evidence}`,
+  Rejected: () => "❌ Needs revision",
+});
+```
+
+The generated types look like this — interfaces, enums, constants, and defaults:
+
+```ts
+export interface TasksItem {
+  readonly title: string;
+  readonly priority: Priority;
+}
+
+export type Priority = "High" | "Medium" | "Low";
+
+export interface Outcome_Confirmed {
+  readonly __kind__: "Confirmed";
+  readonly evidence: string;
+}
+
+export type Outcome = Outcome_Confirmed | "Rejected";
+
+export interface Params {
+  readonly role: string;
+  readonly tasks: readonly TasksItem[];
+  readonly outcome: Outcome;
+}
+
+export const CONSTANTS = {
+  MAX_RETRIES: 3,
+} as const;
+```
 
 ## Why?
 
-Inline template literals are unreadable. Untyped Handlebars/Mustache templates break at runtime.
-`prompt-templates` gives you:
-
-- **Markdown-native** — prompts live in `.tmpl.md` files, readable in any editor or on GitHub.
-- **Strict typing** — every parameter declares a type; `generateTypes()` emits TypeScript interfaces from frontmatter.
-- **Agent-safe** — when an LLM edits prompts, the engine catches drift immediately.
+- **Markdown-native** — prompts live in `.tmpl.md` files, readable in any editor or on GitHub. No embedded strings, no escaping.
+- **Strict typing** — every parameter declares a type; `generateTypes()` emits TypeScript interfaces from frontmatter. Catch errors before deployment, not at 3 AM in production.
+- **Agent-safe** — when an LLM edits prompts, the engine catches drift immediately. Renamed a field? Changed a type? Broke the contract? You'll know before it ships.
 
 ## Installation
 
@@ -26,70 +109,21 @@ Inline template literals are unreadable. Untyped Handlebars/Mustache templates b
 npm install prompt-templates
 ```
 
-## Quick Start
+## Type Generation
 
-### Type-Safe Templates (recommended)
-
-Generate TypeScript interfaces from frontmatter, then use
-`TypedTemplate<P>` for compile-time checked rendering:
-
-**1. Generate types** (build script or CLI):
+`generateTypes()` turns frontmatter into full TypeScript — interfaces, enums, constants, and defaults. Run it as a build step:
 
 ```ts
 import { generateTypesFromFile } from "prompt-templates";
 import * as fs from "node:fs";
 
 fs.writeFileSync(
-  "src/generated/greeting.ts",
-  generateTypesFromFile("prompts/greeting.tmpl.md"),
+  "src/generated/agent_task.ts",
+  generateTypesFromFile("prompts/agent_task.tmpl.md"),
 );
 ```
 
-This produces interfaces like:
-
-```ts
-export interface Params {
-  readonly name: string;
-  readonly count: number;
-}
-```
-
-**2. Use with `TypedTemplate<P>`**:
-
-```ts
-import type { Params } from "./generated/greeting.js";
-import { TypedTemplate } from "prompt-templates";
-
-const tmpl = TypedTemplate.fromFile<Params>("prompts/greeting.tmpl.md");
-
-tmpl.render({ name: "Alice", count: 42 }); // ✅ type-checked
-// tmpl.render({ name: "Alice" });           // ❌ TS error: missing 'count'
-
-tmpl.renderTrusted(params); // validate first call, skip rest — fast path
-```
-
-### Inline Templates
-
-For quick prototyping, parse templates inline:
-
-```ts
-import { Template } from "prompt-templates";
-
-const tmpl = Template.fromSource(`---
-params:
-  - name = str
-  - role = str
----
-You are {{ role }}. Hello {{ name }}!`);
-
-console.log(tmpl.render({ name: "Alice", role: "an AI assistant" }));
-// → "You are an AI assistant. Hello Alice!"
-```
-
-## Type Generation
-
-`generateTypes()` turns frontmatter into full TypeScript — interfaces,
-enums, constants, and defaults:
+Or generate from a raw source string:
 
 ```ts
 import { generateTypes } from "prompt-templates";
@@ -100,49 +134,20 @@ consts:
 params:
   - message = str
   - level = int := 1
-  - tasks = list<title = str, priority = str>
-  - outcome = enum<Confirmed(evidence = str), Rejected>
+  - tasks = list(title = str, priority = str)
+  - outcome = enum(Confirmed(evidence = str), Rejected)
 ---
 {{ message }}`);
 ```
 
-Output:
-
-```ts
-export interface TasksItem {
-  readonly title: string;
-  readonly priority: string;
-}
-
-export interface Outcome_Confirmed {
-  readonly __kind__: "Confirmed";
-  readonly evidence: string;
-}
-
-export type Outcome = Outcome_Confirmed | "Rejected";
-
-export interface Params {
-  readonly message: string;
-  readonly level?: number;
-  readonly tasks: readonly TasksItem[];
-  readonly outcome: Outcome;
-}
-
-export const CONSTANTS = {
-  MAX_RETRIES: 3,
-} as const;
-
-export const DEFAULTS: Partial<Params> = {
-  level: 1,
-};
-```
+Output includes `Params`, item interfaces, enum unions, `CONSTANTS`, and `DEFAULTS` — ready to import.
 
 ## Enum Dispatch
 
-`defineVariants` creates type-safe enum constructors with pattern matching:
+`defineVariants` creates type-safe enum constructors. `match` gives you exhaustive pattern matching. `isVariant` is a type guard.
 
 ```ts
-import { defineVariants, match, isVariant, Template } from "prompt-templates";
+import { defineVariants, match, isVariant } from "prompt-templates";
 
 const Status = defineVariants({
   Done: ["summary"],
@@ -150,9 +155,10 @@ const Status = defineVariants({
   Blocked: ["reason"],
 });
 
-tmpl.render({ status: Status.Done({ summary: "All tests pass" }) });
+// Construct
+const status = Status.Done({ summary: "All tests pass" });
 
-// Pattern matching — exhaustive over all variants
+// Pattern match — exhaustive over all variants
 const msg = match(status, {
   Done: (f) => `✅ ${f.summary}`,
   InProgress: () => "🔄 Working...",
@@ -178,11 +184,12 @@ if (isVariant(status, "Done")) {
 ```ts
 const tmpl = Template.fromSource(`---
 params:
-  - tasks = list<title = str, priority = str>
+  - tasks = list(title = str, priority = str)
 ---
 > {% for task in tasks %}
 
 - {{ task.title }}: {{ task.priority }}
+
 > {% /for %}`);
 
 tmpl.render({
@@ -246,7 +253,7 @@ Expert: {{ name }}
 {{ len(name) }}           → 5 (string length)
 {{ idx(item) }}           → 0, 1, 2, … (loop index)
 {{ kind(status) }}        → "Done" (variant name)
-{{ has(field) }}          → true if option<T> is present
+{{ has(field) }}          → true if option(T) is present
 ```
 
 ## API Reference
@@ -283,7 +290,7 @@ tmpl.validateDeclarationsAgainst(expected)
 TypedTemplate.fromSource<P>(source): TypedTemplate<P>
 TypedTemplate.fromFile<P>(path): TypedTemplate<P>
 
-tmpl.render(params: P)              // TS compile-time + runtime checked
+tmpl.render(params: P)              // TS type-checked + runtime validated
 tmpl.renderUnchecked(params: P)     // skip runtime validation, trust TS types
 tmpl.renderTrusted(params: P)       // validate first call, skip rest
 ```
@@ -299,8 +306,8 @@ cache.clear();
 
 ### ITemplate Interface
 
-Both the pure-TypeScript `Template` and the WASM `Template` implement
-`ITemplate`. Write backend-agnostic code:
+Both `Template` and the WASM `Template` implement `ITemplate`. Write
+backend-agnostic code:
 
 ```ts
 import type { ITemplate } from "prompt-templates";
@@ -312,39 +319,68 @@ function renderGreeting(tmpl: ITemplate, name: string): string {
 
 ## Performance
 
+### Internal Benchmarks
+
+Node.js 22, single-template timings (lower is better):
+
+| Operation           | Scenario        |      Time |
+| ------------------- | --------------- | --------: |
+| **render**          | simple          |    610 ns |
+|                     | multi-param     |  1,808 ns |
+|                     | list (2 items)  |  4,135 ns |
+|                     | list (20 items) | 32,114 ns |
+|                     | enum unit       |    742 ns |
+|                     | enum struct     |  1,925 ns |
+|                     | filters         |  6,939 ns |
+|                     | conditional     |  2,011 ns |
+| **renderUnchecked** | simple          |    489 ns |
+|                     | multi-param     |  1,064 ns |
+|                     | list (2 items)  |  1,910 ns |
+|                     | conditional     |  1,134 ns |
+| **parse**           | simple          |  5,112 ns |
+|                     | multi-param     | 13,442 ns |
+
+`renderUnchecked()` skips runtime type validation — use it when TypeScript's
+static checks are sufficient.
+
+### Comparison Benchmarks
+
 Node.js 22, 50,000 iterations, best of 5 runs
 ([source](src/benchmarks/comparison.ts)).
 
-**Render only** (pre-compiled template + data → output):
+**Render only** (pre-parsed template + data → output):
 
 <!-- BENCHMARK:TS_COMPARISON_RENDER -->
 
-| Scenario           | render() | renderUnchecked() |      Handlebars |      Mustache |
-| ------------------ | -------: | ----------------: | --------------: | ------------: |
-| **simple**         |   752 ns |     **723 ns** 🏆 |          942 ns |        732 ns |
-| **loop (5 items)** | 6,750 ns |          4,413 ns | **2,195 ns** 🏆 |      3,389 ns |
-| **conditional**    | 1,280 ns |          1,205 ns |        1,201 ns | **897 ns** 🏆 |
+| Scenario           | render() | renderUnchecked() | Handlebars |        Mustache |
+| ------------------ | -------: | ----------------: | ---------: | --------------: |
+| **simple**         | 1,228 ns |     **768 ns** 🏆 |   1,274 ns |          821 ns |
+| **loop (5 items)** | 6,083 ns |          2,469 ns |   2,093 ns | **1,862 ns** 🏆 |
+| **conditional**    | 1,974 ns |          1,372 ns |   1,416 ns |   **456 ns** 🏆 |
 
 <!-- /BENCHMARK:TS_COMPARISON_RENDER -->
 
-**Round-trip** (compile + render):
+**Round-trip** (parse + render):
 
 <!-- BENCHMARK:TS_COMPARISON_ROUNDTRIP -->
 
 | Scenario           | prompt-templates | Handlebars |        Mustache |
 | ------------------ | ---------------: | ---------: | --------------: |
-| **simple**         |         6,828 ns |  78,160 ns |   **920 ns** 🏆 |
-| **loop (5 items)** |        18,862 ns | 156,362 ns | **3,500 ns** 🏆 |
+| **simple**         |         9,958 ns |  88,522 ns |   **804 ns** 🏆 |
+| **loop (5 items)** |        30,717 ns | 125,384 ns | **1,897 ns** 🏆 |
 | **conditional**    |              N/A |        N/A |             N/A |
 
 <!-- /BENCHMARK:TS_COMPARISON_ROUNDTRIP -->
 
-`renderUnchecked()` skips runtime type validation for ~723 ns simple render.
+> **Note:** Mustache wins raw render speed due to its minimal feature set — no
+> type checking, no filters, no `elif`. prompt-templates wins `renderUnchecked()`
+> for simple templates. The value proposition is **type safety and correctness**,
+> not raw throughput.
 
-A [WASM build](../prompt-templates-wasm/README.md) wrapping the Rust
-engine is also available (~200 KB `.wasm`). Pure TypeScript is 2–6×
-faster for small templates due to JS↔WASM serialization overhead; WASM
-closes the gap on complex templates and provides exact Rust parity.
+A [WASM build](../prompt-templates-wasm/README.md) (~200 KB `.wasm`) is also
+available for exact feature parity. Pure TypeScript is 2–6× faster for small
+templates due to JS↔WASM serialization overhead; WASM closes the gap on complex
+templates.
 
 ```bash
 just bench-ts           # internal benchmarks

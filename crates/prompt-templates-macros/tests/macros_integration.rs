@@ -182,6 +182,7 @@ fn type_alias_enum_display() {
 
 #[test]
 fn type_alias_enum_from_str() {
+    #[allow(unused_imports)]
     use std::str::FromStr;
     assert_eq!(
         type_library::Priority::from_str("low").unwrap(),
@@ -237,6 +238,7 @@ fn type_alias_enum_copy_hash_eq() {
 #[test]
 fn type_alias_enum_display_roundtrip() {
     // Verify Display → FromStr roundtrip works.
+    #[allow(unused_imports)]
     use std::str::FromStr;
     for p in &type_library::Priority::ALL {
         let s = p.to_string();
@@ -396,14 +398,14 @@ fn include_template_module_has_template_function() {
     );
 }
 
-// ── include_template! with option<T> params ──────────────────────────
+// ── include_template! with option(T) params ──────────────────────────
 
 prompt_templates_macros::include_template!("prompts/option_test.tmpl.md");
 
 #[test]
 fn option_param_struct_fields_are_option_type() {
-    // Verify that option<str> generates Option<String> and
-    // option<int> generates Option<i64>.
+    // Verify that option(str) generates Option<String> and
+    // option(int) generates Option<i64>.
     let params = option_test::Params {
         name: "Alice".into(),
         nickname: Some("Ali".into()),
@@ -478,14 +480,14 @@ fn option_param_defaults_to_none() {
     assert!(output.contains("Hello Eve!"), "output: {output}");
 }
 
-// ── template! inline with option<T> ──────────────────────────────────
+// ── template! inline with option(T) ──────────────────────────────────
 
 prompt_templates_macros::template!(
     r#"
 ---
 params:
   - label = str
-  - count = option<int>
+  - count = option(int)
 ---
 {{ label }}
 

@@ -677,7 +677,7 @@ fn include_depth_limit_enforced() {
 name: self
 params: []
 ---
-X{% include [self](self.tmpl.md) %}",
+X{% include [self](./self.tmpl.md) %}",
     )
     .unwrap();
 
@@ -715,7 +715,7 @@ child",
 name: parent
 params: []
 ---
-parent+{% include [child](child.tmpl.md) %}",
+parent+{% include [child](./child.tmpl.md) %}",
     )
     .unwrap();
     std::fs::write(
@@ -726,7 +726,7 @@ parent+{% include [child](child.tmpl.md) %}",
 name: grandparent
 params: []
 ---
-grandparent+{% include [parent](parent.tmpl.md) %}",
+grandparent+{% include [parent](./parent.tmpl.md) %}",
     )
     .unwrap();
 
@@ -778,7 +778,7 @@ name: parent
 params: [middle = str]
 ---
 \
-         Mid:{{ middle }},{% include [child](child.tmpl.md) with leaf=\"deep\" %}",
+         Mid:{{ middle }},{% include [child](./child.tmpl.md) with leaf=\"deep\" %}",
     )
     .unwrap();
     std::fs::write(
@@ -790,7 +790,7 @@ name: grandparent
 params: [top = str]
 ---
 \
-         Top:{{ top }},{% include [parent](parent.tmpl.md) with middle=\"mid\" %}",
+         Top:{{ top }},{% include [parent](./parent.tmpl.md) with middle=\"mid\" %}",
     )
     .unwrap();
 
@@ -824,7 +824,7 @@ D",
 name: c
 params: []
 ---
-C+{% include [d](d.tmpl.md) %}",
+C+{% include [d](./d.tmpl.md) %}",
     )
     .unwrap();
     std::fs::write(
@@ -835,7 +835,7 @@ C+{% include [d](d.tmpl.md) %}",
 name: b
 params: []
 ---
-B+{% include [c](c.tmpl.md) %}",
+B+{% include [c](./c.tmpl.md) %}",
     )
     .unwrap();
     std::fs::write(
@@ -846,7 +846,7 @@ B+{% include [c](c.tmpl.md) %}",
 name: a
 params: []
 ---
-A+{% include [b](b.tmpl.md) %}",
+A+{% include [b](./b.tmpl.md) %}",
     )
     .unwrap();
 
@@ -880,7 +880,7 @@ params: [msg = str]
 name: parent
 params: []
 ---
-> {% include [child](child.tmpl.md) %}",
+> {% include [child](./child.tmpl.md) %}",
     )
     .unwrap();
 
@@ -918,7 +918,7 @@ Hello {{ msg }}",
 name: parent
 params: []
 ---
-> {% include [child](child.tmpl.md) with msg=\"World\" %}",
+> {% include [child](./child.tmpl.md) with msg=\"World\" %}",
     )
     .unwrap();
 
@@ -950,7 +950,7 @@ Static!",
 name: parent
 params: []
 ---
-> {% include [static](static.tmpl.md) %}",
+> {% include [static](./static.tmpl.md) %}",
     )
     .unwrap();
 
@@ -1191,7 +1191,7 @@ fn self_recursive_include_hits_depth_limit() {
 name: self
 params: []
 ---
-R> {% include [self](self.tmpl.md) %}",
+R> {% include [self](./self.tmpl.md) %}",
     )
     .unwrap();
 
@@ -1217,7 +1217,7 @@ fn mutual_recursive_includes_hit_depth_limit() {
 name: a
 params: []
 ---
-A> {% include [b](b.tmpl.md) %}",
+A> {% include [b](./b.tmpl.md) %}",
     )
     .unwrap();
     std::fs::write(
@@ -1228,7 +1228,7 @@ A> {% include [b](b.tmpl.md) %}",
 name: b
 params: []
 ---
-B> {% include [a](a.tmpl.md) %}",
+B> {% include [a](./a.tmpl.md) %}",
     )
     .unwrap();
 
@@ -1266,7 +1266,7 @@ name: parent
 params: [name = str]
 ---
 \
-         > {% include [child](child.tmpl.md) with count=name %}",
+         > {% include [child](./child.tmpl.md) with count=name %}",
     )
     .unwrap();
 
@@ -1455,7 +1455,7 @@ params:
   - name = str
 ---
 \
-         > {% include [child](child.tmpl.md) with name=name %}",
+         > {% include [child](./child.tmpl.md) with name=name %}",
     )
     .unwrap();
 
@@ -1508,7 +1508,7 @@ params: []
          > {% /tmpl %}
 
 \
-         > {% include [child](child.tmpl.md) %}",
+         > {% include [child](./child.tmpl.md) %}",
     )
     .unwrap();
 
@@ -1585,7 +1585,7 @@ params: []
          > {% include greeting %}
 
 \
-         > {% include [child](child.tmpl.md) %}",
+         > {% include [child](./child.tmpl.md) %}",
     )
     .unwrap();
 
@@ -1662,10 +1662,10 @@ params: []
 params: []
 ---
 \
-         > {% include [alpha](alpha.tmpl.md) %}
+         > {% include [alpha](./alpha.tmpl.md) %}
 
 \
-         > {% include [beta](beta.tmpl.md) %}",
+         > {% include [beta](./beta.tmpl.md) %}",
     )
     .unwrap();
 
@@ -1676,8 +1676,8 @@ params: []
 
 #[test]
 fn same_display_name_different_files_work() {
-    // {% include [greeting](en/greeting.tmpl.md) %} and
-    // {% include [greeting](de/greeting.tmpl.md) %} should work independently.
+    // {% include [greeting](./en/greeting.tmpl.md) %} and
+    // {% include [greeting](./de/greeting.tmpl.md) %} should work independently.
     let dir = tempfile::tempdir().unwrap();
 
     std::fs::create_dir_all(dir.path().join("en")).unwrap();
@@ -1716,10 +1716,10 @@ params:
   - name = str
 ---
 \
-         > {% include [greeting](en/greeting.tmpl.md) with name=name %}
+         > {% include [greeting](./en/greeting.tmpl.md) with name=name %}
 
 \
-         > {% include [greeting](de/greeting.tmpl.md) with name=name %}",
+         > {% include [greeting](./de/greeting.tmpl.md) with name=name %}",
     )
     .unwrap();
 
@@ -1759,7 +1759,7 @@ params:
          [B:{{ msg }}]
 
 \
-         > {% include [c](c.tmpl.md) with msg=msg %}",
+         > {% include [c](./c.tmpl.md) with msg=msg %}",
     )
     .unwrap();
 
@@ -1775,7 +1775,7 @@ params:
          [A:{{ msg }}]
 
 \
-         > {% include [b](b.tmpl.md) with msg=msg %}",
+         > {% include [b](./b.tmpl.md) with msg=msg %}",
     )
     .unwrap();
 
@@ -1816,7 +1816,7 @@ params:
          [B]
 
 \
-         > {% include [d](d.tmpl.md) with label=val %}",
+         > {% include [d](./d.tmpl.md) with label=val %}",
     )
     .unwrap();
 
@@ -1832,7 +1832,7 @@ params:
          [C]
 
 \
-         > {% include [d](d.tmpl.md) with label=val %}",
+         > {% include [d](./d.tmpl.md) with label=val %}",
     )
     .unwrap();
 
@@ -1846,10 +1846,10 @@ params:
   - y = str
 ---
 \
-         > {% include [b](b.tmpl.md) with val=x %}
+         > {% include [b](./b.tmpl.md) with val=x %}
 
 \
-         > {% include [c](c.tmpl.md) with val=y %}",
+         > {% include [c](./c.tmpl.md) with val=y %}",
     )
     .unwrap();
 

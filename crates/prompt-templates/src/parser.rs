@@ -588,14 +588,16 @@ pub(crate) fn parse_include_tag(tag_body: &str) -> Result<IncludeDirective<'_>, 
     };
 
     if let Some(with_body) = rest.strip_prefix(TAG_WITH_PREFIX) {
-        for assignment in with_body.split(',') {
+        for assignment in with_body.split(crate::consts::COMMA) {
             let assignment = assignment.trim();
             if assignment.is_empty() {
                 continue;
             }
-            let (key, val) = assignment.split_once('=').ok_or_else(|| {
-                TemplateError::syntax(format!("invalid with: got '{assignment}'"))
-            })?;
+            let (key, val) = assignment
+                .split_once(crate::consts::EQUALS)
+                .ok_or_else(|| {
+                    TemplateError::syntax(format!("invalid with: got '{assignment}'"))
+                })?;
             with_vars.push((key.trim(), val.trim()));
         }
     }
@@ -615,12 +617,12 @@ fn parse_quoted_path(input: &str) -> Result<(&str, &str), TemplateError> {
         .ok_or_else(|| TemplateError::syntax("include: missing path".to_string()))?;
 
     // Markdown link syntax: [text](path) — required for file includes.
-    if first == '[' {
+    if first == crate::consts::BRACKET_OPEN {
         return parse_markdown_link_path(input);
     }
 
     // Reject old quoted-path syntax — includes must use [name](path) links.
-    if first == '"' || first == '\'' {
+    if first == crate::consts::QUOTE_DOUBLE || first == crate::consts::QUOTE_SINGLE {
         return Err(TemplateError::syntax(format!(
             "include: quoted paths are no longer supported. \
              Use markdown link syntax instead: \
@@ -656,22 +658,27 @@ fn parse_quoted_path(input: &str) -> Result<(&str, &str), TemplateError> {
 fn parse_markdown_link_path(input: &str) -> Result<(&str, &str), TemplateError> {
     let after_bracket = &input[1..]; // skip '['
     let close_bracket = after_bracket
-        .find(']')
+        .find(crate::consts::BRACKET_CLOSE)
         .ok_or_else(|| TemplateError::syntax(format!("include: unclosed '[' in '{input}'")))?;
     let after_close = &after_bracket[close_bracket + 1..];
 
     // Expect `(path)` immediately after `]`.
     let after_close = after_close.trim_start();
-    if !after_close.starts_with('(') {
+    if !after_close.starts_with(crate::consts::PAREN_OPEN) {
         return Err(TemplateError::syntax(format!(
             "include: expected '(' after ']' in '{input}'"
         )));
     }
     let after_paren = &after_close[1..];
     let close_paren = after_paren
-        .find(')')
+        .find(crate::consts::PAREN_CLOSE)
         .ok_or_else(|| TemplateError::syntax(format!("include: unclosed '(' in '{input}'")))?;
     let path = after_paren[..close_paren].trim();
+    if !crate::consts::is_valid_include_path(path) {
+        return Err(TemplateError::syntax(format!(
+            "include path '{path}' must start with './', '../', or '/'"
+        )));
+    }
     let rest = &after_paren[close_paren + 1..];
     Ok((path, rest))
 }
@@ -836,23 +843,23 @@ mod tests {
 
     #[test]
     fn parse_include_simple() {
-        let d = parse_include_tag("include [header](header.tmpl.md)").unwrap();
-        assert_eq!(d.path, "header.tmpl.md");
+        let d = parse_include_tag("include [header](./header.tmpl.md)").unwrap();
+        assert_eq!(d.path, "./header.tmpl.md");
         assert!(d.with_vars.is_empty());
         assert!(d.for_each.is_none());
     }
 
     #[test]
     fn parse_include_with_vars() {
-        let d =
-            parse_include_tag("include [card](card.tmpl.md) with title=name, count=total").unwrap();
-        assert_eq!(d.path, "card.tmpl.md");
+        let d = parse_include_tag("include [card](./card.tmpl.md) with title=name, count=total")
+            .unwrap();
+        assert_eq!(d.path, "./card.tmpl.md");
         assert_eq!(d.with_vars, vec![("title", "name"), ("count", "total")]);
     }
 
     #[test]
     fn parse_include_for_each() {
-        let d = parse_include_tag("include [row](row.tmpl.md) for item in items").unwrap();
+        let d = parse_include_tag("include [row](./row.tmpl.md) for item in items").unwrap();
         assert_eq!(d.for_each, Some(("item", "items")));
     }
 
@@ -865,9 +872,9 @@ mod tests {
 
     #[test]
     fn parse_include_markdown_link() {
-        let d = parse_include_tag("include [collaboration_rules](collaboration_rules.tmpl.md)")
+        let d = parse_include_tag("include [collaboration_rules](./collaboration_rules.tmpl.md)")
             .unwrap();
-        assert_eq!(d.path, "collaboration_rules.tmpl.md");
+        assert_eq!(d.path, "./collaboration_rules.tmpl.md");
         assert!(d.with_vars.is_empty());
         assert!(d.for_each.is_none());
     }
@@ -875,17 +882,26 @@ mod tests {
     #[test]
     fn parse_include_markdown_link_with_vars() {
         let d =
-            parse_include_tag("include [task_planning](task_planning.tmpl.md) with tasks=tasks")
+            parse_include_tag("include [task_planning](./task_planning.tmpl.md) with tasks=tasks")
                 .unwrap();
-        assert_eq!(d.path, "task_planning.tmpl.md");
+        assert_eq!(d.path, "./task_planning.tmpl.md");
         assert_eq!(d.with_vars, vec![("tasks", "tasks")]);
     }
 
     #[test]
     fn parse_include_markdown_link_for_each() {
-        let d = parse_include_tag("include [row](row.tmpl.md) for item in items").unwrap();
-        assert_eq!(d.path, "row.tmpl.md");
+        let d = parse_include_tag("include [row](./row.tmpl.md) for item in items").unwrap();
+        assert_eq!(d.path, "./row.tmpl.md");
         assert_eq!(d.for_each, Some(("item", "items")));
+    }
+
+    #[test]
+    fn parse_include_bare_relative_filename_rejected() {
+        let err = parse_include_tag("include [row](row.tmpl.md)").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("must start with './', '../', or '/'")
+        );
     }
 
     #[test]

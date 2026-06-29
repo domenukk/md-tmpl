@@ -2,19 +2,19 @@
 name: task_report
 description: A task report template with types
 types:
-  - Priority = enum<Critical, High, Medium, Low>
+  - Priority = enum(Critical, High, Medium, Low)
 params:
   - title = str
   - priority = Priority
-  - tasks = list<name = str, urgency = Priority>
+  - tasks = list(name = str, urgency = Priority)
 ---
 
 # Task Report: {{ title }}
 
-Priority: {{ priority }}
+Priority: {{ kind(priority) }}
 
 > {% for task in tasks %}
 
-- {{ task.name }} ({{ task.urgency }})
+- {{ task.name }} ({{ kind(task.urgency) }})
 
   > {% /for %}

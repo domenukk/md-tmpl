@@ -2,7 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/prompt-templates-macros.svg)](https://crates.io/crates/prompt-templates-macros)
 
-Proc macros for **compile-time** template validation, pre-parsing, and
+Proc macros for **build-time** template validation, pre-parsing, and
 typed parameter struct generation for
 [prompt-templates](https://github.com/domenukk/prompt-templates).
 
@@ -13,8 +13,9 @@ typed parameter struct generation for
 
 The core `prompt-templates` crate validates at runtime. This companion
 crate moves validation to `cargo build` — syntax errors, unknown
-variables, and type mismatches become compile errors. It also generates
-typed Rust structs from frontmatter.
+variables, and type mismatches become build errors. It also generates
+typed Rust structs from frontmatter. Templates can still be loaded at
+runtime for dynamic or hot-reload use cases.
 
 ## Installation
 
@@ -27,8 +28,8 @@ cargo add prompt-templates-macros
 
 ### `include_template!`
 
-Reads, parses, and validates a `.tmpl.md` file at compile time. Emits a
-module with the pre-compiled template, typed parameter struct, sub-structs,
+Reads, parses, and validates a `.tmpl.md` file at build time. Emits a
+module with the pre-parsed template, typed parameter struct, sub-structs,
 constants, and type aliases.
 
 ```rust
@@ -57,7 +58,7 @@ assert_eq!(output, "\nHello Alice!\n");
 
 #### Generated module contents
 
-- **`pub fn template() -> &'static Template`** — pre-compiled template singleton.
+- **`pub fn template() -> &'static Template`** — pre-parsed template singleton.
 - **`pub struct Params { ... }`** — typed parameter struct with:
   - `render()` — render using the embedded template.
   - `render_reloaded(tmpl)` — render with an externally-loaded template (hot-reload).
@@ -89,7 +90,7 @@ assert_eq!(output, "Hello World!\n");
 
 ## Hot-Reload with Type Safety
 
-Combine compile-time types with runtime loading — iterate on prompt
+Combine build-time types with runtime loading — iterate on prompt
 wording without recompiling, while keeping your type guarantees:
 
 ```rust
@@ -119,11 +120,11 @@ let output = greeting::Params {
 | `int`                       | `i64`                                                |
 | `float`                     | `f64`                                                |
 | `bool`                      | `bool`                                               |
-| `list<field = type, ...>`   | `Vec<Params{Field}Item>` (auto-generated sub-struct) |
-| `struct<field = type, ...>` | `Params{Field}` (auto-generated sub-struct)          |
-| `enum<Variant, ...>`        | `Params{Field}` (auto-generated enum)                |
-| `option<T>`                 | `Option<RustType>`                                   |
-| `tmpl<field = type, ...>`   | `Params{Field}` (template callable)                  |
+| `list(field = type, ...)`   | `Vec<Params{Field}Item>` (auto-generated sub-struct) |
+| `struct(field = type, ...)` | `Params{Field}` (auto-generated sub-struct)          |
+| `enum(Variant, ...)`        | `Params{Field}` (auto-generated enum)                |
+| `option(T)`                 | `Option<RustType>`                                   |
+| `tmpl(field = type, ...)`   | `Params{Field}` (template callable)                  |
 
 ## License
 

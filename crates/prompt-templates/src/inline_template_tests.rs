@@ -94,7 +94,7 @@ fn inline_template_for_loop() {
         "\
 ---
 ",
-        "params: [items = list<str>]\n",
+        "params: [items = list(str)]\n",
         "\
 ---
 ",

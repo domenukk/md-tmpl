@@ -34,7 +34,7 @@ params: [name = str]
     let main_src = r"---
 params: [name = str]
 ---
-> {% include [helper](helper.tmpl.md) with name=name %}";
+> {% include [helper](./helper.tmpl.md) with name=name %}";
     let (tmpl, _) = Template::compile(main_src, CompileOptions::default().base_dir(base)).unwrap();
 
     let mut ctx = Context::new();
@@ -67,7 +67,7 @@ included"#,
     let main_src = r"---
 params: []
 ---
-> {% include [helper](helper.tmpl.md) %}
+> {% include [helper](./helper.tmpl.md) %}
 
 {{ LEAKED_CONST }}";
     let result = Template::compile(main_src, CompileOptions::default().base_dir(base));
@@ -98,7 +98,7 @@ Got: {{ ctx_val }}",
     let main_src = r"---
 params: [ctx_val = str]
 ---
-> {% include [helper](helper.tmpl.md) with ctx_val=ctx_val %}";
+> {% include [helper](./helper.tmpl.md) with ctx_val=ctx_val %}";
     let (tmpl, _) = Template::compile(main_src, CompileOptions::default().base_dir(base)).unwrap();
 
     let mut ctx = Context::new();
@@ -131,7 +131,7 @@ consts:
 
     let main_src = r"---
 imports:
-  - [colors](colors.tmpl.md)
+  - [colors](./colors.tmpl.md)
 
 params: []
 ---
@@ -173,8 +173,8 @@ consts:
 
     let main_src = r"---
 imports:
-  - [a](a.tmpl.md)
-  - [b](b.tmpl.md)
+  - [a](./a.tmpl.md)
+  - [b](./b.tmpl.md)
 
 params: []
 ---
@@ -206,7 +206,7 @@ consts:
     // Try using SECRET without lib. prefix — should fail at compile time.
     let main_src = r"---
 imports:
-  - [lib](lib.tmpl.md)
+  - [lib](./lib.tmpl.md)
 
 params: []
 ---
@@ -251,8 +251,8 @@ Bye {{ who }}",
     let main_src = r#"---
 params: []
 ---
-> {% include [greet](greet.tmpl.md) with who="Alice" %}
-> {% include [farewell](farewell.tmpl.md) with who="Bob" %}"#;
+> {% include [greet](./greet.tmpl.md) with who="Alice" %}
+> {% include [farewell](./farewell.tmpl.md) with who="Bob" %}"#;
     let (tmpl, _) = Template::compile(main_src, CompileOptions::default().base_dir(base)).unwrap();
 
     let ctx = Context::new();
@@ -296,7 +296,7 @@ params: [val = str]
 ---
 Parent: {{ val }}
 
-> {% include [echo](echo.tmpl.md) with val="overridden" %}"#;
+> {% include [echo](./echo.tmpl.md) with val="overridden" %}"#;
     let (tmpl, _) = Template::compile(main_src, CompileOptions::default().base_dir(base)).unwrap();
 
     let mut ctx = Context::new();
@@ -337,7 +337,7 @@ params:
     let main_src = r#"---
 params: []
 ---
-> {% include [widget](widget.tmpl.md) with label="Button" %}"#;
+> {% include [widget](./widget.tmpl.md) with label="Button" %}"#;
     let (tmpl, _) = Template::compile(main_src, CompileOptions::default().base_dir(base)).unwrap();
 
     let ctx = Context::new();
@@ -366,7 +366,7 @@ params:
     let main_src = r#"---
 params: []
 ---
-> {% include [widget](widget.tmpl.md) with label="Button", color="red" %}"#;
+> {% include [widget](./widget.tmpl.md) with label="Button", color="red" %}"#;
     let (tmpl, _) = Template::compile(main_src, CompileOptions::default().base_dir(base)).unwrap();
 
     let ctx = Context::new();
@@ -395,9 +395,9 @@ params: [thing = str]
     .unwrap();
 
     let main_src = r"---
-params: [items = list<str>]
+params: [items = list(str)]
 ---
-> {% include [item](item.tmpl.md) for thing in items %}";
+> {% include [item](./item.tmpl.md) for thing in items %}";
     let (tmpl, _) = Template::compile(main_src, CompileOptions::default().base_dir(base)).unwrap();
 
     let mut ctx = Context::new();
@@ -432,11 +432,11 @@ params: [thing = str]
     .unwrap();
 
     let main_src = r"---
-params: [items = list<str>]
+params: [items = list(str)]
 ---
 Before
 
-> {% include [item](item.tmpl.md) for thing in items %}
+> {% include [item](./item.tmpl.md) for thing in items %}
 
 After";
     let (tmpl, _) = Template::compile(main_src, CompileOptions::default().base_dir(base)).unwrap();
@@ -484,7 +484,7 @@ consts:
 
 params: []
 ---
-[{{ MID_TAG }}]> {% include [leaf](leaf.tmpl.md) %}"#,
+[{{ MID_TAG }}]> {% include [leaf](./leaf.tmpl.md) %}"#,
     )
     .unwrap();
 
@@ -494,7 +494,7 @@ consts:
 
 params: []
 ---
-[{{ TOP_TAG }}]> {% include [mid](mid.tmpl.md) %}"#;
+[{{ TOP_TAG }}]> {% include [mid](./mid.tmpl.md) %}"#;
     let (tmpl, _) = Template::compile(main_src, CompileOptions::default().base_dir(base)).unwrap();
 
     let ctx = Context::new();
@@ -505,7 +505,7 @@ params: []
 }
 
 // ---------------------------------------------------------------------------
-// G. Template parameters (tmpl<...>) with their own constants
+// G. Template parameters (tmpl(...)) with their own constants
 // ---------------------------------------------------------------------------
 
 /// Higher-order template parameter carries its own constants.
@@ -523,7 +523,7 @@ consts:
 
     let main = Template::from_source(
         r#"---
-params: [formatter = tmpl<name = str>]
+params: [formatter = tmpl(name = str)]
 ---
 > {% include formatter with name="Smith" %}"#,
     )
@@ -541,7 +541,7 @@ fn tmpl_param_constants_do_not_leak() {
     // Main tries to use HELPER_SECRET — should fail at compile time
     // because the constant belongs to the tmpl param, not the parent.
     let main_src = r"---
-params: [h = tmpl<>]
+params: [h = tmpl()]
 ---
 > {% include h %}
 
@@ -733,7 +733,7 @@ fn match_enum_renders_correct_arm() {
     let tmpl = Template::from_source(
         r"---
 types:
-  - Status = enum<Active, Inactive>
+  - Status = enum(Active, Inactive)
 
 params: [status = Status]
 ---
@@ -945,7 +945,7 @@ fn dict_constant_dot_access() {
     let tmpl = Template::from_source(
         r#"---
 consts:
-  - CFG = struct<host = str, port = int> := {host = "localhost", port = 8080}
+  - CFG = struct(host = str, port = int) := {host = "localhost", port = 8080}
 
 params: []
 ---
@@ -964,7 +964,7 @@ fn list_constant_join_filter() {
     let tmpl = Template::from_source(
         r#"---
 consts:
-  - LANGS = list<str> := ["Rust", "Go", "Python"]
+  - LANGS = list(str) := ["Rust", "Go", "Python"]
 
 params: []
 ---
@@ -1020,7 +1020,7 @@ fn imported_type_alias_in_params() {
         r"---
 name: types
 types:
-  - Priority = enum<High, Medium, Low>
+  - Priority = enum(High, Medium, Low)
 ---
 ",
     )
@@ -1028,7 +1028,7 @@ types:
 
     let main_src = r"---
 imports:
-  - [types](types.tmpl.md)
+  - [types](./types.tmpl.md)
 
 params: [p = types.Priority]
 ---
@@ -1053,7 +1053,7 @@ fn constant_accessible_inside_for_loop() {
 consts:
   - BULLET = str := "*"
 
-params: [items = list<str>]
+params: [items = list(str)]
 ---
 > {% for item in items %}
 
@@ -1081,7 +1081,7 @@ params: [items = list<str>]
 fn loop_variable_does_not_persist_after_loop() {
     let tmpl = Template::from_source(
         r"---
-params: [items = list<str>]
+params: [items = list(str)]
 ---
 > {% for item in items %}
 
@@ -1133,8 +1133,8 @@ B={{ val }}",
     let main_src = r#"---
 params: []
 ---
-> {% include [a](a.tmpl.md) with val="first" %}
-> {% include [b](b.tmpl.md) with val="second" %}"#;
+> {% include [a](./a.tmpl.md) with val="first" %}
+> {% include [b](./b.tmpl.md) with val="second" %}"#;
     let (tmpl, _) = Template::compile(main_src, CompileOptions::default().base_dir(base)).unwrap();
 
     let ctx = Context::new();
@@ -1203,7 +1203,7 @@ params: [title = str]
     let main_src = r#"---
 params: []
 ---
-> {% include [card](card.tmpl.md) with title="Hello" %}"#;
+> {% include [card](./card.tmpl.md) with title="Hello" %}"#;
     let (tmpl, _) = Template::compile(main_src, CompileOptions::default().base_dir(base)).unwrap();
 
     let ctx = Context::new();
@@ -1240,9 +1240,9 @@ params: [item = str]
     .unwrap();
 
     let main_src = r"---
-params: [items = list<str>]
+params: [items = list(str)]
 ---
-> {% include [row](row.tmpl.md) for item in items %}";
+> {% include [row](./row.tmpl.md) for item in items %}";
     let (tmpl, _) = Template::compile(main_src, CompileOptions::default().base_dir(base)).unwrap();
 
     let mut ctx = Context::new();

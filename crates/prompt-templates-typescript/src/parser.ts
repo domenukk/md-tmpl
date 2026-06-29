@@ -22,8 +22,30 @@ import {
   TypeMismatchError,
   UndefinedVariableError,
 } from "./errors.js";
-import { type VarDecl, type VarType } from "./frontmatter.js";
+import {
+  type VarDecl,
+  type VarType,
+  isValidPathPrefix,
+} from "./frontmatter.js";
 import { applyFilter, parseFilter } from "./filters.js";
+import {
+  TYPE_STR,
+  TYPE_BOOL,
+  TYPE_INT,
+  TYPE_FLOAT,
+  TYPE_LIST,
+  TYPE_STRUCT,
+  TYPE_ENUM,
+  TYPE_TMPL,
+  TYPE_OPTION,
+  BRACKET_OPEN,
+  QUOTE_DOUBLE,
+  QUOTE_SINGLE,
+  DOT,
+  PIPE,
+  EQUALS,
+  COMMA,
+} from "./consts.js";
 
 // ---------------------------------------------------------------------------
 // AST node types
@@ -116,7 +138,7 @@ export class Scope {
     // Check exact match first
     if (this.optionParams.has(path)) return true;
     // For dotted paths, check if the root is known as option
-    const dotIdx = path.indexOf(".");
+    const dotIdx = path.indexOf(DOT);
     if (dotIdx > 0) {
       return this.optionParams.has(path);
     }
@@ -158,7 +180,7 @@ export class Scope {
 
   resolvePath(pathStr: string): Value {
     // Fast path: no dot means simple variable lookup (very common)
-    const firstDot = pathStr.indexOf(".");
+    const firstDot = pathStr.indexOf(DOT);
     if (firstDot === -1) {
       const root = this.resolve(pathStr);
       if (root === undefined) {
@@ -176,7 +198,7 @@ export class Scope {
     let current = root;
     let start = firstDot + 1;
     while (start < pathStr.length) {
-      const nextDot = pathStr.indexOf(".", start);
+      const nextDot = pathStr.indexOf(DOT, start);
       const end = nextDot === -1 ? pathStr.length : nextDot;
       const part = pathStr.slice(start, end);
       const field = getField(current, part);
@@ -216,9 +238,9 @@ export class Scope {
  * Handles `{{ expr }}`, `{% tag %}`, `{# comment #}` delimiters,
  * blockquote stripping for standalone tags, and whitespace control.
  */
-export function parseBody(body: string): Node[] {
+export function parseBody(body: string, skipPreprocess = false): Node[] {
   // Pre-process: strip blockquote prefix from standalone statement tags
-  const processed = preprocessBlockquotes(body);
+  const processed = skipPreprocess ? body : preprocessBlockquotes(body);
   return parseNodes(processed, []);
 }
 
@@ -251,10 +273,35 @@ function preprocessBlockquotes(body: string): string {
   const lines = body.split("\n");
   let result = "";
   let skipNextNewline = false;
+  let inRaw = false;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
     const trimmed = line.trimStart();
+
+    if (inRaw) {
+      if (
+        trimmed.includes("{%") &&
+        (trimmed.includes("/raw") || trimmed.includes("- /raw"))
+      ) {
+        inRaw = false;
+      } else {
+        if (i > 0 && !skipNextNewline) {
+          result += "\n";
+        }
+        skipNextNewline = false;
+        result += line;
+        continue;
+      }
+    } else if (
+      trimmed.startsWith(">") &&
+      trimmed.includes("{%") &&
+      (trimmed.includes(" raw ") ||
+        trimmed.includes(" raw=") ||
+        trimmed.includes(" raw%"))
+    ) {
+      inRaw = true;
+    }
 
     // Enforce bare statement and comment rules
     if (trimmed.startsWith("{%") || trimmed.startsWith("{%-")) {
@@ -271,10 +318,13 @@ function preprocessBlockquotes(body: string): string {
     if (trimmed.startsWith(">")) {
       const afterGt = trimmed.replace(/^>\s*/, "");
       if (afterGt.startsWith("{#")) {
-        const trimmedEnd = afterGt.trimEnd();
+        const closeIdx = afterGt.indexOf("#}");
         if (
-          (!afterGt.startsWith("{# ") && !afterGt.startsWith("{#\t")) ||
-          (!trimmedEnd.endsWith(" #}") && !trimmedEnd.endsWith("\t#}"))
+          closeIdx !== -1 &&
+          ((!afterGt.startsWith("{# ") && !afterGt.startsWith("{#\t")) ||
+            (closeIdx > 0 &&
+              afterGt[closeIdx - 1] !== " " &&
+              afterGt[closeIdx - 1] !== "\t"))
         ) {
           throw new TemplateSyntaxError(
             `Blockquote comments must have spaces around the content (e.g. '> {# comment #}'): '${line.trim()}'`,
@@ -285,16 +335,19 @@ function preprocessBlockquotes(body: string): string {
 
     // Check for standalone blockquote statement line: `> {% ... %}` or `> {# ... #}`
     const afterGt = trimmed.replace(/^>\s*/, "");
-    const isBlockquoteTag =
+    const shouldStrip =
       trimmed.startsWith(">") &&
-      ((afterGt.startsWith("{%") && afterGt.endsWith("%}")) ||
-        (afterGt.startsWith("{#") && afterGt.endsWith("#}")));
+      (afterGt.startsWith("{%") || afterGt.startsWith("{#"));
 
-    // Strip the `> ` prefix from blockquote tag lines.
     let tagLine = line;
-    if (isBlockquoteTag) {
+    if (shouldStrip) {
       tagLine = afterGt;
     }
+
+    const isStandaloneTag =
+      shouldStrip &&
+      ((afterGt.startsWith("{%") && afterGt.endsWith("%}")) ||
+        (afterGt.startsWith("{#") && afterGt.endsWith("#}")));
 
     // Skip blank line immediately after a standalone tag.
     if (skipNextNewline && tagLine.trim() === "") {
@@ -309,8 +362,9 @@ function preprocessBlockquotes(body: string): string {
     }
     skipNextNewline = false;
 
-    if (isBlockquoteTag) {
-      if (i > 0) {
+    if (isStandaloneTag) {
+      const isRawTag = tagLine.includes("raw");
+      if (!isRawTag && i > 0) {
         const prevLine = lines[i - 1]!;
         if (!isValidTagNeighbor(prevLine)) {
           throw new TemplateSyntaxError(
@@ -319,7 +373,7 @@ function preprocessBlockquotes(body: string): string {
         }
       }
 
-      if (i + 1 < lines.length) {
+      if (!isRawTag && i + 1 < lines.length) {
         const nextLine = lines[i + 1]!;
         if (!isValidTagNeighbor(nextLine)) {
           throw new TemplateSyntaxError(
@@ -334,12 +388,7 @@ function preprocessBlockquotes(body: string): string {
         result = result.slice(0, -1);
       }
 
-      if (
-        (tagLine.trim().startsWith("{%") && tagLine.trim().endsWith("%}")) ||
-        (tagLine.trim().startsWith("{#") && tagLine.trim().endsWith("#}"))
-      ) {
-        skipNextNewline = true;
-      }
+      skipNextNewline = true;
     }
 
     result += tagLine;
@@ -716,7 +765,7 @@ function handleMatch(
       }
       // Parse the case variants
       const variants = (closingContent ?? "")
-        .split("|")
+        .split(PIPE)
         .map((v) => v.trim())
         .filter((v) => v.length > 0);
       arms.push({ variants, body: [] });
@@ -802,10 +851,20 @@ function handleInclude(tag: string, afterTag: number): [Node[], number] {
 
   if (linkMatch && linkMatch[1] && linkMatch[2]) {
     name = linkMatch[1];
-    path = linkMatch[2];
+    path = linkMatch[2].trim();
+    if (!isValidPathPrefix(path)) {
+      throw new TemplateSyntaxError(
+        `include path must begin with './', '../', or '/': '${path}'`,
+      );
+    }
     remaining = (linkMatch[3] ?? "").trim();
   } else {
     // Bare name include (inline template)
+    if (rest.startsWith(BRACKET_OPEN)) {
+      throw new TemplateSyntaxError(
+        `malformed include link or path: '${rest}'`,
+      );
+    }
     const parts = rest.split(/\s+/);
     name = parts[0] ?? rest;
     remaining = parts.slice(1).join(" ").trim();
@@ -828,9 +887,9 @@ function handleInclude(tag: string, afterTag: number): [Node[], number] {
     remaining = remaining.slice(5).trim();
   }
   if (remaining.length > 0) {
-    const pairs = remaining.split(",");
+    const pairs = remaining.split(COMMA);
     for (const pair of pairs) {
-      const eqIdx = pair.indexOf("=");
+      const eqIdx = pair.indexOf(EQUALS);
       if (eqIdx !== -1) {
         const key = pair.slice(0, eqIdx).trim();
         const val = pair.slice(eqIdx + 1).trim();
@@ -1206,7 +1265,7 @@ export function renderNodes(
 
       case "for": {
         const listVal = evaluateExpression(node.iterExpr, scope);
-        if (listVal.type !== "list") {
+        if (listVal.type !== TYPE_LIST) {
           throw new TemplateSyntaxError(
             `for loop requires a list, got ${listVal.type}`,
           );
@@ -1316,12 +1375,12 @@ export function renderNodes(
             );
           }
 
-          const inlineNodes = parseBody(inline.body);
+          const inlineNodes = parseBody(inline.body, true);
 
           if (node.forBinding && node.forExpr) {
             // {% include tmpl_name for binding in list_expr %}
             const listVal = evaluateExpression(node.forExpr, scope);
-            if (listVal.type !== "list") {
+            if (listVal.type !== TYPE_LIST) {
               throw new TemplateSyntaxError(
                 `include for-loop requires a list, got ${listVal.type}`,
               );
@@ -1419,7 +1478,7 @@ export function renderNodes(
           if (node.forBinding && node.forExpr) {
             // {% include [name](path) for item in items with ... %}
             const listVal = evaluateExpression(node.forExpr, scope);
-            if (listVal.type !== "list") {
+            if (listVal.type !== TYPE_LIST) {
               throw new TemplateSyntaxError(
                 `include for-loop requires a list, got ${listVal.type}`,
               );
@@ -1483,7 +1542,7 @@ export function renderNodes(
         break;
       }
 
-      case "tmpl":
+      case TYPE_TMPL:
         // Template definitions are stored at parse time, not rendered inline
         break;
     }
@@ -1499,7 +1558,7 @@ export function renderNodes(
 /** Evaluate a template expression (possibly with filters). */
 export function evaluateExpression(expr: string, scope: Scope): Value {
   // Fast path: no pipe means no filters (the vast majority of expressions)
-  const pipeIdx = expr.indexOf("|");
+  const pipeIdx = expr.indexOf(PIPE);
   if (pipeIdx === -1) {
     // No filters — resolve directly, trim only if needed
     const trimmed =
@@ -1553,8 +1612,8 @@ function resolveExpr(expr: string, scope: Scope): Value {
       }
       case "len": {
         const val = scope.resolvePath(arg);
-        if (val.type === "list") return int(val.items.length);
-        if (val.type === "str") return int(val.value.length);
+        if (val.type === TYPE_LIST) return int(val.items.length);
+        if (val.type === TYPE_STR) return int(val.value.length);
         if (val.type === "dict") return int(val.fields.size);
         throw new TemplateSyntaxError(
           `len() requires a list, string, or struct, got ${typeName(val)}`,
@@ -1570,10 +1629,10 @@ function resolveExpr(expr: string, scope: Scope): Value {
         const val = scope.resolvePath(arg);
         // NoneValue means the option is absent
         if (val.type === "none") {
-          return { type: "bool", value: false };
+          return { type: TYPE_BOOL, value: false };
         }
         // Not None — value is present
-        return { type: "bool", value: true };
+        return { type: TYPE_BOOL, value: true };
       }
       default:
         throw new TemplateSyntaxError(`unknown function '${funcName}'`);
@@ -1593,10 +1652,10 @@ function getVariantName(val: Value, isOption: boolean): string {
   if (val.type === "none") return "None";
   // In option context, any non-None value is "Some"
   if (isOption) return "Some";
-  if (val.type === "str") return val.value;
+  if (val.type === TYPE_STR) return val.value;
   if (val.type === "dict") {
     const tag = val.fields.get(ENUM_TAG_KEY);
-    if (tag && tag.type === "str") return tag.value;
+    if (tag && tag.type === TYPE_STR) return tag.value;
     throw new TemplateSyntaxError(
       "kind() requires an enum value (struct with variant tag)",
     );
@@ -1650,20 +1709,20 @@ function evaluateConditionOperand(operand: string, scope: Scope): Value {
 
   // String literal
   if (
-    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+    (trimmed.startsWith(QUOTE_DOUBLE) && trimmed.endsWith(QUOTE_DOUBLE)) ||
+    (trimmed.startsWith(QUOTE_SINGLE) && trimmed.endsWith(QUOTE_SINGLE))
   ) {
     return str(trimmed.slice(1, -1));
   }
 
   // Boolean literals
-  if (trimmed === "true") return { type: "bool", value: true };
-  if (trimmed === "false") return { type: "bool", value: false };
+  if (trimmed === "true") return { type: TYPE_BOOL, value: true };
+  if (trimmed === "false") return { type: TYPE_BOOL, value: false };
 
   // Number literals
   const num = Number(trimmed);
   if (!isNaN(num)) {
-    return Number.isInteger(num) ? int(num) : { type: "float", value: num };
+    return Number.isInteger(num) ? int(num) : { type: TYPE_FLOAT, value: num };
   }
 
   // Expression
@@ -1698,13 +1757,13 @@ function compareValues(
 /** Coerce a value to a primitive for comparison. */
 function coerceForComparison(v: Value): string | number | boolean {
   switch (v.type) {
-    case "str":
+    case TYPE_STR:
       return v.value;
-    case "bool":
+    case TYPE_BOOL:
       return v.value;
-    case "int":
+    case TYPE_INT:
       return v.value;
-    case "float":
+    case TYPE_FLOAT:
       return v.value;
     default:
       return display(v);
@@ -1769,79 +1828,79 @@ function checkIncludeValueType(
   includeName: string,
 ): void {
   switch (varType.kind) {
-    case "str":
-      if (value.type !== "str") {
+    case TYPE_STR:
+      if (value.type !== TYPE_STR) {
         throw new TypeMismatchError(
           `${path} (in include '${includeName}')`,
-          "str",
+          TYPE_STR,
           value.type,
         );
       }
       break;
-    case "bool":
-      if (value.type !== "bool") {
+    case TYPE_BOOL:
+      if (value.type !== TYPE_BOOL) {
         throw new TypeMismatchError(
           `${path} (in include '${includeName}')`,
-          "bool",
+          TYPE_BOOL,
           value.type,
         );
       }
       break;
-    case "int":
-      if (value.type !== "int") {
+    case TYPE_INT:
+      if (value.type !== TYPE_INT) {
         throw new TypeMismatchError(
           `${path} (in include '${includeName}')`,
-          "int",
+          TYPE_INT,
           value.type,
         );
       }
       break;
-    case "float":
-      if (value.type !== "float" && value.type !== "int") {
+    case TYPE_FLOAT:
+      if (value.type !== TYPE_FLOAT && value.type !== TYPE_INT) {
         throw new TypeMismatchError(
           `${path} (in include '${includeName}')`,
-          "float",
+          TYPE_FLOAT,
           value.type,
         );
       }
       break;
-    case "list":
-      if (value.type !== "list") {
+    case TYPE_LIST:
+      if (value.type !== TYPE_LIST) {
         throw new TypeMismatchError(
           `${path} (in include '${includeName}')`,
-          "list",
+          TYPE_LIST,
           value.type,
         );
       }
       break;
     case "scalar_list":
-      if (value.type !== "list") {
+      if (value.type !== TYPE_LIST) {
         throw new TypeMismatchError(
           `${path} (in include '${includeName}')`,
-          "list",
+          TYPE_LIST,
           value.type,
         );
       }
       break;
-    case "struct":
+    case TYPE_STRUCT:
       if (value.type !== "dict") {
         throw new TypeMismatchError(
           `${path} (in include '${includeName}')`,
-          "struct",
+          TYPE_STRUCT,
           value.type,
         );
       }
       break;
-    case "option":
+    case TYPE_OPTION:
       if (value.type === "none") break;
       checkIncludeValueType(path, value, varType.innerType, includeName);
       break;
-    case "enum":
+    case TYPE_ENUM:
       // Enum type checking is complex; for now validate top-level type
-      if (value.type !== "str" && value.type !== "dict") {
+      if (value.type !== TYPE_STR && value.type !== "dict") {
         throw new TypeMismatchError(
           `${path} (in include '${includeName}')`,
-          "enum",
+          TYPE_ENUM,
           value.type,
         );
       }

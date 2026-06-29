@@ -716,7 +716,7 @@ params: [title = str]
             r"---
 params: [title = str]
 ---
-> {% include [header](header.tmpl.md) with title=title %}
+> {% include [header](./header.tmpl.md) with title=title %}
 
 Body",
         )

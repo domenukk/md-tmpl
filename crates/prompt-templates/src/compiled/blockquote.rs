@@ -89,8 +89,6 @@ pub(super) fn validate_blockquote_prefix(input: &str) -> Result<(), TemplateErro
             ));
         }
 
-
-
         // Main check: line starts with `{%` (or `{%-`) without `>` prefix.
         if trimmed.starts_with(STMT_START) {
             // Truncate for a clean error message.
@@ -201,7 +199,9 @@ pub(super) fn strip_blockquote_tags(input: &str) -> alloc::borrow::Cow<'_, str> 
 /// contain content between/around the tags.
 pub(super) fn is_standalone_tag(line: &str) -> bool {
     let trimmed = line.trim();
-    if trimmed.starts_with(crate::consts::COMMENT_START) && trimmed.ends_with(crate::consts::COMMENT_END) {
+    if trimmed.starts_with(crate::consts::COMMENT_START)
+        && trimmed.ends_with(crate::consts::COMMENT_END)
+    {
         return true;
     }
     // Must start with `{%` and end with `%}`.
@@ -224,13 +224,15 @@ fn strip_blockquote_line(line: &str) -> &str {
     let trimmed = line.trim_start();
     // Try `> {% ...` or `> {# ...` (with space after >).
     if let Some(rest) = trimmed.strip_prefix(BLOCKQUOTE_PREFIX_SPACED)
-        && (rest.trim_start().starts_with(STMT_START) || rest.trim_start().starts_with(crate::consts::COMMENT_START))
+        && (rest.trim_start().starts_with(STMT_START)
+            || rest.trim_start().starts_with(crate::consts::COMMENT_START))
     {
         return rest;
     }
     // Try `>{% ...` or `>{# ...` (no space).
     if let Some(rest) = trimmed.strip_prefix(BLOCKQUOTE_PREFIX)
-        && (rest.trim_start().starts_with(STMT_START) || rest.trim_start().starts_with(crate::consts::COMMENT_START))
+        && (rest.trim_start().starts_with(STMT_START)
+            || rest.trim_start().starts_with(crate::consts::COMMENT_START))
     {
         return rest;
     }

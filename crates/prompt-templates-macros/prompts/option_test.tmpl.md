@@ -2,8 +2,8 @@
 name: option_test
 params:
   - name = str
-  - nickname = option<str>
-  - age = option<int>
+  - nickname = option(str)
+  - age = option(int)
 ---
 
 Hello {{ name }}!

@@ -87,7 +87,7 @@ const MUS_SIMPLE_SRC = "Hello {{name}}, welcome to {{place}}!";
 
 const PT_LOOP_SRC = `---
 params:
-  - items = list<label = str, value = int>
+  - items = list(label = str, value = int)
 ---
 > {% for item in items %}
 

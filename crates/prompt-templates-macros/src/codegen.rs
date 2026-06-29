@@ -490,11 +490,11 @@ pub(crate) fn codegen_value_as_rust_literal(
         (Value::Struct(d), VarType::Struct(fields)) => {
             codegen_struct_literal(d, fields, parent_struct, field_name)
         }
-        // option<T>: Value::Str("None") → Rust None
+        // option(T): Value::Str("None") → Rust None
         (Value::Str(s), VarType::Enum(_)) if t.is_option() && s == "None" => {
             quote! { ::core::option::Option::None }
         }
-        // option<T>: Value::Struct({__kind__: "Some", val: v}) → Rust Some(inner)
+        // option(T): Value::Struct({__kind__: "Some", val: v}) → Rust Some(inner)
         (Value::Struct(d), VarType::Enum(_)) if t.is_option() => {
             let inner_vt = t
                 .option_inner_type()

@@ -355,3 +355,44 @@ fn shared_inline_control_tests() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Shared tmpl() parameter tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn shared_tmpl_param_tests() {
+    let json_str = include_str!("../../../../tests/shared/tmpl_param_tests.json");
+    let root = parse_json(json_str);
+    let tests = root.get("tests").unwrap().as_array().unwrap();
+
+    for tc in tests {
+        let name = tc.get("name").unwrap().as_str().unwrap();
+        let template_src = tc.get("template_lines").unwrap().join_lines();
+        let params = tc.get("params").unwrap();
+
+        if let Some(expected_output) = tc.get("expected_output") {
+            let expected = expected_output.as_str().unwrap();
+            let tmpl = Template::from_source(&template_src)
+                .unwrap_or_else(|e| panic!("[{name}] parse failed: {e}"));
+            let ctx = params.to_context();
+            let output = tmpl
+                .render_ctx(&ctx)
+                .unwrap_or_else(|e| panic!("[{name}] render failed: {e}"));
+            assert_eq!(output, expected, "[{name}] output mismatch");
+        } else if let Some(expected_error) = tc.get("expected_error") {
+            let expected_substr = expected_error.as_str().unwrap();
+            let result = Template::from_source(&template_src).and_then(|tmpl| {
+                let ctx = params.to_context();
+                tmpl.render_ctx(&ctx)
+            });
+            let err = result.unwrap_err();
+            assert!(
+                err.to_string()
+                    .to_lowercase()
+                    .contains(&expected_substr.to_lowercase()),
+                "[{name}] expected error containing \"{expected_substr}\", got: \"{err}\""
+            );
+        }
+    }
+}

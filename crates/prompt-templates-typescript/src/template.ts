@@ -200,7 +200,7 @@ export class Template implements ITemplate {
     this.optionParams = optParams;
 
     // Inject enum type constants from type aliases.
-    // For each enum type (e.g., `Stage = enum<Design, Build>`), create a
+    // For each enum type (e.g., `Stage = enum(Design, Build)`), create a
     // constant dict mapping variant names → values, enabling expressions
     // like `{{ Stage.Design }}`.  User-defined constants are never overwritten.
     injectEnumTypeConstants(fm.typeAliases, consts, constsJs);
@@ -655,7 +655,7 @@ export class Template implements ITemplate {
           if (!validNames.includes(value.value)) {
             throw new TypeMismatchError(
               path,
-              `enum<${validNames.join(", ")}>`,
+              `enum(${validNames.join(", ")})`,
               `str("${value.value}")`,
             );
           }
@@ -673,7 +673,7 @@ export class Template implements ITemplate {
           if (!validNames.includes(tag.value)) {
             throw new TypeMismatchError(
               path,
-              `enum<${validNames.join(", ")}>`,
+              `enum(${validNames.join(", ")})`,
               `variant("${tag.value}")`,
             );
           }
@@ -828,7 +828,7 @@ export class Template implements ITemplate {
 /**
  * Convert a JS value to a template Value, handling option types transparently.
  *
- * For `option<T>` fields:
+ * For `option(T)` fields:
  * - `null`/`undefined` → `NONE` (absent value)
  * - any other value → `fromJs(value)` (the inner value directly)
  *
@@ -1204,9 +1204,9 @@ function escapeRegex(s: string): string {
 /**
  * Recursively collect parameter paths that are option-typed.
  *
- * For a param like `person = struct<name = str, email = option<str>>`,
+ * For a param like `person = struct(name = str, email = option(str))`,
  * this adds `"person.email"` to the set.  For a top-level
- * `x = option<str>`, it adds `"x"`.
+ * `x = option(str)`, it adds `"x"`.
  */
 function collectOptionPaths(
   prefix: string,
@@ -1343,7 +1343,7 @@ function extractBareDottedPath(expr: string): string | undefined {
 /**
  * Inject auto-generated constants for enum types declared in `types:`.
  *
- * For each enum type alias (e.g., `Stage = enum<Design, Build>`), creates
+ * For each enum type alias (e.g., `Stage = enum(Design, Build)`), creates
  * a dict constant mapping variant names to their values:
  * - Unit variants → string with the variant name
  * - Struct variants → tagged dict with `__kind__` key

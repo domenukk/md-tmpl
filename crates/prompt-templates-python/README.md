@@ -1,49 +1,13 @@
-# prompt-templates for Python
-
-Strongly-typed prompt templates for LLMs.
+# prompt-templates
 
 [![PyPI version](https://badge.fury.io/py/prompt-templates.svg)](https://badge.fury.io/py/prompt-templates)
-Templates are markdown files with YAML frontmatter declaring typed
-parameters — every variable, list shape, and enum variant is validated
-at render time.
 
-Built with PyO3/maturin on top of the Rust engine. **3–8× faster than
-Jinja2** for rendering.
-
-## Why?
-
-Inline f-strings are unreadable. Untyped Jinja2/Mako templates break at runtime.
-`prompt-templates` gives you:
-
-- **Markdown-native** — prompts live in `.tmpl.md` files, readable in any editor or on GitHub.
-- **Strict typing** — every parameter declares a type; mismatches are caught at render time with clear errors.
-- **Agent-safe** — when an LLM edits prompts, the engine catches drift immediately.
-
-## Installation
-
-```bash
-pip install prompt-templates
-```
-
-For development (requires Rust toolchain):
-
-```bash
-pip install maturin
-cd crates/prompt-templates-python
-maturin develop
-```
-
-## Quick Start
-
-### Generated Types (recommended)
-
-`template()` auto-generates Python enum classes and item types from
-frontmatter — use them for type-safe rendering:
+Strongly-typed prompt templates for LLMs.
 
 ```python
 from prompt_templates import template
 
-# Loads the template and generates Status enum + Item class from frontmatter
+# Load a template — enums and typed classes are generated automatically
 review = template("prompts/code_review.tmpl.md")
 
 output = review.render(
@@ -56,36 +20,129 @@ output = review.render(
         ),
     ],
 )
+
+# Pattern-match on the generated enum (Python 3.10+)
+match review.Status.NeedsChanges(reason="missing tests"):
+    case review.Status.Approved:
+        print("Ship it!")
+    case review.Status.NeedsChanges(reason=r):
+        print(f"Please fix: {r}")
+    case review.Status.Rejected:
+        print("Back to the drawing board")
 ```
 
-Unit variants are sentinels (no parens), struct variants are callable:
+The template file is plain Markdown with YAML frontmatter:
 
-```python
-review.Status.Approved           # unit variant
-review.Status.NeedsChanges(reason="fix tests")  # struct variant
-```
-
-Generated Python classes use PascalCase: param `tasks` → class `Tasks`.
-
-### Inline Templates
-
-For quick prototyping, parse templates inline:
-
-```python
-from prompt_templates import Template
-
-tmpl = Template.from_source("""\
+<!-- prettier-ignore -->
+```markdown
 ---
+types:
+  - Status = enum(Approved, NeedsChanges(reason = str), Rejected)
 params:
-  - name = str
+  - reviewer = str
+  - items = list(file = str, status = Status)
 ---
-Hello {{ name }}!""")
-print(tmpl.render(name="world"))  # → "Hello world!"
+
+Review by {{ reviewer }}:
+
+> {% for item in items %}
+
+- **{{ item.file }}** — {% match item.status %}{% case Approved %}✅{% case NeedsChanges %}needs changes: {{ item.status.reason }}{% case Rejected %}❌{% /match %}
+
+> {% /for %}
+```
+
+## Why?
+
+- **Type-safe** — every parameter declares a type; mismatches are caught at render time with clear errors, not silently buried in LLM output.
+- **Markdown-native** — prompts live in `.tmpl.md` files, readable in any editor and on GitHub. No string soup.
+- **Fast** — native-speed engine, 4–8× faster than Jinja2 for rendering, 75× faster to parse.
+
+## Installation
+
+```bash
+pip install prompt-templates
+```
+
+<details>
+<summary>Development installation (building from source)</summary>
+
+Requires a Rust toolchain and [maturin](https://github.com/PyO3/maturin):
+
+```bash
+pip install maturin
+cd crates/prompt-templates-python
+maturin develop
+```
+
+</details>
+
+## Generated Types
+
+### `template()` — the recommended API
+
+`template()` loads a `.tmpl.md` file and auto-generates Python classes for
+every enum, struct, and list-item type declared in the frontmatter:
+
+```python
+from prompt_templates import template
+
+tmpl = template("prompts/task_list.tmpl.md")
+
+# Generated types are attributes on the returned object:
+tmpl.Priority.High       # unit enum variant (sentinel, no parens)
+tmpl.Priority.Medium
+tmpl.Priority.Low
+
+output = tmpl.render(
+    tasks=[
+        {"title": "Fix bug", "priority": tmpl.Priority.High},
+        {"title": "Add tests", "priority": tmpl.Priority.Medium},
+    ],
+)
+```
+
+Generated class names use PascalCase: param `tasks` → class `Tasks`,
+type alias `priority` → class `Priority`.
+
+### `load_types()` — load types without a template object
+
+```python
+from prompt_templates import load_types
+
+types = load_types("prompts/review.tmpl.md")
+Status = types.Status
+
+# Or pick specific types:
+types = load_types("prompts/review.tmpl.md", pick=["Status"])
+```
+
+### `generate_types_source()` — static type stubs for mypy / pyright
+
+Generate `.py` files with `@dataclass` classes so type checkers catch errors
+at analysis time:
+
+```python
+from prompt_templates import generate_types_source
+
+source = generate_types_source("prompts/greeting.tmpl.md")
+with open("greeting_types.py", "w") as f:
+    f.write(source)
+```
+
+Use the generated class like a normal dataclass:
+
+```python
+from greeting_types import Greeting
+
+# mypy / pyright catch missing or mistyped fields here:
+params = Greeting(name="world")
+output = params.render()   # → "Hello world!"
 ```
 
 ## Import Hook
 
-Use templates as regular Python modules — the most Pythonic approach:
+Use templates as regular Python modules:
 
 ```python
 from prompt_templates import prompt_template_import_hook
@@ -100,91 +157,15 @@ output = CodeReview(
 ).render()
 ```
 
-## Runtime Loading
-
-```python
-from prompt_templates import load_template, load_types
-
-tmpl = load_template("prompts/greeting.tmpl.md")
-types = load_types("prompts/greeting.tmpl.md")
-
-output = tmpl.render(name="world")
-```
-
-`load_types` returns a namespace with generated Python classes for all
-type aliases and compound param types. Use `pick=` to load specific types:
-
-```python
-types = load_types("prompts/review.tmpl.md", pick=["Status"])
-```
-
-## Static Type Stubs (mypy / pyright)
-
-Generate `.py` files with typed `@dataclass` classes so type checkers
-catch errors at analysis time — no runtime needed:
-
-```python
-from prompt_templates import generate_types_source
-
-source = generate_types_source("prompts/greeting.tmpl.md")
-with open("greeting_types.py", "w") as f:
-    f.write(source)
-```
-
-The generated file contains:
-
-- `@dataclass` params class with typed fields
-- A `render()` method that loads the template and returns `str`
-- Nested `@dataclass` classes for struct/list params
-- `Variants` subclasses for enum params
-- Default values via `field(default=...)`
-- `__all__` export list
-
-Use the generated class like a normal dataclass:
-
-```python
-from greeting_types import Greeting
-
-# mypy / pyright catch missing or mistyped fields here:
-params = Greeting(name="world")
-output = params.render()   # → "Hello world!"
-
-# Pass an explicit template for hot-reload:
-from prompt_templates import Template
-tmpl = Template.from_file("prompts/greeting.tmpl.md")
-output = params.render(template=tmpl)
-```
-
-## Typed Lists
-
-```python
-from prompt_templates import Template
-
-tmpl = Template.from_source("""\
----
-params:
-  - tasks = list<title = str, priority = str>
----
-> {% for task in tasks %}
-
-- **{{ task.title }}** ({{ task.priority }})
-
-> {% /for %}
-""")
-
-output = tmpl.render(tasks=[
-    {"title": "Write documentation", "priority": "High"},
-    {"title": "Add unit tests",      "priority": "Medium"},
-])
-```
-
 ## Enum Dispatch
+
+Define enums in frontmatter and branch on them with `{% match %}`:
 
 <!-- prettier-ignore -->
 ```markdown
 ---
 params:
-  - status = enum<Done(summary = str), InProgress, Blocked>
+  - status = enum(Done(summary = str), InProgress, Blocked)
 ---
 
 > {% match status %}
@@ -205,50 +186,23 @@ params:
 
 Accessing `status.summary` outside `{% case Done %}` is a template error.
 
-## Type Aliases
-
-```python
-from prompt_templates import template
-
-# Given types: - Priority = enum<High, Medium, Low>
-tmpl = template("prompts/task_list.tmpl.md")
-
-output = tmpl.render(
-    tasks=[
-        {"title": "Fix bug", "priority": tmpl.Priority.High},
-        {"title": "Add tests", "priority": tmpl.Priority.Medium},
-    ],
-)
-```
-
-## Custom Enum Types
-
-```python
-from prompt_templates import variant, Variants
-
-@variant
-class NeedsChanges:
-    reason: str
-
-class Status(Variants):
-    Approved = ()
-    Rejected = ()
-    NeedsChanges = {"reason": str}
-
-Status.Approved              # unit sentinel
-Status.NeedsChanges(reason="fix tests")  # struct constructor
-```
-
-## Pattern Matching (Python 3.10+)
+### `Variants` — define enums in Python
 
 ```python
 from prompt_templates import Variants
 
 class Status(Variants):
-    Approved = ()
+    Approved = ()                    # unit variant (sentinel)
     Rejected = ()
-    NeedsChanges = {"reason": str}
+    NeedsChanges = {"reason": str}   # struct variant (callable)
 
+Status.Approved                          # no parens
+Status.NeedsChanges(reason="fix tests")  # keyword constructor
+```
+
+### Pattern Matching (Python 3.10+)
+
+```python
 def handle_review(status):
     match status:
         case Status.Approved:
@@ -259,75 +213,52 @@ def handle_review(status):
             return "Back to the drawing board"
 ```
 
-## Type Validation
+### `@variant` decorator
 
-Wrong types produce clear errors:
+Turn a class with annotations into a matchable variant:
 
 ```python
+from prompt_templates import variant
+
+@variant
+class NeedsChanges:
+    reason: str
+
+v = NeedsChanges(reason="fix tests")
+assert v.reason == "fix tests"
+```
+
+## Features
+
+### Typed Lists
+
+```python
+from prompt_templates import Template
+
 tmpl = Template.from_source("""\
 ---
 params:
-  - count = int
+  - tasks = list(title = str, priority = str)
 ---
-Count: {{ count }}""")
+> {% for task in tasks %}
 
-tmpl.render(count="not an int")
-# ValueError: type mismatch for 'count': expected int, got str
+- **{{ task.title }}** ({{ task.priority }})
+
+> {% /for %}
+""")
+
+output = tmpl.render(tasks=[
+    {"title": "Write documentation", "priority": "High"},
+    {"title": "Add unit tests",      "priority": "Medium"},
+])
 ```
 
-Extra parameters are rejected by default — pass `allow_extra=True` to
-opt out.
+### Defaults
 
-## Caching
+Parameters can declare defaults in the frontmatter. Call `render_empty()`
+on templates where every parameter has a default.
 
-```python
-from prompt_templates import TemplateCache
-
-cache = TemplateCache()
-tmpl = cache.load("prompts/greeting.tmpl.md")
-output = tmpl.render(name="cached")
-
-# Cache-aware rendering (resolves {% include %} through cache):
-output = tmpl.render_cached(cache, name="world")
-
-cache.template_count()  # 2
-cache.clear()           # invalidate all entries
-```
-
-## Rendering from a Dict
-
-```python
-params = {"name": "world", "count": 3}
-output = tmpl.render_dict(params)
-output = tmpl.render_dict(params, allow_extra=True)
-```
-
-## Constants
-
-```python
-tmpl = Template.from_source("""\
----
-consts:
-  - MAX_RETRIES = int := 3
-  - MODEL = str := "gpt-4"
-params:
-  - query = str
----
-{{ query }}""")
-
-constants = tmpl.consts()  # {"MAX_RETRIES": 3, "MODEL": "gpt-4"}
-```
-
-## Hot-Reload Validation
-
-```python
-expected = tmpl.declarations()
-
-new_tmpl = Template.from_file("prompts/greeting.tmpl.md")
-new_tmpl.validate_declarations_against(expected)  # raises ValueError if changed
-```
-
-## Filters
+### Filters
 
 | Filter      | Example                    |
 | ----------- | -------------------------- |
@@ -340,16 +271,67 @@ new_tmpl.validate_declarations_against(expected)  # raises ValueError if changed
 | `add(N)`    | `{{ count \| add(1) }}`    |
 | `sub(N)`    | `{{ count \| sub(1) }}`    |
 
-## Built-in Functions
+### Built-in Functions
 
 | Function       | Example                                             |
 | -------------- | --------------------------------------------------- |
 | `idx(binding)` | `{{ idx(item) }}` — 0-based loop index              |
 | `len(expr)`    | `{{ len(items) }}` — list or string length          |
 | `kind(expr)`   | `{{ kind(status) }}` — enum variant name            |
-| `has(expr)`    | `{{ has(field) }}` — true if `option<T>` is present |
+| `has(expr)`    | `{{ has(field) }}` — true if `option(T)` is present |
 
-## Errors
+### Includes
+
+Templates can include other templates with `{% include "path.tmpl.md" %}`.
+
+### Constants
+
+```python
+tmpl = Template.from_source("""\
+---
+consts:
+  - MAX_RETRIES = int := 3
+  - MODEL = str := "gemini-3.5-flash"
+params:
+  - query = str
+---
+{{ query }}""")
+
+constants = tmpl.consts()  # {"MAX_RETRIES": 3, "MODEL": "gemini-3.5-flash"}
+```
+
+### Caching
+
+```python
+from prompt_templates import TemplateCache
+
+cache = TemplateCache()
+tmpl = cache.load("prompts/greeting.tmpl.md")
+output = tmpl.render(name="cached")
+
+# Cache-aware rendering (resolves {% include %} through cache):
+output = tmpl.render_cached(cache, name="world")
+
+cache.template_count()  # number of cached templates
+cache.clear()           # invalidate all entries
+```
+
+## API Reference
+
+### `Template`
+
+| Method / Constructor                      | Description                                             |
+| ----------------------------------------- | ------------------------------------------------------- |
+| `Template.from_file(path)`                | Load and parse a `.tmpl.md` file                        |
+| `Template.from_source(source)`            | Parse a template from an inline string                  |
+| `tmpl.render(**kwargs)`                   | Render with keyword arguments (type-checked)            |
+| `tmpl.render_dict(params, allow_extra=…)` | Render from a dict; `allow_extra=True` skips extras     |
+| `tmpl.render_empty()`                     | Render a template with only defaults (no user args)     |
+| `tmpl.declarations()`                     | Return `[(name, type_str), …]` for all params           |
+| `tmpl.consts()`                           | Return `{name: value, …}` for constants                 |
+| `tmpl.validate_declarations_against(…)`   | Raise `ValueError` if declarations changed (hot-reload) |
+
+### Errors
 
 ```python
 from prompt_templates import (
@@ -361,42 +343,49 @@ from prompt_templates import (
 )
 ```
 
+Wrong types produce clear errors:
+
+```python
+tmpl.render(count="not an int")
+# ValueError: type mismatch for 'count': expected int, got str
+```
+
+Extra parameters are rejected by default — pass `allow_extra=True` to opt out.
+
 ## Performance
 
-**3–8× faster than Jinja2** for rendering. Backed by a native Rust
-engine via PyO3 FFI — the speed advantage is partly due to compiled
-code, not template design alone. On the hero render benchmark, Mako
-(which generates Python bytecode) is slightly faster.
+**4–8× faster than Jinja2** for rendering, backed by a native-speed engine.
+The speed advantage comes from a native Rust engine — not template design alone.
 
-### Render Time (pre-compiled template + data)
+### Render Time (pre-parsed template + data)
 
 10,000 iterations, best of 5 runs
 ([source](../../benchmarks/python/bench_templates.py)):
 
-| Scenario        | prompt-templates |   Jinja2 |            Mako |       vs Jinja2 |
-| --------------- | ---------------: | -------: | --------------: | --------------: |
-| **simple**      |   **0.82 µs** 🏆 |  6.43 µs |         6.41 µs | **7.8× faster** |
-| **loop**        |   **2.47 µs** 🏆 | 11.96 µs |         7.17 µs | **4.8× faster** |
-| **conditional** |   **1.00 µs** 🏆 |  6.85 µs |         6.63 µs | **6.9× faster** |
-| **hero**        |         24.20 µs | 76.91 µs | **21.50 µs** 🏆 | **3.2× faster** |
+| Scenario        | prompt-templates |   Jinja2 |    Mako |       vs Jinja2 |
+| --------------- | ---------------: | -------: | ------: | --------------: |
+| **simple**      |   **0.84 µs** 🏆 |  6.48 µs | 6.46 µs | **7.7× faster** |
+| **loop**        |   **1.74 µs** 🏆 |  9.71 µs | 6.70 µs | **5.6× faster** |
+| **conditional** |   **0.87 µs** 🏆 |  6.50 µs | 6.44 µs | **7.5× faster** |
+| **hero**        |   **6.62 µs** 🏆 | 24.74 µs | 9.27 µs | **3.7× faster** |
 
-### Compile Time (source → compiled object)
+### Parse Time (source → template object)
 
 | Scenario        | prompt-templates |    Jinja2 |      Mako |    Django |
 | --------------- | ---------------: | --------: | --------: | --------: |
-| **simple**      |   **4.19 µs** 🏆 | 316.41 µs | 405.50 µs |  18.73 µs |
-| **loop**        |   **7.38 µs** 🏆 | 668.25 µs | 605.36 µs |  50.48 µs |
-| **conditional** |   **9.98 µs** 🏆 |   1.15 ms | 731.26 µs | 161.04 µs |
-| **hero**        |  **26.21 µs** 🏆 |   2.30 ms |   1.64 ms | 272.07 µs |
+| **simple**      |   **4.22 µs** 🏆 | 316.75 µs | 393.84 µs |  18.80 µs |
+| **loop**        |   **6.35 µs** 🏆 | 563.24 µs | 501.24 µs |  41.55 µs |
+| **conditional** |   **7.98 µs** 🏆 | 674.79 µs | 557.00 µs |  75.34 µs |
+| **hero**        |  **27.43 µs** 🏆 |   2.26 ms |   1.38 ms | 228.92 µs |
 
-### End-to-End (compile + render)
+### End-to-End (parse + render)
 
-| Scenario        | prompt-templates |    Jinja2 |      Mako |      Django |
-| --------------- | ---------------: | --------: | --------: | ----------: |
-| **simple**      |   **5.01 µs** 🏆 | 322.84 µs | 411.91 µs |    26.45 µs |
-| **loop**        |   **9.85 µs** 🏆 | 680.21 µs | 612.53 µs |    86.89 µs |
-| **conditional** |  **10.98 µs** 🏆 |   1.16 ms | 737.89 µs |   189.52 µs |
-| **hero**        |  **50.41 µs** 🏆 |   2.38 ms |   1.66 ms | 1,113.65 µs |
+| Scenario        | prompt-templates |    Jinja2 |      Mako |    Django |
+| --------------- | ---------------: | --------: | --------: | --------: |
+| **simple**      |   **5.33 µs** 🏆 | 341.41 µs | 425.09 µs |  39.69 µs |
+| **loop**        |   **8.90 µs** 🏆 | 590.97 µs | 529.91 µs | 102.85 µs |
+| **conditional** |   **9.45 µs** 🏆 | 688.41 µs | 593.48 µs | 102.92 µs |
+| **hero**        |  **37.35 µs** 🏆 |   2.32 ms |   1.46 ms | 492.58 µs |
 
 ```bash
 just bench-python          # run comparison benchmarks

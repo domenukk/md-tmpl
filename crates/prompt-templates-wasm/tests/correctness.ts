@@ -157,7 +157,7 @@ testExact(
   "5. Struct field access",
   `---
 params:
-  - meta = struct<author = str, version = int>
+  - meta = struct(author = str, version = int)
 ---
 By {{ meta.author }}, v{{ meta.version }}`,
   { meta: { author: "Alice", version: 3 } },
@@ -319,7 +319,7 @@ testContent(
   "19. List iteration (for loop) [content]",
   `---
 params:
-  - tasks = list<title = str, priority = str>
+  - tasks = list(title = str, priority = str)
 ---
 > {% for task in tasks %}
 
@@ -411,7 +411,7 @@ testContent(
   "23. Enum unit variant [content]",
   `---
 params:
-  - outcome = enum<Confirmed(evidence = str), Rejected, NeedsWork>
+  - outcome = enum(Confirmed(evidence = str), Rejected, NeedsWork)
 ---
 > {% match outcome %}
 > {% case Confirmed %}
@@ -435,7 +435,7 @@ testContent(
   "24. Enum struct variant [content]",
   `---
 params:
-  - outcome = enum<Confirmed(evidence = str), Rejected, NeedsWork>
+  - outcome = enum(Confirmed(evidence = str), Rejected, NeedsWork)
 ---
 > {% match outcome %}
 > {% case Confirmed %}
@@ -478,7 +478,7 @@ testContent(
   "26. Large list (12 items) [content]",
   `---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
 > {% for item in items %}
 
@@ -495,7 +495,7 @@ testWasm(
   "27. WASM for-loop exact",
   `---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
 > {% for item in items %}
 
@@ -531,7 +531,7 @@ testWasm(
   "29. WASM match exact",
   `---
 params:
-  - s = enum<A, B(val = str)>
+  - s = enum(A, B(val = str))
 ---
 > {% match s %}
 > {% case A %}
@@ -578,7 +578,7 @@ testExact(
   "32. Filter join(sep)",
   `---
 params:
-  - items = list<label = str>
+  - items = list(label = str)
 ---
 > {% for item in items %}{{ item.label }}> {% /for %}`,
   { items: [{ label: "a" }, { label: "b" }, { label: "c" }] },
@@ -645,7 +645,7 @@ testContent(
   "38. Built-in idx() in for loop",
   `---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
 > {% for item in items %}
 
@@ -660,7 +660,7 @@ testExact(
   "39. Built-in len() on list",
   `---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
 Count: {{ len(items) }}`,
   { items: [{ name: "x" }, { name: "y" }] },
@@ -682,7 +682,7 @@ testExact(
   "41. Built-in kind() on enum",
   `---
 params:
-  - status = enum<Active, Paused, Stopped>
+  - status = enum(Active, Paused, Stopped)
 ---
 Kind: {{ kind(status) }}`,
   { status: "Active" },
@@ -693,8 +693,8 @@ testExact(
   "42. Nested idx() in nested for loops",
   `---
 params:
-  - outer = list<label = str>
-  - inner = list<label = str>
+  - outer = list(label = str)
+  - inner = list(label = str)
 ---
 > {% for a in outer %}> {% for b in inner %}{{ idx(a) }}.{{ idx(b) }} > {% /for %}> {% /for %}`,
   {
@@ -745,7 +745,7 @@ testContent(
   "46. Match else arm",
   `---
 params:
-  - s = enum<A, B, C>
+  - s = enum(A, B, C)
 ---
 > {% match s %}
 > {% case A %}
@@ -765,7 +765,7 @@ testContent(
   "47. Match else arm (explicit case)",
   `---
 params:
-  - s = enum<A, B, C>
+  - s = enum(A, B, C)
 ---
 > {% match s %}
 > {% case A %}
@@ -785,7 +785,7 @@ testContent(
   "48. Match multi-variant arm",
   `---
 params:
-  - s = enum<A, B, C>
+  - s = enum(A, B, C)
 ---
 > {% match s %}
 > {% case A | B %}
@@ -805,7 +805,7 @@ testExact(
   "49. Match inline guard",
   `---
 params:
-  - s = enum<Labelled(label = str), Unlabelled>
+  - s = enum(Labelled(label = str), Unlabelled)
 ---
 Result: {% match s case Labelled %}{{ s.label }}{% /match %}`,
   { s: { __kind__: "Labelled", label: "found" } },
@@ -816,7 +816,7 @@ testContent(
   "50. Empty list for-loop",
   `---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
 before
 
@@ -996,7 +996,7 @@ testContent(
 consts:
   - PREFIX = str := ">>"
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
 > {% for item in items %}
 
@@ -1030,7 +1030,7 @@ testContent(
 consts:
   - LABEL = str := "status"
 params:
-  - s = enum<A, B>
+  - s = enum(A, B)
 ---
 > {% match s %}
 > {% case A %}
@@ -1050,7 +1050,7 @@ testExact(
   "64. Constants with struct type",
   `---
 consts:
-  - STAGES = struct<DESIGN = str, BUILD = str> := {DESIGN = "Design", BUILD = "Build"}
+  - STAGES = struct(DESIGN = str, BUILD = str) := {DESIGN = "Design", BUILD = "Build"}
 params: []
 ---
 Stage: {{ STAGES.DESIGN }}, {{ STAGES.BUILD }}`,
@@ -1062,7 +1062,7 @@ testExact(
   "65. Match inline guard with struct field access",
   `---
 params:
-  - x = enum<Known(label = str), Unknown>
+  - x = enum(Known(label = str), Unknown)
 ---
 Result: {% match x case Known %}{{ x.label }}{% /match %}`,
   { x: { __kind__: "Known", label: "found-it" } },
@@ -1095,7 +1095,7 @@ testExact(
   "68. Filter limit(N) on expression",
   `---
 params:
-  - items = list<str>
+  - items = list(str)
 ---
 {{ items | limit(2) | join(", ") }}`,
   { items: ["a", "b", "c"] },
@@ -1117,7 +1117,7 @@ testContent(
   "70. For loop with single item",
   `---
 params:
-  - items = list<name = str>
+  - items = list(name = str)
 ---
 > {% for item in items %}
 
@@ -1132,7 +1132,7 @@ testExact(
   "71. Struct with multiple fields",
   `---
 params:
-  - info = struct<a = str, b = int, c = bool>
+  - info = struct(a = str, b = int, c = bool)
 ---
 {{ info.a }}-{{ info.b }}-{{ info.c }}`,
   { info: { a: "hello", b: 42, c: true } },
@@ -1143,7 +1143,7 @@ testExact(
   "72. Nested struct field access",
   `---
 params:
-  - config = struct<db = struct<host = str, port = int>>
+  - config = struct(db = struct(host = str, port = int))
 ---
 {{ config.db.host }}:{{ config.db.port }}`,
   { config: { db: { host: "localhost", port: 5432 } } },

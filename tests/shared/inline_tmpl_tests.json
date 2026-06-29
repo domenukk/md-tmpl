@@ -76,7 +76,7 @@
       "description": "Inline template with for-each iteration over a list",
       "template_lines": [
         "---",
-        "params: [items = list<str>]",
+        "params: [items = list(str)]",
         "---",
         "> {% tmpl item %}",
         "---",

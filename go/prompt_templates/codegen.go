@@ -379,8 +379,8 @@ const (
 	kindList
 	kindStruct
 	kindEnum
-	kindOption     // option<T> — nullable wrapper.
-	kindScalarList // scalar_list<T> — homogeneous typed list.
+	kindOption     // option(T) — nullable wrapper.
+	kindScalarList // scalar_list(T) — homogeneous typed list.
 	kindAlias      // Unresolved type alias — maps to any.
 )
 
@@ -404,8 +404,8 @@ type variantNode struct {
 	fields []fieldNode // Empty for unit variants.
 }
 
-// parseTypeSpec parses a TypeSpec string like "str", "list<x = str, y = int>",
-// "enum<A, B(x = str)>", etc.
+// parseTypeSpec parses a TypeSpec string like "str", "list(x = str, y = int)",
+// "enum(A, B(x = str))", etc.
 func parseTypeSpec(spec string) (typeNode, error) {
 	spec = strings.TrimSpace(spec)
 	p := &typeParser{input: spec}
@@ -456,11 +456,11 @@ func (p *typeParser) parseType() (typeNode, error) {
 	}
 }
 
-// parseWrapped handles option<T> and scalar_list<T> — types wrapping a single inner type.
+// parseWrapped handles option(T) and scalar_list(T) — types wrapping a single inner type.
 func (p *typeParser) parseWrapped(kind typeKind) (typeNode, error) {
 	p.skipWhitespace()
-	if !p.consume('<') {
-		return typeNode{}, fmt.Errorf("expected '<' after type keyword at position %d in %q", p.pos, p.input)
+	if !p.consume('(') {
+		return typeNode{}, fmt.Errorf("expected '(' after type keyword at position %d in %q", p.pos, p.input)
 	}
 	p.skipWhitespace()
 
@@ -470,8 +470,8 @@ func (p *typeParser) parseWrapped(kind typeKind) (typeNode, error) {
 	}
 
 	p.skipWhitespace()
-	if !p.consume('>') {
-		return typeNode{}, fmt.Errorf("expected '>' at position %d in %q", p.pos, p.input)
+	if !p.consume(')') {
+		return typeNode{}, fmt.Errorf("expected ')' at position %d in %q", p.pos, p.input)
 	}
 
 	return typeNode{kind: kind, innerType: &inner}, nil
@@ -479,12 +479,12 @@ func (p *typeParser) parseWrapped(kind typeKind) (typeNode, error) {
 
 func (p *typeParser) parseCompound(kind typeKind) (typeNode, error) {
 	p.skipWhitespace()
-	if !p.consume('<') {
+	if !p.consume('(') {
 		// Bare list/struct without fields.
 		return typeNode{kind: kind}, nil
 	}
 
-	// For list types, check if this is a scalar list (e.g., list<str>)
+	// For list types, check if this is a scalar list (e.g., list(str))
 	// by peeking ahead: if the first token is a type keyword not followed
 	// by '=', it's a scalar list.
 	if kind == kindList {
@@ -492,9 +492,9 @@ func (p *typeParser) parseCompound(kind typeKind) (typeNode, error) {
 		p.skipWhitespace()
 		ident := p.readIdent()
 		p.skipWhitespace()
-		if ident != "" && p.peek() == '>' {
-			// It's a scalar list like list<str>.
-			p.pos++ // consume '>'
+		if ident != "" && p.peek() == ')' {
+			// It's a scalar list like list(str).
+			p.pos++ // consume ')'
 			innerNode, err := parseTypeSpec(ident)
 			if err != nil {
 				return typeNode{}, fmt.Errorf("parsing scalar list element type: %w", err)
@@ -505,7 +505,7 @@ func (p *typeParser) parseCompound(kind typeKind) (typeNode, error) {
 		p.pos = saved
 	}
 
-	fields, err := p.parseFields('>')
+	fields, err := p.parseFields(')')
 	if err != nil {
 		return typeNode{}, err
 	}
@@ -549,20 +549,20 @@ func (p *typeParser) parseFields(closer rune) ([]fieldNode, error) {
 
 func (p *typeParser) parseEnum() (typeNode, error) {
 	p.skipWhitespace()
-	if !p.consume('<') {
-		return typeNode{}, fmt.Errorf("expected '<' after 'enum' at position %d in %q", p.pos, p.input)
+	if !p.consume('(') {
+		return typeNode{}, fmt.Errorf("expected '(' after 'enum' at position %d in %q", p.pos, p.input)
 	}
 
 	var variants []variantNode
 	for {
 		p.skipWhitespace()
-		if p.peek() == '>' {
+		if p.peek() == ')' {
 			p.pos++
 			break
 		}
 		if len(variants) > 0 {
 			if !p.consume(',') {
-				return typeNode{}, fmt.Errorf("expected ',' or '>' at position %d in %q", p.pos, p.input)
+				return typeNode{}, fmt.Errorf("expected ',' or ')' at position %d in %q", p.pos, p.input)
 			}
 			p.skipWhitespace()
 		}

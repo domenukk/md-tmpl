@@ -158,7 +158,7 @@ type Cache struct {
 // Declaration represents a single parameter declaration from frontmatter.
 type Declaration struct {
 	Name    string // Parameter name.
-	Type    string // Parameter type (e.g. "str", "int", "list<label = str>").
+	Type    string // Parameter type (e.g. "str", "int", "list(label = str)").
 	Default any    // Default value (nil if no default).
 }
 
@@ -179,8 +179,8 @@ type Frontmatter struct {
 // TaggedVariant is an embeddable base struct for creating statically typed,
 // zero-allocation enum variants in Go without using maps or magic strings.
 //
-// By embedding TaggedVariant in your custom structs, you achieve compile-time
-// static typing for template enum variants that perfectly mirrors Rust's enum representation.
+// By embedding TaggedVariant in your custom structs, you get static
+// typing for template enum variants that mirrors Rust's enum representation.
 //
 // Example:
 //
@@ -203,7 +203,7 @@ func NewTaggedVariant(kind string) TaggedVariant {
 
 // Variant represents a dynamic template enum variant.
 //
-// For static, compile-time type safety without map allocations, embed [TaggedVariant] instead.
+// For static type safety without map allocations, embed [TaggedVariant] instead.
 //
 // Unit variants (no fields):
 //
@@ -806,7 +806,7 @@ func (c *Context) SetBool(key string, value bool) error {
 
 // SetNone sets a None (absent) value in the context.
 //
-// Use this for option<T> parameters to indicate an absent value.
+// Use this for option(T) parameters to indicate an absent value.
 // Equivalent to passing null/nil.
 func (c *Context) SetNone(key string) error {
 	if c.ptr == nil {
@@ -900,7 +900,7 @@ func (c *Context) MergeMap(params map[string]any) error {
 
 // SetTmpl sets a template-typed parameter in the context.
 //
-// This is used for tmpl<...> parameters, where one template is passed as a
+// This is used for tmpl(...) parameters, where one template is passed as a
 // parameter to another template. The template is shared via Arc — the caller
 // retains ownership of the original.
 func (c *Context) SetTmpl(key string, tmpl *Template) error {

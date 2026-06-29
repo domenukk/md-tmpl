@@ -4,48 +4,92 @@
 [![crates.io](https://img.shields.io/crates/v/prompt-templates.svg)](https://crates.io/crates/prompt-templates)
 [![docs.rs](https://docs.rs/prompt-templates/badge.svg)](https://docs.rs/prompt-templates)
 
-Strongly-typed prompt templates for LLMs.
-Templates are markdown files with YAML frontmatter declaring typed
-parameters — every variable, list shape, and enum variant is validated
-at **compile time** via proc macros.
+Strongly-typed prompt templates for LLMs — markdown files with YAML frontmatter,
+validated at **build time** via proc macros, with a full runtime API for dynamic loading.
 
-**MSRV:** 1.85 (Rust 2024 edition) · **`no_std`** compatible (disable default `std` feature)
+```rust
+use prompt_templates_macros::include_template;
+
+// Parses and validates the template at build time, generates typed structs + enums.
+include_template!("prompts/task_report.tmpl.md");
+
+// Generated types:
+//   task_report::Params                  — typed struct
+//   task_report::ParamsPriority          — enum(Critical, High, Medium, Low)
+//   task_report::ParamsTasksItem         — struct { name, urgency }
+//   task_report::ParamsTasksItemUrgency  — enum(Critical, High, Medium, Low)
+
+let params = task_report::Params {
+    title: "Deploy v2.0".into(),
+    priority: task_report::ParamsPriority::Critical,
+    tasks: vec![
+        task_report::ParamsTasksItem {
+            name: "run migrations".into(),
+            urgency: task_report::ParamsTasksItemUrgency::High,
+        },
+        task_report::ParamsTasksItem {
+            name: "update load balancer".into(),
+            urgency: task_report::ParamsTasksItemUrgency::Medium,
+        },
+    ],
+};
+
+let output = params.render().unwrap();
+assert!(output.contains("# Task Report: Deploy v2.0"));
+assert!(output.contains("Priority: Critical"));
+assert!(output.contains("run migrations (High)"));
+```
+
+The template behind it — a plain `.tmpl.md` markdown file:
+
+```markdown
+---
+name: task_report
+description: A task report template with types
+types:
+  - Priority = enum(Critical, High, Medium, Low)
+params:
+  - title = str
+  - priority = Priority
+  - tasks = list(name = str, urgency = Priority)
+---
+
+# Task Report: {{ title }}
+
+Priority: {{ kind(priority) }}
+
+> {% for task in tasks %}
+
+- {{ task.name }} ({{ kind(task.urgency) }})
+
+  > {% /for %}
+```
+
+Rename a variant, add a field, remove a param — the compiler catches it
+immediately. No runtime surprises.
 
 ## Why?
 
-Inline `format!()` strings are unreadable. Untyped Tera/Handlebars templates break at runtime.
-`prompt-templates` gives you:
-
-- **Markdown-native** — prompts live in `.tmpl.md` files, readable in any editor or on GitHub.
-- **Compile-time safety** — proc macros validate syntax, types, and variable references at `cargo build`.
-- **Agent-safe** — when an LLM edits prompts, the compiler catches drift immediately.
+- **Build-time validation** — proc macros parse and validate syntax, types, and variable references at `cargo build`. Typos, missing fields, and type mismatches are build errors. Templates can also be loaded and validated at runtime.
+- **Markdown-native** — prompts live in `.tmpl.md` files, readable in any editor or on GitHub. Compound types use `()` (never `<>`), control-flow tags use `> {% %}` blockquote prefixes.
+- **Agent-safe** — when an LLM edits prompts, the compiler catches drift immediately. `validate_template()` enables hot-reload with contract enforcement.
 
 ## Installation
 
 ```bash
 cargo add prompt-templates
-# compile-time validation + code generation:
+# build-time validation + code generation:
 cargo add prompt-templates-macros
 ```
 
-## Quick Start
+**MSRV:** 1.85 (Rust 2024 edition) · **`no_std`** compatible (disable default `std` feature)
 
-A `.tmpl.md` file is markdown with typed parameters:
+## Build-Time Typed Structs
 
-```markdown
----
-params:
-  - name = str
----
+### `include_template!`
 
-Hello {{ name }}!
-```
-
-### Compile-Time Typed Structs
-
-`include_template!` validates the template at `cargo build` and generates
-a typed struct — wrong types, missing fields, and unknown variables are
-compile errors:
+Reads a `.tmpl.md` file at build time, validates it, and generates a typed
+module:
 
 ```rust
 use prompt_templates_macros::include_template;
@@ -57,7 +101,9 @@ let output = simple_greeting::Params { name: "world".into() }.render().unwrap();
 assert_eq!(output, "\nHello world!\n");
 ```
 
-Use `template!` for inline template strings:
+### `template!`
+
+Inline template strings — same validation, no file needed:
 
 ```rust
 prompt_templates_macros::template!(r#"
@@ -74,7 +120,7 @@ let output = greeting::Params { name: "World".into() }
 assert_eq!(output, "Hello World!\n");
 ```
 
-### `TypedBuilder` Integration
+## `TypedBuilder` Integration
 
 Enable `typed-builder` for ergonomic builder patterns:
 
@@ -114,7 +160,7 @@ let params = greeting::Params::builder()
     .build();
 ```
 
-### `serde` Integration
+## serde Integration
 
 Render directly from any `Serialize` struct:
 
@@ -141,7 +187,7 @@ let tmpl = Template::from_source("\
 params:
   - file_path = str
   - severity = str
-  - findings = list<line = int, message = str>
+  - findings = list(line = int, message = str)
 ---
 
 # Code Review: {{ file_path }}
@@ -166,7 +212,7 @@ let output = tmpl.render(&ReviewParams {
 
 ## Runtime API
 
-For dynamic or scripting use cases, parse templates at runtime:
+For dynamic or scripting use cases, parse templates at runtime.
 
 ### `ctx!` Macro
 
@@ -178,7 +224,7 @@ use prompt_templates::{ctx, Template};
 let tmpl = Template::from_source("
 ---
 params:
-  - tasks = list<title = str, priority = str>
+  - tasks = list(title = str, priority = str)
 ---
 
 > {% for task in tasks %}
@@ -211,9 +257,9 @@ let output = tmpl.render_ctx(&ctx).unwrap();
 assert!(output.contains("Hello world!"));
 ```
 
-## Hot-Reload with Contract Validation
+## Hot-Reload
 
-Load templates from disk at runtime while keeping compile-time type safety —
+Load templates from disk at runtime while keeping type safety —
 iterate on prompt wording without recompiling:
 
 ```rust
@@ -257,7 +303,7 @@ let output = tmpl.render_ctx_cached(&ctx, &cache).unwrap();
 assert_eq!(output, "Hello world!");
 ```
 
-## Extra Parameters and Defaults
+## Defaults & Extra Params
 
 ### `render_allowing_extra()`
 
@@ -299,16 +345,25 @@ assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Alice (5)");
 
 ## Performance
 
-Criterion benchmarks, render only (pre-compiled template + data → output).
+### Internal Benchmarks (Criterion)
+
+| Operation |   Small |  Medium |   Large |
+| --------- | ------: | ------: | ------: |
+| render    |  196 ns | 1.11 µs | 22.1 µs |
+| parse     | 3.65 µs | 15.3 µs | 30.8 µs |
+
+### vs Competitors
+
+Criterion benchmarks, render only (pre-parsed template + data → output).
 ([source](../../benchmarks/benches/comparison.rs))
 
-| Scenario        | prompt-templates |     Tera | `MiniJinja` | Handlebars |
-| --------------- | ---------------: | -------: | ----------: | ---------: |
-| **simple**      |    **119 ns** 🏆 |   215 ns |      553 ns |     610 ns |
-| **loop**        |    **402 ns** 🏆 |   596 ns |     1.96 µs |    2.92 µs |
-| **conditional** |    **196 ns** 🏆 |   341 ns |      615 ns |    1.16 µs |
-| **hero**        |   **2.08 µs** 🏆 |  2.21 µs |     7.58 µs |    21.0 µs |
-| **mega**        |   **9.93 µs** 🏆 | 10.87 µs |     28.5 µs |    82.4 µs |
+| Scenario        | prompt-templates |    Tera | `MiniJinja` | Handlebars |
+| --------------- | ---------------: | ------: | ----------: | ---------: |
+| **simple**      |    **130 ns** 🏆 |  213 ns |      558 ns |     632 ns |
+| **loop**        |    **445 ns** 🏆 |  618 ns |     2.00 µs |    2.85 µs |
+| **conditional** |    **173 ns** 🏆 |  348 ns |      625 ns |    1.16 µs |
+| **hero**        |   **2.07 µs** 🏆 | 2.09 µs |     7.62 µs |    21.4 µs |
+| **mega**        |   **10.1 µs** 🏆 | 11.1 µs |     30.1 µs |    84.7 µs |
 
 _Intel Xeon @ 2.60 GHz, 3 runs × 100 Criterion samples.
 Hero/mega margins are small — treat as comparable to Tera._

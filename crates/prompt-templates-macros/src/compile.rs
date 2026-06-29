@@ -86,7 +86,7 @@ pub(crate) fn compile_template_to_ast(
     }
 
     // Recursively resolve includes at compile time.
-    // Collect declared tmpl<> parameter names — these are dynamic includes
+    // Collect declared tmpl() parameter names — these are dynamic includes
     // resolved at runtime, not compile-time file lookups.
     let tmpl_params: HashSet<String> = fm
         .declarations
@@ -166,7 +166,7 @@ pub(crate) fn resolve_includes_recursive(
     for seg in segments {
         match seg {
             prompt_templates::compiled::Segment::Include(inc) => {
-                // Dynamic tmpl<> parameter — resolved at runtime, not compile time.
+                // Dynamic tmpl() parameter — resolved at runtime, not compile time.
                 if tmpl_params.contains(inc.path.as_ref()) {
                     continue;
                 }

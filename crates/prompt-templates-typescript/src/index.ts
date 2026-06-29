@@ -32,7 +32,7 @@
  * const tmpl = Template.fromSource(`
  * ---
  * params:
- *   - outcome = enum<Approved, Rejected, NeedsChanges(reason = str)>
+ *   - outcome = enum(Approved, Rejected, NeedsChanges(reason = str))
  * ---
  * > {%- match outcome %}
  * > {% case Approved %}

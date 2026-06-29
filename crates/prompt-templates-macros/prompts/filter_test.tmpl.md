@@ -5,7 +5,7 @@ params:
   - name = str
   - score = float
   - count = int
-  - items = list<label = str>
+  - items = list(label = str)
 ---
 
 Upper: {{ name | upper }}

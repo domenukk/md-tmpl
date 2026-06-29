@@ -636,7 +636,7 @@ impl<'a> Scope<'a> {
     /// - Any value that is NOT `Str("None")` (unit variant representation).
     ///
     /// This means a non-option enum `Str("Active")` would also return `true`,
-    /// which is acceptable since `has()` should only be used on `option<T>` types.
+    /// which is acceptable since `has()` should only be used on `option(T)` types.
     pub(crate) fn is_option_some(val: &Value) -> bool {
         use crate::consts::{ENUM_TAG_KEY, OPTION_NONE, OPTION_SOME};
         match val {
@@ -1108,7 +1108,7 @@ mod tests {
     fn kind_extracts_enum_variant_name() {
         let tmpl = crate::Template::from_source(
             r"---
-params: [outcome = struct<evidence = str>]
+params: [outcome = struct(evidence = str)]
 ---
 {{ kind(outcome) }}",
         )
@@ -1149,7 +1149,7 @@ params: [count = int]
     fn kind_rejects_dict_without_variant_tag() {
         let tmpl = crate::Template::from_source(
             r"---
-params: [data = struct<name = str>]
+params: [data = struct(name = str)]
 ---
 {{ kind(data) }}",
         )
@@ -1174,7 +1174,7 @@ params: [data = struct<name = str>]
         // The internal __kind__ key must not be accessible as {{ outcome.__kind__ }}.
         let tmpl = crate::Template::from_source(
             r"---
-params: [outcome = struct<evidence = str>]
+params: [outcome = struct(evidence = str)]
 ---
 {{ outcome.__kind__ }}",
         )
@@ -1202,7 +1202,7 @@ params: [outcome = struct<evidence = str>]
         // A user field named "tag" must not collide with the internal __kind__ key.
         let tmpl = crate::Template::from_source(
             r"---
-params: [entry = struct<tag = str>]
+params: [entry = struct(tag = str)]
 ---
 {{ kind(entry) }}: {{ entry.tag }}",
         )

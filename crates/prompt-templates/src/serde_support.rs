@@ -129,7 +129,7 @@ impl ser::Serializer for ValueSerializer {
     }
 
     fn serialize_none(self) -> Result<Value, SerError> {
-        // Map to the template engine's `Value::None` for `option<T>`.
+        // Map to the template engine's `Value::None` for `option(T)`.
         Ok(Value::None)
     }
     fn serialize_some<T: ?Sized + Serialize>(self, value: &T) -> Result<Value, SerError> {
@@ -832,11 +832,11 @@ impl<'de> serde::Deserialize<'de> for Value {
                 Ok(Value::Struct(Arc::new(hashmap)))
             }
             fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
-                // null / unit → template `Value::None` for `option<T>`.
+                // null / unit → template `Value::None` for `option(T)`.
                 Ok(Value::None)
             }
             fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
-                // serde `None` → template `Value::None` for `option<T>`.
+                // serde `None` → template `Value::None` for `option(T)`.
                 Ok(Value::None)
             }
         }

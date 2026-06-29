@@ -19,6 +19,22 @@
 
 import { TemplateSyntaxError } from "./errors.js";
 import type { Frontmatter, VarDecl, VarType } from "./frontmatter.js";
+import {
+  TYPE_STR,
+  TYPE_BOOL,
+  TYPE_INT,
+  TYPE_FLOAT,
+  TYPE_LIST,
+  TYPE_STRUCT,
+  TYPE_ENUM,
+  TYPE_TMPL,
+  TYPE_OPTION,
+  PIPE,
+  QUOTE_DOUBLE,
+  QUOTE_SINGLE,
+  OPTION_SOME,
+  DOT,
+} from "./consts.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -26,29 +42,29 @@ import type { Frontmatter, VarDecl, VarType } from "./frontmatter.js";
 
 /** Reserved keywords that cannot be used as parameter, constant, or type alias names. */
 const RESERVED_NAMES: ReadonlySet<string> = new Set([
-  "str",
-  "bool",
-  "int",
-  "float",
-  "list",
-  "struct",
-  "enum",
-  "tmpl",
-  "option",
+  TYPE_STR,
+  TYPE_BOOL,
+  TYPE_INT,
+  TYPE_FLOAT,
+  TYPE_LIST,
+  TYPE_STRUCT,
+  TYPE_ENUM,
+  TYPE_TMPL,
+  TYPE_OPTION,
   "params",
 ]);
 
 /** Built-in type names. A type alias cannot shadow any of these. */
 const BUILTIN_TYPE_NAMES: ReadonlySet<string> = new Set([
-  "str",
-  "bool",
-  "int",
-  "float",
-  "list",
-  "struct",
-  "enum",
-  "tmpl",
-  "option",
+  TYPE_STR,
+  TYPE_BOOL,
+  TYPE_INT,
+  TYPE_FLOAT,
+  TYPE_LIST,
+  TYPE_STRUCT,
+  TYPE_ENUM,
+  TYPE_TMPL,
+  TYPE_OPTION,
 ]);
 
 // ---------------------------------------------------------------------------
@@ -84,18 +100,18 @@ function varTypeEquals(a: VarType, b: VarType): boolean {
   if (a.kind !== b.kind) return false;
 
   switch (a.kind) {
-    case "str":
-    case "bool":
-    case "int":
-    case "float":
+    case TYPE_STR:
+    case TYPE_BOOL:
+    case TYPE_INT:
+    case TYPE_FLOAT:
     case "untyped_list":
       return true;
     case "alias":
       return (b as typeof a).name === a.name;
     case "scalar_list":
       return varTypeEquals(a.elementType, (b as typeof a).elementType);
-    case "list":
-    case "struct": {
+    case TYPE_LIST:
+    case TYPE_STRUCT: {
       const bFields = (b as typeof a).fields;
       if (a.fields.length !== bFields.length) return false;
       return a.fields.every((f, i) => {
@@ -103,7 +119,7 @@ function varTypeEquals(a: VarType, b: VarType): boolean {
         return f.name === bf.name && varTypeEquals(f.varType, bf.varType);
       });
     }
-    case "enum": {
+    case TYPE_ENUM: {
       const bVariants = (b as typeof a).variants;
       if (a.variants.length !== bVariants.length) return false;
       return a.variants.every((v, i) => {
@@ -116,7 +132,7 @@ function varTypeEquals(a: VarType, b: VarType): boolean {
         });
       });
     }
-    case "option":
+    case TYPE_OPTION:
       return varTypeEquals(a.innerType, (b as typeof a).innerType);
     default: {
       const _exhaustive: never = a;
@@ -144,12 +160,12 @@ function varTypeReferencesAlias(
   switch (ty.kind) {
     case "scalar_list":
       return varTypeReferencesAlias(ty.elementType, aliasType, aliasName);
-    case "list":
-    case "struct":
+    case TYPE_LIST:
+    case TYPE_STRUCT:
       return ty.fields.some((f) =>
         varTypeReferencesAlias(f.varType, aliasType, aliasName),
       );
-    case "enum":
+    case TYPE_ENUM:
       return ty.variants.some((v) =>
         v.fields.some((f) =>
           varTypeReferencesAlias(f.varType, aliasType, aliasName),
@@ -260,7 +276,7 @@ export function validateFrontmatter(fm: Frontmatter): void {
         }
         // Enum type aliases are auto-injected as constants, so a user-defined
         // constant with the same name simply takes priority — not a conflict.
-        if (aliasType.kind === "enum") {
+        if (aliasType.kind === TYPE_ENUM) {
           continue;
         }
         const label = fm.consts.some((c) => c.name === decl.name)
@@ -307,7 +323,7 @@ export function validateFrontmatter(fm: Frontmatter): void {
   ) {
     for (const [aliasName, aliasType] of fm.typeAliases) {
       // Enum types are always used — they're auto-injected as constants.
-      if (aliasType.kind === "enum") continue;
+      if (aliasType.kind === TYPE_ENUM) continue;
       const isUsed = allDecls.some((d) =>
         varTypeReferencesAlias(d.varType, aliasType, aliasName),
       );
@@ -383,29 +399,29 @@ function isDisplayableType(ty: VarType): boolean {
   // Conservatively allow them — the resolved type may be scalar.
   if (ty.kind === "alias") return true;
   return (
-    ty.kind === "str" ||
-    ty.kind === "int" ||
-    ty.kind === "float" ||
-    ty.kind === "bool"
+    ty.kind === TYPE_STR ||
+    ty.kind === TYPE_INT ||
+    ty.kind === TYPE_FLOAT ||
+    ty.kind === TYPE_BOOL
   );
 }
 
 /** Built-in functions that always return a scalar (displayable) value. */
-const SCALAR_FUNCTIONS = new Set(["len", "idx", "kind", "has", "str"]);
+const SCALAR_FUNCTIONS = new Set(["len", "idx", "kind", "has", TYPE_STR]);
 
 /** Human-readable label for a VarType. */
 function varTypeLabel(ty: VarType): string {
   switch (ty.kind) {
-    case "list":
+    case TYPE_LIST:
     case "scalar_list":
     case "untyped_list":
-      return "list";
-    case "struct":
-      return "struct";
-    case "enum":
-      return "enum";
-    case "option":
-      return "option";
+      return TYPE_LIST;
+    case TYPE_STRUCT:
+      return TYPE_STRUCT;
+    case TYPE_ENUM:
+      return TYPE_ENUM;
+    case TYPE_OPTION:
+      return TYPE_OPTION;
     default:
       return ty.kind;
   }
@@ -414,15 +430,15 @@ function varTypeLabel(ty: VarType): string {
 /** Hint message for non-displayable types. */
 function displayHint(ty: VarType): string {
   switch (ty.kind) {
-    case "list":
+    case TYPE_LIST:
     case "scalar_list":
     case "untyped_list":
       return "use {% for %} to iterate, or | join()";
-    case "struct":
+    case TYPE_STRUCT:
       return "access fields with dot notation, e.g. {{ x.field }}";
-    case "enum":
+    case TYPE_ENUM:
       return "use kind(x) for the variant name, or {% match %}";
-    case "option":
+    case TYPE_OPTION:
       return "use {% if has(x) %} to unwrap, or {% match %}";
     default:
       return "only str, int, float, bool can be displayed";
@@ -471,14 +487,14 @@ class TypeEnv {
    */
   resolveExprType(expr: string): VarType | undefined {
     // If filters are applied, skip — filters may transform the type.
-    if (expr.indexOf("|") >= 0) return undefined;
+    if (expr.indexOf(PIPE) >= 0) return undefined;
 
     const pathStr = expr.trim();
 
     // Skip string/numeric literals
     if (
-      pathStr.startsWith('"') ||
-      pathStr.startsWith("'") ||
+      pathStr.startsWith(QUOTE_DOUBLE) ||
+      pathStr.startsWith(QUOTE_SINGLE) ||
       /^\d/.test(pathStr)
     ) {
       return undefined;
@@ -495,7 +511,7 @@ class TypeEnv {
     if (narrowed !== undefined) return narrowed;
 
     // Split dotted path: "user.address.city" → ["user", "address", "city"]
-    const parts = pathStr.split(".");
+    const parts = pathStr.split(DOT);
     const root = parts[0]!;
 
     // Check if a prefix is narrowed (e.g. "x" narrowed, resolving "x.field")
@@ -527,12 +543,12 @@ class TypeEnv {
  */
 function resolveFieldType(ty: VarType, field: string): VarType | undefined {
   switch (ty.kind) {
-    case "struct":
-    case "list": {
+    case TYPE_STRUCT:
+    case TYPE_LIST: {
       const fieldDecl = ty.fields.find((f) => f.name === field);
       return fieldDecl?.varType;
     }
-    case "enum": {
+    case TYPE_ENUM: {
       // A field is accessible if ALL variants have it
       const allHave = ty.variants.every((v) =>
         v.fields.some((f) => f.name === field),
@@ -544,8 +560,8 @@ function resolveFieldType(ty: VarType, field: string): VarType | undefined {
       }
       return undefined;
     }
-    case "option": {
-      // Transparent access through option: option<struct<x = str>>.x → str
+    case TYPE_OPTION: {
+      // Transparent access through option: option(struct(x = str)).x → str
       return resolveFieldType(ty.innerType, field);
     }
     default:
@@ -560,7 +576,7 @@ function resolveFieldType(ty: VarType, field: string): VarType | undefined {
 /**
  * Extract has() narrowing from a condition string.
  *
- * If the condition is `has(path)`, and `path` resolves to `option<T>` in the
+ * If the condition is `has(path)`, and `path` resolves to `option(T)` in the
  * current environment, returns `[path, T]` — the narrowed type.
  */
 function extractHasNarrowing(
@@ -575,13 +591,13 @@ function extractHasNarrowing(
   const ty = env.resolveExprType(path);
   if (!ty) return undefined;
 
-  if (ty.kind === "option") {
+  if (ty.kind === TYPE_OPTION) {
     return [path, ty.innerType];
   }
 
   // Legacy enum-based option
-  if (ty.kind === "enum" && ty.isOption) {
-    const someVariant = ty.variants.find((v) => v.name === "Some");
+  if (ty.kind === TYPE_ENUM && ty.isOption) {
+    const someVariant = ty.variants.find((v) => v.name === OPTION_SOME);
     if (someVariant && someVariant.fields.length === 1) {
       return [path, someVariant.fields[0]!.varType];
     }
@@ -637,7 +653,7 @@ function walkNodesWithNarrowing(
         const exprPath = node.expr.trim();
         const exprType = env.resolveExprType(exprPath);
 
-        if (exprType?.kind === "enum") {
+        if (exprType?.kind === TYPE_ENUM) {
           // Narrow each arm to only the matched variant(s)
           for (const arm of node.arms) {
             const matchedVariants = exprType.variants.filter((v) =>
@@ -657,9 +673,9 @@ function walkNodesWithNarrowing(
               walkNodesWithNarrowing(arm.body, env, errors);
             }
           }
-        } else if (exprType?.kind === "option") {
+        } else if (exprType?.kind === TYPE_OPTION) {
           for (const arm of node.arms) {
-            if (arm.variants.includes("Some")) {
+            if (arm.variants.includes(OPTION_SOME)) {
               // Narrow option to inner type
               const narrowedEnv = env.withNarrowing(
                 exprPath,
@@ -683,7 +699,7 @@ function walkNodesWithNarrowing(
 
         // Inline guard
         if (node.inlineGuard) {
-          if (exprType?.kind === "enum") {
+          if (exprType?.kind === TYPE_ENUM) {
             const matchedVariants = exprType.variants.filter(
               (v) => v.name === node.inlineGuard!.variant,
             );
@@ -713,8 +729,8 @@ function walkNodesWithNarrowing(
         const iterType = env.resolveExprType(node.iterExpr);
         if (iterType) {
           let elementType: VarType | undefined;
-          if (iterType.kind === "list") {
-            // list<name = str, ...> → struct<name = str, ...>
+          if (iterType.kind === TYPE_LIST) {
+            // list(name = str, ...) → struct(name = str, ...)
             elementType = { kind: "struct", fields: iterType.fields };
           } else if (iterType.kind === "scalar_list") {
             elementType = iterType.elementType;
@@ -749,7 +765,7 @@ function walkNodesWithNarrowing(
  * Validate that all `{{ expr }}` interpolations resolve to displayable
  * (scalar) types, with proper flow-sensitive narrowing through:
  *
- * - `{% if has(x) %}` — narrows `option<T>` to `T` in the true branch
+ * - `{% if has(x) %}` — narrows `option(T)` to `T` in the true branch
  * - `{% match x %}{% case V %}` — narrows enum to matched variant
  * - `{% for item in list %}` — introduces element binding
  *

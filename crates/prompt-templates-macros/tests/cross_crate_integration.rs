@@ -4,6 +4,7 @@
 //! `prompt-templates-macros` (compile-time codegen) work together correctly
 //! across crate boundaries with enums, lists, and typed parameters.
 
+#[allow(unused_imports)]
 use std::str::FromStr;
 
 use prompt_templates::{Template, Value, ctx};
@@ -66,7 +67,7 @@ fn test_include_template_generates_correct_structs() {
 
 #[test]
 fn test_include_template_enum_variants() {
-    // The `task_report` template defines `Priority = enum<Critical, High, Medium, Low>`.
+    // The `task_report` template defines `Priority = enum(Critical, High, Medium, Low)`.
     // Verify all variants exist and can be pattern-matched.
     let severity = task_report::Priority::Critical;
 

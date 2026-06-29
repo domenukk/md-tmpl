@@ -24,7 +24,7 @@ params:
   - status = str
   - score = float
   - show_footer = bool
-  - items = list<label = str, value = str>
+  - items = list(label = str, value = str)
 ---
 # Report for {{ title | upper }}
 
@@ -49,7 +49,7 @@ Generated for {{ title }}.
 const largeTemplate = `---
 params:
   - title = str
-  - sections = list<heading = str, entries = list<name = str, active = bool, score = float, tags = list<label = str>>>
+  - sections = list(heading = str, entries = list(name = str, active = bool, score = float, tags = list(label = str)))
   - notes = str
 ---
 # {{ title | upper }}

@@ -72,7 +72,7 @@ mod loop_scenario {
     pub const PROMPT_TEMPLATES: &str = "\
 ---
 params:
-  - items = list<label = str, value = int>
+  - items = list(label = str, value = int)
 ---
 > {% for item in items %}
 
@@ -168,7 +168,7 @@ mod hero {
 ---
 params:
   - title = str
-  - sections = list<heading = str, entries = list<name = str, active = bool, score = float, tags = list<label = str>>>
+  - sections = list(heading = str, entries = list(name = str, active = bool, score = float, tags = list(label = str)))
 ---
 # {{ title }}
 
@@ -708,7 +708,7 @@ mod mega {
 ---
 params:
   - org = str
-  - teams = list<name = str, lead = str, active = bool, idx = int, members = list<name = str, role = str, score = float, skills = list<name = str>>>
+  - teams = list(name = str, lead = str, active = bool, idx = int, members = list(name = str, role = str, score = float, skills = list(name = str)))
 ---
 # {{ org }} Organization Report
 

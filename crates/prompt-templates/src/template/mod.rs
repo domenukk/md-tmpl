@@ -1181,7 +1181,7 @@ pub fn load_template(dir: &Path, name: &str) -> Result<Template, TemplateError> 
 }
 /// Inject enum type aliases as namespace constants.
 ///
-/// For each enum type alias like `Stage = enum<Design, Build>`, this creates
+/// For each enum type alias like `Stage = enum(Design, Build)`, this creates
 /// a dict constant `Stage` → `{Design: "Design", Build: "Build"}`.
 /// This enables expressions like `{{ kind(Stage.Design) }}` in templates.
 /// Bare access like `{{ Stage.Design }}` is rejected at compile time —
