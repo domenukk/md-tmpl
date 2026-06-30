@@ -98,9 +98,9 @@ fn try_convert_tagged_variant(obj: &Bound<'_, PyAny>) -> PyResult<Option<Value>>
         return Ok(None);
     };
 
-    let tag_str: String = tag_attr.extract().map_err(|_| {
-        pyo3::exceptions::PyTypeError::new_err("_md_tmpl_tag must be a string")
-    })?;
+    let tag_str: String = tag_attr
+        .extract()
+        .map_err(|_| pyo3::exceptions::PyTypeError::new_err("_md_tmpl_tag must be a string"))?;
 
     let mut map = HashMap::new();
     map.insert(ENUM_TAG_KEY.to_string(), Value::Str(tag_str));

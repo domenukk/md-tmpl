@@ -502,8 +502,7 @@ mod tests {
 
     #[test]
     fn class_attr_renders() {
-        let cls = PyClassDef::build("Variant")
-            .attr(ClassAttr::new("_md_tmpl_tag", "'Confirmed'"));
+        let cls = PyClassDef::build("Variant").attr(ClassAttr::new("_md_tmpl_tag", "'Confirmed'"));
         let source = cls.render();
         assert!(source.contains("_md_tmpl_tag = 'Confirmed'"));
     }

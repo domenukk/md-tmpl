@@ -246,8 +246,7 @@ export function fromJs(value: unknown): Value {
     if (typeof obj._md_tmpl_tag === "string") {
       const tag = obj._md_tmpl_tag as string;
       const fieldsObj =
-        typeof obj._md_tmpl_fields === "object" &&
-        obj._md_tmpl_fields !== null
+        typeof obj._md_tmpl_fields === "object" && obj._md_tmpl_fields !== null
           ? (obj._md_tmpl_fields as Record<string, unknown>)
           : {};
       const entries: [string, Value][] = [[ENUM_TAG_KEY, str(tag)]];
