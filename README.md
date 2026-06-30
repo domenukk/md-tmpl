@@ -1,6 +1,5 @@
 # prompt-templates
 
-[![CI](https://github.com/domenukk/prompt-templates/actions/workflows/ci.yml/badge.svg)](https://github.com/domenukk/prompt-templates/actions/workflows/ci.yml)
 
 **Strongly-typed prompt templates for LLM Agents**
 Write prompts as markdown, catch errors faster. Vibe harder.
@@ -13,9 +12,11 @@ Write prompts as markdown, catch errors faster. Vibe harder.
 consts:
   - MODEL = str := "gemini-3.5-flash"
   - MAX_FINDINGS = int := 20
+
 types:
   - Severity = enum(Critical, High, Medium, Low)
   - Verdict = enum(Approved, NeedsChanges(reason = str), Rejected(reason = str))
+
 params:
   - reviewer = str
   - file_path = str
@@ -160,6 +161,7 @@ import pt "github.com/domenukk/prompt-templates/go/prompt_templates"
 tmpl, _ := pt.FromSource(`---
 types:
   - Priority = enum(Critical, High, Medium, Low)
+
 params:
   - title = str
   - priority = Priority
@@ -197,6 +199,7 @@ const Priority = defineVariants({
 const tmpl = Template.fromSource(`---
 types:
   - Priority = enum(Critical, High, Medium, Low)
+
 params:
   - title = str
   - priority = Priority
@@ -254,8 +257,6 @@ See the language-specific READMEs or the [benchmarks suite](benchmarks/README.md
 
 ### Rust ([README](crates/prompt-templates/README.md))
 
-[![crates.io](https://img.shields.io/crates/v/prompt-templates.svg)](https://crates.io/crates/prompt-templates)
-[![docs.rs](https://docs.rs/prompt-templates/badge.svg)](https://docs.rs/prompt-templates)
 
 Build-time validation via proc macros, plus a full runtime API for dynamic loading. Pre-parsed templates with zero-overhead rendering. Includes `ctx!` macro, `TypedBuilder`, `serde`, hot-reload, caching, and benchmarks.
 

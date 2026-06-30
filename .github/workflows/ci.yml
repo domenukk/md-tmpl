@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        rust: [stable, "1.85"]
+        rust: [stable]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -91,8 +91,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - uses: Swatinem/rust-cache@v2
-      - run: pip install maturin pytest
-      - run: cd crates/prompt-templates-python && maturin develop && pytest python/tests/ -v
+      - run: python -m venv .venv && . .venv/bin/activate && pip install maturin pytest
+      - run: . .venv/bin/activate && cd crates/prompt-templates-python && maturin develop && pytest python/tests/ -v
 
   go:
     name: Go

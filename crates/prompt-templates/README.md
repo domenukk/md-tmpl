@@ -1,8 +1,5 @@
 # prompt-templates
 
-[![CI](https://github.com/domenukk/prompt-templates/actions/workflows/ci.yml/badge.svg)](https://github.com/domenukk/prompt-templates/actions/workflows/ci.yml)
-[![crates.io](https://img.shields.io/crates/v/prompt-templates.svg)](https://crates.io/crates/prompt-templates)
-[![docs.rs](https://docs.rs/prompt-templates/badge.svg)](https://docs.rs/prompt-templates)
 
 Strongly-typed prompt templates for LLMs — markdown files with YAML frontmatter,
 validated at **build time** via proc macros, with a full runtime API for dynamic loading.
@@ -48,6 +45,7 @@ name: task_report
 description: A task report template with types
 types:
   - Priority = enum(Critical, High, Medium, Low)
+
 params:
   - title = str
   - priority = Priority
@@ -62,7 +60,7 @@ Priority: {{ kind(priority) }}
 
 - {{ task.name }} ({{ kind(task.urgency) }})
 
-  > {% /for %}
+> {% /for %}
 ```
 
 Rename a variant, add a field, remove a param — the compiler catches it
@@ -198,7 +196,7 @@ Severity: {{ severity }}
 
 - Line {{ finding.line }}: {{ finding.message }}
 
-  > {% /for %}"
+> {% /for %}"
 ).unwrap();
 
 let output = tmpl.render(&ReviewParams {

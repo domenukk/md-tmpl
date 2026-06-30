@@ -1,13 +1,10 @@
 # prompt-templates-macros
 
-[![crates.io](https://img.shields.io/crates/v/prompt-templates-macros.svg)](https://crates.io/crates/prompt-templates-macros)
 
 Proc macros for **build-time** template validation, pre-parsing, and
 typed parameter struct generation for
 [prompt-templates](https://github.com/domenukk/prompt-templates).
 
-[![Crates.io](https://img.shields.io/crates/v/prompt-templates-macros.svg)](https://crates.io/crates/prompt-templates-macros)
-[![Docs.rs](https://docs.rs/prompt-templates-macros/badge.svg)](https://docs.rs/prompt-templates-macros)
 
 ## Why?
 
