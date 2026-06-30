@@ -99,6 +99,8 @@ You need a working [Rust toolchain](https://rustup.rs/) for the build step.
 
 ## Installation
 
+Repository: https://github.com/domenukk/md-tmpl
+
 ```bash
 go get github.com/domenukk/md-tmpl/go/md_tmpl
 ```

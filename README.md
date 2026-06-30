@@ -1,7 +1,6 @@
-# md-tmpl
+# md-tmpl: Strongly typed markdown templates
 
-**Strongly-typed prompt templates for LLM Agents**
-Write prompts as markdown, catch errors faster. Vibe harder.
+Fast and powerful templates. Valid markdown. Strongly typed and great for agents.
 
 ## The Template
 
@@ -185,6 +184,13 @@ WebAssembly bindings wrapping the full Rust engine via `wasm-bindgen`. Same `ITe
 See **[SPEC.md](SPEC.md)** for the complete syntax — all control-flow
 tags, filters, built-in functions, whitespace control, and error
 diagnostics.
+
+## Packages
+
+- **Rust**: https://crates.io/crates/md-tmpl (and https://crates.io/crates/md-tmpl-macros)
+- **Python**: https://pypi.org/project/md-tmpl/
+- **Go**: https://github.com/domenukk/md-tmpl
+- **TypeScript**: https://www.npmjs.com/package/md-tmpl
 
 ## License
 

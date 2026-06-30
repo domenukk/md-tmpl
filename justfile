@@ -77,7 +77,7 @@ lint-python:
 # Lint Go files (vet)
 lint-go: build-go-ffi
     cd go/md_tmpl && go vet ./...
-    @cd go/md_tmpl && if [ -n "$$(gofmt -l .)" ]; then echo "Go code is not formatted. Run 'just fmt'"; exit 1; fi
+    @cd go/md_tmpl && if [ -n "$(gofmt -l .)" ]; then echo "Go code is not formatted. Run 'just fmt'"; exit 1; fi
 
 # Lint TypeScript (strict type-check with tsc)
 lint-ts:

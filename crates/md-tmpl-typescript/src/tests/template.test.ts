@@ -5242,13 +5242,11 @@ describe("Variant edge cases", () => {
       Inactive: null,
     });
     assert.strictEqual(
-      (Active as unknown as { _md_tmpl_tag: string })
-        ._md_tmpl_tag,
+      (Active as unknown as { _md_tmpl_tag: string })._md_tmpl_tag,
       "Active",
     );
     assert.strictEqual(
-      (Inactive as unknown as { _md_tmpl_tag: string })
-        ._md_tmpl_tag,
+      (Inactive as unknown as { _md_tmpl_tag: string })._md_tmpl_tag,
       "Inactive",
     );
   });
