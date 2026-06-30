@@ -1,0 +1,1 @@
+../../md-tmpl/prompts/type_library.tmpl.md

@@ -1,1 +1,0 @@
-../../prompt-templates/prompts/simple_greeting.tmpl.md

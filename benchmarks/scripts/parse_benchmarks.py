@@ -37,7 +37,7 @@ log = logging.getLogger(__name__)
 
 # Criterion benchmark groups map to scenarios
 CRITERION_GROUPS = ["simple", "loop", "conditional", "hero", "mega"]
-CRITERION_ENGINES = ["prompt_templates", "tera", "minijinja", "handlebars"]
+CRITERION_ENGINES = ["md_tmpl", "tera", "minijinja", "handlebars"]
 
 
 def parse_criterion_dir(criterion_dir: Path) -> dict:
@@ -81,7 +81,7 @@ def parse_criterion_dir(criterion_dir: Path) -> dict:
 #   RENDER TIME (pre-compiled template + data → output string)
 #   COMPILE + RENDER TIME (source → compiled → output string)
 # Each section has a table like:
-#   Scenario    prompt-templates   Jinja2  ...
+#   Scenario    md-tmpl   Jinja2  ...
 #   simple          4.63 µs    468.72 µs  ...
 
 PYTHON_SECTION_RE = re.compile(
@@ -169,7 +169,7 @@ def _parse_header_engines(header: str) -> list[str]:
     """Parse engine names from a Python benchmark header line.
 
     The header looks like:
-      Scenario    prompt-templates     Jinja2       Mako   Chevron     Django  str.Tmpl
+      Scenario    md-tmpl     Jinja2       Mako   Chevron     Django  str.Tmpl
     """
     # Split on 2+ spaces to separate columns
     parts = re.split(r"\s{2,}", header.strip())
@@ -246,7 +246,7 @@ def parse_go_output(text: str) -> dict:
         elif unit == "ms":
             ns_val *= 1_000_000
 
-        # Classify: Go_ prefix means stdlib, otherwise prompt-templates
+        # Classify: Go_ prefix means stdlib, otherwise md-tmpl
         entry = {"ns": ns_val, "bytes": bytes_per_op, "allocs": allocs_per_op}
         if name.startswith("Go_"):
             # e.g., Go_RenderSmall -> RenderSmall

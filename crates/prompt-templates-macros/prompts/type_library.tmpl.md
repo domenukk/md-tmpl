@@ -1,1 +1,0 @@
-../../prompt-templates/prompts/type_library.tmpl.md

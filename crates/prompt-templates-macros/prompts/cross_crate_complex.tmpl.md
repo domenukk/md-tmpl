@@ -1,1 +1,0 @@
-../../prompt-templates/prompts/cross_crate_complex.tmpl.md

@@ -1,5 +1,5 @@
 /// Quick script to print actual rendered output from each engine for visual inspection.
-use prompt_templates::{Template, ctx, Value};
+use md_tmpl::{Template, ctx, Value};
 use std::sync::Arc;
 
 fn main() {

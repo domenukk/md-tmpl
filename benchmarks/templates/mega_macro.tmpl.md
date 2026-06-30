@@ -51,8 +51,8 @@ Skills:
 
 - {{ skill.name }}
 
-  > {% /for %}
-  > {% /for %}
+> {% /for %}
+> {% /for %}
 
 ---
 

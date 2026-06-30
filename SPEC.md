@@ -1,4 +1,4 @@
-# prompt-templates — Language Specification
+# md-tmpl — Language Specification
 
 Complete reference for `.tmpl.md` template syntax and the frontmatter type
 system. See the [README](README.md) for API documentation, motivation,
@@ -107,11 +107,14 @@ description: A summary
 types:
   - Labelled = enum(Known(label = str), Unknown)
   - Priority = enum(High, Medium, Low)
+
 imports:
   - "[shared_types](./shared_types.tmpl.md)"
+
 consts:
   - NOTEBOOK_FILENAME = str := "thought_process.md"
   - MAX_RETRIES = int := 3
+
 params:
   - name = str
   - count = int
@@ -123,6 +126,7 @@ params:
   - outcome = enum(Confirmed(evidence = str), Rejected)
   - category = Labelled
   - ext_type = shared_types.SomeType
+
 allow_unused: false
 ---
 ```
@@ -165,6 +169,7 @@ validated against the declared signature:
 
 ```yaml
 # Example: signature matching
+
 params:
   - widget = tmpl(name = str)
 ```
@@ -276,7 +281,7 @@ omitted from the render context, the default is injected automatically.
 Query defaults programmatically:
 
 ```rust
-use prompt_templates::Template;
+use md_tmpl::Template;
 
 let tmpl = Template::from_source(
 "---
@@ -287,7 +292,7 @@ Hello {{ name }}!").unwrap();
 let defaults = tmpl.defaults();
 assert_eq!(defaults.len(), 1);
 
-let ctx = prompt_templates::Context::new();
+let ctx = md_tmpl::Context::new();
 assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Hello World!");
 ```
 
@@ -351,6 +356,7 @@ types:
   - Priority = enum(High, Medium, Low)
   - TaskList = list(title = str, category = Category, priority = Priority)
   - Config = struct(timeout = int, retries = int)
+
 params:
   - tasks = TaskList
   - components = list(name = str, category = Labelled)
@@ -397,6 +403,7 @@ For example, given:
 ```yaml
 params:
   - tasks = list(title = str, priority = str)
+
 consts:
   - DEFAULT_ITEMS = list(label = str) := [{label = "init"}]
 ```
@@ -426,6 +433,7 @@ Each import entry uses quoted markdown link syntax:
 ---
 imports:
   - "[task_list_item](./task_list_item.tmpl.md)"
+
 params:
   - tasks = task_list_item.tasks
   - label = task_list_item.Category
@@ -540,6 +548,7 @@ function, which returns the variant name as a string. Bare access
 types:
   - Stage = enum(Design, Build, Deploy)
   - Status = enum(Active, Paused(reason = str))
+
 params: []
 ---
 
@@ -580,6 +589,7 @@ and constants:
 ---
 imports:
   - "[lib](./lib.tmpl.md)"
+
 params: []
 ---
 
@@ -776,7 +786,7 @@ Pipe operator chains transforms left-to-right: `{{ expr | filter | filter }}`
 `idx()` tracks each loop variable independently in nested loops:
 
 ```rust
-use prompt_templates::{ctx, Template};
+use md_tmpl::{ctx, Template};
 
 let tmpl = Template::from_source("---
 params:
@@ -803,7 +813,7 @@ assert_eq!(output, "0.0 0.1 1.0 1.1 ");
 
 - **{{ task.title }}**: {{ task.description }}
 
-  > {% /for %}
+> {% /for %}
 ```
 
 `{% for x in y %}` requires `y` to be a `list` type — enforced at compile time.
@@ -1085,16 +1095,16 @@ params:
       &path, "---\nparams: []\n---\nok"
   ).unwrap();
 
-  let tmpl = prompt_templates::Template::from_file(&path)
+  let tmpl = md_tmpl::Template::from_file(&path)
       .unwrap()
       .with_max_include_depth(4); // builder-style
 
-  let mut tmpl2 = prompt_templates::Template::from_file(&path).unwrap();
+  let mut tmpl2 = md_tmpl::Template::from_file(&path).unwrap();
   tmpl2.set_max_include_depth(4); // mutable setter
   ```
 
 - **Compile-time** (`include_template!`): Maximum depth
-  defaults to 64. Override with the `PROMPT_TEMPLATES_MAX_INCLUDE_DEPTH`
+  defaults to 64. Override with the `MD_TMPL_MAX_INCLUDE_DEPTH`
   environment variable at build time.
 - **Circular includes** are detected at both compile time (via canonical
   path tracking) and runtime (via depth limit). A cycle is not a hard error
@@ -1121,6 +1131,7 @@ an enum and use it as the element or field type:
 ---
 types:
   - TreeNode = enum(Leaf(label = str), Branch(label = str, depth = int))
+
 params:
   - nodes = list(TreeNode)
 ---
@@ -1145,6 +1156,7 @@ The same pattern works for structs with heterogeneous value types:
 ```yaml
 types:
   - ConfigVal = enum(Text(val = str), Num(val = int), Flag(val = bool))
+
 params:
   - settings = struct(timeout = ConfigVal, label = ConfigVal)
 ```
@@ -1183,7 +1195,7 @@ params:
 
 - **{{ title }}** ({{ priority }})
 
-  > {% /tmpl %}
+> {% /tmpl %}
 
 > {% for task in tasks %}
 > {% include task_row with title=task.title, priority=task.priority %}
@@ -1248,7 +1260,7 @@ explicit call sites.
 Output literal template syntax without processing:
 
 ```rust
-use prompt_templates::{Context, Template};
+use md_tmpl::{Context, Template};
 
 let tmpl = Template::from_source("---
 params: []
@@ -1316,7 +1328,7 @@ Add `-` inside any delimiter to strip adjacent whitespace:
 | `-}}`     | Strips whitespace _after_ the expression                      |
 
 ```rust
-use prompt_templates::{ctx, Template};
+use md_tmpl::{ctx, Template};
 
 let tmpl = Template::from_source("---
 params:
@@ -1336,7 +1348,7 @@ assert_eq!(output, "helloworldbye");
 All errors are returned as `TemplateError` variants with structured fields:
 
 ```rust
-use prompt_templates::{Context, Template, TemplateError};
+use md_tmpl::{Context, Template, TemplateError};
 
 let err = Template::from_source("---
 params:
@@ -1354,7 +1366,7 @@ if let TemplateError::Syntax(syn) = &err {
 Type mismatches include the path to the failing field:
 
 ```rust
-use prompt_templates::{VarType, VarDecl, TypeCheckError, Value};
+use md_tmpl::{VarType, VarDecl, TypeCheckError, Value};
 use std::sync::Arc;
 
 let var_type = VarType::List(vec![VarDecl {

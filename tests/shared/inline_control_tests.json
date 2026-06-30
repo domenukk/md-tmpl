@@ -9,7 +9,9 @@
         "---",
         "> {% if flag %}yes{% /if %}"
       ],
-      "params": { "flag": true },
+      "params": {
+        "flag": true
+      },
       "expected_output": "yes"
     },
     {
@@ -21,7 +23,9 @@
         "---",
         "> {% if flag %}yes{% /if %}"
       ],
-      "params": { "flag": false },
+      "params": {
+        "flag": false
+      },
       "expected_output": ""
     },
     {
@@ -33,7 +37,9 @@
         "---",
         "> {% if flag %}yes{% else %}no{% /if %}"
       ],
-      "params": { "flag": true },
+      "params": {
+        "flag": true
+      },
       "expected_output": "yes"
     },
     {
@@ -45,7 +51,9 @@
         "---",
         "> {% if flag %}yes{% else %}no{% /if %}"
       ],
-      "params": { "flag": false },
+      "params": {
+        "flag": false
+      },
       "expected_output": "no"
     },
     {
@@ -57,7 +65,9 @@
         "---",
         "> {% if x == 1 %}A{% elif x == 2 %}B{% else %}C{% /if %}"
       ],
-      "params": { "x": 1 },
+      "params": {
+        "x": 1
+      },
       "expected_output": "A"
     },
     {
@@ -69,7 +79,9 @@
         "---",
         "> {% if x == 1 %}A{% elif x == 2 %}B{% else %}C{% /if %}"
       ],
-      "params": { "x": 2 },
+      "params": {
+        "x": 2
+      },
       "expected_output": "B"
     },
     {
@@ -81,7 +93,9 @@
         "---",
         "> {% if x == 1 %}A{% elif x == 2 %}B{% else %}C{% /if %}"
       ],
-      "params": { "x": 99 },
+      "params": {
+        "x": 99
+      },
       "expected_output": "C"
     },
     {
@@ -93,7 +107,19 @@
         "---",
         "> {% for item in items %}{{ item.name }} {% /for %}"
       ],
-      "params": { "items": [{ "name": "a" }, { "name": "b" }, { "name": "c" }] },
+      "params": {
+        "items": [
+          {
+            "name": "a"
+          },
+          {
+            "name": "b"
+          },
+          {
+            "name": "c"
+          }
+        ]
+      },
       "expected_output": "a b c "
     },
     {
@@ -105,7 +131,9 @@
         "---",
         "> {% for item in items %}{{ item }}{% else %}empty{% /for %}"
       ],
-      "params": { "items": [] },
+      "params": {
+        "items": []
+      },
       "expected_output": "empty"
     },
     {
@@ -117,7 +145,12 @@
         "---",
         "> {% for item in items %}{{ item }} {% else %}empty{% /for %}"
       ],
-      "params": { "items": ["x", "y"] },
+      "params": {
+        "items": [
+          "x",
+          "y"
+        ]
+      },
       "expected_output": "x y "
     },
     {
@@ -129,55 +162,68 @@
         "---",
         "> {% if a %}{% if b %}DEEP{% /if %}{% /if %}"
       ],
-      "params": { "a": true, "b": true },
+      "params": {
+        "a": true,
+        "b": true
+      },
       "expected_output": "DEEP"
     },
     {
       "name": "nested_inline_if_outer_true_inner_false",
-      "description": "Nested inline if — outer true, inner false",
+      "description": "Nested inline if \u2014 outer true, inner false",
       "template_lines": [
         "---",
         "params: [a = bool, b = bool]",
         "---",
         "> {% if a %}{% if b %}DEEP{% /if %}{% /if %}"
       ],
-      "params": { "a": true, "b": false },
+      "params": {
+        "a": true,
+        "b": false
+      },
       "expected_output": ""
     },
     {
       "name": "nested_inline_if_outer_false",
-      "description": "Nested inline if — outer false skips everything",
+      "description": "Nested inline if \u2014 outer false skips everything",
       "template_lines": [
         "---",
         "params: [a = bool, b = bool]",
         "---",
         "> {% if a %}{% if b %}DEEP{% /if %}{% /if %}"
       ],
-      "params": { "a": false, "b": true },
+      "params": {
+        "a": false,
+        "b": true
+      },
       "expected_output": ""
     },
     {
       "name": "text_around_inline_if_true",
-      "description": "Text before and after inline if — condition true",
+      "description": "Text before and after inline if \u2014 condition true",
       "template_lines": [
         "---",
         "params: [flag = bool]",
         "---",
         "prefix-{% if flag %}MIDDLE{% /if %}-suffix"
       ],
-      "params": { "flag": true },
+      "params": {
+        "flag": true
+      },
       "expected_output": "prefix-MIDDLE-suffix"
     },
     {
       "name": "text_around_inline_if_false",
-      "description": "Text before and after inline if — condition false",
+      "description": "Text before and after inline if \u2014 condition false",
       "template_lines": [
         "---",
         "params: [flag = bool]",
         "---",
         "prefix-{% if flag %}MIDDLE{% /if %}-suffix"
       ],
-      "params": { "flag": false },
+      "params": {
+        "flag": false
+      },
       "expected_output": "prefix--suffix"
     },
     {
@@ -189,7 +235,9 @@
         "---",
         "> {% match x case Active %}ON{% else %}OFF{% /match %}"
       ],
-      "params": { "x": "Active" },
+      "params": {
+        "x": "Active"
+      },
       "expected_output": "ON"
     },
     {
@@ -201,7 +249,9 @@
         "---",
         "> {% match x case Active %}ON{% else %}OFF{% /match %}"
       ],
-      "params": { "x": "Stopped" },
+      "params": {
+        "x": "Stopped"
+      },
       "expected_output": "OFF"
     },
     {
@@ -211,10 +261,12 @@
         "---",
         "params: [flag = bool]",
         "---",
-        "> {% if flag %}🎯 日本語{% /if %}"
+        "> {% if flag %}\ud83c\udfaf \u65e5\u672c\u8a9e{% /if %}"
       ],
-      "params": { "flag": true },
-      "expected_output": "🎯 日本語"
+      "params": {
+        "flag": true
+      },
+      "expected_output": "\ud83c\udfaf \u65e5\u672c\u8a9e"
     },
     {
       "name": "const_ref_as_param_default",
@@ -241,19 +293,25 @@
         "---",
         "> {% if flag %}{{ name | upper }}{% /if %}"
       ],
-      "params": { "flag": true, "name": "hello" },
+      "params": {
+        "flag": true,
+        "name": "hello"
+      },
       "expected_output": "HELLO"
     },
     {
       "name": "filter_inside_inline_if_false",
-      "description": "Filter inside inline if — condition false renders nothing",
+      "description": "Filter inside inline if \u2014 condition false renders nothing",
       "template_lines": [
         "---",
         "params: [flag = bool, name = str]",
         "---",
         "> {% if flag %}{{ name | upper }}{% /if %}"
       ],
-      "params": { "flag": false, "name": "hello" },
+      "params": {
+        "flag": false,
+        "name": "hello"
+      },
       "expected_output": ""
     },
     {
@@ -265,7 +323,16 @@
         "---",
         "> {% for item in items %}{{ item.name | lower }} {% /for %}"
       ],
-      "params": { "items": [{ "name": "FOO" }, { "name": "BAR" }] },
+      "params": {
+        "items": [
+          {
+            "name": "FOO"
+          },
+          {
+            "name": "BAR"
+          }
+        ]
+      },
       "expected_output": "foo bar "
     },
     {
@@ -277,12 +344,26 @@
         "---",
         "> {% for group in groups %}[{% for item in group.items %}{{ item }}{% /for %}]{% /for %}"
       ],
-      "params": { "groups": [{ "items": ["a", "b"] }, { "items": ["c"] }] },
+      "params": {
+        "groups": [
+          {
+            "items": [
+              "a",
+              "b"
+            ]
+          },
+          {
+            "items": [
+              "c"
+            ]
+          }
+        ]
+      },
       "expected_output": "[ab][c]"
     },
     {
       "name": "inline_match_typed_enum_matched",
-      "description": "Inline match with typed enum — matched variant",
+      "description": "Inline match with typed enum \u2014 matched variant",
       "template_lines": [
         "---",
         "types:",
@@ -292,12 +373,14 @@
         "---",
         "> {% match s case Active %}on{% else %}off{% /match %}"
       ],
-      "params": { "s": "Active" },
+      "params": {
+        "s": "Active"
+      },
       "expected_output": "on"
     },
     {
       "name": "inline_match_typed_enum_unmatched",
-      "description": "Inline match with typed enum — unmatched falls to else",
+      "description": "Inline match with typed enum \u2014 unmatched falls to else",
       "template_lines": [
         "---",
         "types:",
@@ -307,12 +390,14 @@
         "---",
         "> {% match s case Active %}on{% else %}off{% /match %}"
       ],
-      "params": { "s": "Paused" },
+      "params": {
+        "s": "Paused"
+      },
       "expected_output": "off"
     },
     {
       "name": "multiple_inline_blocks_on_separate_lines",
-      "description": "Multiple blockquoted inline blocks on separate lines — no newline between",
+      "description": "Multiple blockquoted inline blocks on separate lines \u2014 no newline between",
       "template_lines": [
         "---",
         "params: [a = bool, b = bool]",
@@ -320,79 +405,94 @@
         "> {% if a %}A{% /if %}",
         "> {% if b %}B{% /if %}"
       ],
-      "params": { "a": true, "b": true },
+      "params": {
+        "a": true,
+        "b": true
+      },
       "expected_output": "AB"
     },
     {
       "name": "inline_if_comparison_gt_positive",
-      "description": "Inline if with > comparison — positive result",
+      "description": "Inline if with > comparison \u2014 positive result",
       "template_lines": [
         "---",
         "params: [count = int]",
         "---",
         "> {% if count > 0 %}positive{% else %}zero{% /if %}"
       ],
-      "params": { "count": 5 },
+      "params": {
+        "count": 5
+      },
       "expected_output": "positive"
     },
     {
       "name": "inline_if_comparison_gt_zero",
-      "description": "Inline if with > comparison — zero falls to else",
+      "description": "Inline if with > comparison \u2014 zero falls to else",
       "template_lines": [
         "---",
         "params: [count = int]",
         "---",
         "> {% if count > 0 %}positive{% else %}zero{% /if %}"
       ],
-      "params": { "count": 0 },
+      "params": {
+        "count": 0
+      },
       "expected_output": "zero"
     },
     {
       "name": "inline_if_eq_string_match",
-      "description": "Inline if with string equality — matched",
+      "description": "Inline if with string equality \u2014 matched",
       "template_lines": [
         "---",
         "params: [mode = str]",
         "---",
-        "> {% if mode == \"debug\" %}🐛{% else %}🚀{% /if %}"
+        "> {% if mode == \"debug\" %}\ud83d\udc1b{% else %}\ud83d\ude80{% /if %}"
       ],
-      "params": { "mode": "debug" },
-      "expected_output": "🐛"
+      "params": {
+        "mode": "debug"
+      },
+      "expected_output": "\ud83d\udc1b"
     },
     {
       "name": "inline_if_eq_string_no_match",
-      "description": "Inline if with string equality — not matched falls to else",
+      "description": "Inline if with string equality \u2014 not matched falls to else",
       "template_lines": [
         "---",
         "params: [mode = str]",
         "---",
-        "> {% if mode == \"debug\" %}🐛{% else %}🚀{% /if %}"
+        "> {% if mode == \"debug\" %}\ud83d\udc1b{% else %}\ud83d\ude80{% /if %}"
       ],
-      "params": { "mode": "release" },
-      "expected_output": "🚀"
+      "params": {
+        "mode": "release"
+      },
+      "expected_output": "\ud83d\ude80"
     },
     {
       "name": "inline_match_no_else_matched",
-      "description": "Inline match without else — matched renders body",
+      "description": "Inline match without else \u2014 matched renders body",
       "template_lines": [
         "---",
         "params: [x = str]",
         "---",
         "> {% match x case Active %}ON{% /match %}"
       ],
-      "params": { "x": "Active" },
+      "params": {
+        "x": "Active"
+      },
       "expected_output": "ON"
     },
     {
       "name": "inline_match_no_else_unmatched",
-      "description": "Inline match without else — unmatched renders empty",
+      "description": "Inline match without else \u2014 unmatched renders empty",
       "template_lines": [
         "---",
         "params: [x = str]",
         "---",
         "> {% match x case Active %}ON{% /match %}"
       ],
-      "params": { "x": "Other" },
+      "params": {
+        "x": "Other"
+      },
       "expected_output": ""
     },
     {
@@ -424,7 +524,9 @@
         "---",
         "{{ msg }}"
       ],
-      "params": { "msg": "Hi" },
+      "params": {
+        "msg": "Hi"
+      },
       "expected_output": "Hi"
     },
     {
@@ -456,31 +558,37 @@
         "---",
         "> {% if flag %}yes{% else %}no{% /if %}"
       ],
-      "params": { "flag": false },
+      "params": {
+        "flag": false
+      },
       "expected_output": "no"
     },
     {
       "name": "empty_inline_if_true",
-      "description": "Empty inline if body — true condition renders nothing extra",
+      "description": "Empty inline if body \u2014 true condition renders nothing extra",
       "template_lines": [
         "---",
         "params: [flag = bool]",
         "---",
         "before{% if flag %}{% /if %}after"
       ],
-      "params": { "flag": true },
+      "params": {
+        "flag": true
+      },
       "expected_output": "beforeafter"
     },
     {
       "name": "empty_inline_if_false",
-      "description": "Empty inline if body — false condition also renders nothing",
+      "description": "Empty inline if body \u2014 false condition also renders nothing",
       "template_lines": [
         "---",
         "params: [flag = bool]",
         "---",
         "before{% if flag %}{% /if %}after"
       ],
-      "params": { "flag": false },
+      "params": {
+        "flag": false
+      },
       "expected_output": "beforeafter"
     },
     {
@@ -492,7 +600,13 @@
         "---",
         "> {% for item in items %}{{ item }}{% /for %}"
       ],
-      "params": { "items": ["x", "y", "z"] },
+      "params": {
+        "items": [
+          "x",
+          "y",
+          "z"
+        ]
+      },
       "expected_output": "xyz"
     },
     {
@@ -527,8 +641,103 @@
         "---",
         "[{{ tags | join(\", \") }}]"
       ],
-      "params": { "tags": ["rust", "ts", "go"] },
+      "params": {
+        "tags": [
+          "rust",
+          "ts",
+          "go"
+        ]
+      },
       "expected_output": "[rust, ts, go]"
+    },
+    {
+      "name": "control_deeply_nested_struct_in_loop",
+      "description": "For loop accessing deeply nested struct fields across lists",
+      "template_lines": [
+        "---",
+        "params: [org = struct(name = str, teams = list(name = str, members = list(name = str, role = str)))]",
+        "---",
+        "{{ org.name }}:",
+        "",
+        "> {% for team in org.teams %}",
+        "",
+        "Team {{ team.name }}:",
+        "",
+        "> {% for member in team.members %}",
+        "",
+        "- {{ member.name }} ({{ member.role }})",
+        "",
+        "> {% /for %}",
+        "",
+        "> {% /for %}"
+      ],
+      "params": {
+        "org": {
+          "name": "Eng",
+          "teams": [
+            {
+              "name": "Core",
+              "members": [
+                {
+                  "name": "Alice",
+                  "role": "Lead"
+                },
+                {
+                  "name": "Bob",
+                  "role": "Dev"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected_output": "Eng:\nTeam Core:\n- Alice (Lead)\n- Bob (Dev)\n"
+    },
+    {
+      "name": "control_whitespace_stripping_loop_if",
+      "description": "Aggressive whitespace stripping in combined for and if blocks",
+      "template_lines": [
+        "---",
+        "params: [nums = list(int)]",
+        "---",
+        "[X{%- for n in nums -%}{%- if n > 0 -%}{{ n }}{%- /if -%}{%- /for -%}Y]"
+      ],
+      "params": {
+        "nums": [
+          -1,
+          2,
+          -3,
+          4
+        ]
+      },
+      "expected_output": "[X24Y]"
+    },
+    {
+      "name": "control_match_option_narrowing_complex",
+      "description": "Match statement on option<struct<...>> narrowing fields",
+      "template_lines": [
+        "---",
+        "params: [config = option(struct(host = str, port = int))]",
+        "---",
+        "> {% match config %}",
+        "",
+        "> {% case Some %}",
+        "",
+        "{{ config.host }}:{{ config.port }}",
+        "",
+        "> {% case None %}",
+        "",
+        "default:80",
+        "",
+        "> {% /match %}"
+      ],
+      "params": {
+        "config": {
+          "host": "localhost",
+          "port": 8080
+        }
+      },
+      "expected_output": "localhost:8080\n"
     }
   ]
 }

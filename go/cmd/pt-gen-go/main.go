@@ -1,4 +1,4 @@
-// pt-gen-go generates typed Go code from prompt-templates .tmpl.md files.
+// pt-gen-go generates typed Go code from md-tmpl .tmpl.md files.
 //
 // Usage:
 //
@@ -15,7 +15,7 @@ import (
 	"log"
 	"os"
 
-	pt "github.com/domenukk/prompt-templates/go/prompt_templates"
+	pt "github.com/domenukk/md-tmpl/go/md_tmpl"
 )
 
 func main() {

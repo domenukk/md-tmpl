@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark prompt-templates (PyO3 bindings) vs Jinja2, Mako, Chevron, Django,
+"""Benchmark md-tmpl (PyO3 bindings) vs Jinja2, Mako, Chevron, Django,
 and Python's built-in string.Template.
 
 Compares rendering performance across four template scenarios that match
@@ -21,7 +21,7 @@ produce equivalent results.
 
 Methodology notes:
 
-- ``prompt-templates`` and ``pt-json`` are Rust (PyO3) bindings calling a
+- ``md-tmpl`` and ``pt-json`` are Rust (PyO3) bindings calling a
   native compiled engine.  All other engines are pure Python (Jinja2 has
   optional C extensions for markup escaping, but template rendering is
   pure Python).  The speed advantage is partly due to native code.
@@ -48,7 +48,7 @@ from typing import Any, Protocol
 # ---------------------------------------------------------------------------
 
 from jinja2 import Environment
-from prompt_templates import Template
+from md_tmpl import Template
 
 from mako.template import Template as MakoTemplate
 
@@ -79,7 +79,7 @@ log = logging.getLogger(__name__)
 
 ITERATIONS = 10_000
 TIMEIT_REPEAT = 5  # best-of-N runs for stability
-REFERENCE_ENGINE = "prompt-templates"
+REFERENCE_ENGINE = "md-tmpl"
 
 # ---------------------------------------------------------------------------
 # Engine abstraction
@@ -104,14 +104,14 @@ class TemplateEngine(Protocol):
 
 
 # ---------------------------------------------------------------------------
-# Engine: prompt-templates (PyO3)
+# Engine: md-tmpl (PyO3)
 # ---------------------------------------------------------------------------
 
 
-class PromptTemplatesEngine:
-    """Adapter for the prompt-templates PyO3 bindings."""
+class MdTmplEngine:
+    """Adapter for the md-tmpl PyO3 bindings."""
 
-    name = "prompt-templates"
+    name = "md-tmpl"
 
     def compile(self, source: str) -> CompiledTemplate:
         tmpl = Template.from_source(source)
@@ -141,7 +141,7 @@ class PromptTemplatesJsonEngine:
 
 
 def _pt_float(value: float) -> str:
-    """Format a float the way prompt-templates does.
+    """Format a float the way md-tmpl does.
 
     Integer-valued floats are rendered without a decimal part
     (e.g. 3.0 → '3'), while fractional values keep their natural
@@ -217,7 +217,7 @@ def _django_trim(value: str) -> str:
 
 
 def _django_pt_float(value: float) -> str:
-    """Django filter: format floats the prompt-templates way."""
+    """Django filter: format floats the md-tmpl way."""
     as_int = int(value)
     if float(as_int) == value:
         return str(as_int)
@@ -268,7 +268,7 @@ class StringTemplateEngine:
 
 
 ALL_ENGINES: list[TemplateEngine] = [
-    PromptTemplatesEngine(),
+    MdTmplEngine(),
     PromptTemplatesJsonEngine(),
     Jinja2Engine(),
     MakoEngine(),
@@ -301,7 +301,7 @@ class Scenario:
 #
 #   All engines render: "Hello Alice, welcome to Wonderland!"
 #
-#   prompt-templates:  {{ name }}        (frontmatter declares params)
+#   md-tmpl:  {{ name }}        (frontmatter declares params)
 #   Jinja2:            {{ name }}        (identical body syntax)
 #   Mako:              ${name}           (dollar-brace syntax)
 #   Chevron:           {{name}}          (Mustache — no spaces required)
@@ -335,7 +335,7 @@ SIMPLE_KWARGS: dict = {"name": "Alice", "place": "Wonderland"}
 #     - Beta: 20
 #     - Gamma: 30
 #
-#   prompt-templates:  > {% for item in items %} ... > {% /for %}
+#   md-tmpl:  > {% for item in items %} ... > {% /for %}
 #   Jinja2:            {% for item in items -%} ... {% endfor %}
 #   Mako:              % for item in items: ... % endfor
 #   Chevron:           {{#items}} ... {{/items}}
@@ -388,7 +388,7 @@ LOOP_KWARGS: dict = {
 #   All engines render (with level="medium", score=75):
 #     Rating: Good (score 75)
 #
-#   prompt-templates:  > {% if level == "high" %} ... > {% /if %}
+#   md-tmpl:  > {% if level == "high" %} ... > {% /if %}
 #   Jinja2:            {% if level == "high" -%} ... {% endif -%}
 #   Mako:              % if level == "high": ... % endif
 #   Django:            {% if level == "high" %} ... {% endif %}
@@ -452,7 +452,7 @@ CONDITIONAL_KWARGS: dict = {"level": "medium", "score": 75}
 #   30 entries across 3 sections, conditional status formatting, and
 #   float formatting.
 #
-#   prompt-templates:  > {% for section in sections %} ... > {% /for %}
+#   md-tmpl:  > {% for section in sections %} ... > {% /for %}
 #   Jinja2:            {% for section in sections -%} ... {% endfor %}
 #   Mako:              % for section in sections: ... % endfor
 #   Django:            {% for section in sections %} ... {% endfor %}
@@ -602,7 +602,7 @@ SCENARIOS: list[Scenario] = [
     Scenario(
         "simple",
         {
-            "prompt-templates": PT_SIMPLE,
+            "md-tmpl": PT_SIMPLE,
             "pt-json": PT_SIMPLE,
             "Jinja2": J2_SIMPLE,
             "Mako": MAKO_SIMPLE,
@@ -615,7 +615,7 @@ SCENARIOS: list[Scenario] = [
     Scenario(
         "loop",
         {
-            "prompt-templates": PT_LOOP,
+            "md-tmpl": PT_LOOP,
             "pt-json": PT_LOOP,
             "Jinja2": J2_LOOP,
             "Mako": MAKO_LOOP,
@@ -628,7 +628,7 @@ SCENARIOS: list[Scenario] = [
     Scenario(
         "conditional",
         {
-            "prompt-templates": PT_CONDITIONAL,
+            "md-tmpl": PT_CONDITIONAL,
             "pt-json": PT_CONDITIONAL,
             "Jinja2": J2_CONDITIONAL,
             "Mako": MAKO_CONDITIONAL,
@@ -641,7 +641,7 @@ SCENARIOS: list[Scenario] = [
     Scenario(
         "hero",
         {
-            "prompt-templates": PT_HERO,
+            "md-tmpl": PT_HERO,
             "pt-json": PT_HERO,
             "Jinja2": J2_HERO,
             "Mako": MAKO_HERO,

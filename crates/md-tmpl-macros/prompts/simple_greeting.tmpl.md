@@ -1,0 +1,1 @@
+../../md-tmpl/prompts/simple_greeting.tmpl.md

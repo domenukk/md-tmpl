@@ -1,6 +1,4 @@
-# prompt-templates
-
-[![CI](https://github.com/domenukk/prompt-templates/actions/workflows/ci.yml/badge.svg)](https://github.com/domenukk/prompt-templates/actions/workflows/ci.yml)
+# md-tmpl
 
 **Strongly-typed prompt templates for LLM Agents**
 Write prompts as markdown, catch errors faster. Vibe harder.
@@ -13,9 +11,11 @@ Write prompts as markdown, catch errors faster. Vibe harder.
 consts:
   - MODEL = str := "gemini-3.5-flash"
   - MAX_FINDINGS = int := 20
+
 types:
   - Severity = enum(Critical, High, Medium, Low)
   - Verdict = enum(Approved, NeedsChanges(reason = str), Rejected(reason = str))
+
 params:
   - reviewer = str
   - file_path = str
@@ -54,27 +54,25 @@ Severity: {{ kind(severity) }} · Findings: {{ len(findings) }}/{{ MAX_FINDINGS 
 Types and fields are validated at build time — rendering happens at runtime:
 
 ```rust
-use prompt_templates_macros::include_template;
+use md_tmpl_macros::include_template;
 
 include_template!("prompts/code_review.tmpl.md");
 
-let output = code_review::Params {
-    reviewer: "Alice".into(),
-    file_path: "src/main.rs".into(),
-    severity: code_review::Severity::High,
-    findings: vec![
-        code_review::FindingsItem {
-            line: 42,
-            message: "unused import".into(),
-            severity: code_review::Severity::Low,
-        },
-    ],
-    verdict: code_review::Verdict::NeedsChanges {
+let output = code_review::Params::builder()
+    .reviewer("Alice")
+    .file_path("src/main.rs")
+    .severity(code_review::Severity::High)
+    .findings([
+        code_review::FindingsItem::builder()
+            .line(42)
+            .message("unused import")
+            .severity(code_review::Severity::Low)
+            .build(),
+    ])
+    .verdict(code_review::Verdict::NeedsChanges {
         reason: "remove dead imports".into(),
-    },
-}
-.render()
-.unwrap();
+    })
+    .build().render().unwrap();
 ```
 
 Wrong types, missing fields, non-exhaustive matches — all caught at **build time**.
@@ -112,117 +110,27 @@ Templates can also be loaded and validated at runtime for dynamic or hot-reload 
 
 ## Quick Start
 
-<!-- prettier-ignore -->
-````carousel
 ```rust
-use prompt_templates_macros::include_template;
+use md_tmpl_macros::include_template;
 
 // Parsed + validated at build time — generates typed structs from frontmatter
 include_template!("prompts/task_report.tmpl.md");
 
-let output = task_report::Params {
-    title: "Sprint 42".into(),
-    priority: task_report::Priority::Critical,
-    tasks: vec![
-        task_report::TasksItem {
-            name: "Fix auth bypass".into(),
-            urgency: task_report::Priority::Critical,
-        },
-        task_report::TasksItem {
-            name: "Update dependencies".into(),
-            urgency: task_report::Priority::Low,
-        },
-    ],
-}
-.render()
-.unwrap();
+let output = task_report::Params::builder()
+    .title("Sprint 42")
+    .priority(task_report::Priority::Critical)
+    .tasks([
+        task_report::TasksItem::builder()
+            .name("Fix auth bypass")
+            .urgency(task_report::Priority::Critical)
+            .build(),
+        task_report::TasksItem::builder()
+            .name("Update dependencies")
+            .urgency(task_report::Priority::Low)
+            .build(),
+    ])
+    .build().render().unwrap();
 ```
-<!-- slide -->
-```python
-from prompt_templates import template
-
-# Auto-generates Priority enum + TasksItem class from frontmatter
-report = template("prompts/task_report.tmpl.md")
-
-output = report.render(
-    title="Sprint 42",
-    priority=report.Priority.Critical,
-    tasks=[
-        {"name": "Fix auth bypass", "urgency": report.Priority.Critical},
-        {"name": "Update dependencies", "urgency": report.Priority.Low},
-    ],
-)
-```
-<!-- slide -->
-```go
-import pt "github.com/domenukk/prompt-templates/go/prompt_templates"
-
-tmpl, _ := pt.FromSource(`---
-types:
-  - Priority = enum(Critical, High, Medium, Low)
-params:
-  - title = str
-  - priority = Priority
-  - tasks = list(name = str, urgency = Priority)
----
-
-# Task Report: {{ title }}
-
-Priority: {{ priority }}
-
-> {% for task in tasks %}
-
-- {{ task.name }} ({{ task.urgency }})
-
-> {% /for %}`)
-defer tmpl.Close()
-
-result, _ := tmpl.RenderMap(map[string]any{
-    "title":    "Sprint 42",
-    "priority": pt.Variant{Kind: "Critical"},
-    "tasks": []map[string]any{
-        {"name": "Fix auth bypass", "urgency": pt.Variant{Kind: "Critical"}},
-        {"name": "Update dependencies", "urgency": pt.Variant{Kind: "Low"}},
-    },
-})
-```
-<!-- slide -->
-```typescript
-import { Template, defineVariants } from "prompt-templates";
-
-const Priority = defineVariants({
-  Critical: null, High: null, Medium: null, Low: null,
-});
-
-const tmpl = Template.fromSource(`---
-types:
-  - Priority = enum(Critical, High, Medium, Low)
-params:
-  - title = str
-  - priority = Priority
-  - tasks = list(name = str, urgency = Priority)
----
-
-# Task Report: {{ title }}
-
-Priority: {{ priority }}
-
-> {% for task in tasks %}
-
-- {{ task.name }} ({{ task.urgency }})
-
-> {% /for %}`);
-
-console.log(tmpl.render({
-  title: "Sprint 42",
-  priority: Priority.Critical(),
-  tasks: [
-    { name: "Fix auth bypass", urgency: Priority.Critical() },
-    { name: "Update dependencies", urgency: Priority.Low() },
-  ],
-}));
-```
-````
 
 ## Performance
 
@@ -230,13 +138,13 @@ Built for speed — zero-allocation rendering in Rust, native FFI in all binding
 
 ### Rust (render-only, pre-parsed)
 
-| Scenario        | prompt-templates |    Tera | MiniJinja | Handlebars |
-| --------------- | ---------------: | ------: | --------: | ---------: |
-| **simple**      |    **130 ns** 🏆 |  213 ns |    558 ns |     632 ns |
-| **loop**        |    **445 ns** 🏆 |  618 ns |   2.00 µs |    2.85 µs |
-| **conditional** |    **173 ns** 🏆 |  348 ns |    625 ns |    1.16 µs |
-| **hero**        |   **2.07 µs** 🏆 | 2.09 µs |   7.62 µs |    21.4 µs |
-| **mega**        |   **10.1 µs** 🏆 | 11.1 µs |   30.1 µs |    84.7 µs |
+| Scenario        |        md-tmpl |    Tera | MiniJinja | Handlebars |
+| --------------- | -------------: | ------: | --------: | ---------: |
+| **simple**      |  **130 ns** 🏆 |  213 ns |    558 ns |     632 ns |
+| **loop**        |  **445 ns** 🏆 |  618 ns |   2.00 µs |    2.85 µs |
+| **conditional** |  **173 ns** 🏆 |  348 ns |    625 ns |    1.16 µs |
+| **hero**        | **2.07 µs** 🏆 | 2.09 µs |   7.62 µs |    21.4 µs |
+| **mega**        | **10.1 µs** 🏆 | 11.1 µs |   30.1 µs |    84.7 µs |
 
 ### Cross-Language (render-only)
 
@@ -252,26 +160,23 @@ See the language-specific READMEs or the [benchmarks suite](benchmarks/README.md
 
 ## Language Bindings
 
-### Rust ([README](crates/prompt-templates/README.md))
-
-[![crates.io](https://img.shields.io/crates/v/prompt-templates.svg)](https://crates.io/crates/prompt-templates)
-[![docs.rs](https://docs.rs/prompt-templates/badge.svg)](https://docs.rs/prompt-templates)
+### Rust ([README](crates/md-tmpl/README.md))
 
 Build-time validation via proc macros, plus a full runtime API for dynamic loading. Pre-parsed templates with zero-overhead rendering. Includes `ctx!` macro, `TypedBuilder`, `serde`, hot-reload, caching, and benchmarks.
 
-### Python ([README](crates/prompt-templates-python/README.md))
+### Python ([README](crates/md-tmpl-python/README.md))
 
 Includes generated types, import hooks, pattern matching, enum construction, caching, and benchmarks.
 
-### Go ([README](go/prompt_templates/README.md))
+### Go ([README](go/md_tmpl/README.md))
 
 Includes `RenderStruct`, `TaggedVariant`, codegen, caching, and benchmarks.
 
-### TypeScript ([README](crates/prompt-templates-typescript/README.md))
+### TypeScript ([README](crates/md-tmpl-typescript/README.md))
 
 Includes `TypedTemplate(P)`, `defineVariants`, codegen, WASM backend, and benchmarks.
 
-### WASM ([README](crates/prompt-templates-wasm/README.md))
+### WASM ([README](crates/md-tmpl-wasm/README.md))
 
 WebAssembly bindings wrapping the full Rust engine via `wasm-bindgen`. Same `ITemplate` interface as the pure-TypeScript package.
 

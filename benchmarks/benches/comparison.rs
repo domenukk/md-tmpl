@@ -1,4 +1,4 @@
-//! Criterion benchmarks comparing prompt-templates against Tera, MiniJinja,
+//! Criterion benchmarks comparing md-tmpl against Tera, MiniJinja,
 //! and Handlebars across four scenarios of increasing complexity.
 //!
 //! **Scenarios**:
@@ -25,7 +25,7 @@
 //!   so Handlebars can produce equivalent output — this means Handlebars
 //!   does slightly less per-render work than the other engines.
 //!
-//! - **prompt-templates** uses `render_ctx_allowing_extra()` because the
+//! - **md-tmpl** uses `render_ctx_allowing_extra()` because the
 //!   shared data structs carry fields for other engines. This skips strict
 //!   unknown-field rejection but still performs type validation.
 
@@ -33,7 +33,7 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use handlebars::Handlebars;
 use minijinja::Environment;
-use prompt_templates::Template;
+use md_tmpl::Template;
 
 // ==========================================================================
 // Constants: template name used for registration
@@ -46,7 +46,7 @@ const TEMPLATE_NAME: &str = "bench";
 // ==========================================================================
 
 mod simple {
-    pub const PROMPT_TEMPLATES: &str = "\
+    pub const MD_TMPL: &str = "\
 ---
 params:
   - name = str
@@ -69,7 +69,7 @@ Hello {{ name }}, welcome to {{ place }}!";
 // ==========================================================================
 
 mod loop_scenario {
-    pub const PROMPT_TEMPLATES: &str = "\
+    pub const MD_TMPL: &str = "\
 ---
 params:
   - items = list(label = str, value = int)
@@ -108,7 +108,7 @@ params:
 // ==========================================================================
 
 mod conditional {
-    pub const PROMPT_TEMPLATES: &str = "\
+    pub const MD_TMPL: &str = "\
 ---
 params:
   - level = str
@@ -164,7 +164,7 @@ Rating: Needs Improvement
 // ==========================================================================
 
 mod hero {
-    pub const PROMPT_TEMPLATES: &str = "\
+    pub const MD_TMPL: &str = "\
 ---
 params:
   - title = str
@@ -407,24 +407,24 @@ fn hero_data() -> HeroReport {
 // Engine wrappers — pre-compiled template holders
 // ==========================================================================
 
-struct PromptTemplatesEngine {
+struct MdTmplEngine {
     template: Template,
 }
 
-impl PromptTemplatesEngine {
+impl MdTmplEngine {
     fn compile(source: &str) -> Self {
         Self {
             template: Template::from_source(source)
-                .expect("prompt-templates: failed to compile template"),
+                .expect("md-tmpl: failed to compile template"),
         }
     }
 
-    fn render(&self, ctx: &prompt_templates::Context) -> String {
+    fn render(&self, ctx: &md_tmpl::Context) -> String {
         // Use render_allowing_extra since shared structs may carry fields
         // needed by other engines (e.g. score_fmt, is_high).
         self.template
             .render_ctx_allowing_extra(ctx)
-            .expect("prompt-templates: render failed")
+            .expect("md-tmpl: render failed")
     }
 }
 
@@ -531,15 +531,15 @@ fn assert_engines_match(
 
     assert_eq!(
         pt, tera,
-        "[{scenario}] prompt-templates vs tera mismatch:\nPT:\n{pt}\n\nTERA:\n{tera}"
+        "[{scenario}] md-tmpl vs tera mismatch:\nPT:\n{pt}\n\nTERA:\n{tera}"
     );
     assert_eq!(
         pt, mj,
-        "[{scenario}] prompt-templates vs minijinja mismatch:\nPT:\n{pt}\n\nMJ:\n{mj}"
+        "[{scenario}] md-tmpl vs minijinja mismatch:\nPT:\n{pt}\n\nMJ:\n{mj}"
     );
     assert_eq!(
         pt, hbs,
-        "[{scenario}] prompt-templates vs handlebars mismatch:\nPT:\n{pt}\n\nHBS:\n{hbs}"
+        "[{scenario}] md-tmpl vs handlebars mismatch:\nPT:\n{pt}\n\nHBS:\n{hbs}"
     );
 
     if let Some(exp) = expected {
@@ -556,13 +556,13 @@ fn assert_engines_match(
 // ==========================================================================
 
 fn bench_simple(c: &mut Criterion) {
-    let pt = PromptTemplatesEngine::compile(simple::PROMPT_TEMPLATES);
+    let pt = MdTmplEngine::compile(simple::MD_TMPL);
     let tera = TeraEngine::compile(simple::TERA);
     let mj = MiniJinjaEngine::compile(simple::MINIJINJA);
     let hbs = HandlebarsEngine::compile(simple::HANDLEBARS);
 
     let data = simple_data();
-    let pt_ctx = prompt_templates::Context::from_serialize(&data).unwrap();
+    let pt_ctx = md_tmpl::Context::from_serialize(&data).unwrap();
     let tera_ctx = TeraEngine::context(&data);
     let json_ctx = serde_json::to_value(&data).unwrap();
 
@@ -576,7 +576,7 @@ fn bench_simple(c: &mut Criterion) {
     );
 
     let mut group = c.benchmark_group("simple");
-    group.bench_function("prompt_templates", |b| {
+    group.bench_function("md_tmpl", |b| {
         b.iter(|| pt.render(black_box(&pt_ctx)));
     });
     group.bench_function("tera", |b| {
@@ -592,13 +592,13 @@ fn bench_simple(c: &mut Criterion) {
 }
 
 fn bench_loop(c: &mut Criterion) {
-    let pt = PromptTemplatesEngine::compile(loop_scenario::PROMPT_TEMPLATES);
+    let pt = MdTmplEngine::compile(loop_scenario::MD_TMPL);
     let tera = TeraEngine::compile(loop_scenario::TERA);
     let mj = MiniJinjaEngine::compile(loop_scenario::MINIJINJA);
     let hbs = HandlebarsEngine::compile(loop_scenario::HANDLEBARS);
 
     let data = loop_data();
-    let pt_ctx = prompt_templates::Context::from_serialize(&data).unwrap();
+    let pt_ctx = md_tmpl::Context::from_serialize(&data).unwrap();
     let tera_ctx = TeraEngine::context(&data);
     let json_ctx = serde_json::to_value(&data).unwrap();
 
@@ -612,7 +612,7 @@ fn bench_loop(c: &mut Criterion) {
     );
 
     let mut group = c.benchmark_group("loop");
-    group.bench_function("prompt_templates", |b| {
+    group.bench_function("md_tmpl", |b| {
         b.iter(|| pt.render(black_box(&pt_ctx)));
     });
     group.bench_function("tera", |b| {
@@ -628,13 +628,13 @@ fn bench_loop(c: &mut Criterion) {
 }
 
 fn bench_conditional(c: &mut Criterion) {
-    let pt = PromptTemplatesEngine::compile(conditional::PROMPT_TEMPLATES);
+    let pt = MdTmplEngine::compile(conditional::MD_TMPL);
     let tera = TeraEngine::compile(conditional::TERA);
     let mj = MiniJinjaEngine::compile(conditional::MINIJINJA);
     let hbs = HandlebarsEngine::compile(conditional::HANDLEBARS);
 
     let data = conditional_data();
-    let pt_ctx = prompt_templates::Context::from_serialize(&data).unwrap();
+    let pt_ctx = md_tmpl::Context::from_serialize(&data).unwrap();
     let tera_ctx = TeraEngine::context(&data);
     let json_ctx = serde_json::to_value(&data).unwrap();
 
@@ -648,7 +648,7 @@ fn bench_conditional(c: &mut Criterion) {
     );
 
     let mut group = c.benchmark_group("conditional");
-    group.bench_function("prompt_templates", |b| {
+    group.bench_function("md_tmpl", |b| {
         b.iter(|| pt.render(black_box(&pt_ctx)));
     });
     group.bench_function("tera", |b| {
@@ -664,13 +664,13 @@ fn bench_conditional(c: &mut Criterion) {
 }
 
 fn bench_hero(c: &mut Criterion) {
-    let pt = PromptTemplatesEngine::compile(hero::PROMPT_TEMPLATES);
+    let pt = MdTmplEngine::compile(hero::MD_TMPL);
     let tera = TeraEngine::compile(hero::TERA);
     let mj = MiniJinjaEngine::compile(hero::MINIJINJA);
     let hbs = HandlebarsEngine::compile(hero::HANDLEBARS);
 
     let data = hero_data();
-    let pt_ctx = prompt_templates::Context::from_serialize(&data).unwrap();
+    let pt_ctx = md_tmpl::Context::from_serialize(&data).unwrap();
     let tera_ctx = TeraEngine::context(&data);
     let json_ctx = serde_json::to_value(&data).unwrap();
 
@@ -684,7 +684,7 @@ fn bench_hero(c: &mut Criterion) {
     );
 
     let mut group = c.benchmark_group("hero");
-    group.bench_function("prompt_templates", |b| {
+    group.bench_function("md_tmpl", |b| {
         b.iter(|| pt.render(black_box(&pt_ctx)));
     });
     group.bench_function("tera", |b| {
@@ -704,7 +704,7 @@ fn bench_hero(c: &mut Criterion) {
 // ==========================================================================
 
 mod mega {
-    pub const PROMPT_TEMPLATES: &str = "\
+    pub const MD_TMPL: &str = "\
 ---
 params:
   - org = str
@@ -970,14 +970,14 @@ fn mega_data() -> MegaReport {
 }
 
 fn bench_mega(c: &mut Criterion) {
-    let pt = PromptTemplatesEngine::compile(mega::PROMPT_TEMPLATES);
+    let pt = MdTmplEngine::compile(mega::MD_TMPL);
     let tera = TeraEngine::compile(mega::TERA);
     let mj = MiniJinjaEngine::compile(mega::MINIJINJA);
     let hbs = HandlebarsEngine::compile(mega::HANDLEBARS);
 
     let data = mega_data();
-    let pt_ctx = prompt_templates::Context::from_serialize(&data)
-        .expect("prompt-templates: serde context failed");
+    let pt_ctx = md_tmpl::Context::from_serialize(&data)
+        .expect("md-tmpl: serde context failed");
     let tera_ctx = TeraEngine::context(&data);
     let json_ctx = serde_json::to_value(&data)
         .expect("serde_json: serialization failed");
@@ -993,7 +993,7 @@ fn bench_mega(c: &mut Criterion) {
     );
 
     let mut group = c.benchmark_group("mega");
-    group.bench_function("prompt_templates", |b| {
+    group.bench_function("md_tmpl", |b| {
         b.iter(|| pt.render(black_box(&pt_ctx)));
     });
 
@@ -1001,7 +1001,7 @@ fn bench_mega(c: &mut Criterion) {
     // The consolidated `include_template!` generates both the pre-compiled
     // template AND the `Params` struct that directly converts its fields
     // into a `Context` without using Serde, which is faster.
-    prompt_templates_macros::include_template!("templates/mega_macro.tmpl.md");
+    md_tmpl_macros::include_template!("templates/mega_macro.tmpl.md");
     let macro_tmpl = mega_macro::template();
 
     // Map our mega_data into the macro-generated struct.
@@ -1024,7 +1024,7 @@ fn bench_mega(c: &mut Criterion) {
     };
 
     let macro_ctx = macro_data.to_context();
-    group.bench_function("prompt_templates_macro", |b| {
+    group.bench_function("md_tmpl_macro", |b| {
         b.iter(|| macro_tmpl.render_ctx(black_box(&macro_ctx)));
     });
     // -------------------------------------
@@ -1050,16 +1050,16 @@ fn bench_mega(c: &mut Criterion) {
 // ==========================================================================
 
 fn bench_hero_e2e(c: &mut Criterion) {
-    let pt = PromptTemplatesEngine::compile(hero::PROMPT_TEMPLATES);
+    let pt = MdTmplEngine::compile(hero::MD_TMPL);
     let tera = TeraEngine::compile(hero::TERA);
     let mj = MiniJinjaEngine::compile(hero::MINIJINJA);
     let hbs = HandlebarsEngine::compile(hero::HANDLEBARS);
     let data = hero_data();
 
     let mut group = c.benchmark_group("hero_e2e");
-    group.bench_function("prompt_templates", |b| {
+    group.bench_function("md_tmpl", |b| {
         b.iter(|| {
-            let ctx = prompt_templates::Context::from_serialize(black_box(&data)).unwrap();
+            let ctx = md_tmpl::Context::from_serialize(black_box(&data)).unwrap();
             pt.render(&ctx)
         });
     });
@@ -1082,16 +1082,16 @@ fn bench_hero_e2e(c: &mut Criterion) {
 }
 
 fn bench_mega_e2e(c: &mut Criterion) {
-    let pt = PromptTemplatesEngine::compile(mega::PROMPT_TEMPLATES);
+    let pt = MdTmplEngine::compile(mega::MD_TMPL);
     let tera = TeraEngine::compile(mega::TERA);
     let mj = MiniJinjaEngine::compile(mega::MINIJINJA);
     let hbs = HandlebarsEngine::compile(mega::HANDLEBARS);
     let data = mega_data();
 
     let mut group = c.benchmark_group("mega_e2e");
-    group.bench_function("prompt_templates", |b| {
+    group.bench_function("md_tmpl", |b| {
         b.iter(|| {
-            let ctx = prompt_templates::Context::from_serialize(black_box(&data)).unwrap();
+            let ctx = md_tmpl::Context::from_serialize(black_box(&data)).unwrap();
             pt.render(&ctx)
         });
     });
@@ -1126,12 +1126,12 @@ mod tests {
 
     #[test]
     fn simple_output_matches() {
-        let pt = PromptTemplatesEngine::compile(simple::PROMPT_TEMPLATES);
+        let pt = MdTmplEngine::compile(simple::MD_TMPL);
         let tera = TeraEngine::compile(simple::TERA);
         let mj = MiniJinjaEngine::compile(simple::MINIJINJA);
         let hbs = HandlebarsEngine::compile(simple::HANDLEBARS);
         let data = simple_data();
-        let pt_ctx = prompt_templates::Context::from_serialize(&data).unwrap();
+        let pt_ctx = md_tmpl::Context::from_serialize(&data).unwrap();
         let tera_ctx = TeraEngine::context(&data);
         let json_ctx = serde_json::to_value(&data).unwrap();
 
@@ -1147,12 +1147,12 @@ mod tests {
 
     #[test]
     fn loop_output_matches() {
-        let pt = PromptTemplatesEngine::compile(loop_scenario::PROMPT_TEMPLATES);
+        let pt = MdTmplEngine::compile(loop_scenario::MD_TMPL);
         let tera = TeraEngine::compile(loop_scenario::TERA);
         let mj = MiniJinjaEngine::compile(loop_scenario::MINIJINJA);
         let hbs = HandlebarsEngine::compile(loop_scenario::HANDLEBARS);
         let data = loop_data();
-        let pt_ctx = prompt_templates::Context::from_serialize(&data).unwrap();
+        let pt_ctx = md_tmpl::Context::from_serialize(&data).unwrap();
         let tera_ctx = TeraEngine::context(&data);
         let json_ctx = serde_json::to_value(&data).unwrap();
 
@@ -1168,12 +1168,12 @@ mod tests {
 
     #[test]
     fn conditional_output_matches() {
-        let pt = PromptTemplatesEngine::compile(conditional::PROMPT_TEMPLATES);
+        let pt = MdTmplEngine::compile(conditional::MD_TMPL);
         let tera = TeraEngine::compile(conditional::TERA);
         let mj = MiniJinjaEngine::compile(conditional::MINIJINJA);
         let hbs = HandlebarsEngine::compile(conditional::HANDLEBARS);
         let data = conditional_data();
-        let pt_ctx = prompt_templates::Context::from_serialize(&data).unwrap();
+        let pt_ctx = md_tmpl::Context::from_serialize(&data).unwrap();
         let tera_ctx = TeraEngine::context(&data);
         let json_ctx = serde_json::to_value(&data).unwrap();
 
@@ -1189,12 +1189,12 @@ mod tests {
 
     #[test]
     fn hero_output_matches() {
-        let pt = PromptTemplatesEngine::compile(hero::PROMPT_TEMPLATES);
+        let pt = MdTmplEngine::compile(hero::MD_TMPL);
         let tera = TeraEngine::compile(hero::TERA);
         let mj = MiniJinjaEngine::compile(hero::MINIJINJA);
         let hbs = HandlebarsEngine::compile(hero::HANDLEBARS);
         let data = hero_data();
-        let pt_ctx = prompt_templates::Context::from_serialize(&data).unwrap();
+        let pt_ctx = md_tmpl::Context::from_serialize(&data).unwrap();
         let tera_ctx = TeraEngine::context(&data);
         let json_ctx = serde_json::to_value(&data).unwrap();
 
@@ -1210,12 +1210,12 @@ mod tests {
 
     #[test]
     fn mega_output_matches() {
-        let pt = PromptTemplatesEngine::compile(mega::PROMPT_TEMPLATES);
+        let pt = MdTmplEngine::compile(mega::MD_TMPL);
         let tera = TeraEngine::compile(mega::TERA);
         let mj = MiniJinjaEngine::compile(mega::MINIJINJA);
         let hbs = HandlebarsEngine::compile(mega::HANDLEBARS);
         let data = mega_data();
-        let pt_ctx = prompt_templates::Context::from_serialize(&data).unwrap();
+        let pt_ctx = md_tmpl::Context::from_serialize(&data).unwrap();
         let tera_ctx = TeraEngine::context(&data);
         let json_ctx = serde_json::to_value(&data).unwrap();
 

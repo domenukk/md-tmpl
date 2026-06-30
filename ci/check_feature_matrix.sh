@@ -2,7 +2,7 @@
 # ci/check_feature_matrix.sh — Verify all feature combinations compile cleanly.
 #
 # This script checks every meaningful combination of features for the
-# `prompt-templates` crate.  It is designed to catch regressions in the
+# `md-tmpl` crate.  It is designed to catch regressions in the
 # no_std / alloc / serde / typed-builder feature gating.
 #
 # Usage:  ./ci/check_feature_matrix.sh
@@ -10,7 +10,7 @@
 
 set -euo pipefail
 
-CRATE="prompt-templates"
+CRATE="md-tmpl"
 PASS=0
 FAIL=0
 

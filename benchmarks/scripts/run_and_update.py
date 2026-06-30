@@ -36,12 +36,12 @@ PROJECT_ROOT = SCRIPT_DIR.parent.parent
 PARSE_SCRIPT = SCRIPT_DIR / "parse_benchmarks.py"
 UPDATE_SCRIPT = SCRIPT_DIR / "update_tables.py"
 README = PROJECT_ROOT / "README.md"
-PYTHON_README = PROJECT_ROOT / "crates" / "prompt-templates-python" / "README.md"
-GO_README = PROJECT_ROOT / "go" / "prompt_templates" / "README.md"
-TS_README = PROJECT_ROOT / "crates" / "prompt-templates-typescript" / "README.md"
+PYTHON_README = PROJECT_ROOT / "crates" / "md-tmpl-python" / "README.md"
+GO_README = PROJECT_ROOT / "go" / "md_tmpl" / "README.md"
+TS_README = PROJECT_ROOT / "crates" / "md-tmpl-typescript" / "README.md"
 
 
-PYTHON_VENV = PROJECT_ROOT / "crates" / "prompt-templates-python" / ".venv" / "bin"
+PYTHON_VENV = PROJECT_ROOT / "crates" / "md-tmpl-python" / ".venv" / "bin"
 
 
 def run_cmd(
@@ -111,7 +111,7 @@ def run_python_bench() -> Path | None:
 
     # Build release-mode bindings (debug builds are ~10× slower)
     maturin_bin = PYTHON_VENV / "maturin"
-    py_crate = PROJECT_ROOT / "crates" / "prompt-templates-python"
+    py_crate = PROJECT_ROOT / "crates" / "md-tmpl-python"
     build_result = run_cmd(
         [str(maturin_bin), "develop", "--release"],
         cwd=py_crate,
@@ -144,7 +144,7 @@ def run_go_bench() -> Path | None:
 
     # Build FFI library first
     result = run_cmd(
-        ["cargo", "build", "-p", "prompt-templates-ffi", "--release"],
+        ["cargo", "build", "-p", "md-tmpl-ffi", "--release"],
         cwd=PROJECT_ROOT,
         capture=True,
     )
@@ -152,7 +152,7 @@ def run_go_bench() -> Path | None:
         log.error("FFI build failed")
         return None
 
-    go_dir = PROJECT_ROOT / "go" / "prompt_templates"
+    go_dir = PROJECT_ROOT / "go" / "md_tmpl"
     result = run_cmd(
         ["go", "test", "-bench=.", "-benchmem", "-count=1", "./..."],
         cwd=go_dir,
@@ -173,7 +173,7 @@ def run_ts_bench() -> Path | None:
     """Run TypeScript benchmarks. Returns path to output file or None."""
     log.info("=== Running TypeScript benchmarks ===")
 
-    ts_dir = PROJECT_ROOT / "crates" / "prompt-templates-typescript"
+    ts_dir = PROJECT_ROOT / "crates" / "md-tmpl-typescript"
 
     # Build TS first
     result = run_cmd(["npx", "tsc"], cwd=ts_dir, capture=True)
@@ -200,7 +200,7 @@ def run_ts_comparison_bench() -> Path | None:
     """Run TypeScript comparison benchmarks (vs Handlebars/Mustache)."""
     log.info("=== Running TypeScript comparison benchmarks ===")
 
-    ts_dir = PROJECT_ROOT / "crates" / "prompt-templates-typescript"
+    ts_dir = PROJECT_ROOT / "crates" / "md-tmpl-typescript"
 
     # Build TS first (may already be built from run_ts_bench)
     result = run_cmd(["npx", "tsc"], cwd=ts_dir, capture=True)
@@ -227,7 +227,7 @@ def run_wasm_bench() -> Path | None:
     """Run WASM benchmarks. Returns path to output file or None."""
     log.info("=== Running WASM benchmarks ===")
 
-    wasm_dir = PROJECT_ROOT / "crates" / "prompt-templates-wasm"
+    wasm_dir = PROJECT_ROOT / "crates" / "md-tmpl-wasm"
 
     # Build WASM first
     result = run_cmd(

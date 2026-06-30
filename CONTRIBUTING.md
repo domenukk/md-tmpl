@@ -1,10 +1,10 @@
-# Contributing to prompt-templates
+# Contributing to md-tmpl
 
-First off, thank you for considering contributing to `prompt-templates`! We welcome contributions from everyone.
+First off, thank you for considering contributing to `md-tmpl`! We welcome contributions from everyone.
 
 ## Development Setup
 
-`prompt-templates` is a cross-language project built around a core Rust engine.
+`md-tmpl` is a cross-language project built around a core Rust engine.
 
 ### Prerequisites
 
@@ -19,20 +19,20 @@ First off, thank you for considering contributing to `prompt-templates`! We welc
 Clone the repository and run the test suite to ensure everything is set up correctly:
 
 ```bash
-git clone https://github.com/domenukk/prompt-templates.git
-cd prompt-templates
+git clone https://github.com/domenukk/md-tmpl.git
+cd md-tmpl
 cargo test --workspace --all-features
 ```
 
 ## Project Structure
 
-- `crates/prompt-templates`: The core Rust template engine.
-- `crates/prompt-templates-macros`: Rust procedural macros for build-time validation and codegen.
-- `crates/prompt-templates-ffi`: C ABI for binding to other languages.
-- `crates/prompt-templates-python`: Python bindings (PyO3).
-- `crates/prompt-templates-wasm`: WASM bindings.
-- `crates/prompt-templates-typescript`: TypeScript/Node integration.
-- `go/prompt_templates`: Go bindings (cgo).
+- `crates/md-tmpl`: The core Rust template engine.
+- `crates/md-tmpl-macros`: Rust procedural macros for build-time validation and codegen.
+- `crates/md-tmpl-ffi`: C ABI for binding to other languages.
+- `crates/md-tmpl-python`: Python bindings (PyO3).
+- `crates/md-tmpl-wasm`: WASM bindings.
+- `crates/md-tmpl-typescript`: TypeScript/Node integration.
+- `go/md_tmpl`: Go bindings (cgo).
 - `benchmarks`: Cross-language benchmark suite.
 
 ## Pull Requests

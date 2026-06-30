@@ -18,8 +18,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       # Core must be published first (macros depends on it).
-      - name: Publish prompt-templates
-        run: cargo publish -p prompt-templates --no-verify
+      - name: Publish md-tmpl
+        run: cargo publish -p md-tmpl --no-verify
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -27,8 +27,8 @@ jobs:
       - name: Wait for index
         run: sleep 30
 
-      - name: Publish prompt-templates-macros
-        run: cargo publish -p prompt-templates-macros --no-verify
+      - name: Publish md-tmpl-macros
+        run: cargo publish -p md-tmpl-macros --no-verify
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -63,13 +63,13 @@ jobs:
           target: ${{ matrix.target }}
           args: --release --out dist
           manylinux: auto
-          working-directory: crates/prompt-templates-python
+          working-directory: crates/md-tmpl-python
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
           name: wheels-${{ matrix.os }}-${{ matrix.target }}
-          path: crates/prompt-templates-python/dist
+          path: crates/md-tmpl-python/dist
 
   # ── Publish all wheels to PyPI ────────────────────
   publish-pypi:
@@ -104,12 +104,12 @@ jobs:
           registry-url: "https://registry.npmjs.org"
 
       - name: Install dependencies
-        run: cd crates/prompt-templates-typescript && npm install
+        run: cd crates/md-tmpl-typescript && npm install
 
       - name: Build
-        run: cd crates/prompt-templates-typescript && npx tsc
+        run: cd crates/md-tmpl-typescript && npx tsc
 
       - name: Publish
-        run: cd crates/prompt-templates-typescript && npm publish --access public
+        run: cd crates/md-tmpl-typescript && npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -70,13 +70,13 @@ def format_us(us: float) -> str:
 # ---------------------------------------------------------------------------
 
 RUST_ENGINES_DISPLAY = {
-    "prompt_templates": "prompt-templates",
+    "md_tmpl": "md-tmpl",
     "tera": "Tera",
     "minijinja": "`MiniJinja`",
     "handlebars": "Handlebars",
 }
 
-RUST_ENGINES_ORDER = ["prompt_templates", "tera", "minijinja", "handlebars"]
+RUST_ENGINES_ORDER = ["md_tmpl", "tera", "minijinja", "handlebars"]
 RUST_SCENARIOS = ["simple", "loop", "conditional", "hero", "mega"]
 
 
@@ -145,7 +145,7 @@ def build_rust_table(
 # ---------------------------------------------------------------------------
 
 PYTHON_ENGINES_ORDER = [
-    "prompt-templates",
+    "md-tmpl",
     "Jinja2",
     "Mako",
     "Chevron",
@@ -154,7 +154,7 @@ PYTHON_ENGINES_ORDER = [
 ]
 
 PYTHON_ENGINES_README_RENDER = {
-    "prompt-templates": "prompt-templates",
+    "md-tmpl": "md-tmpl",
     "Jinja2": "Jinja2",
     "Mako": "Mako",
     "Chevron": "Chevron",
@@ -163,7 +163,7 @@ PYTHON_ENGINES_README_RENDER = {
 }
 
 PYTHON_ENGINES_README_E2E = {
-    "prompt-templates": "prompt-templates",
+    "md-tmpl": "md-tmpl",
     "Jinja2": "Jinja2",
     "Mako": "Mako",
     "Chevron": "Chevron",
@@ -250,7 +250,7 @@ def build_go_table(
     phase should be one of: "Render", "Compile", "RoundTrip"
     """
     scenario_width = max(len("Scenario"), 10)
-    pt_width = max(len("prompt-templates"), 16)
+    pt_width = max(len("md-tmpl"), 16)
     go_width = max(len("Go `text/template`"), 18)
     speedup_width = max(len("speedup"), 7)
 
@@ -259,7 +259,7 @@ def build_go_table(
     # Header
     lines.append(
         f"| {'Scenario':<{scenario_width}} "
-        f"| {'prompt-templates':>{pt_width}} "
+        f"| {'md-tmpl':>{pt_width}} "
         f"| {'Go `text/template`':>{go_width}} "
         f"| {'speedup':>{speedup_width}} |"
     )
@@ -603,7 +603,7 @@ def build_ts_comparison_roundtrip_table(
     """Build TS comparison round-trip table."""
     lines = []
     lines.append(
-        "| Scenario   | prompt-templates | Handlebars |        Mustache |"
+        "| Scenario   | md-tmpl | Handlebars |        Mustache |"
     )
     lines.append(
         "| ---------- | ---------------: | ---------: | --------------: |"

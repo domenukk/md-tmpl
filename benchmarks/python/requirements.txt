@@ -1,5 +1,5 @@
-# Benchmark dependencies for prompt-templates vs Jinja2/Mako/Chevron/Django.
-# prompt-templates is installed from the local PyO3 package
+# Benchmark dependencies for md-tmpl vs Jinja2/Mako/Chevron/Django.
+# md-tmpl is installed from the local PyO3 package
 # (see benchmarks/README.md for setup instructions).
 jinja2>=3.1
 Mako>=1.3

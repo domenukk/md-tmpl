@@ -1,1 +1,0 @@
-../../prompt-templates/prompts/code_review.tmpl.md

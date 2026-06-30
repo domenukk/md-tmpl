@@ -1,7 +1,7 @@
 # Benchmarks
 
 Performance benchmarks for
-[prompt-templates](https://github.com/domenukk/prompt-templates) across
+[md-tmpl](https://github.com/domenukk/md-tmpl) across
 all language bindings.
 
 ## Scenarios
@@ -30,7 +30,7 @@ cargo bench
 
 Results in `benchmarks/target/criterion/` with HTML reports.
 
-> The standalone crate at `crates/prompt-templates` also has Criterion
+> The standalone crate at `crates/md-tmpl` also has Criterion
 > benchmarks for internals (parse, render, filters, conditions).
 
 ## Python
@@ -38,9 +38,9 @@ Results in `benchmarks/target/criterion/` with HTML reports.
 Compares against Jinja2, Mako, Chevron, and Django templates.
 
 ```bash
-source crates/prompt-templates-python/.venv/bin/activate
+source crates/md-tmpl-python/.venv/bin/activate
 pip install maturin
-cd crates/prompt-templates-python && maturin develop && cd ../..
+cd crates/md-tmpl-python && maturin develop && cd ../..
 pip install -r benchmarks/python/requirements.txt
 python benchmarks/python/bench_templates.py
 ```
@@ -50,7 +50,7 @@ python benchmarks/python/bench_templates.py
 
 ## Go
 
-Go's `testing.B` framework, comparing prompt-templates (Rust/CGo FFI)
+Go's `testing.B` framework, comparing md-tmpl (Rust/CGo FFI)
 against Go's `text/template` across parse, render, and round-trip
 scenarios.
 
@@ -70,7 +70,7 @@ just bench-ts-compare   # vs Handlebars & Mustache
 Compares WASM bindings against the pure-TypeScript implementation.
 
 ```bash
-cd crates/prompt-templates-wasm
+cd crates/md-tmpl-wasm
 wasm-pack build --target nodejs --out-dir pkg
 node benchmarks/bench.mjs            # table output
 node benchmarks/bench.mjs --json     # JSON to stdout
@@ -88,10 +88,10 @@ These benchmarks aim for objectivity. Known asymmetries:
   Data structs include pre-computed boolean flags and formatted strings
   so it can produce equivalent output — Handlebars therefore does
   slightly less per-render work.
-- **Python**: `prompt-templates` is a Rust/PyO3 engine; competitors
+- **Python**: `md-tmpl` is a Rust/PyO3 engine; competitors
   (Jinja2, Mako, Django, Chevron) are pure Python. The speed advantage
   is partly due to native code, not template design alone.
-- **Go**: prompt-templates uses CGo FFI (~100–200ns overhead per call),
+- **Go**: md-tmpl uses CGo FFI (~100–200ns overhead per call),
   penalizing it relative to the pure-Go `text/template` on small
   templates. The comparison is fair at the API boundary level.
 - **TypeScript comparison**: Mustache lacks `elif` and filters, so its
@@ -102,8 +102,8 @@ All comparison benchmarks verify output correctness before timing.
 ## Results
 
 Benchmark tables are in each language binding's README:
-[Rust](../crates/prompt-templates/README.md#performance) ·
-[Python](../crates/prompt-templates-python/README.md#performance) ·
-[Go](../go/prompt_templates/README.md#performance) ·
-[TypeScript](../crates/prompt-templates-typescript/README.md#performance) ·
-[WASM](../crates/prompt-templates-wasm/README.md#performance)
+[Rust](../crates/md-tmpl/README.md#performance) ·
+[Python](../crates/md-tmpl-python/README.md#performance) ·
+[Go](../go/md_tmpl/README.md#performance) ·
+[TypeScript](../crates/md-tmpl-typescript/README.md#performance) ·
+[WASM](../crates/md-tmpl-wasm/README.md#performance)

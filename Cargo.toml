@@ -1,10 +1,10 @@
 [workspace]
 members = [
-  "crates/prompt-templates",
-  "crates/prompt-templates-macros",
-  "crates/prompt-templates-python",
-  "crates/prompt-templates-ffi",
-  "crates/prompt-templates-wasm",
+  "crates/md-tmpl",
+  "crates/md-tmpl-macros",
+  "crates/md-tmpl-python",
+  "crates/md-tmpl-ffi",
+  "crates/md-tmpl-wasm",
 ]
 resolver = "3"
 

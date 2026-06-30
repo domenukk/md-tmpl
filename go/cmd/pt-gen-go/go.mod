@@ -1,7 +1,7 @@
-module github.com/domenukk/prompt-templates/go/cmd/pt-gen-go
+module github.com/domenukk/md-tmpl/go/cmd/pt-gen-go
 
 go 1.24
 
-require github.com/domenukk/prompt-templates/go/prompt_templates v0.0.0
+require github.com/domenukk/md-tmpl/go/md_tmpl v0.0.0
 
-replace github.com/domenukk/prompt-templates/go/prompt_templates => ../../prompt_templates
+replace github.com/domenukk/md-tmpl/go/md_tmpl => ../../md_tmpl
