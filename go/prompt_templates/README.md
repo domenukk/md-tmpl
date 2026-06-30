@@ -286,6 +286,7 @@ result, _ := tmpl.RenderMap(map[string]any{"name": "Alice"})
 ---
 consts:
   - MAX_RETRIES = int := 3
+
 params: []
 ---
 

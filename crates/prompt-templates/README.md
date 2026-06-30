@@ -1,9 +1,5 @@
 # prompt-templates
 
-[![CI](https://github.com/domenukk/prompt-templates/actions/workflows/ci.yml/badge.svg)](https://github.com/domenukk/prompt-templates/actions/workflows/ci.yml)
-[![crates.io](https://img.shields.io/crates/v/prompt-templates.svg)](https://crates.io/crates/prompt-templates)
-[![docs.rs](https://docs.rs/prompt-templates/badge.svg)](https://docs.rs/prompt-templates)
-
 Strongly-typed prompt templates for LLMs — markdown files with YAML frontmatter,
 validated at **build time** via proc macros, with a full runtime API for dynamic loading.
 
@@ -19,20 +15,20 @@ include_template!("prompts/task_report.tmpl.md");
 //   task_report::ParamsTasksItem         — struct { name, urgency }
 //   task_report::ParamsTasksItemUrgency  — enum(Critical, High, Medium, Low)
 
-let params = task_report::Params {
-    title: "Deploy v2.0".into(),
-    priority: task_report::ParamsPriority::Critical,
-    tasks: vec![
-        task_report::ParamsTasksItem {
-            name: "run migrations".into(),
-            urgency: task_report::ParamsTasksItemUrgency::High,
-        },
-        task_report::ParamsTasksItem {
-            name: "update load balancer".into(),
-            urgency: task_report::ParamsTasksItemUrgency::Medium,
-        },
-    ],
-};
+let params = task_report::Params::builder()
+    .title("Deploy v2.0")
+    .priority(task_report::ParamsPriority::Critical)
+    .tasks([
+        task_report::ParamsTasksItem::builder()
+            .name("run migrations")
+            .urgency(task_report::ParamsTasksItemUrgency::High)
+            .build(),
+        task_report::ParamsTasksItem::builder()
+            .name("update load balancer")
+            .urgency(task_report::ParamsTasksItemUrgency::Medium)
+            .build(),
+    ])
+    .build();
 
 let output = params.render().unwrap();
 assert!(output.contains("# Task Report: Deploy v2.0"));
@@ -48,6 +44,7 @@ name: task_report
 description: A task report template with types
 types:
   - Priority = enum(Critical, High, Medium, Low)
+
 params:
   - title = str
   - priority = Priority
@@ -62,7 +59,7 @@ Priority: {{ kind(priority) }}
 
 - {{ task.name }} ({{ kind(task.urgency) }})
 
-  > {% /for %}
+> {% /for %}
 ```
 
 Rename a variant, add a field, remove a param — the compiler catches it
@@ -198,7 +195,7 @@ Severity: {{ severity }}
 
 - Line {{ finding.line }}: {{ finding.message }}
 
-  > {% /for %}"
+> {% /for %}"
 ).unwrap();
 
 let output = tmpl.render(&ReviewParams {

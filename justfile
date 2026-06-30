@@ -40,7 +40,7 @@ fmt-go:
 
 # Format TypeScript files with prettier
 fmt-ts:
-    cd crates/prompt-templates-typescript && npx -y prettier@latest --write 'src/**/*.ts'
+    cd crates/prompt-templates-typescript && npx -y prettier@latest --write '**/*.ts'
 
 # ── Lint ──────────────────────────────────────────────────────────────
 
@@ -63,6 +63,7 @@ lint-toml:
 # Lint Markdown files
 lint-markdown:
     npx -y markdownlint-cli2@latest '**/*.md'
+    npx -y prettier@latest --check '**/*.md'
 
 # Lint the justfile (check formatting)
 lint-just:
@@ -76,10 +77,12 @@ lint-python:
 # Lint Go files (vet)
 lint-go: build-go-ffi
     cd go/prompt_templates && go vet ./...
+    @cd go/prompt_templates && if [ -n "$$(gofmt -l .)" ]; then echo "Go code is not formatted. Run 'just fmt'"; exit 1; fi
 
 # Lint TypeScript (strict type-check with tsc)
 lint-ts:
     cd crates/prompt-templates-typescript && npx tsc --noEmit --strict
+    cd crates/prompt-templates-typescript && npx -y prettier@latest --check '**/*.ts'
 
 # Run all tests
 test: test-rust test-no-std test-python test-go test-ts test-wasm
@@ -114,7 +117,7 @@ test-go: build-go-ffi
 
 # Build and test TypeScript bindings
 test-ts: build-ts
-    cd crates/prompt-templates-typescript && node --test dist/tests/template.test.js
+    cd crates/prompt-templates-typescript && node --test dist/tests/*.test.js
 
 # Run WASM tests (parity + comprehensive unit tests)
 test-wasm: build-wasm

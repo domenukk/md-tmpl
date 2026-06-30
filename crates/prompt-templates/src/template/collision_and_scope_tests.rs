@@ -334,8 +334,10 @@ inner
 /// Inline template with the same name as an import stem → rejected.
 #[test]
 fn inline_tmpl_shadows_import_stem_rejected() {
-    let src = r"---
-imports: [[shared](./shared.tmpl.md)]
+    let src = r#"---
+imports:
+  - "[shared](./shared.tmpl.md)"
+
 params: [x = str]
 allow_unused: true
 ---
@@ -349,7 +351,7 @@ inner
 
 > {% /tmpl %}
 
-{{ x }}";
+{{ x }}"#;
     let err = Template::from_source(src)
         .expect_err("inline template 'shared' should conflict with import stem 'shared'");
     let msg = err.to_string();

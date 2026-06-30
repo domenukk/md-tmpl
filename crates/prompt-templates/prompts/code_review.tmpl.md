@@ -17,4 +17,4 @@ Severity: {{ severity }}
 
 - Line {{ finding.line }}: {{ finding.message }}
 
-  > {% /for %}
+> {% /for %}

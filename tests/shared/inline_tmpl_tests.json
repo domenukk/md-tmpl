@@ -89,7 +89,11 @@
         "> {% include item for it in items %}"
       ],
       "params": {
-        "items": ["a", "b", "c"]
+        "items": [
+          "a",
+          "b",
+          "c"
+        ]
       },
       "expected_output": "- a\n- b\n- c\n"
     },
@@ -220,6 +224,151 @@
         "name": "world"
       },
       "expected_output": "Hello world!\n"
+    },
+    {
+      "name": "circular_inline_includes",
+      "description": "Circular inline templates should exceed max include depth and fail",
+      "template_lines": [
+        "---",
+        "params: []",
+        "---",
+        "> {% tmpl a %}",
+        "---",
+        "params: []",
+        "---",
+        "> {% include b %}",
+        "",
+        "> {% /tmpl %}",
+        "> {% tmpl b %}",
+        "---",
+        "params: []",
+        "---",
+        "> {% include a %}",
+        "",
+        "> {% /tmpl %}",
+        "> {% include a %}"
+      ],
+      "params": {},
+      "expected_error": "maximum include depth"
+    },
+    {
+      "name": "missing_inline_include",
+      "description": "Including an inline template that does not exist should fail",
+      "template_lines": [
+        "---",
+        "params: []",
+        "---",
+        "> {% include non_existent_tmpl %}"
+      ],
+      "params": {},
+      "expected_error": "non_existent_tmpl"
+    },
+    {
+      "name": "inline_tmpl_wrong_type",
+      "description": "Passing wrong parameter type to inline template should fail type checking",
+      "template_lines": [
+        "---",
+        "params: [items = list(str)]",
+        "---",
+        "> {% tmpl row %}",
+        "---",
+        "params: [x = int]",
+        "---",
+        "{{ x }}",
+        "",
+        "> {% /tmpl %}",
+        "> {% include row with x=items %}"
+      ],
+      "params": {
+        "items": [
+          "a",
+          "b"
+        ]
+      },
+      "expected_error": "type mismatch"
+    },
+    {
+      "name": "inline_tmpl_complex_struct_and_consts",
+      "description": "Inline template accessing its own consts and formatting complex struct param",
+      "template_lines": [
+        "---",
+        "params: [user = struct(name = str, role = str)]",
+        "---",
+        "> {% tmpl card %}",
+        "---",
+        "params: [u = struct(name = str, role = str)]",
+        "consts:",
+        "  - BADGE = str := \"[VERIFIED]\"",
+        "---",
+        "{{ BADGE }} {{ u.name }} ({{ u.role }})",
+        "",
+        "> {% /tmpl %}",
+        "> {% include card with u=user %}"
+      ],
+      "params": {
+        "user": {
+          "name": "Eve",
+          "role": "Admin"
+        }
+      },
+      "expected_output": "[VERIFIED] Eve (Admin)\n"
+    },
+    {
+      "name": "deeply_nested_inline_includes",
+      "description": "Deeply nested inline templates calling each other across 3 levels",
+      "template_lines": [
+        "---",
+        "params: [val = str]",
+        "---",
+        "> {% tmpl l3 %}",
+        "---",
+        "params: [v = str]",
+        "---",
+        "L3:{{ v }}",
+        "",
+        "> {% /tmpl %}",
+        "> {% tmpl l2 %}",
+        "---",
+        "params: [v = str]",
+        "---",
+        "L2->{%- include l3 with v=v -%}",
+        "",
+        "> {% /tmpl %}",
+        "> {% tmpl l1 %}",
+        "---",
+        "params: [v = str]",
+        "---",
+        "L1->{%- include l2 with v=v -%}",
+        "",
+        "> {% /tmpl %}",
+        "> {%- include l1 with v=val -%}"
+      ],
+      "params": {
+        "val": "core"
+      },
+      "expected_output": "L1->L2->L3:core\n"
+    },
+    {
+      "name": "inline_tmpl_whitespace_stripping_complex",
+      "description": "Complex whitespace stripping around inline templates and comments",
+      "template_lines": [
+        "---",
+        "params: [x = str]",
+        "---",
+        "> {% tmpl tag %}",
+        "---",
+        "params: [t = str]",
+        "---",
+        "[{{ t }}]",
+        "",
+        "> {% /tmpl %}",
+        "",
+        "Start{# comment #}{%- include tag with t=x -%}End"
+      ],
+      "params": {
+        "x": "mid"
+      },
+      "expected_output": "Start[mid]\nEnd"
     }
   ]
 }

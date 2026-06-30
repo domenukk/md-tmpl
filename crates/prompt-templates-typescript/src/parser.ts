@@ -612,7 +612,7 @@ function handleStatement(
 
   // Include
   if (tag.startsWith("include ")) {
-    return handleInclude(tag, afterTag);
+    return handleInclude(tag, bodyStart);
   }
 
   // Inline template definition
@@ -1441,6 +1441,10 @@ export function renderNodes(
             parts.push(renderNodes(inlineNodes, childScope, childOpts));
           }
           break;
+        }
+
+        if (!node.path) {
+          throw new TemplateSyntaxError(`include not found: ${node.name}`);
         }
 
         // File-based include

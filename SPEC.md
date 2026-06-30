@@ -107,11 +107,14 @@ description: A summary
 types:
   - Labelled = enum(Known(label = str), Unknown)
   - Priority = enum(High, Medium, Low)
+
 imports:
   - "[shared_types](./shared_types.tmpl.md)"
+
 consts:
   - NOTEBOOK_FILENAME = str := "thought_process.md"
   - MAX_RETRIES = int := 3
+
 params:
   - name = str
   - count = int
@@ -123,6 +126,7 @@ params:
   - outcome = enum(Confirmed(evidence = str), Rejected)
   - category = Labelled
   - ext_type = shared_types.SomeType
+
 allow_unused: false
 ---
 ```
@@ -165,6 +169,7 @@ validated against the declared signature:
 
 ```yaml
 # Example: signature matching
+
 params:
   - widget = tmpl(name = str)
 ```
@@ -351,6 +356,7 @@ types:
   - Priority = enum(High, Medium, Low)
   - TaskList = list(title = str, category = Category, priority = Priority)
   - Config = struct(timeout = int, retries = int)
+
 params:
   - tasks = TaskList
   - components = list(name = str, category = Labelled)
@@ -397,6 +403,7 @@ For example, given:
 ```yaml
 params:
   - tasks = list(title = str, priority = str)
+
 consts:
   - DEFAULT_ITEMS = list(label = str) := [{label = "init"}]
 ```
@@ -426,6 +433,7 @@ Each import entry uses quoted markdown link syntax:
 ---
 imports:
   - "[task_list_item](./task_list_item.tmpl.md)"
+
 params:
   - tasks = task_list_item.tasks
   - label = task_list_item.Category
@@ -540,6 +548,7 @@ function, which returns the variant name as a string. Bare access
 types:
   - Stage = enum(Design, Build, Deploy)
   - Status = enum(Active, Paused(reason = str))
+
 params: []
 ---
 
@@ -580,6 +589,7 @@ and constants:
 ---
 imports:
   - "[lib](./lib.tmpl.md)"
+
 params: []
 ---
 
@@ -803,7 +813,7 @@ assert_eq!(output, "0.0 0.1 1.0 1.1 ");
 
 - **{{ task.title }}**: {{ task.description }}
 
-  > {% /for %}
+> {% /for %}
 ```
 
 `{% for x in y %}` requires `y` to be a `list` type — enforced at compile time.
@@ -1121,6 +1131,7 @@ an enum and use it as the element or field type:
 ---
 types:
   - TreeNode = enum(Leaf(label = str), Branch(label = str, depth = int))
+
 params:
   - nodes = list(TreeNode)
 ---
@@ -1145,6 +1156,7 @@ The same pattern works for structs with heterogeneous value types:
 ```yaml
 types:
   - ConfigVal = enum(Text(val = str), Num(val = int), Flag(val = bool))
+
 params:
   - settings = struct(timeout = ConfigVal, label = ConfigVal)
 ```
@@ -1183,7 +1195,7 @@ params:
 
 - **{{ title }}** ({{ priority }})
 
-  > {% /tmpl %}
+> {% /tmpl %}
 
 > {% for task in tasks %}
 > {% include task_row with title=task.title, priority=task.priority %}

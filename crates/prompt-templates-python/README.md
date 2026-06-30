@@ -1,7 +1,5 @@
 # prompt-templates
 
-[![PyPI version](https://badge.fury.io/py/prompt-templates.svg)](https://badge.fury.io/py/prompt-templates)
-
 Strongly-typed prompt templates for LLMs.
 
 ```python
@@ -38,6 +36,7 @@ The template file is plain Markdown with YAML frontmatter:
 ---
 types:
   - Status = enum(Approved, NeedsChanges(reason = str), Rejected)
+
 params:
   - reviewer = str
   - items = list(file = str, status = Status)
@@ -292,6 +291,7 @@ tmpl = Template.from_source("""\
 consts:
   - MAX_RETRIES = int := 3
   - MODEL = str := "gemini-3.5-flash"
+
 params:
   - query = str
 ---

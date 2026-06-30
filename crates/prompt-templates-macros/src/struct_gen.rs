@@ -313,7 +313,7 @@ pub(crate) fn builder_field_attrs(
     }
     match var_type {
         VarType::Str => quote! { #[builder(setter(into))] },
-        VarType::List(_) => quote! { #[builder(default)] },
+        VarType::List(_) => quote! { #[builder(default, setter(into))] },
         VarType::Enum(_) if var_type.is_option() => quote! { #[builder(default)] },
         _ => quote! {},
     }

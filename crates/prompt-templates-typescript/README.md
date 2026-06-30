@@ -1,7 +1,5 @@
 # prompt-templates
 
-[![npm](https://img.shields.io/npm/v/prompt-templates.svg)](https://www.npmjs.com/package/prompt-templates)
-
 Strongly-typed prompt templates for LLMs.
 
 ## The Cool Part
@@ -12,8 +10,10 @@ Define a prompt as a `.tmpl.md` file — readable markdown with typed frontmatte
 ---
 consts:
   - MAX_RETRIES = int := 3
+
 types:
   - Priority = enum(High, Medium, Low)
+
 params:
   - role = str
   - tasks = list(title = str, priority = Priority)
@@ -131,6 +131,7 @@ import { generateTypes } from "prompt-templates";
 const code = generateTypes(`---
 consts:
   - MAX_RETRIES = int := 3
+
 params:
   - message = str
   - level = int := 1
