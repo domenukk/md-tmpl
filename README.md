@@ -1,4 +1,4 @@
-# prompt-templates
+# md-tmpl: Strongly typed templates for Markdown
 
 **Strongly-typed prompt templates for LLM Agents**
 Write prompts as markdown, catch errors faster. Vibe harder.
