@@ -73,7 +73,7 @@ immediately. No runtime surprises.
 
 ## Installation
 
-Available on crates.io: https://crates.io/crates/md-tmpl (and https://crates.io/crates/md-tmpl-macros)
+Available on crates.io: <https://crates.io/crates/md-tmpl> (and <https://crates.io/crates/md-tmpl-macros>)
 
 ```bash
 cargo add md-tmpl

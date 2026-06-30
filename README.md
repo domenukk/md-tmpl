@@ -187,10 +187,10 @@ diagnostics.
 
 ## Packages
 
-- **Rust**: https://crates.io/crates/md-tmpl (and https://crates.io/crates/md-tmpl-macros)
-- **Python**: https://pypi.org/project/md-tmpl/
-- **Go**: https://github.com/domenukk/md-tmpl
-- **TypeScript**: https://www.npmjs.com/package/md-tmpl
+- **Rust**: <https://crates.io/crates/md-tmpl> (and <https://crates.io/crates/md-tmpl-macros>)
+- **Python**: <https://pypi.org/project/md-tmpl/>
+- **Go**: <https://github.com/domenukk/md-tmpl>
+- **TypeScript**: <https://www.npmjs.com/package/md-tmpl>
 
 ## License
 

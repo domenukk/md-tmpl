@@ -1,6 +1,6 @@
 [package]
 name = "md-tmpl-macros"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 rust-version = "1.85"
 description = "Proc macros for build-time template validation and pre-parsing"

@@ -14,7 +14,7 @@ runtime for dynamic or hot-reload use cases.
 
 ## Installation
 
-Available on crates.io: https://crates.io/crates/md-tmpl-macros (and https://crates.io/crates/md-tmpl)
+Available on crates.io: <https://crates.io/crates/md-tmpl-macros> (and <https://crates.io/crates/md-tmpl>)
 
 ```bash
 cargo add md-tmpl
