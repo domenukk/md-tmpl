@@ -1,6 +1,6 @@
 [package]
 name = "md-tmpl-python"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Strongly-typed template engine for LLM prompts (Python package)"

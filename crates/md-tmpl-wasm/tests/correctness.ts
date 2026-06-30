@@ -146,6 +146,7 @@ testExact(
   `---
 consts:
   - MAX = int := 100
+
 params: []
 ---
 Max is {{ MAX }}`,
@@ -736,7 +737,7 @@ testExact(
 params:
   - name = str
 ---
-{# This is a comment #}Hello {{ name }}!`,
+Hello {# comment inside #}{{ name }}!`,
   { name: "world" },
 );
 
@@ -983,7 +984,7 @@ params: []
 ---
 > {% raw=MYDELIM %}
 
-{% raw %}...{% /raw %}
+> {% raw %}...{% /raw %}
 
 > {% /MYDELIM %}`,
   {},
@@ -995,6 +996,7 @@ testContent(
   `---
 consts:
   - PREFIX = str := ">>"
+
 params:
   - items = list(name = str)
 ---
@@ -1012,6 +1014,7 @@ testContent(
   `---
 consts:
   - THRESHOLD = int := 10
+
 params:
   - x = int
 ---
@@ -1029,6 +1032,7 @@ testContent(
   `---
 consts:
   - LABEL = str := "status"
+
 params:
   - s = enum(A, B)
 ---
@@ -1051,6 +1055,7 @@ testExact(
   `---
 consts:
   - STAGES = struct(DESIGN = str, BUILD = str) := {DESIGN = "Design", BUILD = "Build"}
+
 params: []
 ---
 Stage: {{ STAGES.DESIGN }}, {{ STAGES.BUILD }}`,

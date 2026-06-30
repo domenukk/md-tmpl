@@ -1,6 +1,6 @@
 [package]
 name = "md-tmpl"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Lightweight template engine for .tmpl.md prompt files with typed frontmatter"

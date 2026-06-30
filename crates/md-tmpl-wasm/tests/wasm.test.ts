@@ -275,6 +275,7 @@ describe("Template.consts()", () => {
       `---
 consts:
   - MAX = int := 100
+
 params: []
 ---
 Max is {{ MAX }}`,
@@ -1252,6 +1253,7 @@ describe("Metadata caching", () => {
       `---
 consts:
   - MAX = int := 100
+
 params: []
 ---
 Max is {{ MAX }}`,
