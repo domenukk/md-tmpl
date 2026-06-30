@@ -254,7 +254,7 @@ function applyDirectFilter(
       if (Array.isArray(value)) {
         return value.slice(0, max);
       }
-      return strVal.length > max ? strVal.slice(0, max) + "…" : strVal;
+      return strVal.length > max ? `${strVal.slice(0, max)}…` : strVal;
     }
     case "add": {
       const n = filterArgs.length > 0 ? parseInt(filterArgs[0]!, 10) : 0;

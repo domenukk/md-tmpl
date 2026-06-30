@@ -243,12 +243,12 @@ export function fromJs(value: unknown): Value {
     const obj = value as Record<string, unknown>;
 
     // Check for variant protocol (like Python's _prompt_template_tag)
-    if (typeof obj["_prompt_template_tag"] === "string") {
-      const tag = obj["_prompt_template_tag"] as string;
+    if (typeof obj._prompt_template_tag === "string") {
+      const tag = obj._prompt_template_tag as string;
       const fieldsObj =
-        typeof obj["_prompt_template_fields"] === "object" &&
-        obj["_prompt_template_fields"] !== null
-          ? (obj["_prompt_template_fields"] as Record<string, unknown>)
+        typeof obj._prompt_template_fields === "object" &&
+        obj._prompt_template_fields !== null
+          ? (obj._prompt_template_fields as Record<string, unknown>)
           : {};
       const entries: [string, Value][] = [[ENUM_TAG_KEY, str(tag)]];
       for (const [k, v] of Object.entries(fieldsObj)) {

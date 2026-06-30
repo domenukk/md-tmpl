@@ -105,6 +105,54 @@ pub struct Template {
     estimated_capacity: usize,
 }
 
+/// Pre-compiled template data used to reconstruct a [`Template`] from cache.
+///
+/// See [`Template::from_cached`].
+#[cfg(feature = "std")]
+pub(crate) struct CachedTemplateData {
+    /// Pre-compiled segment instructions.
+    pub segments: Arc<[Segment]>,
+    /// Declared variables from frontmatter.
+    pub declared_variables: Arc<[VarDecl]>,
+    /// Base directory for resolving includes.
+    pub base_dir: Option<PathBuf>,
+    /// Pre-compiled inline template definitions.
+    pub inline_templates: Arc<HashMap<String, CompiledInlineTemplate>>,
+    /// Content hash of the raw source.
+    pub source_hash: u64,
+    /// Constants defined in this template.
+    pub consts: Arc<HashMap<String, crate::value::Value>>,
+    /// Imported constants.
+    pub imported_consts: Arc<HashMap<String, crate::value::Value>>,
+    /// Template name.
+    pub name: Option<String>,
+    /// Template description.
+    pub description: Option<String>,
+}
+
+/// Pre-compiled template data for compile-time macro integration.
+///
+/// See [`Template::from_precompiled`].
+#[doc(hidden)]
+pub struct PrecompiledTemplateData<'a> {
+    /// Pre-compiled segment instructions.
+    pub segments: &'a [Segment],
+    /// Declared variables from frontmatter.
+    pub declared_variables: &'a [VarDecl],
+    /// Pre-compiled inline template definitions.
+    pub inline_templates: &'a [(&'a str, CompiledInlineTemplate)],
+    /// Content hash of the raw source.
+    pub source_hash: u64,
+    /// Constants defined in this template.
+    pub consts: &'a [(&'a str, crate::value::Value)],
+    /// Imported constants.
+    pub imported_consts: &'a [(&'a str, crate::value::Value)],
+    /// Template name.
+    pub name: Option<&'a str>,
+    /// Template description.
+    pub description: Option<&'a str>,
+}
+
 impl Template {
     /// Load a template from a file, stripping YAML frontmatter.
     ///
@@ -389,33 +437,25 @@ impl Template {
     ///
     /// [`TemplateCache`]: crate::TemplateCache
     #[cfg(feature = "std")]
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn from_cached(
-        segments: Arc<[Segment]>,
-        declared_variables: Arc<[VarDecl]>,
-        base_dir: Option<PathBuf>,
-        inline_templates: Arc<HashMap<String, CompiledInlineTemplate>>,
-        source_hash: u64,
-        consts: Arc<HashMap<String, crate::value::Value>>,
-        imported_consts: Arc<HashMap<String, crate::value::Value>>,
-        name: Option<String>,
-        description: Option<String>,
-    ) -> Self {
-        let has_defaults = declared_variables.iter().any(|d| d.default_value.is_some());
-        let estimated_capacity = compiled::render::estimate_output_capacity(&segments);
+    pub(crate) fn from_cached(data: CachedTemplateData) -> Self {
+        let has_defaults = data
+            .declared_variables
+            .iter()
+            .any(|d| d.default_value.is_some());
+        let estimated_capacity = compiled::render::estimate_output_capacity(&data.segments);
         Self {
             body: String::new(),
-            name,
-            description,
-            segments,
-            declared_variables,
-            base_dir,
-            inline_templates,
-            source_hash,
+            name: data.name,
+            description: data.description,
+            segments: data.segments,
+            declared_variables: data.declared_variables,
+            base_dir: data.base_dir,
+            inline_templates: data.inline_templates,
+            source_hash: data.source_hash,
             max_include_depth: crate::scope::MAX_INCLUDE_DEPTH,
             has_defaults,
-            consts,
-            imported_consts,
+            consts: data.consts,
+            imported_consts: data.imported_consts,
             estimated_capacity,
         }
     }
@@ -423,42 +463,38 @@ impl Template {
     /// Construct a `Template` from pre-compiled static structures (used by compile-time macros).
     #[doc(hidden)]
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
-    pub fn from_precompiled(
-        segments: &[Segment],
-        declared_variables: &[VarDecl],
-        inline_templates: &[(&str, CompiledInlineTemplate)],
-        source_hash: u64,
-        consts: &[(&str, crate::value::Value)],
-        imported_consts: &[(&str, crate::value::Value)],
-        name: Option<&str>,
-        description: Option<&str>,
-    ) -> Self {
-        let inline_map = inline_templates
+    pub fn from_precompiled(data: &PrecompiledTemplateData<'_>) -> Self {
+        let inline_map = data
+            .inline_templates
             .iter()
             .map(|(k, v)| (k.to_string(), v.clone()))
             .collect();
-        let const_map = consts
+        let const_map = data
+            .consts
             .iter()
             .map(|(k, v)| (k.to_string(), v.clone()))
             .collect();
-        let imported_const_map = imported_consts
+        let imported_const_map = data
+            .imported_consts
             .iter()
             .map(|(k, v)| (k.to_string(), v.clone()))
             .collect();
-        let has_defaults = declared_variables.iter().any(|d| d.default_value.is_some());
-        let segments: Arc<[Segment]> = Arc::from(segments);
+        let has_defaults = data
+            .declared_variables
+            .iter()
+            .any(|d| d.default_value.is_some());
+        let segments: Arc<[Segment]> = Arc::from(data.segments);
         let estimated_capacity = compiled::render::estimate_output_capacity(&segments);
         Self {
             body: String::new(),
-            name: name.map(String::from),
-            description: description.map(String::from),
+            name: data.name.map(String::from),
+            description: data.description.map(String::from),
             segments,
-            declared_variables: Arc::from(declared_variables),
+            declared_variables: Arc::from(data.declared_variables),
             #[cfg(feature = "std")]
             base_dir: None,
             inline_templates: Arc::new(inline_map),
-            source_hash,
+            source_hash: data.source_hash,
             max_include_depth: crate::scope::MAX_INCLUDE_DEPTH,
             has_defaults,
             consts: Arc::new(const_map),

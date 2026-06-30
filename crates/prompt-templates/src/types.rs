@@ -149,48 +149,86 @@ impl VarType {
     /// For deeply nested types with many list items, this is dramatically
     /// faster than the full `check_inner` path on the success case.
     #[inline]
-    #[allow(clippy::too_many_lines)]
     fn check_fast(&self, value: &Value) -> bool {
         match self {
             Self::Str => matches!(value, Value::Str(_)),
             Self::Bool => matches!(value, Value::Bool(_)),
             Self::Int => matches!(value, Value::Int(_)),
             Self::Float => matches!(value, Value::Float(_)),
-            Self::List(fields) => {
-                let Value::List(items) = value else {
+            Self::List(fields) => Self::check_fast_list(fields, value),
+            Self::Struct(fields) => Self::check_fast_struct(fields, value),
+            Self::Enum(variants) => Self::check_fast_enum(variants, value),
+            Self::Tmpl(expected) => Self::check_fast_tmpl(expected, value),
+            Self::Option(inner) => matches!(value, Value::None) || inner.check_fast(value),
+        }
+    }
+
+    /// Fast check for `List` types: each item must match the declared fields.
+    fn check_fast_list(fields: &[VarDecl], value: &Value) -> bool {
+        let Value::List(items) = value else {
+            return false;
+        };
+        if fields.is_empty() {
+            return true;
+        }
+        for item in items.iter() {
+            if fields.len() == 1 && fields[0].name.is_empty() {
+                if !fields[0].var_type.check_fast(item) {
                     return false;
-                };
-                if fields.is_empty() {
-                    return true;
                 }
-                for item in items.iter() {
-                    if fields.len() == 1 && fields[0].name.is_empty() {
-                        if !fields[0].var_type.check_fast(item) {
-                            return false;
-                        }
-                        continue;
-                    }
-                    let Value::Struct(map) = item else {
-                        return false;
-                    };
-                    for decl in fields {
-                        match map.get(&decl.name) {
-                            Some(v) => {
-                                if !decl.var_type.check_fast(v) {
-                                    return false;
-                                }
-                            }
-                            None => return false,
-                        }
-                    }
-                }
-                true
+                continue;
             }
-            Self::Struct(fields) => {
-                let Value::Struct(map) = value else {
+            let Value::Struct(map) = item else {
+                return false;
+            };
+            if !Self::check_fast_struct_fields(fields, map) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Fast check for `Struct` types: extract the map and delegate to field checking.
+    fn check_fast_struct(fields: &[VarDecl], value: &Value) -> bool {
+        let Value::Struct(map) = value else {
+            return false;
+        };
+        Self::check_fast_struct_fields(fields, map)
+    }
+
+    /// Shared struct field checking: every declared field must be present with a
+    /// matching value type (recursive).
+    fn check_fast_struct_fields(
+        fields: &[VarDecl],
+        map: &crate::compat::HashMap<String, Value>,
+    ) -> bool {
+        for decl in fields {
+            match map.get(&decl.name) {
+                Some(v) => {
+                    if !decl.var_type.check_fast(v) {
+                        return false;
+                    }
+                }
+                None => return false,
+            }
+        }
+        true
+    }
+
+    /// Fast check for `Enum` types: unit variants match strings, struct variants
+    /// match dicts with an `ENUM_TAG_KEY` field and typed fields.
+    fn check_fast_enum(variants: &[VariantDecl], value: &Value) -> bool {
+        match value {
+            Value::Str(s) => variants.iter().any(|v| v.name == *s && v.fields.is_empty()),
+            Value::Struct(map) => {
+                let tag_key = crate::consts::ENUM_TAG_KEY;
+                let Some(Value::Str(tag)) = map.get(tag_key) else {
                     return false;
                 };
-                for decl in fields {
+                let Some(var) = variants.iter().find(|v| v.name == *tag) else {
+                    return false;
+                };
+                for decl in &var.fields {
                     match map.get(&decl.name) {
                         Some(v) => {
                             if !decl.var_type.check_fast(v) {
@@ -202,54 +240,33 @@ impl VarType {
                 }
                 true
             }
-            Self::Enum(variants) => match value {
-                Value::Str(s) => variants.iter().any(|v| v.name == *s && v.fields.is_empty()),
-                Value::Struct(map) => {
-                    let tag_key = crate::consts::ENUM_TAG_KEY;
-                    let Some(Value::Str(tag)) = map.get(tag_key) else {
-                        return false;
-                    };
-                    let Some(var) = variants.iter().find(|v| v.name == *tag) else {
-                        return false;
-                    };
-                    for decl in &var.fields {
-                        match map.get(&decl.name) {
-                            Some(v) => {
-                                if !decl.var_type.check_fast(v) {
-                                    return false;
-                                }
-                            }
-                            None => return false,
-                        }
-                    }
-                    true
-                }
-                _ => false,
-            },
-            Self::Tmpl(expected) => {
-                let Value::Tmpl(tmpl) = value else {
-                    return false;
-                };
-                let actual_decls = tmpl.declarations();
-                for exp in expected {
-                    match actual_decls.iter().find(|d| d.name == exp.name) {
-                        Some(act) => {
-                            if act.var_type != exp.var_type {
-                                return false;
-                            }
-                        }
-                        None => return false,
-                    }
-                }
-                for act in actual_decls {
-                    if act.default_value.is_none() && !expected.iter().any(|e| e.name == act.name) {
-                        return false;
-                    }
-                }
-                true
-            }
-            Self::Option(inner) => matches!(value, Value::None) || inner.check_fast(value),
+            _ => false,
         }
+    }
+
+    /// Fast check for `Tmpl` types: the template's parameters must match the
+    /// expected signature.
+    fn check_fast_tmpl(expected: &[VarDecl], value: &Value) -> bool {
+        let Value::Tmpl(tmpl) = value else {
+            return false;
+        };
+        let actual_decls = tmpl.declarations();
+        for exp in expected {
+            match actual_decls.iter().find(|d| d.name == exp.name) {
+                Some(act) => {
+                    if act.var_type != exp.var_type {
+                        return false;
+                    }
+                }
+                None => return false,
+            }
+        }
+        for act in actual_decls {
+            if act.default_value.is_none() && !expected.iter().any(|e| e.name == act.name) {
+                return false;
+            }
+        }
+        true
     }
 
     fn check_inner(&self, value: &Value, path: String) -> Result<(), TypeCheckError> {

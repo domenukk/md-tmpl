@@ -1122,20 +1122,7 @@ criterion_main!(benches);
 
 #[cfg(test)]
 mod tests {
-    #[allow(unused_imports)]
     use super::*;
-
-    /// Helper: build pt context + tera context + json value from a shared
-    /// Serialize struct.
-    #[allow(dead_code)]
-    fn contexts<T: serde::Serialize>(
-        data: &T,
-    ) -> (prompt_templates::Context, tera::Context, serde_json::Value) {
-        let pt = prompt_templates::Context::from_serialize(data).unwrap();
-        let tera = TeraEngine::context(data);
-        let json = serde_json::to_value(data).unwrap();
-        (pt, tera, json)
-    }
 
     #[test]
     fn simple_output_matches() {
@@ -1144,7 +1131,9 @@ mod tests {
         let mj = MiniJinjaEngine::compile(simple::MINIJINJA);
         let hbs = HandlebarsEngine::compile(simple::HANDLEBARS);
         let data = simple_data();
-        let (pt_ctx, tera_ctx, json_ctx) = contexts(&data);
+        let pt_ctx = prompt_templates::Context::from_serialize(&data).unwrap();
+        let tera_ctx = TeraEngine::context(&data);
+        let json_ctx = serde_json::to_value(&data).unwrap();
 
         assert_engines_match(
             "simple",
@@ -1163,7 +1152,9 @@ mod tests {
         let mj = MiniJinjaEngine::compile(loop_scenario::MINIJINJA);
         let hbs = HandlebarsEngine::compile(loop_scenario::HANDLEBARS);
         let data = loop_data();
-        let (pt_ctx, tera_ctx, json_ctx) = contexts(&data);
+        let pt_ctx = prompt_templates::Context::from_serialize(&data).unwrap();
+        let tera_ctx = TeraEngine::context(&data);
+        let json_ctx = serde_json::to_value(&data).unwrap();
 
         assert_engines_match(
             "loop",
@@ -1182,7 +1173,9 @@ mod tests {
         let mj = MiniJinjaEngine::compile(conditional::MINIJINJA);
         let hbs = HandlebarsEngine::compile(conditional::HANDLEBARS);
         let data = conditional_data();
-        let (pt_ctx, tera_ctx, json_ctx) = contexts(&data);
+        let pt_ctx = prompt_templates::Context::from_serialize(&data).unwrap();
+        let tera_ctx = TeraEngine::context(&data);
+        let json_ctx = serde_json::to_value(&data).unwrap();
 
         assert_engines_match(
             "conditional",
@@ -1201,7 +1194,9 @@ mod tests {
         let mj = MiniJinjaEngine::compile(hero::MINIJINJA);
         let hbs = HandlebarsEngine::compile(hero::HANDLEBARS);
         let data = hero_data();
-        let (pt_ctx, tera_ctx, json_ctx) = contexts(&data);
+        let pt_ctx = prompt_templates::Context::from_serialize(&data).unwrap();
+        let tera_ctx = TeraEngine::context(&data);
+        let json_ctx = serde_json::to_value(&data).unwrap();
 
         assert_engines_match(
             "hero",
@@ -1220,7 +1215,9 @@ mod tests {
         let mj = MiniJinjaEngine::compile(mega::MINIJINJA);
         let hbs = HandlebarsEngine::compile(mega::HANDLEBARS);
         let data = mega_data();
-        let (pt_ctx, tera_ctx, json_ctx) = contexts(&data);
+        let pt_ctx = prompt_templates::Context::from_serialize(&data).unwrap();
+        let tera_ctx = TeraEngine::context(&data);
+        let json_ctx = serde_json::to_value(&data).unwrap();
 
         assert_engines_match(
             "mega",
@@ -1232,3 +1229,4 @@ mod tests {
         );
     }
 }
+

@@ -33,7 +33,7 @@ Severity: {{ kind(severity) }} · Findings: {{ len(findings) }}/{{ MAX_FINDINGS 
 
 - **L{{ finding.line }}** ({{ kind(finding.severity) }}): {{ finding.message }}
 
-  > {% /for %}
+> {% /for %}
 
 > {% match verdict %}
 > {% case Approved %}
@@ -174,7 +174,7 @@ Priority: {{ priority }}
 
 - {{ task.name }} ({{ task.urgency }})
 
-  > {% /for %}`)
+> {% /for %}`)
 defer tmpl.Close()
 
 result, _ := tmpl.RenderMap(map[string]any{
@@ -211,7 +211,7 @@ Priority: {{ priority }}
 
 - {{ task.name }} ({{ task.urgency }})
 
-  > {% /for %}`);
+> {% /for %}`);
 
 console.log(tmpl.render({
   title: "Sprint 42",

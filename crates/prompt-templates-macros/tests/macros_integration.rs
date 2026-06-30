@@ -182,7 +182,6 @@ fn type_alias_enum_display() {
 
 #[test]
 fn type_alias_enum_from_str() {
-    #[allow(unused_imports)]
     use std::str::FromStr;
     assert_eq!(
         type_library::Priority::from_str("low").unwrap(),
@@ -238,7 +237,6 @@ fn type_alias_enum_copy_hash_eq() {
 #[test]
 fn type_alias_enum_display_roundtrip() {
     // Verify Display → FromStr roundtrip works.
-    #[allow(unused_imports)]
     use std::str::FromStr;
     for p in &type_library::Priority::ALL {
         let s = p.to_string();

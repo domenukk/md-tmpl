@@ -280,16 +280,16 @@ pub fn include_template(input: TokenStream) -> TokenStream {
 
                 static __TEMPLATE: #crate_path::__private::LazyLock<#crate_path::Template> =
                     #crate_path::__private::LazyLock::new(|| {
-                        #crate_path::Template::from_precompiled(
-                            &[#(#segments_tokens),*],
-                            &[#(#decls_tokens),*],
-                            &[#(#inline_templates_tokens),*],
-                            #source_hash,
-                            &[#(#consts_tokens),*],
-                            &[#(#imported_consts_tokens),*],
-                            #name_token,
-                            #desc_token,
-                        )
+                        #crate_path::Template::from_precompiled(&#crate_path::PrecompiledTemplateData {
+                            segments: &[#(#segments_tokens),*],
+                            declared_variables: &[#(#decls_tokens),*],
+                            inline_templates: &[#(#inline_templates_tokens),*],
+                            source_hash: #source_hash,
+                            consts: &[#(#consts_tokens),*],
+                            imported_consts: &[#(#imported_consts_tokens),*],
+                            name: #name_token,
+                            description: #desc_token,
+                        })
                     });
 
                 /// Get a reference to the compile-time validated, pre-compiled template.
@@ -412,16 +412,16 @@ pub fn template(input: TokenStream) -> TokenStream {
             pub mod #mod_ident {
                 static __TEMPLATE: #crate_path::__private::LazyLock<#crate_path::Template> =
                     #crate_path::__private::LazyLock::new(|| {
-                        #crate_path::Template::from_precompiled(
-                            &[#(#segments_tokens),*],
-                            &[#(#decls_tokens),*],
-                            &[#(#inline_templates_tokens),*],
-                            #source_hash,
-                            &[#(#consts_tokens),*],
-                            &[#(#imported_consts_tokens),*],
-                            #name_token,
-                            #desc_token,
-                        )
+                        #crate_path::Template::from_precompiled(&#crate_path::PrecompiledTemplateData {
+                            segments: &[#(#segments_tokens),*],
+                            declared_variables: &[#(#decls_tokens),*],
+                            inline_templates: &[#(#inline_templates_tokens),*],
+                            source_hash: #source_hash,
+                            consts: &[#(#consts_tokens),*],
+                            imported_consts: &[#(#imported_consts_tokens),*],
+                            name: #name_token,
+                            description: #desc_token,
+                        })
                     });
 
                 /// Get a reference to the compile-time validated, pre-compiled template.

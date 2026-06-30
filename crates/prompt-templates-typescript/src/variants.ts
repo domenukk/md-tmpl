@@ -104,7 +104,7 @@ export function variant<F extends string>(
   tag: string,
   fieldNames: readonly F[],
 ): VariantConstructor<F> {
-  const constructor = (fields: Record<F, unknown>): VariantInstance => {
+  const ctor = (fields: Record<F, unknown>): VariantInstance => {
     // Validate required fields
     for (const name of fieldNames) {
       if (!(name in fields)) {
@@ -144,18 +144,18 @@ export function variant<F extends string>(
   };
 
   // Attach metadata to the constructor function
-  Object.defineProperty(constructor, "_prompt_template_tag", {
+  Object.defineProperty(ctor, "_prompt_template_tag", {
     value: tag,
     writable: false,
     enumerable: true,
   });
-  Object.defineProperty(constructor, "__match_args__", {
+  Object.defineProperty(ctor, "__match_args__", {
     value: Object.freeze([...fieldNames]),
     writable: false,
     enumerable: true,
   });
 
-  return constructor as VariantConstructor<F>;
+  return ctor as VariantConstructor<F>;
 }
 
 // ---------------------------------------------------------------------------

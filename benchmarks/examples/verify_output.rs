@@ -11,7 +11,7 @@ params:
   - place = str
 ---
 Hello {{ name }}, welcome to {{ place }}!"#).unwrap();
-    let pt_out = pt.render(&ctx! { name: "Alice", place: "Wonderland" }).unwrap();
+    let pt_out = pt.render_ctx(&ctx! { name: "Alice", place: "Wonderland" }).unwrap();
     println!("PT:   {pt_out:?}");
 
     let mut tera = tera::Tera::default();
@@ -85,7 +85,7 @@ params:
         ]))),
     ]);
 
-    let hero_out = hero_pt.render(&ctx! {
+    let hero_out = hero_pt.render_ctx(&ctx! {
         title: "System Report",
         sections: [(section_a), (section_b)],
     }).unwrap();

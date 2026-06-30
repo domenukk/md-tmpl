@@ -42,7 +42,6 @@ pub(crate) fn join_continuation_lines(block: &str) -> Vec<String> {
 ///
 /// Supports both inline and block list formats:
 /// - Inline: `[name = str, count = int]`
-#[allow(clippy::too_many_lines)]
 pub(crate) fn parse_declarations(
     rest: &str,
     type_aliases: &HashMap<String, VarType>,
@@ -89,93 +88,114 @@ pub(crate) fn parse_declarations(
     for entry in &entries {
         let e = entry.trim();
         let trimmed = crate::consts::strip_string_literal(e).unwrap_or(e).trim();
-        if trimmed.is_empty() {
-            continue;
+        if let Some(decl) = parse_single_declaration(
+            trimmed,
+            type_aliases,
+            resolved_imports,
+            is_constant,
+            &mut current_consts,
+            &mut seen_names,
+        )? {
+            decls.push(decl);
         }
-
-        // Find `=` at depth 0 to split name from type+default.
-        let Some(eq_pos) = find_char_at_depth_zero(trimmed, '=') else {
-            let label = if is_constant { "constant" } else { "param" };
-            return Err(TemplateError::syntax(format!(
-                "{label} '{trimmed}' is missing a type annotation (expected 'name = type')"
-            )));
-        };
-
-        let name = trimmed[..eq_pos].trim().to_string();
-        let type_and_default = trimmed[eq_pos + 1..].trim();
-
-        // Check duplicate names.
-        if !seen_names.insert(name.clone()) {
-            let err = if is_constant {
-                crate::consts::ERR_DUPLICATE_CONST
-            } else {
-                crate::consts::ERR_DUPLICATE_PARAM
-            };
-            return Err(TemplateError::syntax(format!("{err}: '{name}'")));
-        }
-
-        // Check reserved keywords.
-        if crate::consts::RESERVED_NAMES.contains(&name.as_str()) {
-            return Err(TemplateError::syntax(format!(
-                "{}: '{name}'",
-                crate::consts::ERR_RESERVED_KEYWORD
-            )));
-        }
-
-        // Find `:=` at depth 0 to split type from default value.
-        let (type_str, default_part) =
-            if let Some(assign_pos) = find_assign_default_at_depth_zero(type_and_default) {
-                (
-                    type_and_default[..assign_pos].trim(),
-                    Some(type_and_default[assign_pos + 2..].trim()),
-                )
-            } else {
-                (type_and_default, None)
-            };
-
-        let var_type = parse_type_annotation(type_str, type_aliases, resolved_imports)
-            .map_err(|e| TemplateError::syntax(format!("declaration '{name}': {e}")))?;
-
-        let default_value = if let Some(dp) = default_part {
-            let default = parse_default_value_with_type(dp, &var_type, &current_consts)
-                .or_else(|| resolve_const_default(dp, &current_consts))
-                .ok_or_else(|| {
-                    TemplateError::syntax(format!(
-                        "invalid default value '{dp}' for declaration '{name}' (strings must be quoted)"
-                    ))
-                })?;
-            current_consts.insert(name.clone(), default.clone());
-            Some(default)
-        } else {
-            None
-        };
-
-        // For constants, the default value is mandatory.
-        if is_constant && default_value.is_none() {
-            return Err(TemplateError::syntax(format!(
-                "constant '{name}' is missing a value (expected 'name = type := value')"
-            )));
-        }
-
-        // Validate that the default value matches the declared type.
-        if let Some(ref default) = default_value
-            && !var_type.matches(default)
-        {
-            let label = if is_constant { "constant" } else { "param" };
-            return Err(TemplateError::syntax(format!(
-                "{label} '{name}': value has type '{}' but declared type is '{var_type}'",
-                default.type_name()
-            )));
-        }
-
-        decls.push(VarDecl {
-            name,
-            var_type,
-            default_value,
-        });
     }
 
     Ok(decls)
+}
+
+/// Parse a single declaration entry (e.g. `name = str := "default"`) into a [`VarDecl`].
+fn parse_single_declaration(
+    trimmed: &str,
+    type_aliases: &HashMap<String, VarType>,
+    resolved_imports: &HashMap<String, ImportedNamespace>,
+    is_constant: bool,
+    current_consts: &mut HashMap<String, Value>,
+    seen_names: &mut crate::compat::HashSet<String>,
+) -> Result<Option<VarDecl>, TemplateError> {
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    // Find `=` at depth 0 to split name from type+default.
+    let Some(eq_pos) = find_char_at_depth_zero(trimmed, '=') else {
+        let label = if is_constant { "constant" } else { "param" };
+        return Err(TemplateError::syntax(format!(
+            "{label} '{trimmed}' is missing a type annotation (expected 'name = type')"
+        )));
+    };
+
+    let name = trimmed[..eq_pos].trim().to_string();
+    let type_and_default = trimmed[eq_pos + 1..].trim();
+
+    // Check duplicate names.
+    if !seen_names.insert(name.clone()) {
+        let err = if is_constant {
+            crate::consts::ERR_DUPLICATE_CONST
+        } else {
+            crate::consts::ERR_DUPLICATE_PARAM
+        };
+        return Err(TemplateError::syntax(format!("{err}: '{name}'")));
+    }
+
+    // Check reserved keywords.
+    if crate::consts::RESERVED_NAMES.contains(&name.as_str()) {
+        return Err(TemplateError::syntax(format!(
+            "{}: '{name}'",
+            crate::consts::ERR_RESERVED_KEYWORD
+        )));
+    }
+
+    // Find `:=` at depth 0 to split type from default value.
+    let (type_str, default_part) =
+        if let Some(assign_pos) = find_assign_default_at_depth_zero(type_and_default) {
+            (
+                type_and_default[..assign_pos].trim(),
+                Some(type_and_default[assign_pos + 2..].trim()),
+            )
+        } else {
+            (type_and_default, None)
+        };
+
+    let var_type = parse_type_annotation(type_str, type_aliases, resolved_imports)
+        .map_err(|e| TemplateError::syntax(format!("declaration '{name}': {e}")))?;
+
+    let default_value = if let Some(dp) = default_part {
+        let default = parse_default_value_with_type(dp, &var_type, current_consts)
+            .or_else(|| resolve_const_default(dp, current_consts))
+            .ok_or_else(|| {
+                TemplateError::syntax(format!(
+                    "invalid default value '{dp}' for declaration '{name}' (strings must be quoted)"
+                ))
+            })?;
+        current_consts.insert(name.clone(), default.clone());
+        Some(default)
+    } else {
+        None
+    };
+
+    // For constants, the default value is mandatory.
+    if is_constant && default_value.is_none() {
+        return Err(TemplateError::syntax(format!(
+            "constant '{name}' is missing a value (expected 'name = type := value')"
+        )));
+    }
+
+    // Validate that the default value matches the declared type.
+    if let Some(ref default) = default_value
+        && !var_type.matches(default)
+    {
+        let label = if is_constant { "constant" } else { "param" };
+        return Err(TemplateError::syntax(format!(
+            "{label} '{name}': value has type '{}' but declared type is '{var_type}'",
+            default.type_name()
+        )));
+    }
+
+    Ok(Some(VarDecl {
+        name,
+        var_type,
+        default_value,
+    }))
 }
 
 // Compatibility wrapper for `params:` removed as it is now unused.

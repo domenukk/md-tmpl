@@ -30,9 +30,6 @@ export class Context {
   /** Internal variable storage. */
   readonly values: Map<string, Value> = new Map();
 
-  /** Create an empty context. */
-  constructor() {}
-
   /** Insert a value into the context. Plain JS values are auto-converted. */
   set(key: string, value: unknown): void {
     this.values.set(key, fromJs(value));

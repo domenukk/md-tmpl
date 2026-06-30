@@ -526,7 +526,7 @@ function parseStatement(
   if (endIdx === -1) {
     throw new TemplateSyntaxError("unclosed statement {%");
   }
-  let rawInner = input.slice(start + offset, endIdx);
+  const rawInner = input.slice(start + offset, endIdx);
   const trimAfter = rawInner.endsWith("-");
   const content = trimAfter ? rawInner.slice(0, -1) : rawInner;
 
@@ -560,7 +560,7 @@ function tryMatchClosingTag(
     .trim();
 
   for (const ct of closingTags) {
-    if (tagContent === ct || tagContent.startsWith(ct + " ")) {
+    if (tagContent === ct || tagContent.startsWith(`${ct} `)) {
       return ct;
     }
   }
@@ -956,7 +956,7 @@ function parseBlockWithClosing(
     const cleanTag = tagContent.replace(/^-/, "").replace(/-$/, "").trim();
 
     for (const ct of closingTags) {
-      if (cleanTag === ct || cleanTag.startsWith(ct + " ")) {
+      if (cleanTag === ct || cleanTag.startsWith(`${ct} `)) {
         // Parse any expressions/comments in the text before the closing tag
         const textEnd = findTagStart(input, stmtIdx);
         if (textEnd > pos) {
@@ -973,7 +973,7 @@ function parseBlockWithClosing(
             };
           }
         }
-        const content = cleanTag.startsWith(ct + " ")
+        const content = cleanTag.startsWith(`${ct} `)
           ? cleanTag.slice(ct.length + 1).trim()
           : undefined;
         // Handle -%} on closing tag: strip all whitespace after
@@ -1721,7 +1721,7 @@ function evaluateConditionOperand(operand: string, scope: Scope): Value {
 
   // Number literals
   const num = Number(trimmed);
-  if (!isNaN(num)) {
+  if (!Number.isNaN(num)) {
     return Number.isInteger(num) ? int(num) : { type: TYPE_FLOAT, value: num };
   }
 

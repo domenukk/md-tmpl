@@ -93,7 +93,7 @@ function applyFixed(value: Value, args: string | undefined): Value {
     throw new TemplateSyntaxError("'fixed' requires precision arg");
   }
   const precision = parseInt(args, 10);
-  if (isNaN(precision)) {
+  if (Number.isNaN(precision)) {
     throw new TemplateSyntaxError(
       `'fixed' precision must be an integer: ${args}`,
     );
@@ -124,7 +124,7 @@ function applyLimit(value: Value, args: string | undefined): Value {
     throw new TemplateSyntaxError("'limit' requires a limit argument");
   }
   const limit = parseInt(args, 10);
-  if (isNaN(limit)) {
+  if (Number.isNaN(limit)) {
     throw new TemplateSyntaxError(
       `'limit' argument must be an integer: ${args}`,
     );
@@ -143,7 +143,7 @@ function parseNumArg(arg: string | undefined, filterName: string): number {
     throw new TemplateSyntaxError(`'${filterName}' requires a number argument`);
   }
   const n = Number(arg);
-  if (isNaN(n)) {
+  if (Number.isNaN(n)) {
     throw new TemplateSyntaxError(
       `'${filterName}' argument must be a number: ${arg}`,
     );

@@ -18,11 +18,13 @@ let _fs: typeof import("node:fs") | undefined;
 let _path: typeof import("node:path") | undefined;
 function getFs(): typeof import("node:fs") {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  return (_fs ??= require("node:fs"));
+  const mod = _fs ?? (_fs = require("node:fs"));
+  return mod;
 }
 function getPath(): typeof import("node:path") {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  return (_path ??= require("node:path"));
+  const mod = _path ?? (_path = require("node:path"));
+  return mod;
 }
 import { Context } from "./context.js";
 import {

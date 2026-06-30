@@ -311,7 +311,7 @@ class CodegenContext {
         lines.push(` * import { Template } from "prompt-templates";`);
         lines.push(` * const tmpl = Template.fromFile("my_template.tmpl.md");`);
         lines.push(
-          ` * const output = render(tmpl, { ${params.length > 0 ? params[0]!.name + ": ..." : ""} });`,
+          ` * const output = render(tmpl, { ${params.length > 0 ? `${params[0]!.name}: ...` : ""} });`,
         );
         lines.push(` * \`\`\``);
         lines.push(" */");
@@ -345,7 +345,7 @@ class CodegenContext {
           return "unknown[]";
         }
         // Generate an item interface
-        const itemName = pascalCase(fieldName) + "Item";
+        const itemName = `${pascalCase(fieldName)}Item`;
         this.emitInterface(itemName, vt.fields);
         return `readonly ${itemName}[]`;
       }

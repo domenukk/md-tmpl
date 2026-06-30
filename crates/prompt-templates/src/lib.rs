@@ -82,7 +82,7 @@ pub use frontmatter::{
 pub use serde_support::{DeError, SerError, from_value, to_value};
 #[cfg(feature = "std")]
 pub use template::load_template;
-pub use template::{CompileOptions, Template};
+pub use template::{CompileOptions, PrecompiledTemplateData, Template};
 pub use types::{
     BUILTIN_TYPE_NAMES, TypeCheckError, VarDecl, VarType, VariantDecl, to_pascal_case,
 };

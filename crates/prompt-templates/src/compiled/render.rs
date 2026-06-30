@@ -223,44 +223,14 @@ fn render_value_into(val: &Value, output: &mut String) -> Result<(), TemplateErr
 /// Evaluate a pre-compiled expression (path + filters) and write
 /// the result directly into `output`, avoiding intermediate `String`
 /// allocations in the common no-filter path.
-#[allow(clippy::too_many_lines)]
 fn eval_compiled_expr_into(
     expr: &CompiledExpr,
     filters: &[ParsedFilter],
     scope: &Scope<'_>,
     output: &mut String,
 ) -> Result<(), TemplateError> {
-    // Fast path: single `fixed(n)` filter on a numeric value — write directly
-    // into `output` without allocating an intermediate String or Value.
-    if filters.len() == 1 && filters[0].kind == super::FilterKind::Fixed {
-        if let CompiledExpr::Path(path) = expr {
-            if let Some(precision) = filters[0].parsed_num {
-                let val = scope.resolve_path(path)?;
-                match val {
-                    Value::Float(f) => {
-                        use core::fmt::Write;
-                        write!(output, "{f:.precision$}")
-                            .expect("fmt::Write for String is infallible");
-                        return Ok(());
-                    }
-                    Value::Int(i) => {
-                        // Use itoa for the integer part to avoid
-                        // i64→f64 precision loss for values > 2^53.
-                        let mut buf = itoa::Buffer::new();
-                        let int_str = buf.format(*i);
-                        output.push_str(int_str);
-                        if precision > 0 {
-                            output.push('.');
-                            for _ in 0..precision {
-                                output.push('0');
-                            }
-                        }
-                        return Ok(());
-                    }
-                    _ => {}
-                }
-            }
-        }
+    if try_fast_path_fixed_filter(expr, filters, scope, output)? {
+        return Ok(());
     }
 
     let value = match expr {
@@ -296,54 +266,10 @@ fn eval_compiled_expr_into(
             };
             Cow::Owned(Value::Int(count))
         }
-        CompiledExpr::Kind(path) => {
-            let val = scope.resolve_path(path)?;
-            // Fast path: kind() is almost never filtered, so write directly
-            // to output without cloning the string.
-            if filters.is_empty() {
-                match val {
-                    Value::Struct(d) => {
-                        if let Some(Value::Str(k)) = d.get(crate::consts::ENUM_TAG_KEY) {
-                            output.push_str(k);
-                            return Ok(());
-                        }
-                        return Err(TemplateError::syntax(
-                            "kind() requires an enum value (dict with variant tag)",
-                        ));
-                    }
-                    Value::Str(s) => {
-                        output.push_str(s);
-                        return Ok(());
-                    }
-                    _ => {
-                        return Err(TemplateError::syntax(alloc::format!(
-                            "kind() requires an enum value, got {}",
-                            val.type_name()
-                        )));
-                    }
-                }
-            }
-            // Slow path: filters present — need to clone into a Value.
-            let kind = match val {
-                Value::Struct(d) => {
-                    if let Some(Value::Str(k)) = d.get(crate::consts::ENUM_TAG_KEY) {
-                        k.clone()
-                    } else {
-                        return Err(TemplateError::syntax(
-                            "kind() requires an enum value (dict with variant tag)",
-                        ));
-                    }
-                }
-                Value::Str(s) => s.clone(),
-                _ => {
-                    return Err(TemplateError::syntax(alloc::format!(
-                        "kind() requires an enum value, got {}",
-                        val.type_name()
-                    )));
-                }
-            };
-            Cow::Owned(Value::Str(kind))
-        }
+        CompiledExpr::Kind(path) => match eval_kind_expr(path, filters, scope, output)? {
+            Some(cow) => cow,
+            None => return Ok(()),
+        },
         CompiledExpr::Has(path) => {
             let val = scope.resolve_path(path)?;
             let result = Scope::is_option_some(val);
@@ -355,6 +281,116 @@ fn eval_compiled_expr_into(
         }
     };
 
+    apply_filters_and_render(value, filters, output)
+}
+
+/// Fast path: single `fixed(n)` filter on a numeric value — write directly
+/// into `output` without allocating an intermediate String or Value.
+#[inline]
+fn try_fast_path_fixed_filter(
+    expr: &CompiledExpr,
+    filters: &[ParsedFilter],
+    scope: &Scope<'_>,
+    output: &mut String,
+) -> Result<bool, TemplateError> {
+    if filters.len() == 1 && filters[0].kind == super::FilterKind::Fixed {
+        if let CompiledExpr::Path(path) = expr {
+            if let Some(precision) = filters[0].parsed_num {
+                let val = scope.resolve_path(path)?;
+                match val {
+                    Value::Float(f) => {
+                        use core::fmt::Write;
+                        write!(output, "{f:.precision$}")
+                            .expect("fmt::Write for String is infallible");
+                        return Ok(true);
+                    }
+                    Value::Int(i) => {
+                        // Use itoa for the integer part to avoid
+                        // i64→f64 precision loss for values > 2^53.
+                        let mut buf = itoa::Buffer::new();
+                        let int_str = buf.format(*i);
+                        output.push_str(int_str);
+                        if precision > 0 {
+                            output.push('.');
+                            for _ in 0..precision {
+                                output.push('0');
+                            }
+                        }
+                        return Ok(true);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Evaluate `kind()` expression, resolving the enum variant tag.
+///
+/// Returns `Ok(None)` if the result was written directly to output
+/// (no-filter fast path), `Ok(Some(cow))` if filters still need to
+/// be applied.
+fn eval_kind_expr<'a>(
+    path: &CompiledPath,
+    filters: &[ParsedFilter],
+    scope: &'a Scope<'_>,
+    output: &mut String,
+) -> Result<Option<Cow<'a, Value>>, TemplateError> {
+    let val = scope.resolve_path(path)?;
+    // Fast path: kind() is almost never filtered, so write directly
+    // to output without cloning the string.
+    if filters.is_empty() {
+        match val {
+            Value::Struct(d) => {
+                if let Some(Value::Str(k)) = d.get(crate::consts::ENUM_TAG_KEY) {
+                    output.push_str(k);
+                    return Ok(None);
+                }
+                return Err(TemplateError::syntax(
+                    "kind() requires an enum value (dict with variant tag)",
+                ));
+            }
+            Value::Str(s) => {
+                output.push_str(s);
+                return Ok(None);
+            }
+            _ => {
+                return Err(TemplateError::syntax(alloc::format!(
+                    "kind() requires an enum value, got {}",
+                    val.type_name()
+                )));
+            }
+        }
+    }
+    // Slow path: filters present — need to clone into a Value.
+    let kind = match val {
+        Value::Struct(d) => {
+            if let Some(Value::Str(k)) = d.get(crate::consts::ENUM_TAG_KEY) {
+                k.clone()
+            } else {
+                return Err(TemplateError::syntax(
+                    "kind() requires an enum value (dict with variant tag)",
+                ));
+            }
+        }
+        Value::Str(s) => s.clone(),
+        _ => {
+            return Err(TemplateError::syntax(alloc::format!(
+                "kind() requires an enum value, got {}",
+                val.type_name()
+            )));
+        }
+    };
+    Ok(Some(Cow::Owned(Value::Str(kind))))
+}
+
+/// Apply filters to a resolved value and render the result.
+fn apply_filters_and_render(
+    value: Cow<'_, Value>,
+    filters: &[ParsedFilter],
+    output: &mut String,
+) -> Result<(), TemplateError> {
     if filters.is_empty() {
         render_value_into(&value, output)
     } else {

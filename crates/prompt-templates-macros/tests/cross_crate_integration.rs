@@ -4,7 +4,6 @@
 //! `prompt-templates-macros` (compile-time codegen) work together correctly
 //! across crate boundaries with enums, lists, and typed parameters.
 
-#[allow(unused_imports)]
 use std::str::FromStr;
 
 use prompt_templates::{Template, Value, ctx};

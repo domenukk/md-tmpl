@@ -309,17 +309,17 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
         need_frontmatter: bool,
     ) -> (crate::Template, Option<Frontmatter>) {
         entry.last_accessed = Instant::now();
-        let tmpl = crate::Template::from_cached(
-            entry.segments.clone(),
-            entry.declarations.clone(),
+        let tmpl = crate::Template::from_cached(crate::template::CachedTemplateData {
+            segments: entry.segments.clone(),
+            declared_variables: entry.declarations.clone(),
             base_dir,
-            entry.inline_templates.clone(),
-            entry.source_hash,
-            entry.consts.clone(),
-            entry.imported_consts.clone(),
-            entry.frontmatter.name.clone(),
-            entry.frontmatter.description.clone(),
-        );
+            inline_templates: entry.inline_templates.clone(),
+            source_hash: entry.source_hash,
+            consts: entry.consts.clone(),
+            imported_consts: entry.imported_consts.clone(),
+            name: entry.frontmatter.name.clone(),
+            description: entry.frontmatter.description.clone(),
+        });
         let fm = if need_frontmatter {
             Some(entry.frontmatter.clone())
         } else {
@@ -415,17 +415,17 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
             cache.insert(canonical, entry.clone());
         }
 
-        let tmpl = crate::Template::from_cached(
-            entry.segments,
-            entry.declarations,
+        let tmpl = crate::Template::from_cached(crate::template::CachedTemplateData {
+            segments: entry.segments,
+            declared_variables: entry.declarations,
             base_dir,
-            entry.inline_templates,
+            inline_templates: entry.inline_templates,
             source_hash,
-            entry.consts,
-            entry.imported_consts,
-            entry.frontmatter.name.clone(),
-            entry.frontmatter.description.clone(),
-        );
+            consts: entry.consts,
+            imported_consts: entry.imported_consts,
+            name: entry.frontmatter.name.clone(),
+            description: entry.frontmatter.description.clone(),
+        });
         Ok((tmpl, Some(fm)))
     }
 
@@ -577,6 +577,8 @@ impl<S: std::hash::BuildHasher + Send + Sync> IncludeResolver for TemplateCache<
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::AtomicUsize;
+
     use super::*;
 
     #[test]
@@ -840,6 +842,92 @@ params: []
         assert_eq!(cache.template_count(), 10);
     }
 
+    /// Helper for [`concurrent_load_render_clear`]: loader thread logic.
+    fn run_loader_thread(
+        cache: &TemplateCache,
+        path: &std::path::Path,
+        successful_loads: &AtomicUsize,
+    ) {
+        use std::sync::atomic::Ordering;
+        if let Ok(tmpl) = cache.load(path) {
+            // Verify the loaded template is functional.
+            assert!(
+                !tmpl.declarations().is_empty(),
+                "loaded template must have declarations"
+            );
+            successful_loads.fetch_add(1, Ordering::Relaxed);
+        }
+        // Err is acceptable — clear() may have raced.
+    }
+
+    /// Helper for [`concurrent_load_render_clear`]: renderer thread logic.
+    fn run_renderer_thread(
+        cache: &TemplateCache,
+        path: &std::path::Path,
+        expected_idx: usize,
+        successful_renders: &AtomicUsize,
+    ) {
+        use std::sync::atomic::Ordering;
+        if let Ok(tmpl) = cache.load(path) {
+            let mut ctx = crate::Context::new();
+            ctx.set("x", "hello");
+            if let Ok(output) = tmpl.render_ctx_cached(&ctx, cache) {
+                assert!(
+                    output.contains("hello"),
+                    "rendered output must contain 'hello', got: {output}"
+                );
+                assert!(
+                    output.contains(&format!("template{expected_idx}")),
+                    "rendered output must contain template index, got: {output}"
+                );
+                successful_renders.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Helper for [`concurrent_load_render_clear`]: clear thread logic.
+    fn run_clear_thread(
+        cache: &TemplateCache,
+        path: &std::path::Path,
+        round: usize,
+        successful_loads: &AtomicUsize,
+    ) {
+        use std::sync::atomic::Ordering;
+        if round % 5 == 0 {
+            cache.clear();
+        }
+        // Load after clear to verify cache rebuilds correctly.
+        if let Ok(tmpl) = cache.load(path) {
+            assert!(
+                !tmpl.declarations().is_empty(),
+                "reloaded template must have declarations"
+            );
+            successful_loads.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Helper for [`concurrent_load_render_clear`]: reader thread logic.
+    fn run_reader_thread(
+        cache: &TemplateCache,
+        path: &std::path::Path,
+        paths_len: usize,
+        successful_loads: &AtomicUsize,
+    ) {
+        use std::sync::atomic::Ordering;
+        // Counts must be non-negative and bounded.
+        let tc = cache.template_count();
+        let ic = cache.include_count();
+        assert!(tc <= paths_len, "template count {tc} exceeds file count");
+        assert!(ic <= 100, "include count {ic} unexpectedly large");
+        if let Ok(tmpl) = cache.load(path) {
+            assert!(
+                !tmpl.declarations().is_empty(),
+                "loaded template must have declarations"
+            );
+            successful_loads.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
     /// Stress-test `TemplateCache` under concurrent access.
     ///
     /// Spawns 8 threads that simultaneously `load`, `render_ctx_cached`,
@@ -850,7 +938,6 @@ params: []
     /// - No deadlocks (all threads join within the timeout).
     /// - Rendered output is correct when rendering succeeds.
     #[test]
-    #[allow(clippy::too_many_lines)]
     fn concurrent_load_render_clear() {
         use std::sync::{
             Arc, Barrier,
@@ -901,68 +988,17 @@ template{i}: {{{{ x }}}}"
                         let expected_idx = round % paths.len();
 
                         match thread_id % 4 {
-                            // Loader threads: load templates and verify they parse.
-                            0 => {
-                                if let Ok(tmpl) = cache.load(path) {
-                                    // Verify the loaded template is functional.
-                                    assert!(
-                                        !tmpl.declarations().is_empty(),
-                                        "loaded template must have declarations"
-                                    );
-                                    successful_loads.fetch_add(1, Ordering::Relaxed);
-                                }
-                                // Err is acceptable — clear() may have raced.
-                            }
-                            // Renderer threads: load + render through cache.
+                            0 => run_loader_thread(&cache, path, &successful_loads),
                             1 => {
-                                if let Ok(tmpl) = cache.load(path) {
-                                    let mut ctx = crate::Context::new();
-                                    ctx.set("x", "hello");
-                                    if let Ok(output) = tmpl.render_ctx_cached(
-                                        &ctx,
-                                        &cache,
-                                    ) {
-                                        assert!(
-                                            output.contains("hello"),
-                                            "rendered output must contain 'hello', got: {output}"
-                                        );
-                                        assert!(
-                                            output.contains(&format!("template{expected_idx}")),
-                                            "rendered output must contain template index, got: {output}"
-                                        );
-                                        successful_renders.fetch_add(1, Ordering::Relaxed);
-                                    }
-                                }
+                                run_renderer_thread(
+                                    &cache,
+                                    path,
+                                    expected_idx,
+                                    &successful_renders,
+                                );
                             }
-                            // Clear threads: periodically clear the cache.
-                            2 => {
-                                if round % 5 == 0 {
-                                    cache.clear();
-                                }
-                                // Load after clear to verify cache rebuilds correctly.
-                                if let Ok(tmpl) = cache.load(path) {
-                                    assert!(
-                                        !tmpl.declarations().is_empty(),
-                                        "reloaded template must have declarations"
-                                    );
-                                    successful_loads.fetch_add(1, Ordering::Relaxed);
-                                }
-                            }
-                            // Reader threads: query cache counts + load.
-                            _ => {
-                                // Counts must be non-negative and bounded.
-                                let tc = cache.template_count();
-                                let ic = cache.include_count();
-                                assert!(tc <= paths.len(), "template count {tc} exceeds file count");
-                                assert!(ic <= 100, "include count {ic} unexpectedly large");
-                                if let Ok(tmpl) = cache.load(path) {
-                                    assert!(
-                                        !tmpl.declarations().is_empty(),
-                                        "loaded template must have declarations"
-                                    );
-                                    successful_loads.fetch_add(1, Ordering::Relaxed);
-                                }
-                            }
+                            2 => run_clear_thread(&cache, path, round, &successful_loads),
+                            _ => run_reader_thread(&cache, path, paths.len(), &successful_loads),
                         }
                     }
                 })

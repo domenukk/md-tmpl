@@ -1,6 +1,6 @@
 [package]
 name = "prompt-templates-python"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Strongly-typed template engine for LLM prompts (Python package)"

@@ -607,7 +607,7 @@ export function parseVarType(typeStr: string): VarType {
       const innerTrimmed = inner.trim();
       if (
         startsWithCompoundType(innerTrimmed, TYPE_STRUCT) ||
-        innerTrimmed.startsWith(TYPE_STRUCT + " ")
+        innerTrimmed.startsWith(`${TYPE_STRUCT} `)
       ) {
         throw new TemplateSyntaxError(
           "list(struct(...)) is redundant; use named fields directly: list(name = str, count = int)",
@@ -908,12 +908,12 @@ export function parseLiteral(literal: string, varType: VarType): Value {
     (varType.kind !== TYPE_FLOAT && /^-?\d+$/.test(literal))
   ) {
     const n = parseInt(literal, 10);
-    if (!isNaN(n)) return int(n);
+    if (!Number.isNaN(n)) return int(n);
   }
 
   // Float
   const f = parseFloat(literal);
-  if (!isNaN(f)) return float(f);
+  if (!Number.isNaN(f)) return float(f);
 
   // If the expected type is an Enum, validate variant identifiers.
   if (varType.kind === TYPE_ENUM) {
