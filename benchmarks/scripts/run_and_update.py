@@ -39,6 +39,7 @@ README = PROJECT_ROOT / "README.md"
 PYTHON_README = PROJECT_ROOT / "crates" / "md-tmpl-python" / "README.md"
 GO_README = PROJECT_ROOT / "go" / "md_tmpl" / "README.md"
 TS_README = PROJECT_ROOT / "crates" / "md-tmpl-typescript" / "README.md"
+WASM_README = PROJECT_ROOT / "crates" / "md-tmpl-wasm" / "README.md"
 
 
 PYTHON_VENV = PROJECT_ROOT / "crates" / "md-tmpl-python" / ".venv" / "bin"
@@ -239,8 +240,13 @@ def run_wasm_bench() -> Path | None:
         log.error("WASM build failed")
         return None
 
+    result = run_cmd(["npm", "run", "build"], cwd=wasm_dir, capture=True)
+    if result.returncode != 0:
+        log.error("WASM TS build failed")
+        return None
+
     result = run_cmd(
-        ["node", "benchmarks/bench.mjs", "--json"],
+        ["node", "dist/bench.js", "--json"],
         cwd=wasm_dir,
         capture=True,
     )
@@ -367,6 +373,8 @@ def main() -> None:
         str(GO_README),
         "--ts-readme",
         str(TS_README),
+        "--wasm-readme",
+        str(WASM_README),
     ]
     result = subprocess.run(update_args, text=True)
     if result.returncode != 0:

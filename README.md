@@ -137,13 +137,13 @@ Built for speed — zero-allocation rendering in Rust, native FFI in all binding
 
 ### Rust (render-only, pre-parsed)
 
-| Scenario        |        md-tmpl |    Tera | MiniJinja | Handlebars |
-| --------------- | -------------: | ------: | --------: | ---------: |
-| **simple**      |  **130 ns** 🏆 |  213 ns |    558 ns |     632 ns |
-| **loop**        |  **445 ns** 🏆 |  618 ns |   2.00 µs |    2.85 µs |
-| **conditional** |  **173 ns** 🏆 |  348 ns |    625 ns |    1.16 µs |
-| **hero**        | **2.07 µs** 🏆 | 2.09 µs |   7.62 µs |    21.4 µs |
-| **mega**        | **10.1 µs** 🏆 | 11.1 µs |   30.1 µs |    84.7 µs |
+| Scenario        |         md-tmpl |     Tera | `MiniJinja` | Handlebars |
+| --------------- | --------------: | -------: | ----------: | ---------: |
+| **simple**      |   **122 ns** 🏆 |   221 ns |      552 ns |     717 ns |
+| **loop**        |   **555 ns** 🏆 |   651 ns |     1.89 µs |    3.31 µs |
+| **conditional** |   **168 ns** 🏆 |   390 ns |      612 ns |    1.38 µs |
+| **hero**        |  **2.09 µs** 🏆 |  2.17 µs |     7.43 µs |   25.18 µs |
+| **mega**        | **10.60 µs** 🏆 | 11.21 µs |    28.39 µs |   91.99 µs |
 
 ### Cross-Language (render-only)
 

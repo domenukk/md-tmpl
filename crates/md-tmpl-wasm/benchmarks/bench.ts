@@ -10,8 +10,9 @@
  * Usage:
  *   cd crates/md-tmpl-wasm
  *   wasm-pack build --target nodejs --out-dir pkg
- *   node benchmarks/bench.mjs            # table output
- *   node benchmarks/bench.mjs --json     # JSON to stdout
+ *   npx tsc
+ *   node dist/benchmarks/bench.js            # table output
+ *   node dist/benchmarks/bench.js --json     # JSON to stdout
  */
 
 import { Template as WasmTemplate } from "../pkg/md_tmpl_wasm.js";
@@ -24,29 +25,78 @@ import { Template as TsTemplate } from "../../md-tmpl-typescript/dist/index.js";
 const JSON_OUTPUT = process.argv.includes("--json");
 
 // ---------------------------------------------------------------------------
+// Interfaces & Types
+// ---------------------------------------------------------------------------
+
+interface BenchmarkStats {
+  name: string;
+  sampleCount: number;
+  batchSize: number;
+  totalMs: number;
+  min: number;
+  median: number;
+  mean: number;
+  p95: number;
+  p99: number;
+  stddev: number;
+  opsPerSec: number;
+}
+
+interface BenchmarkOptions {
+  minSamples?: number;
+  minDuration?: number;
+  warmupIters?: number;
+  warmupMs?: number;
+}
+
+interface ScenarioResult {
+  scenario: string;
+  wasm: BenchmarkStats;
+  ts: BenchmarkStats;
+  speedup: number;
+}
+
+type EngineTemplate = WasmTemplate | TsTemplate;
+type EngineFactory = typeof WasmTemplate | typeof TsTemplate;
+
+interface ScenarioConfig {
+  name: string;
+  setup?: (engine: EngineFactory) => EngineTemplate;
+  wasm?: () => void;
+  ts?: () => void;
+  params?: Record<string, unknown>;
+  jsonParams?: string;
+  methodName?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Statistical helpers
 // ---------------------------------------------------------------------------
 
-function percentile(sorted, p) {
+function percentile(sorted: number[], p: number): number {
+  if (sorted.length === 0) return 0;
   const idx = Math.ceil((p / 100) * sorted.length) - 1;
-  return sorted[Math.max(0, idx)];
+  return sorted[Math.max(0, idx)] ?? 0;
 }
 
-function median(sorted) {
+function median(sorted: number[]): number {
+  if (sorted.length === 0) return 0;
   const mid = sorted.length >> 1;
   if (sorted.length % 2 === 0) {
-    return (sorted[mid - 1] + sorted[mid]) / 2;
+    return ((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2;
   }
-  return sorted[mid];
+  return sorted[mid] ?? 0;
 }
 
-function mean(values) {
+function mean(values: number[]): number {
+  if (values.length === 0) return 0;
   let sum = 0;
   for (const v of values) sum += v;
   return sum / values.length;
 }
 
-function stddev(values, avg) {
+function stddev(values: number[], avg: number): number {
+  if (values.length === 0) return 0;
   let sumSq = 0;
   for (const v of values) {
     const d = v - avg;
@@ -67,10 +117,12 @@ function stddev(values, avg) {
  * 3. Collect: run batches until we have ≥`minSamples` samples AND
  *    ≥`minDuration` ms of total measurement time.
  * 4. Each "sample" is one batch's average ns/op.
- *
- * @returns {{ name, samples, min, median, mean, p95, p99, stddev, opsPerSec }}
  */
-function benchmark(name, fn, options = {}) {
+function benchmark(
+  name: string,
+  fn: () => void,
+  options: BenchmarkOptions = {},
+): BenchmarkStats {
   const {
     minSamples = 50,
     minDuration = 500,
@@ -109,7 +161,7 @@ function benchmark(name, fn, options = {}) {
   }
 
   // --- Collect samples ---
-  const samples = []; // ns per operation
+  const samples: number[] = []; // ns per operation
   let totalMs = 0;
 
   while (samples.length < minSamples || totalMs < minDuration) {
@@ -130,7 +182,7 @@ function benchmark(name, fn, options = {}) {
     sampleCount: samples.length,
     batchSize,
     totalMs,
-    min: samples[0],
+    min: samples[0] ?? 0,
     median: median(samples),
     mean: avg,
     p95: percentile(samples, 95),
@@ -144,17 +196,17 @@ function benchmark(name, fn, options = {}) {
 // Formatting helpers
 // ---------------------------------------------------------------------------
 
-function fmtTime(ns) {
+function fmtTime(ns: number): string {
   if (ns >= 1e6) return (ns / 1e6).toFixed(1) + "ms";
   if (ns >= 1e3) return (ns / 1e3).toFixed(1) + "µs";
   return ns.toFixed(0) + "ns";
 }
 
-function fmtOps(ops) {
+function fmtOps(ops: number): string {
   return Math.round(ops).toLocaleString("en-US");
 }
 
-function pad(s, w) {
+function pad(s: string | number, w: number): string {
   return String(s).padStart(w);
 }
 
@@ -179,7 +231,7 @@ params:
 
 const LIST_SRC = `---
 params:
-  - tasks = list<title = str, priority = str>
+  - tasks = list(title = str, priority = str)
 ---
 > {% for task in tasks %}
 
@@ -208,7 +260,7 @@ Expert: {{ name }}
 
 const ENUM_SRC = `---
 params:
-  - outcome = enum<Confirmed(evidence = str), Rejected, NeedsWork>
+  - outcome = enum(Confirmed(evidence = str), Rejected, NeedsWork)
 ---
 > {% match outcome %}
 > {% case Confirmed %}
@@ -236,8 +288,8 @@ params:
 
 const COMPLEX_SRC = `---
 params:
-  - config = struct<db = struct<host = str, port = int>, retries = int>
-  - items = list<label = str>
+  - config = struct(db = struct(host = str, port = int), retries = int)
+  - items = list(label = str)
   - name = str
 ---
 DB: {{ config.db.host }}:{{ config.db.port }} (retries={{ config.retries }})
@@ -254,24 +306,24 @@ By: {{ name | trim }}`;
 // Parameters
 // ---------------------------------------------------------------------------
 
-const simpleParams = { name: "world" };
-const multiParams = { name: "Alice", count: 42, score: 9.5, enabled: true };
-const list2Params = {
+const simpleParams: Record<string, unknown> = { name: "world" };
+const multiParams: Record<string, unknown> = { name: "Alice", count: 42, score: 9.5, enabled: true };
+const list2Params: Record<string, unknown> = {
   tasks: [
     { title: "Task A", priority: "High" },
     { title: "Task B", priority: "Low" },
   ],
 };
-const list20Params = {
+const list20Params: Record<string, unknown> = {
   tasks: Array.from({ length: 20 }, (_, i) => ({
     title: `Task ${String.fromCharCode(65 + (i % 26))}${i}`,
     priority: i % 3 === 0 ? "High" : i % 3 === 1 ? "Medium" : "Low",
   })),
 };
-const condParams = { level: 2, name: "Alice" };
-const enumParams = { outcome: { __kind__: "Confirmed", evidence: "proof found" } };
-const defaultsParams = { name: "World" }; // greeting, suffix, lang use defaults
-const complexParams = {
+const condParams: Record<string, unknown> = { level: 2, name: "Alice" };
+const enumParams: Record<string, unknown> = { outcome: { __kind__: "Confirmed", evidence: "proof found" } };
+const defaultsParams: Record<string, unknown> = { name: "World" }; // greeting, suffix, lang use defaults
+const complexParams: Record<string, unknown> = {
   config: { db: { host: "localhost", port: 5432 }, retries: 3 },
   items: [{ label: "alpha" }, { label: "beta" }, { label: "gamma" }],
   name: "  Admin  ",
@@ -281,12 +333,12 @@ const complexParams = {
 // Scenario definitions
 // ---------------------------------------------------------------------------
 
-const scenarios = [
+const scenarios: ScenarioConfig[] = [
   // Parse-only
   {
     name: "parse simple",
-    wasm: () => WasmTemplate.fromSource(SIMPLE_SRC),
-    ts: () => TsTemplate.fromSource(SIMPLE_SRC),
+    wasm: () => { WasmTemplate.fromSource(SIMPLE_SRC); },
+    ts: () => { TsTemplate.fromSource(SIMPLE_SRC); },
   },
   // Render benchmarks (pre-compiled template)
   {
@@ -347,6 +399,7 @@ const scenarios = [
 consts:
   - MAX = int := 100
   - PREFIX = str := ">> "
+
 params: []
 ---
 Max={{ MAX }}, prefix={{ PREFIX }}`),
@@ -387,7 +440,7 @@ const COL = {
   ops: 12,
 };
 
-function printHeader() {
+function printHeader(): void {
   const hdr =
     "Scenario".padEnd(COL.name) +
     " | " + "Engine".padEnd(COL.engine) +
@@ -400,7 +453,7 @@ function printHeader() {
   console.log("-".repeat(hdr.length));
 }
 
-function printRow(name, engine, stats) {
+function printRow(name: string, engine: string, stats: BenchmarkStats): void {
   console.log(
     name.padEnd(COL.name) +
     " | " + engine.padEnd(COL.engine) +
@@ -408,11 +461,11 @@ function printRow(name, engine, stats) {
     " | " + pad(fmtTime(stats.mean), COL.mean) +
     " | " + pad(fmtTime(stats.p95), COL.p95) +
     " | " + pad(fmtTime(stats.stddev), COL.stddev) +
-    " | " + pad(fmtOps(stats.opsPerSec), COL.ops)
+    " | " + pad(fmtOps(stats.opsPerSec), COL.ops),
   );
 }
 
-function printDelta(wasmStats, tsStats) {
+function printDelta(wasmStats: BenchmarkStats, tsStats: BenchmarkStats): void {
   const ratio = tsStats.median / wasmStats.median;
   if (ratio >= 1.0) {
     console.log(`  → WASM is ${ratio.toFixed(2)}× faster (median)`);
@@ -433,10 +486,11 @@ console.log("");
 
 printHeader();
 
-const allResults = [];
+const allResults: ScenarioResult[] = [];
 
 for (const scenario of scenarios) {
-  let wasmFn, tsFn;
+  let wasmFn: () => void;
+  let tsFn: () => void;
 
   if (scenario.wasm && scenario.ts) {
     // Custom fn (e.g., parse-only)
@@ -444,26 +498,34 @@ for (const scenario of scenarios) {
     tsFn = scenario.ts;
   } else if (scenario.setup && scenario.jsonParams) {
     // JSON render benchmark: WASM uses renderJson, TS uses render
-    const wasmTmpl = scenario.setup(WasmTemplate);
+    const wasmTmpl = scenario.setup(WasmTemplate) as WasmTemplate;
     const tsTmpl = scenario.setup(TsTemplate);
     const jsonStr = scenario.jsonParams;
-    const params = scenario.params;
-    wasmFn = () => wasmTmpl.renderJson(jsonStr);
-    tsFn = () => tsTmpl.render(params);
+    const params = scenario.params ?? {};
+    wasmFn = () => { wasmTmpl.renderJson(jsonStr); };
+    tsFn = () => { tsTmpl.render(params); };
   } else if (scenario.setup && scenario.params) {
     // Render benchmark
     const wasmTmpl = scenario.setup(WasmTemplate);
     const tsTmpl = scenario.setup(TsTemplate);
     const params = scenario.params;
-    wasmFn = () => wasmTmpl.render(params);
-    tsFn = () => tsTmpl.render(params);
+    wasmFn = () => { wasmTmpl.render(params); };
+    tsFn = () => { tsTmpl.render(params); };
   } else if (scenario.setup && scenario.methodName) {
     // Metadata access
     const wasmTmpl = scenario.setup(WasmTemplate);
     const tsTmpl = scenario.setup(TsTemplate);
     const method = scenario.methodName;
-    wasmFn = () => wasmTmpl[method]();
-    tsFn = () => tsTmpl[method]();
+    if (method === "sourceHash") {
+      wasmFn = () => { wasmTmpl.sourceHash(); };
+      tsFn = () => { tsTmpl.sourceHash(); };
+    } else if (method === "declarations") {
+      wasmFn = () => { wasmTmpl.declarations(); };
+      tsFn = () => { tsTmpl.declarations(); };
+    } else {
+      wasmFn = () => { wasmTmpl.consts(); };
+      tsFn = () => { tsTmpl.consts(); };
+    }
   } else {
     console.error(`Invalid scenario config: ${scenario.name}`);
     process.exit(1);
@@ -498,7 +560,7 @@ const wasmWins = allResults.filter((r) => r.speedup >= 1.0);
 const tsWins = allResults.filter((r) => r.speedup < 1.0);
 const avgSpeedup = mean(allResults.map((r) => r.speedup));
 const geoMean = Math.exp(
-  allResults.reduce((s, r) => s + Math.log(r.speedup), 0) / allResults.length
+  allResults.reduce((s, r) => s + Math.log(r.speedup), 0) / allResults.length,
 );
 
 console.log("");

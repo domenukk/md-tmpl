@@ -72,8 +72,9 @@ Compares WASM bindings against the pure-TypeScript implementation.
 ```bash
 cd crates/md-tmpl-wasm
 wasm-pack build --target nodejs --out-dir pkg
-node benchmarks/bench.mjs            # table output
-node benchmarks/bench.mjs --json     # JSON to stdout
+npm run build
+node dist/bench.js            # table output
+node dist/bench.js --json     # JSON to stdout
 ```
 
 ## Fairness & Methodology

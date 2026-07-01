@@ -121,7 +121,7 @@ test-ts: build-ts
 
 # Run WASM tests (parity + comprehensive unit tests)
 test-wasm: build-wasm
-    cd crates/md-tmpl-wasm && npx tsc && node dist/correctness.js && node --test dist/wasm.test.js
+    cd crates/md-tmpl-wasm && npm test
 
 # ── Docs ──────────────────────────────────────────────────────────────
 
@@ -152,7 +152,7 @@ bench-ts-compare: build-ts
 
 # Run WASM vs TypeScript comparative benchmarks
 bench-wasm: build-wasm
-    cd crates/md-tmpl-wasm && node benchmarks/bench.mjs
+    cd crates/md-tmpl-wasm && npm run bench
 
 # Run Python benchmarks (vs Jinja2, Mako, Chevron, Django)
 bench-python:
@@ -194,7 +194,7 @@ build-ts:
 
 # Build the WASM package (via wasm-pack)
 build-wasm:
-    cd crates/md-tmpl-wasm && wasm-pack build --target nodejs --out-dir pkg --release
+    cd crates/md-tmpl-wasm && wasm-pack build --target nodejs --out-dir pkg --release && npm run build
 
 # ── Other ─────────────────────────────────────────────────────────────
 

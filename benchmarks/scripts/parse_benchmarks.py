@@ -6,7 +6,7 @@ Parses:
   - Python (tabular stdout from bench_templates.py)
   - Go (standard `go test -bench` format)
   - TypeScript (stdout from bench.ts)
-  - WASM (stdout from bench.mjs, or --json mode)
+  - WASM (stdout from dist/bench.js, or --json mode)
 
 Outputs a unified JSON structure to stdout.
 

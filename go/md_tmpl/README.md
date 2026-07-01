@@ -368,19 +368,19 @@ vs Go's `text/template`, median of 3 runs
 
 **Render** (pre-parsed template + data → output):
 
-| Scenario |          md-tmpl | Go `text/template` | Speedup |
-| -------- | ---------------: | -----------------: | ------: |
-| small    |    **525 ns** 🏆 |             569 ns |    1.1× |
-| medium   |  **1,716 ns** 🏆 |           6,251 ns |    3.6× |
-| large    | **24,808 ns** 🏆 |         140,495 ns |    5.7× |
+| Scenario   |          md-tmpl | Go `text/template` | speedup |
+| ---------- | ---------------: | -----------------: | ------: |
+| **small**  |           514 ns |             523 ns |   ~1.0× |
+| **medium** |  **1,709 ns** 🏆 |           5,902 ns |    3.5× |
+| **large**  | **24,385 ns** 🏆 |         133,680 ns |    5.5× |
 
 **Round-trip** (parse + render):
 
-| Scenario |          md-tmpl | Go `text/template` | Speedup |
-| -------- | ---------------: | -----------------: | ------: |
-| small    |         5,330 ns |  4,735 ns + 569 ns |   ~1.0× |
-| medium   | **19,438 ns** 🏆 |          20,509 ns |    1.1× |
-| large    | **61,531 ns** 🏆 |         165,633 ns |    2.7× |
+| Scenario   |          md-tmpl | Go `text/template` | speedup |
+| ---------- | ---------------: | -----------------: | ------: |
+| **small**  |         5,548 ns |           5,076 ns |   ~1.0× |
+| **medium** |        20,115 ns |          19,699 ns |   ~1.0× |
+| **large**  | **65,056 ns** 🏆 |         160,838 ns |    2.5× |
 
 **Filters:**
 
@@ -392,7 +392,7 @@ vs Go's `text/template`, median of 3 runs
 Allocations: 2 per render (small/medium/large) vs 3–517 for `text/template`.
 
 ```bash
-just test-go     # 144 tests
+just test-go     # 175 tests
 just bench-go    # 24 benchmarks
 ```
 

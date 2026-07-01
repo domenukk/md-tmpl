@@ -4,8 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc",
-    "test": "node dist/correctness.js && node --test dist/wasm.test.js"
+    "build": "tsc && tsc -p benchmarks",
+    "test": "node dist/correctness.js && node --test dist/wasm.test.js",
+    "bench": "node dist/bench.js"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

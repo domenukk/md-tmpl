@@ -4,13 +4,12 @@
     "module": "Node16",
     "moduleResolution": "Node16",
     "lib": ["ES2022"],
-    "outDir": "dist",
-    "rootDir": "tests",
+    "outDir": "../dist",
+    "rootDir": ".",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "noImplicitAny": false
   },
-  "include": ["tests/**/*.ts"],
-  "exclude": ["node_modules", "dist", "pkg"]
+  "include": ["bench.ts"]
 }

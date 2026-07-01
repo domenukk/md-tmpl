@@ -10488,7 +10488,7 @@ params:
 params: [x = list<str>]
 ---
 {{ x }}`),
-      (err: any) =>
+      (err: unknown) =>
         err instanceof TemplateSyntaxError &&
         err.message.includes("parentheses (...)"),
     );
@@ -10497,7 +10497,7 @@ params: [x = list<str>]
         Template.fromSource(`---
 params: [x = list[str]]\n---
 {{ x }}`),
-      (err: any) =>
+      (err: unknown) =>
         err instanceof TemplateSyntaxError &&
         err.message.includes("parentheses (...)"),
     );
@@ -10522,7 +10522,7 @@ params: []
 ---
 > {% include [header](header.tmpl.md) %}`,
         ),
-      (err: any) =>
+      (err: unknown) =>
         err instanceof TemplateSyntaxError &&
         err.message.includes("include path must begin with"),
     );

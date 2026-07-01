@@ -326,22 +326,16 @@ function renderGreeting(tmpl: ITemplate, name: string): string {
 
 Node.js 22, single-template timings (lower is better):
 
-| Operation           | Scenario        |      Time |
-| ------------------- | --------------- | --------: |
-| **render**          | simple          |    610 ns |
-|                     | multi-param     |  1,808 ns |
-|                     | list (2 items)  |  4,135 ns |
-|                     | list (20 items) | 32,114 ns |
-|                     | enum unit       |    742 ns |
-|                     | enum struct     |  1,925 ns |
-|                     | filters         |  6,939 ns |
-|                     | conditional     |  2,011 ns |
-| **renderUnchecked** | simple          |    489 ns |
-|                     | multi-param     |  1,064 ns |
-|                     | list (2 items)  |  1,910 ns |
-|                     | conditional     |  1,134 ns |
-| **parse**           | simple          |  5,112 ns |
-|                     | multi-param     | 13,442 ns |
+| Scenario                 |     render | renderUnchecked |
+| ------------------------ | ---------: | --------------: |
+| simple (1 str)           | **425 ns** |          449 ns |
+| multi-param (4 types)    |   1,084 ns |      **931 ns** |
+| list (2 items)           |   2,991 ns |    **1,757 ns** |
+| list (20 items)          |  21,708 ns |             N/A |
+| enum unit variant        |     535 ns |             N/A |
+| enum struct variant      |   1,354 ns |             N/A |
+| filters (idx+add, upper) |   5,537 ns |             N/A |
+| if/elif/else             |   1,285 ns |    **1,065 ns** |
 
 `renderUnchecked()` skips runtime type validation — use it when TypeScript's
 static checks are sufficient.
@@ -355,11 +349,11 @@ Node.js 22, 50,000 iterations, best of 5 runs
 
 <!-- BENCHMARK:TS_COMPARISON_RENDER -->
 
-| Scenario           | render() | renderUnchecked() | Handlebars |        Mustache |
-| ------------------ | -------: | ----------------: | ---------: | --------------: |
-| **simple**         | 1,228 ns |     **768 ns** 🏆 |   1,274 ns |          821 ns |
-| **loop (5 items)** | 6,083 ns |          2,469 ns |   2,093 ns | **1,862 ns** 🏆 |
-| **conditional**    | 1,974 ns |          1,372 ns |   1,416 ns |   **456 ns** 🏆 |
+| Scenario           |      render() | renderUnchecked() |      Handlebars |      Mustache |
+| ------------------ | ------------: | ----------------: | --------------: | ------------: |
+| **simple**         | **699 ns** 🏆 |            705 ns |          918 ns |        886 ns |
+| **loop (5 items)** |      4,091 ns |          2,802 ns | **1,571 ns** 🏆 |      1,845 ns |
+| **conditional**    |      1,371 ns |          1,288 ns |        1,424 ns | **444 ns** 🏆 |
 
 <!-- /BENCHMARK:TS_COMPARISON_RENDER -->
 
@@ -369,8 +363,8 @@ Node.js 22, 50,000 iterations, best of 5 runs
 
 | Scenario           |   md-tmpl | Handlebars |        Mustache |
 | ------------------ | --------: | ---------: | --------------: |
-| **simple**         |  9,958 ns |  88,522 ns |   **804 ns** 🏆 |
-| **loop (5 items)** | 30,717 ns | 125,384 ns | **1,897 ns** 🏆 |
+| **simple**         |  7,191 ns |  77,066 ns |   **895 ns** 🏆 |
+| **loop (5 items)** | 16,263 ns | 108,863 ns | **1,811 ns** 🏆 |
 | **conditional**    |       N/A |        N/A |             N/A |
 
 <!-- /BENCHMARK:TS_COMPARISON_ROUNDTRIP -->
@@ -393,7 +387,7 @@ just bench-ts-compare   # vs Handlebars & Mustache
 ## Testing
 
 ```bash
-just test-ts    # 486 tests
+just test-ts    # 798 tests
 just lint-ts    # strict type-check with tsc
 just fmt-ts     # format with prettier
 ```

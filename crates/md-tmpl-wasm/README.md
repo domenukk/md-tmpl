@@ -97,16 +97,25 @@ renderGreeting(TsTemplate.fromSource(src), "Alice");
 
 ### WASM vs Pure-TypeScript
 
-([source](benchmarks/bench.mjs))
+([source](benchmarks/bench.ts))
 
-| Scenario               |    WASM | Pure-TS |   Winner |
-| ---------------------- | ------: | ------: | -------: |
-| **render simple**      |  2.4 µs |  406 ns |  TS 5.9× |
-| **render multi-param** |  4.2 µs |  1.1 µs |  TS 3.8× |
-| **render list/for**    |  6.8 µs |  2.7 µs |  TS 2.5× |
-| **render complex**     | 12.4 µs |  6.0 µs |  TS 2.1× |
-| **declarations()**     |   44 ns |  585 ns | WASM 13× |
-| **renderJson complex** |  6.1 µs |  6.0 µs |     ~tie |
+| Scenario                                |    WASM (Rust) |      TypeScript | speedup |
+| --------------------------------------- | -------------: | --------------: | ------: |
+| parse simple                            |        5.74 µs |  **3.76 µs** 🏆 | 1.5× TS |
+| render simple (1 param)                 |        2.31 µs |   **433 ns** 🏆 | 5.3× TS |
+| render multi-param (4 params)           |        4.11 µs |  **1.12 µs** 🏆 | 3.7× TS |
+| render list/for (2 items)               |        6.43 µs |  **3.07 µs** 🏆 | 2.1× TS |
+| render list/for (20 items)              |       40.64 µs | **21.79 µs** 🏆 | 1.9× TS |
+| render conditional (if/elif)            |        2.99 µs |  **1.21 µs** 🏆 | 2.5× TS |
+| render enum dispatch                    |        4.23 µs |  **1.39 µs** 🏆 | 3.0× TS |
+| render with defaults                    |        2.94 µs |  **1.10 µs** 🏆 | 2.7× TS |
+| render complex (nested+list+filter)     |       11.82 µs |  **6.60 µs** 🏆 | 1.8× TS |
+| sourceHash()                            |           9 ns |     **6 ns** 🏆 | 1.6× TS |
+| declarations()                          |   **42 ns** 🏆 |          578 ns |   13.9× |
+| consts()                                |   **41 ns** 🏆 |           59 ns |    1.4× |
+| renderJson simple (1 param)             |        1.24 µs |   **501 ns** 🏆 | 2.5× TS |
+| renderJson multi-param (4 params)       |        2.84 µs |  **1.38 µs** 🏆 | 2.1× TS |
+| renderJson complex (nested+list+filter) | **6.17 µs** 🏆 |         6.50 µs |    1.1× |
 
 Pure-TS is faster for rendering due to JS↔WASM serialization overhead.
 WASM wins on metadata access. Use WASM when you need exact Rust-engine

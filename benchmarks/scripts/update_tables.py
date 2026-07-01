@@ -377,7 +377,7 @@ def update_readme(readme_path: Path, data: dict) -> bool:
         rust_table = build_rust_table(data["rust"], RUST_ENGINES_DISPLAY)
         new_content = replace_table(
             content,
-            "**Render only** (pre-compiled template + data → output string):",
+            "### Rust (render-only, pre-parsed)",
             rust_table,
         )
         if new_content != content:
@@ -406,7 +406,7 @@ def update_python_readme(readme_path: Path, data: dict) -> bool:
         )
         new_content = replace_table(
             content,
-            "### 2. Render Time",
+            "### Render Time (pre-parsed template + data)",
             py_render_table,
         )
         if new_content != content:
@@ -422,7 +422,7 @@ def update_python_readme(readme_path: Path, data: dict) -> bool:
         )
         new_content = replace_table(
             content,
-            "### 1. Compile Time",
+            "### Parse Time (source → template object)",
             py_compile_table,
         )
         if new_content != content:
@@ -438,7 +438,7 @@ def update_python_readme(readme_path: Path, data: dict) -> bool:
         )
         new_content = replace_table(
             content,
-            "### 3. End-to-End Time",
+            "### End-to-End (parse + render)",
             py_e2e_table,
         )
         if new_content != content:
@@ -467,7 +467,7 @@ def update_go_readme(readme_path: Path, data: dict) -> bool:
 
     # Render table
     go_render_table = build_go_table(pt_data, go_data, "Render")
-    new_content = replace_table(content, "**Render only**", go_render_table)
+    new_content = replace_table(content, "**Render** (pre-parsed template + data → output):", go_render_table)
     if new_content != content:
         content = new_content
         changes_made = True
@@ -475,7 +475,7 @@ def update_go_readme(readme_path: Path, data: dict) -> bool:
 
     # Round-trip table
     go_rt_table = build_go_table(pt_data, go_data, "RoundTrip")
-    new_content = replace_table(content, "**Round-trip**", go_rt_table)
+    new_content = replace_table(content, "**Round-trip** (parse + render):", go_rt_table)
     if new_content != content:
         content = new_content
         changes_made = True
@@ -704,7 +704,7 @@ def update_ts_readme(readme_path: Path, data: dict) -> bool:
             new_table = build_ts_comparison_render_table(render, unchecked)
             new_content = replace_table(
                 content,
-                "**Render only** (pre-compiled template + data",
+                "**Render only** (pre-parsed template + data",
                 new_table,
             )
             if new_content != content:
@@ -718,7 +718,7 @@ def update_ts_readme(readme_path: Path, data: dict) -> bool:
             new_table = build_ts_comparison_roundtrip_table(rt)
             new_content = replace_table(
                 content,
-                "**Round-trip** (compile + render",
+                "**Round-trip** (parse + render",
                 new_table,
             )
             if new_content != content:
@@ -726,18 +726,29 @@ def update_ts_readme(readme_path: Path, data: dict) -> bool:
                 changes_made = True
                 log.info("Updated TS comparison round-trip table")
 
-    # 4. WASM vs TypeScript table
-    if "wasm" in data:
-        wasm_table = build_wasm_table(data["wasm"])
-        new_content = replace_table(
-            content,
-            "**Render performance** (WASM Rust engine vs pure TypeScript",
-            wasm_table,
-        )
-        if new_content != content:
-            content = new_content
-            changes_made = True
-            log.info("Updated WASM vs TS table")
+    if changes_made:
+        readme_path.write_text(content)
+    return changes_made
+
+
+def update_wasm_readme(readme_path: Path, data: dict) -> bool:
+    """Update benchmark tables in the WASM README.md."""
+    if "wasm" not in data:
+        return False
+
+    content = readme_path.read_text()
+    changes_made = False
+
+    wasm_table = build_wasm_table(data["wasm"])
+    new_content = replace_table(
+        content,
+        "### WASM vs Pure-TypeScript",
+        wasm_table,
+    )
+    if new_content != content:
+        content = new_content
+        changes_made = True
+        log.info("Updated WASM vs TS table")
 
     if changes_made:
         readme_path.write_text(content)
@@ -785,6 +796,12 @@ def main() -> None:
         default=None,
         help="Path to TypeScript/WASM README.md to update",
     )
+    parser.add_argument(
+        "--wasm-readme",
+        type=Path,
+        default=None,
+        help="Path to WASM README.md to update",
+    )
 
     args = parser.parse_args()
 
@@ -799,7 +816,7 @@ def main() -> None:
         sys.exit(1)
 
     updated_any = False
-    has_targets = args.readme or args.python_readme or args.go_readme or args.ts_readme
+    has_targets = args.readme or args.python_readme or args.go_readme or args.ts_readme or args.wasm_readme
 
     if args.readme:
         if update_readme(args.readme, data):
@@ -824,10 +841,17 @@ def main() -> None:
 
     if args.ts_readme:
         if update_ts_readme(args.ts_readme, data):
-            log.info("TypeScript/WASM README.md updated successfully")
+            log.info("TypeScript README.md updated successfully")
             updated_any = True
         else:
-            log.info("TypeScript/WASM README.md — no changes needed")
+            log.info("TypeScript README.md — no changes needed")
+
+    if args.wasm_readme:
+        if update_wasm_readme(args.wasm_readme, data):
+            log.info("WASM README.md updated successfully")
+            updated_any = True
+        else:
+            log.info("WASM README.md — no changes needed")
 
     if not has_targets:
         # Just dump the formatted tables to stdout for inspection
