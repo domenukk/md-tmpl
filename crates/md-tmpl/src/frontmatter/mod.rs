@@ -746,6 +746,56 @@ body";
     }
 
     #[test]
+    fn reject_missing_blank_line_after_types_block_list() {
+        let source = r"---
+types:
+  - Severity = enum(Low, Medium, High)
+consts:
+  - FOO = str := 'bar'
+---
+body";
+        let err = parse_frontmatter(source).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("A blank line is required after a block list"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn reject_missing_blank_line_after_imports_block_list() {
+        let source = r#"---
+imports:
+  - "[shared](./shared.tmpl.md)"
+params:
+  - x = int
+---
+body"#;
+        let err = parse_frontmatter(source).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("A blank line is required after a block list"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn reject_missing_blank_line_before_allow_unused() {
+        let source = r"---
+consts:
+  - FOO = str := 'bar'
+allow_unused: true
+---
+body";
+        let err = parse_frontmatter(source).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("A blank line is required after a block list"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
     fn types_only_template_no_params_block() {
         let source = r"---
 name: types

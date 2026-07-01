@@ -105,7 +105,7 @@ export const CONSTANTS = {
 
 ## Installation
 
-Available on npm: https://www.npmjs.com/package/md-tmpl
+Available on npm: <https://www.npmjs.com/package/md-tmpl>
 
 ```bash
 npm install md-tmpl

@@ -157,7 +157,14 @@ fn compile_raw_empty_delimiter_errors() {
 
 #[test]
 fn extract_basic_inline_template() {
-    let input = "before\n{% tmpl greeting %}\n---\nparams: []\n---\nHello!\n{% /tmpl %}\nafter";
+    let input = r"before
+{% tmpl greeting %}
+---
+params: []
+---
+Hello!
+{% /tmpl %}
+after";
     let (cleaned, templates) = extract_inline_templates(input).unwrap();
     assert_eq!(cleaned.trim(), "before\nafter");
     assert_eq!(templates.len(), 1);
@@ -169,16 +176,19 @@ fn extract_basic_inline_template() {
 #[test]
 fn extract_inline_template_with_frontmatter() {
     let input = concat!(
-        "{% tmpl row %}\n",
+        r#"{% tmpl row %}
+"#,
         "\
 ---
 ",
-        "params: [label = str]\n",
+        r#"params: [label = str]
+"#,
         "\
 ---
 ",
         "- {{ label }}\n",
-        "{% /tmpl %}\n",
+        r#"{% /tmpl %}
+"#,
     );
     let (_, templates) = extract_inline_templates(input).unwrap();
     let tmpl = templates.get("row").unwrap();
@@ -188,7 +198,18 @@ fn extract_inline_template_with_frontmatter() {
 
 #[test]
 fn extract_duplicate_inline_template_errors() {
-    let input = "{% tmpl a %}\n---\nparams: []\n---\nfoo\n{% /tmpl %}\n{% tmpl a %}\n---\nparams: []\n---\nbar\n{% /tmpl %}";
+    let input = r"{% tmpl a %}
+---
+params: []
+---
+foo
+{% /tmpl %}
+{% tmpl a %}
+---
+params: []
+---
+bar
+{% /tmpl %}";
     let err = extract_inline_templates(input).unwrap_err();
     assert!(
         err.to_string().contains("duplicate"),
@@ -198,7 +219,12 @@ fn extract_duplicate_inline_template_errors() {
 
 #[test]
 fn extract_empty_name_errors() {
-    let input = "{% tmpl %}\n---\nparams: []\n---\nfoo\n{% /tmpl %}";
+    let input = r"{% tmpl %}
+---
+params: []
+---
+foo
+{% /tmpl %}";
     let err = extract_inline_templates(input).unwrap_err();
     assert!(
         err.to_string().contains("tmpl NAME"),
@@ -209,7 +235,11 @@ fn extract_empty_name_errors() {
 #[test]
 fn extract_skips_raw_block() {
     // {% tmpl %} inside {% raw %} should NOT be treated as an inline template.
-    let input = "{% raw %}\n{% tmpl fake %}\nnot a template\n{% /tmpl %}\n{% /raw %}";
+    let input = r"{% raw %}
+{% tmpl fake %}
+not a template
+{% /tmpl %}
+{% /raw %}";
     let (cleaned, templates) = extract_inline_templates(input).unwrap();
     assert!(
         templates.is_empty(),
@@ -224,9 +254,21 @@ fn extract_skips_raw_block() {
 #[test]
 fn extract_multiple_inline_templates() {
     let input = concat!(
-        "{% tmpl alpha %}\n---\nparams: []\n---\nA\n{% /tmpl %}\n",
+        r#"{% tmpl alpha %}
+---
+params: []
+---
+A
+{% /tmpl %}
+"#,
         "middle\n",
-        "{% tmpl beta %}\n---\nparams: []\n---\nB\n{% /tmpl %}\n",
+        r#"{% tmpl beta %}
+---
+params: []
+---
+B
+{% /tmpl %}
+"#,
     );
     let (cleaned, templates) = extract_inline_templates(input).unwrap();
     assert_eq!(templates.len(), 2);
@@ -266,7 +308,9 @@ fn parity_for_loop() {
         ])),
     );
     assert_same(
-        "> {% for item in items %}{{ idx(item) }}: {{ item.label }}\n\n> {% /for %}",
+        r"> {% for item in items %}{{ idx(item) }}: {{ item.label }}
+
+> {% /for %}",
         &ctx,
     );
 }
@@ -295,7 +339,9 @@ fn parity_nested_for_loops() {
         )])))])),
     );
     assert_same(
-        "> {% for g in groups %}[{{ g.name }}{% for t in tags %}:{{ t.t }}{% /for %}]\n\n> {% /for %}",
+        r"> {% for g in groups %}[{{ g.name }}{% for t in tags %}:{{ t.t }}{% /for %}]
+
+> {% /for %}",
         &ctx,
     );
 }
@@ -350,7 +396,11 @@ fn parity_mixed_content() {
         )])))])),
     );
     assert_same(
-        "# {{ title }}\n> {% for item in items %}- {{ item.name }}\n\n> {% /for %}{% if show_footer %}---\nFooter{% /if %}",
+        r"# {{ title }}
+> {% for item in items %}- {{ item.name }}
+
+> {% /for %}{% if show_footer %}---
+Footer{% /if %}",
         &ctx,
     );
 }
@@ -1296,16 +1346,20 @@ fn inline_template_include_renders_test() {
 params: []
 ---
 ",
-        "> {% tmpl greeting %}\n",
+        r#"> {% tmpl greeting %}
+"#,
         "\
 ---
 ",
-        "params: [who = str]\n",
+        r#"params: [who = str]
+"#,
         "\
 ---
 ",
         "Hello {{ who }}!\n\n",
-        "> {% /tmpl %}\n\n",
+        r#"> {% /tmpl %}
+
+"#,
         "> {% include greeting with who=\"World\" %}",
     );
     let tmpl = crate::Template::from_source(src).unwrap();
@@ -1323,16 +1377,20 @@ fn inline_template_missing_params_errors() {
 params: []
 ---
 ",
-        "> {% tmpl greeting %}\n",
+        r#"> {% tmpl greeting %}
+"#,
         "\
 ---
 ",
-        "params: [who = str]\n",
+        r#"params: [who = str]
+"#,
         "\
 ---
 ",
         "Hello {{ who }}!\n\n",
-        "> {% /tmpl %}\n\n",
+        r#"> {% /tmpl %}
+
+"#,
         "> {% include greeting %}",
     );
     let tmpl = crate::Template::from_source(src).unwrap();
@@ -1366,16 +1424,20 @@ fn same_named_tmpl_in_different_files_render_independently() {
 params: []
 ---
 ",
-            "> {% tmpl helper %}\n",
+            r#"> {% tmpl helper %}
+"#,
             "\
 ---
 ",
-            "params: []\n",
+            r#"params: []
+"#,
             "\
 ---
 ",
             "CHILD\n\n",
-            "> {% /tmpl %}\n\n",
+            r#"> {% /tmpl %}
+
+"#,
             "> {% include helper %}",
         ),
     )
@@ -1389,17 +1451,23 @@ params: []
 params: []
 ---
 ",
-        "> {% tmpl helper %}\n",
+        r#"> {% tmpl helper %}
+"#,
         "\
 ---
 ",
-        "params: []\n",
+        r#"params: []
+"#,
         "\
 ---
 ",
         "PARENT\n\n",
-        "> {% /tmpl %}\n\n",
-        "> {% include helper %}\n\n",
+        r#"> {% /tmpl %}
+
+"#,
+        r#"> {% include helper %}
+
+"#,
         "\
 ---
 ",
@@ -1408,7 +1476,12 @@ params: []
     let tmpl = crate::Template::from_source(parent_src).unwrap();
     let result = tmpl.render_ctx(&Context::new()).unwrap();
     // Parent's "helper" renders "PARENT"
-    assert_eq!(result, "PARENT\n---\n");
+    assert_eq!(
+        result,
+        r"PARENT
+---
+"
+    );
 }
 
 #[test]
@@ -1956,28 +2029,34 @@ fn if_inside_match_case_arm_with_blockquotes() {
     // Regression: {% if %} inside a {% match %} case arm with blockquote
     // syntax should compile and render correctly.
     let template = concat!(
-        "> {% match role %}\n",
-        "> {% case A %}\n",
+        r#"> {% match role %}
+"#,
+        r#"> {% case A %}
+"#,
         "\n",
         "Section A\n",
         "\n",
         "{{ msg }}\n",
         "\n",
-        "> {% if mission %}\n",
+        r#"> {% if mission %}
+"#,
         "\n",
         "## Mission\n",
         "\n",
         "{{ mission }}\n",
         "\n",
-        "> {% /if %}\n",
+        r#"> {% /if %}
+"#,
         "\n",
         "More content\n",
         "\n",
-        "> {% case B %}\n",
+        r#"> {% case B %}
+"#,
         "\n",
         "Section B\n",
         "\n",
-        "> {% /match %}\n",
+        r#"> {% /match %}
+"#,
     );
     let mut ctx = Context::new();
     ctx.set("role", "A");
@@ -2005,28 +2084,35 @@ fn if_else_inside_match_case_arm_with_blockquotes() {
     // Regression: {% if %}...{% else %}...{% /if %} inside a match case arm
     // must not confuse the {% else %} with a match-level {% else %} arm.
     let template = concat!(
-        "> {% match role %}\n",
-        "> {% case A %}\n",
+        r#"> {% match role %}
+"#,
+        r#"> {% case A %}
+"#,
         "\n",
         "Section A\n",
         "\n",
-        "> {% if flag %}\n",
+        r#"> {% if flag %}
+"#,
         "\n",
         "flag is set\n",
         "\n",
-        "> {% else %}\n",
+        r#"> {% else %}
+"#,
         "\n",
         "flag is not set\n",
         "\n",
-        "> {% /if %}\n",
+        r#"> {% /if %}
+"#,
         "\n",
         "After if\n",
         "\n",
-        "> {% case B %}\n",
+        r#"> {% case B %}
+"#,
         "\n",
         "Section B\n",
         "\n",
-        "> {% /match %}\n",
+        r#"> {% /match %}
+"#,
     );
     let mut ctx = Context::new();
     ctx.set("role", "A");

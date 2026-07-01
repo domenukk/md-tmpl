@@ -59,7 +59,7 @@ Review by {{ reviewer }}:
 
 ## Installation
 
-Available on PyPI: https://pypi.org/project/md-tmpl/
+Available on PyPI: <https://pypi.org/project/md-tmpl/>
 
 ```bash
 pip install md-tmpl

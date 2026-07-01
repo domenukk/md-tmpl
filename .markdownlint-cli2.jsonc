@@ -26,6 +26,7 @@
 
     // Blanks around headings/lists: disabled — allow compact lists/headings in request/project docs.
     "MD022": false,
-    "MD032": false
+    "MD032": false,
+    "MD033": { "allowed_elements": ["details", "summary"] }
   }
 }

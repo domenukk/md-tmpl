@@ -389,7 +389,11 @@ export class Template implements ITemplate {
    * tmpl.renderEmpty(); // => "Hello world!"
    *
    * const tmpl2 = Template.fromSource(
-   *   "---\nparams:\n  - greeting = str := \"Hi\"\n---\n{{ greeting }}!"
+   *   `---
+params:
+  - greeting = str := "Hi"
+---
+{{ greeting }}!`
    * );
    * tmpl2.renderEmpty(); // => "Hi!"
    * ```

@@ -24,7 +24,11 @@ use crate::convert::py_to_value;
 ///
 /// ```python
 /// from md_tmpl import Template
-/// tmpl = Template.from_source("---\nparams:\n  - name = str\n---\nHello {{ name }}!")
+/// tmpl = Template.from_source("""---
+/// params:
+///   - name = str
+/// ---
+/// Hello {{ name }}!""")
 /// tmpl.render(name="world")
 /// # => 'Hello world!'
 /// ```
@@ -316,7 +320,11 @@ impl PyTemplate {
     /// import json
     /// from md_tmpl import Template
     ///
-    /// tmpl = Template.from_source("---\nparams:\n  - name = str\n---\nHello {{ name }}!")
+    /// tmpl = Template.from_source("""---
+    /// params:
+    ///   - name = str
+    /// ---
+    /// Hello {{ name }}!""")
     /// tmpl.render_json(json.dumps({"name": "world"}))
     /// # => 'Hello world!'
     /// ```
@@ -385,7 +393,11 @@ impl PyTemplate {
     /// tmpl = Template.from_source("Hello world!")
     /// tmpl.render_empty()  # => 'Hello world!'
     ///
-    /// tmpl = Template.from_source("---\nparams:\n  - name = str := \"world\"\n---\nHello {{ name }}!")
+    /// tmpl = Template.from_source("""---
+    /// params:
+    ///   - name = str := "world"
+    /// ---
+    /// Hello {{ name }}!""")
     /// tmpl.render_empty()  # => 'Hello world!'
     /// ```
     fn render_empty(&self) -> PyResult<String> {

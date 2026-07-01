@@ -311,27 +311,44 @@ params: [count = int]
 
 describe("renderEmpty", () => {
   it("renders no-param template", () => {
-    const tmpl = Template.fromSource("---\n---\nHello world!");
+    const tmpl = Template.fromSource(`---
+---
+Hello world!`);
     assert.strictEqual(tmpl.renderEmpty(), "Hello world!");
   });
 
   it("renders with all-default params", () => {
     const tmpl = Template.fromSource(
-      '---\nparams:\n  - greeting = str := "Hi"\n  - count = int := 5\n---\n{{ greeting }} {{ count }}',
+      `---
+params:
+  - greeting = str := "Hi"
+  - count = int := 5
+---
+{{ greeting }} {{ count }}`,
     );
     assert.strictEqual(tmpl.renderEmpty(), "Hi 5");
   });
 
   it("renders with consts only", () => {
     const tmpl = Template.fromSource(
-      '---\nconsts:\n  - VERSION = str := "1.0"\n\nparams: []\n---\nv{{ VERSION }}',
+      `---
+consts:
+  - VERSION = str := "1.0"
+
+params: []
+---
+v{{ VERSION }}`,
     );
     assert.strictEqual(tmpl.renderEmpty(), "v1.0");
   });
 
   it("throws for required params", () => {
     const tmpl = Template.fromSource(
-      "---\nparams:\n  - name = str\n---\nHello {{ name }}!",
+      `---
+params:
+  - name = str
+---
+Hello {{ name }}!`,
     );
     assert.throws(
       () => tmpl.renderEmpty(),
@@ -341,7 +358,12 @@ describe("renderEmpty", () => {
 
   it("throws for mixed defaults and required", () => {
     const tmpl = Template.fromSource(
-      '---\nparams:\n  - greeting = str := "Hi"\n  - name = str\n---\n{{ greeting }} {{ name }}!',
+      `---
+params:
+  - greeting = str := "Hi"
+  - name = str
+---
+{{ greeting }} {{ name }}!`,
     );
     assert.throws(
       () => tmpl.renderEmpty(),
@@ -5093,6 +5115,46 @@ params: [name = str]
 `,
     );
     assert.strictEqual(fm.allowUnused, true);
+  });
+
+  it("rejects missing blank line after block list in frontmatter", () => {
+    assert.throws(
+      () =>
+        parseFrontmatter(`---
+consts:
+  - FOO = str := 'bar'
+params:
+  - x = int
+---
+body`),
+      (err: Error) =>
+        err.message.includes("A blank line is required after a block list"),
+    );
+
+    assert.throws(
+      () =>
+        parseFrontmatter(`---
+types:
+  - Priority = enum(High, Low)
+consts:
+  - FOO = str := 'bar'
+---
+body`),
+      (err: Error) =>
+        err.message.includes("A blank line is required after a block list"),
+    );
+
+    assert.throws(
+      () =>
+        parseFrontmatter(`---
+consts:
+  - FOO = str := 'bar'
+allow_unused: true
+---
+body`),
+      (err: Error) =>
+        err.message.includes("A blank line is required after a block list"),
+    );
   });
 });
 
@@ -10421,13 +10483,20 @@ params:
 
   it("rejects compound types with <...> or [...] throwing TemplateSyntaxError", () => {
     assert.throws(
-      () => Template.fromSource("---\nparams: [x = list<str>]\n---\n{{ x }}"),
+      () =>
+        Template.fromSource(`---
+params: [x = list<str>]
+---
+{{ x }}`),
       (err: any) =>
         err instanceof TemplateSyntaxError &&
         err.message.includes("parentheses (...)"),
     );
     assert.throws(
-      () => Template.fromSource("---\nparams: [x = list[str]]\n---\n{{ x }}"),
+      () =>
+        Template.fromSource(`---
+params: [x = list[str]]\n---
+{{ x }}`),
       (err: any) =>
         err instanceof TemplateSyntaxError &&
         err.message.includes("parentheses (...)"),
@@ -10448,7 +10517,10 @@ params:
     assert.throws(
       () =>
         Template.fromSource(
-          "---\nparams: []\n---\n> {% include [header](header.tmpl.md) %}",
+          `---
+params: []
+---
+> {% include [header](header.tmpl.md) %}`,
         ),
       (err: any) =>
         err instanceof TemplateSyntaxError &&
