@@ -1,0 +1,373 @@
+[[tests]]
+name = "basic_inline_template"
+description = "Basic inline template definition and inclusion"
+template = '''
+---
+params: [name = str]
+---
+> {% tmpl greeting %}
+---
+params: [name = str]
+---
+Hello {{ name }}!
+
+> {% /tmpl %}
+
+> {% include greeting with name=name %}'''
+expected_output = '''
+Hello world!
+'''
+
+[tests.params]
+name = "world"
+
+[[tests]]
+name = "inline_template_with_typed_vars"
+description = "Inline template with typed parameters (str and int)"
+template = '''
+---
+params:
+  - label = str
+  - count = int
+---
+> {% tmpl row %}
+---
+params:
+  - label = str
+  - count = int
+---
+- {{ label }}: {{ count }}
+
+> {% /tmpl %}
+
+> {% include row with label=label, count=count %}'''
+expected_output = '''
+- tasks: 42
+'''
+
+[tests.params]
+label = "tasks"
+count = 42
+
+[[tests]]
+name = "inline_template_type_mismatch"
+description = "Passing a str where int is expected should produce a type mismatch error"
+template = '''
+---
+params: [name = str]
+---
+> {% tmpl row %}
+---
+params: [count = int]
+---
+{{ count }}
+
+> {% /tmpl %}
+
+> {% include row with count=name %}'''
+expected_error = "type mismatch"
+
+[tests.params]
+name = "oops"
+
+[[tests]]
+name = "inline_template_for_loop"
+description = "Inline template with for-each iteration over a list"
+template = '''
+---
+params: [items = list(str)]
+---
+> {% tmpl item %}
+---
+params: [it = str]
+---
+- {{ it }}
+
+> {% /tmpl %}
+
+> {% include item for it in items %}'''
+expected_output = '''
+- a
+- b
+- c
+'''
+
+[tests.params]
+items = ["a", "b", "c"]
+
+[[tests]]
+name = "inline_template_used_twice"
+description = "Same inline template included at two different sites"
+template = '''
+---
+params: []
+---
+> {% tmpl sep %}
+---
+params: []
+---
+---
+
+> {% /tmpl %}
+
+A
+
+> {% include sep %}
+
+B
+
+> {% include sep %}'''
+expected_output = '''
+A
+---
+B
+---
+'''
+params = {}
+
+[[tests]]
+name = "raw_block_inside_inline_template"
+description = "Raw blocks inside inline templates preserve literal content"
+template = '''
+---
+params: []
+---
+> {% tmpl code %}
+---
+params: []
+---
+
+> {% raw %}
+
+{{ not_processed }}
+
+> {% /raw %}
+
+> {% /tmpl %}
+
+> {% include code %}'''
+expected_output = '''
+{{ not_processed }}
+'''
+params = {}
+
+[[tests]]
+name = "tmpl_inside_raw_is_literal"
+description = "tmpl tags inside raw blocks are treated as literal text"
+template = '''
+---
+params: []
+---
+
+> {% raw %}
+
+{% tmpl fake %}
+this is not a template
+{% /tmpl %}
+
+> {% /raw %}'''
+expected_output = '''
+{% tmpl fake %}
+this is not a template
+{% /tmpl %}
+'''
+params = {}
+
+[[tests]]
+name = "tmpl_definition_produces_no_output"
+description = "The tmpl definition itself produces no output; only the include does"
+template = '''
+---
+params: []
+---
+> {% tmpl unused_but_included_later %}
+---
+params: []
+---
+invisible
+
+> {% /tmpl %}
+
+visible
+
+> {% include unused_but_included_later %}'''
+expected_output = '''
+visible
+invisible
+'''
+params = {}
+
+[[tests]]
+name = "comment_in_template_strips_cleanly"
+description = "Comments are stripped without leaving extra whitespace"
+template = '''
+---
+params: [x = str]
+---
+before{# a comment #}after {{ x }}'''
+expected_output = "beforeafter !"
+
+[tests.params]
+x = "!"
+
+[[tests]]
+name = "inline_template_name_not_flagged_as_undeclared"
+description = "Inline template names must not trigger undeclared variable errors"
+template = '''
+---
+params: [name = str]
+---
+> {% tmpl greeting %}
+---
+params: [name = str]
+---
+Hello {{ name }}!
+
+> {% /tmpl %}
+
+> {% include greeting with name=name %}'''
+expected_output = '''
+Hello world!
+'''
+
+[tests.params]
+name = "world"
+
+[[tests]]
+name = "circular_inline_includes"
+description = "Circular inline templates should exceed max include depth and fail"
+template = '''
+---
+params: []
+---
+> {% tmpl a %}
+---
+params: []
+---
+> {% include b %}
+
+> {% /tmpl %}
+> {% tmpl b %}
+---
+params: []
+---
+> {% include a %}
+
+> {% /tmpl %}
+> {% include a %}'''
+expected_error = "maximum include depth"
+params = {}
+
+[[tests]]
+name = "missing_inline_include"
+description = "Including an inline template that does not exist should fail"
+template = '''
+---
+params: []
+---
+> {% include non_existent_tmpl %}'''
+expected_error = "non_existent_tmpl"
+params = {}
+
+[[tests]]
+name = "inline_tmpl_wrong_type"
+description = "Passing wrong parameter type to inline template should fail type checking"
+template = '''
+---
+params: [items = list(str)]
+---
+> {% tmpl row %}
+---
+params: [x = int]
+---
+{{ x }}
+
+> {% /tmpl %}
+> {% include row with x=items %}'''
+expected_error = "type mismatch"
+
+[tests.params]
+items = ["a", "b"]
+
+[[tests]]
+name = "inline_tmpl_complex_struct_and_consts"
+description = "Inline template accessing its own consts and formatting complex struct param"
+template = '''
+---
+params: [user = struct(name = str, role = str)]
+---
+> {% tmpl card %}
+---
+params: [u = struct(name = str, role = str)]
+consts:
+  - BADGE = str := "[VERIFIED]"
+---
+{{ BADGE }} {{ u.name }} ({{ u.role }})
+
+> {% /tmpl %}
+> {% include card with u=user %}'''
+expected_output = '''
+[VERIFIED] Eve (Admin)
+'''
+
+[tests.params]
+user = { "name" = "Eve", "role" = "Admin" }
+
+[[tests]]
+name = "deeply_nested_inline_includes"
+description = "Deeply nested inline templates calling each other across 3 levels"
+template = '''
+---
+params: [val = str]
+---
+> {% tmpl l3 %}
+---
+params: [v = str]
+---
+L3:{{ v }}
+
+> {% /tmpl %}
+> {% tmpl l2 %}
+---
+params: [v = str]
+---
+L2->{%- include l3 with v=v -%}
+
+> {% /tmpl %}
+> {% tmpl l1 %}
+---
+params: [v = str]
+---
+L1->{%- include l2 with v=v -%}
+
+> {% /tmpl %}
+> {%- include l1 with v=val -%}'''
+expected_output = '''
+L1->L2->L3:core
+'''
+
+[tests.params]
+val = "core"
+
+[[tests]]
+name = "inline_tmpl_whitespace_stripping_complex"
+description = "Complex whitespace stripping around inline templates and comments"
+template = '''
+---
+params: [x = str]
+---
+> {% tmpl tag %}
+---
+params: [t = str]
+---
+[{{ t }}]
+
+> {% /tmpl %}
+
+Start{# comment #}{%- include tag with t=x -%}End'''
+expected_output = '''
+Start[mid]
+End'''
+
+[tests.params]
+x = "mid"

@@ -67,9 +67,18 @@ pub enum TemplateError {
     /// render call to suppress this check.
     #[error("extra undeclared parameters: {}", .0.join(", "))]
     ExtraParams(Vec<String>),
+
+    /// Template rendering halted by an explicit `{% panic(...) %}` statement.
+    #[error("template panic: {0}")]
+    Panic(String),
 }
 
 impl TemplateError {
+    /// Create a [`Panic`](Self::Panic) error from any string-like value.
+    pub(crate) fn panic(msg: impl Into<String>) -> Self {
+        Self::Panic(msg.into())
+    }
+
     /// Create a [`Syntax`](Self::Syntax) error from any string-like value.
     ///
     /// This is the preferred constructor — use it instead of
@@ -333,6 +342,12 @@ mod tests {
     fn template_error_display_extra_params() {
         let err = TemplateError::ExtraParams(vec!["x".into(), "y".into()]);
         assert_eq!(err.to_string(), "extra undeclared parameters: x, y");
+    }
+
+    #[test]
+    fn template_error_display_panic() {
+        let err = TemplateError::panic("custom panic message");
+        assert_eq!(err.to_string(), "template panic: custom panic message");
     }
 
     // ── levenshtein_distance ────────────────────────────────────────

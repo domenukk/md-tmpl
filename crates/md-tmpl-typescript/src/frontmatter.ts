@@ -19,6 +19,9 @@ import {
   int,
   float,
   bool,
+  list,
+  getField,
+  display,
 } from "./value.js";
 import {
   TYPE_STR,
@@ -30,6 +33,9 @@ import {
   TYPE_ENUM,
   TYPE_TMPL,
   TYPE_OPTION,
+  TYPE_ALIAS,
+  TYPE_SCALAR_LIST,
+  TYPE_UNTYPED_LIST,
   PAREN_OPEN,
   PAREN_CLOSE,
   ANGLE_OPEN,
@@ -38,6 +44,10 @@ import {
   BRACKET_CLOSE,
   BRACE_OPEN,
   BRACE_CLOSE,
+  EXPR_START,
+  EXPR_END,
+  DOT,
+  isValidResolvedPath,
   COMMA,
   EQUALS,
   SLASH,
@@ -54,8 +64,32 @@ import {
   FM_IMPORTS_PREFIX,
   FM_CONSTS_PREFIX,
   FM_ALLOW_UNUSED_PREFIX,
+  FM_DELIMITER,
   ERR_COMPOUND_BRACKETS_PROHIBITED,
+  OPTION_SOME,
+  OPTION_NONE,
+  LIT_TRUE,
+  LIT_FALSE,
+  PREFIX_CONSTS_DOT,
+  PREFIX_OPTS_DOT,
+  PREFIX_OPTIONS_DOT,
+  PREFIX_PARAMS_DOT,
 } from "./consts.js";
+
+export {
+  TYPE_STR,
+  TYPE_BOOL,
+  TYPE_INT,
+  TYPE_FLOAT,
+  TYPE_LIST,
+  TYPE_STRUCT,
+  TYPE_ENUM,
+  TYPE_TMPL,
+  TYPE_OPTION,
+  TYPE_ALIAS,
+  TYPE_SCALAR_LIST,
+  TYPE_UNTYPED_LIST,
+};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -66,21 +100,26 @@ export interface VarDecl {
   readonly name: string;
   readonly varType: VarType;
   readonly defaultValue?: Value;
+  readonly loc?: { line: number; column: number; snippet: string };
 }
 
 /** The type of a template variable. */
 export type VarType =
-  | { kind: "str" }
-  | { kind: "bool" }
-  | { kind: "int" }
-  | { kind: "float" }
-  | { kind: "list"; fields: readonly VarDecl[] }
-  | { kind: "scalar_list"; elementType: VarType }
-  | { kind: "struct"; fields: readonly VarDecl[] }
-  | { kind: "enum"; variants: readonly VariantDecl[]; isOption?: boolean }
-  | { kind: "option"; innerType: VarType }
-  | { kind: "alias"; name: string }
-  | { kind: "untyped_list" };
+  | { kind: typeof TYPE_STR }
+  | { kind: typeof TYPE_BOOL }
+  | { kind: typeof TYPE_INT }
+  | { kind: typeof TYPE_FLOAT }
+  | { kind: typeof TYPE_LIST; fields: readonly VarDecl[] }
+  | { kind: typeof TYPE_SCALAR_LIST; elementType: VarType }
+  | { kind: typeof TYPE_STRUCT; fields: readonly VarDecl[] }
+  | {
+      kind: typeof TYPE_ENUM;
+      variants: readonly VariantDecl[];
+      isOption?: boolean;
+    }
+  | { kind: typeof TYPE_OPTION; innerType: VarType }
+  | { kind: typeof TYPE_ALIAS; name: string }
+  | { kind: typeof TYPE_UNTYPED_LIST };
 
 /** A variant in an enum type. */
 export interface VariantDecl {
@@ -108,12 +147,14 @@ export interface Frontmatter {
     string,
     { text: string; varType: VarType }
   >;
+  readonly bodyStartLine?: number;
 }
 
 /** An import declaration. */
 export interface ImportDecl {
   readonly stem: string;
   readonly path: string;
+  readonly loc?: { line: number; column: number; snippet: string };
 }
 
 // ---------------------------------------------------------------------------
@@ -131,14 +172,14 @@ export function varTypeToString(vt: VarType): string {
     case TYPE_LIST:
       if (vt.fields.length === 0) return "list()";
       return `list(${vt.fields.map((f) => `${f.name} = ${varTypeToString(f.varType)}`).join(", ")})`;
-    case "scalar_list":
+    case TYPE_SCALAR_LIST:
       return `list(${varTypeToString(vt.elementType)})`;
     case TYPE_STRUCT:
       if (vt.fields.length === 0) return "struct()";
       return `struct(${vt.fields.map((f) => `${f.name} = ${varTypeToString(f.varType)}`).join(", ")})`;
     case TYPE_ENUM: {
       if (vt.isOption) {
-        const someVariant = vt.variants.find((v) => v.name === "Some");
+        const someVariant = vt.variants.find((v) => v.name === OPTION_SOME);
         if (someVariant && someVariant.fields.length === 1) {
           return `option(${varTypeToString(someVariant.fields[0]!.varType)})`;
         }
@@ -151,9 +192,9 @@ export function varTypeToString(vt: VarType): string {
     }
     case TYPE_OPTION:
       return `option(${varTypeToString(vt.innerType)})`;
-    case "alias":
+    case TYPE_ALIAS:
       return vt.name;
-    case "untyped_list":
+    case TYPE_UNTYPED_LIST:
       return "list()";
   }
 }
@@ -174,7 +215,7 @@ export function parseFrontmatter(source: string): [Frontmatter, string] {
   // Find opening ---
   let startIdx = -1;
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i]!.trim() === `---`) {
+    if (lines[i]!.trim() === FM_DELIMITER) {
       startIdx = i;
       break;
     }
@@ -182,27 +223,35 @@ export function parseFrontmatter(source: string): [Frontmatter, string] {
   if (startIdx === -1) {
     throw new TemplateSyntaxError(
       "missing mandatory YAML frontmatter block (starts with ---)",
+      1,
+      1,
+      lines[0] ?? "",
     );
   }
 
   // Find closing ---
   let endIdx = -1;
   for (let i = startIdx + 1; i < lines.length; i++) {
-    if (lines[i]!.trim() === `---`) {
+    if (lines[i]!.trim() === FM_DELIMITER) {
       endIdx = i;
       break;
     }
   }
   if (endIdx === -1) {
-    throw new TemplateSyntaxError("unclosed YAML frontmatter block");
+    throw new TemplateSyntaxError(
+      "unclosed YAML frontmatter block",
+      startIdx + 1,
+      1,
+      lines[startIdx] ?? "",
+    );
   }
 
   const fmLines = lines.slice(startIdx + 1, endIdx);
   const body = lines.slice(endIdx + 1).join("\n");
 
   // Parse the frontmatter YAML subset
-  const fm = parseFrontmatterYaml(fmLines);
-  return [fm, body];
+  const fm = parseFrontmatterYaml(fmLines, startIdx + 2);
+  return [{ ...fm, bodyStartLine: endIdx + 2 }, body];
 }
 
 /**
@@ -217,13 +266,14 @@ export function stripFrontmatter(source: string): string {
 // Internal YAML-subset parser
 // ---------------------------------------------------------------------------
 
-function parseFrontmatterYaml(lines: string[]): Frontmatter {
+function parseFrontmatterYaml(lines: string[], startLineNo = 2): Frontmatter {
   // Validate Frontmatter List Termination Rule:
   // A blank line is strictly required after a block list before starting a new top-level
   // section keyword, so raw markdown renders correctly.
   let inBlockList = false;
   let hadBlankLine = true;
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
     const trimmed = line.trim();
     if (trimmed === "" || trimmed.startsWith("#")) {
       hadBlankLine = true;
@@ -242,6 +292,9 @@ function parseFrontmatterYaml(lines: string[]): Frontmatter {
       if (inBlockList && !hadBlankLine) {
         throw new TemplateSyntaxError(
           `A blank line is required after a block list before '${trimmed}' so raw markdown renders correctly`,
+          startLineNo + i,
+          1,
+          line,
         );
       }
       inBlockList = false;
@@ -260,106 +313,166 @@ function parseFrontmatterYaml(lines: string[]): Frontmatter {
   // Two-pass approach: first collect raw items per block, then resolve.
   // This allows consts to be parsed before params, enabling const names
   // as param defaults.
-  const rawParams: string[] = [];
-  const rawConsts: string[] = [];
-  let inlineParamsRaw: string[] | undefined;
+  interface RawItem {
+    raw: string;
+    loc: { line: number; column: number; snippet: string };
+  }
+  const rawParams: RawItem[] = [];
+  const rawConsts: RawItem[] = [];
+  let inlineParamsRaw: RawItem[] | undefined;
 
   let currentBlock: "none" | "params" | "types" | "consts" | "imports" = "none";
 
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!;
     const trimmed = line.trim();
     if (trimmed === "" || trimmed.startsWith("#")) continue;
+    const loc = { line: startLineNo + i, column: 1, snippet: line };
 
-    // Top-level keys
-    if (trimmed.startsWith(FM_NAME_PREFIX)) {
-      name = trimmed
-        .slice(FM_NAME_PREFIX.length)
-        .trim()
-        .replace(/^["']|["']$/g, "");
-      currentBlock = "none";
-      continue;
-    }
-    if (trimmed.startsWith(FM_DESC_PREFIX)) {
-      description = trimmed
-        .slice(FM_DESC_PREFIX.length)
-        .trim()
-        .replace(/^["']|["']$/g, "");
-      currentBlock = "none";
-      continue;
-    }
-    if (trimmed.startsWith(FM_ALLOW_UNUSED_PREFIX)) {
-      allowUnused =
-        trimmed.slice(FM_ALLOW_UNUSED_PREFIX.length).trim() === "true";
-      currentBlock = "none";
-      continue;
-    }
-
-    // Block starts
-    if (trimmed.startsWith(FM_PARAMS_PREFIX)) {
-      currentBlock = "params";
-      // Inline params: [x = str, y = int]
-      const rest = trimmed.slice(FM_PARAMS_PREFIX.length).trim();
-      if (rest.startsWith("[")) {
-        inlineParamsRaw = parseInlineList(rest);
+    try {
+      // Top-level keys
+      if (trimmed.startsWith(FM_NAME_PREFIX)) {
+        name = trimmed
+          .slice(FM_NAME_PREFIX.length)
+          .trim()
+          .replace(/^["']|["']$/g, "");
         currentBlock = "none";
+        continue;
       }
-      continue;
-    }
-    if (trimmed.startsWith(FM_TYPES_PREFIX)) {
-      currentBlock = "types";
-      continue;
-    }
-    if (trimmed.startsWith(FM_CONSTS_PREFIX)) {
-      currentBlock = "consts";
-      continue;
-    }
-    if (trimmed.startsWith(FM_IMPORTS_PREFIX)) {
-      currentBlock = "imports";
-      continue;
-    }
+      if (trimmed.startsWith(FM_DESC_PREFIX)) {
+        description = trimmed
+          .slice(FM_DESC_PREFIX.length)
+          .trim()
+          .replace(/^["']|["']$/g, "");
+        currentBlock = "none";
+        continue;
+      }
+      if (trimmed.startsWith(FM_ALLOW_UNUSED_PREFIX)) {
+        allowUnused =
+          trimmed.slice(FM_ALLOW_UNUSED_PREFIX.length).trim() === LIT_TRUE;
+        currentBlock = "none";
+        continue;
+      }
 
-    // List items
-    if (trimmed.startsWith("- ")) {
-      const item = trimmed.slice(2).trim();
-      switch (currentBlock) {
-        case "params":
-          rawParams.push(item);
-          break;
-        case "types": {
-          const [aliasName, aliasType] = parseTypeAlias(item);
-          if (typeAliases.has(aliasName)) {
-            throw new TemplateSyntaxError(
-              `duplicate type alias '${aliasName}'`,
-            );
-          }
-          typeAliases.set(aliasName, aliasType);
-          break;
+      // Block starts
+      if (trimmed.startsWith(FM_PARAMS_PREFIX)) {
+        currentBlock = "params";
+        // Inline params: [x = str, y = int]
+        const rest = trimmed.slice(FM_PARAMS_PREFIX.length).trim();
+        if (rest.startsWith("[")) {
+          const items = parseInlineList(rest);
+          inlineParamsRaw = items.map((item) => ({ raw: item, loc }));
+          currentBlock = "none";
         }
-        case "consts":
-          rawConsts.push(item);
-          break;
-        case "imports":
-          imports.push(parseImportDecl(item));
-          break;
-        default:
-          break;
+        continue;
       }
+      if (trimmed.startsWith(FM_TYPES_PREFIX)) {
+        currentBlock = "types";
+        const rest = trimmed.slice(FM_TYPES_PREFIX.length).trim();
+        if (rest.startsWith("[")) {
+          const items = parseInlineList(rest);
+          for (const item of items) {
+            const [aliasName, aliasType] = parseTypeAlias(item);
+            if (typeAliases.has(aliasName)) {
+              throw new TemplateSyntaxError(
+                `duplicate type alias '${aliasName}'`,
+              );
+            }
+            typeAliases.set(aliasName, aliasType);
+          }
+          currentBlock = "none";
+        }
+        continue;
+      }
+      if (trimmed.startsWith(FM_CONSTS_PREFIX)) {
+        currentBlock = "consts";
+        const rest = trimmed.slice(FM_CONSTS_PREFIX.length).trim();
+        if (rest.startsWith("[")) {
+          const items = parseInlineList(rest);
+          for (const item of items) {
+            rawConsts.push({ raw: item, loc });
+          }
+          currentBlock = "none";
+        }
+        continue;
+      }
+      if (trimmed.startsWith(FM_IMPORTS_PREFIX)) {
+        currentBlock = "imports";
+        const rest = trimmed.slice(FM_IMPORTS_PREFIX.length).trim();
+        if (rest.startsWith("[")) {
+          const items = parseInlineList(rest);
+          for (const item of items) {
+            imports.push({ ...parseImportDecl(item), loc });
+          }
+          currentBlock = "none";
+        }
+        continue;
+      }
+
+      // List items
+      if (trimmed.startsWith("- ")) {
+        const item = trimmed.slice(2).trim();
+        switch (currentBlock) {
+          case "params":
+            rawParams.push({ raw: item, loc });
+            break;
+          case "types": {
+            const [aliasName, aliasType] = parseTypeAlias(item);
+            if (typeAliases.has(aliasName)) {
+              throw new TemplateSyntaxError(
+                `duplicate type alias '${aliasName}'`,
+              );
+            }
+            typeAliases.set(aliasName, aliasType);
+            break;
+          }
+          case "consts":
+            rawConsts.push({ raw: item, loc });
+            break;
+          case "imports":
+            imports.push({ ...parseImportDecl(item), loc });
+            break;
+          default:
+            break;
+        }
+      }
+    } catch (err) {
+      if (err instanceof TemplateSyntaxError && err.line === undefined) {
+        throw new TemplateSyntaxError(
+          err.message,
+          loc.line,
+          loc.column,
+          loc.snippet,
+        );
+      }
+      throw err;
     }
   }
 
-  // Phase 1: Parse consts (they only use literal defaults)
+  // Phase 1: Parse consts (they can reference earlier consts)
   const consts: VarDecl[] = [];
-  for (const raw of rawConsts) {
-    consts.push(parseConstDecl(raw));
-  }
-
-  // Build resolved const values map for param default resolution
   const constValues = new Map<string, Value>();
-  for (const decl of consts) {
-    if (decl.defaultValue !== undefined) {
-      constValues.set(decl.name, decl.defaultValue);
+  for (const item of rawConsts) {
+    try {
+      const decl = parseConstDecl(item.raw, constValues);
+      consts.push({ ...decl, loc: item.loc });
+      if (decl.defaultValue !== undefined) {
+        constValues.set(decl.name, decl.defaultValue);
+      }
+    } catch (err) {
+      if (err instanceof TemplateSyntaxError && err.line === undefined) {
+        throw new TemplateSyntaxError(
+          err.message,
+          item.loc.line,
+          item.loc.column,
+          item.loc.snippet,
+        );
+      }
+      throw err;
     }
   }
+
+  interpolateImports(imports, constValues);
 
   // Phase 2: Parse params with const values available for defaults.
   // For imported consts (dotted names like stem.NAME), the default is
@@ -370,11 +483,23 @@ function parseFrontmatterYaml(lines: string[]): Frontmatter {
     { text: string; varType: VarType }
   >();
   const allRawParams = inlineParamsRaw ?? rawParams;
-  for (const raw of allRawParams) {
-    const [decl, unresolved] = parseParamDeclDeferred(raw, constValues);
-    params.push(decl);
-    if (unresolved !== undefined) {
-      unresolvedDefaults.set(decl.name, unresolved);
+  for (const item of allRawParams) {
+    try {
+      const [decl, unresolved] = parseParamDeclDeferred(item.raw, constValues);
+      params.push({ ...decl, loc: item.loc });
+      if (unresolved !== undefined) {
+        unresolvedDefaults.set(decl.name, unresolved);
+      }
+    } catch (err) {
+      if (err instanceof TemplateSyntaxError && err.line === undefined) {
+        throw new TemplateSyntaxError(
+          err.message,
+          item.loc.line,
+          item.loc.column,
+          item.loc.snippet,
+        );
+      }
+      throw err;
     }
   }
 
@@ -391,15 +516,137 @@ function parseFrontmatterYaml(lines: string[]): Frontmatter {
   };
 }
 
+export function interpolatePathStr(
+  path: string,
+  availableConsts?: ReadonlyMap<string, Value>,
+): string {
+  const constsMap = availableConsts ?? new Map<string, Value>();
+  let result = "";
+  let remaining = path;
+
+  while (true) {
+    const startIdx = remaining.indexOf(EXPR_START);
+    if (startIdx === -1) break;
+
+    result += remaining.slice(0, startIdx);
+    const afterStart = remaining.slice(startIdx + EXPR_START.length);
+
+    const endIdx = afterStart.indexOf(EXPR_END);
+    if (endIdx === -1) {
+      throw new TemplateSyntaxError(
+        `unclosed '${EXPR_START}' in import path '${path}'`,
+      );
+    }
+
+    const expr = afterStart.slice(0, endIdx).trim();
+    if (expr === "") {
+      throw new TemplateSyntaxError(
+        `empty expression '${EXPR_START}${EXPR_END}' in import path '${path}'`,
+      );
+    }
+
+    let valOpt: Value | undefined;
+    const lit = stripStringLiteral(expr);
+    if (lit !== expr) {
+      valOpt = { type: "str", value: lit };
+    } else {
+      valOpt = constsMap.get(expr);
+      if (valOpt === undefined) {
+        let stripped = expr;
+        if (stripped.startsWith(PREFIX_CONSTS_DOT))
+          stripped = stripped.slice(PREFIX_CONSTS_DOT.length).trim();
+        else if (stripped.startsWith(PREFIX_OPTS_DOT))
+          stripped = stripped.slice(PREFIX_OPTS_DOT.length).trim();
+        else if (stripped.startsWith(PREFIX_OPTIONS_DOT))
+          stripped = stripped.slice(PREFIX_OPTIONS_DOT.length).trim();
+        else if (stripped.startsWith(PREFIX_PARAMS_DOT))
+          stripped = stripped.slice(PREFIX_PARAMS_DOT.length).trim();
+
+        valOpt = constsMap.get(stripped);
+        if (valOpt === undefined) {
+          const parts = stripped.split(DOT);
+          const rootKey = parts[0]?.trim() ?? "";
+          let val = constsMap.get(rootKey);
+          if (val !== undefined) {
+            let ok = true;
+            for (let i = 1; i < parts.length; i++) {
+              const part = parts[i]!.trim();
+              const nextVal = getField(val, part);
+              if (nextVal !== undefined) {
+                val = nextVal;
+              } else {
+                ok = false;
+                break;
+              }
+            }
+            if (ok) valOpt = val;
+          }
+        }
+      }
+    }
+
+    if (valOpt === undefined) {
+      throw new TemplateSyntaxError(
+        `unresolvable expression '${EXPR_START}${expr}${EXPR_END}' in import path '${path}'`,
+      );
+    }
+
+    result += display(valOpt);
+    remaining = afterStart.slice(endIdx + EXPR_END.length);
+  }
+
+  result += remaining;
+  return result;
+}
+
+export function interpolateImports(
+  imports: ImportDecl[],
+  availableConsts: ReadonlyMap<string, Value>,
+): void {
+  for (let i = 0; i < imports.length; i++) {
+    const imp = imports[i]!;
+    if (imp.path.includes(EXPR_START)) {
+      const loc = (
+        imp as { loc?: { line?: number; column?: number; snippet?: string } }
+      ).loc;
+      try {
+        const interpolated = interpolatePathStr(imp.path, availableConsts);
+        if (
+          !isValidResolvedPath(interpolated) ||
+          interpolated.includes(EXPR_START)
+        ) {
+          throw new TemplateSyntaxError(
+            `import path '${interpolated}' must start with './', '../', or '/'`,
+          );
+        }
+        imports[i] = { ...imp, path: interpolated };
+      } catch (err) {
+        if (
+          err instanceof TemplateSyntaxError &&
+          err.line === undefined &&
+          loc
+        ) {
+          throw new TemplateSyntaxError(
+            err.message,
+            loc.line,
+            loc.column,
+            loc.snippet,
+          );
+        }
+        throw err;
+      }
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Declaration parsers
 // ---------------------------------------------------------------------------
 
 /**
- * Parse `name = type` or `name = type := default`.
- *
- * If `constValues` is provided, unrecognised default literals are
- * looked up as const names before raising an error.  This enables
+ * Strips surrounding double quotes (`"`) or single quotes (`'`) from a string.
+ * This is used for parameter/const default string values like
+ * `param = str := "default"` or for string literals in references like
  * `param = int := MY_CONST` where `MY_CONST` is a previously
  * declared constant.
  */
@@ -424,7 +671,8 @@ export function isValidPathPrefix(path: string): boolean {
     path.startsWith(PATH_PREFIX_PARENT) ||
     path.startsWith(PATH_PREFIX_CUR_WIN) ||
     path.startsWith(PATH_PREFIX_PARENT_WIN) ||
-    path.startsWith(SLASH)
+    path.startsWith(SLASH) ||
+    path.startsWith(EXPR_START)
   );
 }
 
@@ -432,37 +680,9 @@ function parseParamDecl(
   raw: string,
   constValues?: ReadonlyMap<string, Value>,
 ): VarDecl {
-  const cleaned = stripStringLiteral(raw);
-  const defaultSplit = splitDefault(cleaned);
-  const [nameType, defaultLiteral] = defaultSplit;
-
-  const eqIdx = nameType!.indexOf(EQUALS);
-  if (eqIdx === -1) {
-    throw new TemplateSyntaxError(
-      `parameter must have explicit type: '${raw}'`,
-    );
-  }
-
-  const name = stripStringLiteral(nameType!.slice(0, eqIdx).trim());
-  const typeStr = nameType!.slice(eqIdx + 1).trim();
-
-  const varType = parseVarType(typeStr);
-  let defaultValue: Value | undefined;
-  if (defaultLiteral !== undefined) {
-    const trimmedDefault = defaultLiteral.trim();
-    defaultValue = parseLiteralOrConst(trimmedDefault, varType, constValues);
-  }
-
-  return { name, varType, defaultValue };
+  return parseParamDeclDeferred(raw, constValues)[0];
 }
 
-/**
- * Like `parseParamDecl` but defers unresolvable defaults (e.g., imported
- * consts like `stem.NAME`) instead of throwing.
- *
- * Returns `[VarDecl, unresolved]` where `unresolved` is either undefined
- * (default was resolved) or `{ text, varType }` for later resolution.
- */
 function parseParamDeclDeferred(
   raw: string,
   constValues?: ReadonlyMap<string, Value>,
@@ -485,7 +705,6 @@ function parseParamDeclDeferred(
   if (defaultLiteral === undefined) {
     return [{ name, varType }, undefined];
   }
-
   const trimmedDefault = defaultLiteral.trim();
 
   // Check first: if it looks like a dotted reference (stem.NAME), and it's
@@ -532,8 +751,11 @@ function parseTypeAlias(raw: string): [string, VarType] {
 }
 
 /** Parse `NAME = type := value` for constants. */
-function parseConstDecl(raw: string): VarDecl {
-  return parseParamDecl(raw);
+function parseConstDecl(
+  raw: string,
+  constValues?: ReadonlyMap<string, Value>,
+): VarDecl {
+  return parseParamDecl(raw, constValues);
 }
 
 /** Parse `"[stem](path.tmpl.md)"` for imports. */
@@ -574,10 +796,10 @@ function startsWithCompoundType(s: string, keyword: string): boolean {
 export function parseVarType(typeStr: string): VarType {
   const t = stripStringLiteral(typeStr);
 
-  if (t === TYPE_STR) return { kind: "str" };
-  if (t === TYPE_BOOL) return { kind: "bool" };
-  if (t === TYPE_INT) return { kind: "int" };
-  if (t === TYPE_FLOAT) return { kind: "float" };
+  if (t === TYPE_STR) return { kind: TYPE_STR };
+  if (t === TYPE_BOOL) return { kind: TYPE_BOOL };
+  if (t === TYPE_INT) return { kind: TYPE_INT };
+  if (t === TYPE_FLOAT) return { kind: TYPE_FLOAT };
 
   if (startsWithCompoundType(t, TYPE_LIST)) {
     const inner = stripTypeBrackets(t, TYPE_LIST);
@@ -615,12 +837,12 @@ export function parseVarType(typeStr: string): VarType {
       }
       const elementType = parseVarType(innerTrimmed);
       if (elementType.kind === TYPE_STRUCT) {
-        return { kind: "list", fields: elementType.fields };
+        return { kind: TYPE_LIST, fields: elementType.fields };
       }
-      return { kind: "scalar_list", elementType };
+      return { kind: TYPE_SCALAR_LIST, elementType };
     }
     const fields = parseFieldList(inner);
-    return { kind: "list", fields };
+    return { kind: TYPE_LIST, fields };
   }
 
   if (startsWithCompoundType(t, TYPE_STRUCT)) {
@@ -631,13 +853,13 @@ export function parseVarType(typeStr: string): VarType {
       );
     }
     const fields = parseFieldList(inner);
-    return { kind: "struct", fields };
+    return { kind: TYPE_STRUCT, fields };
   }
 
   if (startsWithCompoundType(t, TYPE_OPTION)) {
     const inner = stripTypeBrackets(t, TYPE_OPTION);
     const innerType = parseVarType(inner);
-    return { kind: "option", innerType };
+    return { kind: TYPE_OPTION, innerType };
   }
 
   if (startsWithCompoundType(t, TYPE_ENUM)) {
@@ -662,18 +884,18 @@ export function parseVarType(typeStr: string): VarType {
         );
       }
     }
-    return { kind: "enum", variants };
+    return { kind: TYPE_ENUM, variants };
   }
 
   if (startsWithCompoundType(t, TYPE_TMPL)) {
     const inner = stripTypeBrackets(t, TYPE_TMPL);
-    if (inner === "") return { kind: "struct", fields: [] };
+    if (inner === "") return { kind: TYPE_STRUCT, fields: [] };
     const fields = parseFieldList(inner);
-    return { kind: "struct", fields };
+    return { kind: TYPE_STRUCT, fields };
   }
 
   // Type alias reference
-  return { kind: "alias", name: t };
+  return { kind: TYPE_ALIAS, name: t };
 }
 
 /** Extract content between parentheses: `list(...)` → `...`. */
@@ -805,7 +1027,7 @@ function parseLiteralOrConst(
   constValues?: ReadonlyMap<string, Value>,
 ): Value {
   try {
-    return parseLiteral(literal, varType);
+    return parseLiteral(literal, varType, constValues);
   } catch (err) {
     // If the default text matches a known const name, use its value.
     if (constValues) {
@@ -855,33 +1077,37 @@ function validateConstDefaultType(
     validateConstDefaultType(
       constName,
       constVal,
-      (varType as Extract<VarType, { kind: "option" }>).innerType,
+      (varType as Extract<VarType, { kind: typeof TYPE_OPTION }>).innerType,
     );
   }
 }
 
 /** Parse a literal value for a default. */
-export function parseLiteral(literal: string, varType: VarType): Value {
+export function parseLiteral(
+  literal: string,
+  varType: VarType,
+  constValues?: ReadonlyMap<string, Value>,
+): Value {
   // Option types need to be checked first so that quoted strings like
   // "None" are correctly parsed as Some(val="None") rather than being
   // consumed by the generic string literal handler as str("None").
   if (varType.kind === TYPE_OPTION) {
     // Bare None → Value.None
-    if (literal === "None") {
+    if (literal === OPTION_NONE) {
       return NONE;
     }
     // Any other literal → parse as the inner type (auto-wrap to Some)
-    return parseLiteral(literal, varType.innerType);
+    return parseLiteral(literal, varType.innerType, constValues);
   }
 
   // Legacy isOption handling (for backward compatibility with old enum-based options)
   if (varType.kind === TYPE_ENUM && varType.isOption) {
-    if (literal === "None") {
+    if (literal === OPTION_NONE) {
       return NONE;
     }
-    const someVariant = varType.variants.find((v) => v.name === "Some");
+    const someVariant = varType.variants.find((v) => v.name === OPTION_SOME);
     if (someVariant && someVariant.fields.length === 1) {
-      return parseLiteral(literal, someVariant.fields[0]!.varType);
+      return parseLiteral(literal, someVariant.fields[0]!.varType, constValues);
     }
   }
 
@@ -894,12 +1120,17 @@ export function parseLiteral(literal: string, varType: VarType): Value {
   }
 
   // Boolean
-  if (literal === "true") return bool(true);
-  if (literal === "false") return bool(false);
+  if (literal === LIT_TRUE) return bool(true);
+  if (literal === LIT_FALSE) return bool(false);
+
+  // List literals: [item1, item2]
+  if (literal.startsWith(BRACKET_OPEN) && literal.endsWith(BRACKET_CLOSE)) {
+    return parseListLiteral(literal, varType, constValues);
+  }
 
   // Struct literals: {KEY = "val", KEY2 = 42}
   if (varType.kind === TYPE_STRUCT && literal.startsWith(BRACE_OPEN)) {
-    return parseStructLiteral(literal, varType);
+    return parseStructLiteral(literal, varType, constValues);
   }
 
   // Integer
@@ -946,10 +1177,13 @@ export function parseLiteral(literal: string, varType: VarType): Value {
         if (eqPos === -1) continue;
         const key = trimmedEntry.slice(0, eqPos).trim();
         const valStr = trimmedEntry.slice(eqPos + 1).trim();
-        const fieldType = fieldTypeMap.get(key) ?? { kind: "str" as const };
-        entries.push([key, parseLiteral(valStr, fieldType)]);
+        const fieldType = fieldTypeMap.get(key) ?? { kind: TYPE_STR };
+        entries.push([
+          key,
+          parseLiteralOrConst(valStr, fieldType, constValues),
+        ]);
       }
-      return { type: "dict", fields: new Map(entries) };
+      return { type: TYPE_STRUCT, fields: new Map(entries) };
     }
 
     // Bare identifier — must be a known variant.
@@ -959,14 +1193,15 @@ export function parseLiteral(literal: string, varType: VarType): Value {
     }
     if (variant.fields.length > 0) {
       throw new TemplateSyntaxError(
-        `struct variant '${literal}' requires fields; use ${literal}(field = value)`,
+        `struct variant '${literal}' requires fields; use ${literal}(field = val
+ue)`,
       );
     }
     return str(literal);
   }
 
   // If the expected type is a type alias, allow unquoted identifiers.
-  if (varType.kind === "alias") {
+  if (varType.kind === TYPE_ALIAS) {
     return str(literal);
   }
 
@@ -982,11 +1217,12 @@ export function parseLiteral(literal: string, varType: VarType): Value {
  */
 function parseStructLiteral(
   literal: string,
-  varType: Extract<VarType, { kind: "struct" }>,
+  varType: Extract<VarType, { kind: typeof TYPE_STRUCT }>,
+  constValues?: ReadonlyMap<string, Value>,
 ): Value {
   const inner = literal.slice(1, -1).trim();
   if (inner === "") {
-    return { type: "dict", fields: new Map() };
+    return { type: TYPE_STRUCT, fields: new Map() };
   }
 
   // Build a lookup of field name → VarType from the struct declaration
@@ -1004,8 +1240,45 @@ function parseStructLiteral(
     if (eqIdx === -1) continue;
     const key = trimmed.slice(0, eqIdx).trim();
     const valStr = trimmed.slice(eqIdx + 1).trim();
-    const fieldType = fieldTypeMap.get(key) ?? { kind: "str" as const };
-    entries.push([key, parseLiteral(valStr, fieldType)]);
+    const fieldType = fieldTypeMap.get(key) ?? { kind: TYPE_STR };
+    entries.push([key, parseLiteralOrConst(valStr, fieldType, constValues)]);
   }
-  return { type: "dict", fields: new Map(entries) };
+  return { type: TYPE_STRUCT, fields: new Map(entries) };
+}
+
+/**
+ * Parse a list literal like `["rust", "go"]` or `[{name = "Alice", active = true}]`.
+ */
+function parseListLiteral(
+  literal: string,
+  varType: VarType,
+  constValues?: ReadonlyMap<string, Value>,
+): Value {
+  const inner = literal.slice(1, -1).trim();
+  if (inner === "") {
+    return list([]);
+  }
+  const entries = splitTopLevel(inner, COMMA);
+  const items: Value[] = [];
+
+  // Determine the expected type for individual list elements
+  let elemType: VarType;
+  if (varType.kind === TYPE_SCALAR_LIST) {
+    elemType = varType.elementType;
+  } else if (varType.kind === TYPE_LIST) {
+    // For a struct list like list(name = str, count = int), each element
+    // in the default literal is a struct literal matching these fields.
+    elemType = { kind: TYPE_STRUCT, fields: varType.fields };
+  } else {
+    // Fallback for aliases or untyped lists: pass varType or string
+    elemType = varType;
+  }
+
+  for (const entry of entries) {
+    const trimmed = entry.trim();
+    if (trimmed !== "") {
+      items.push(parseLiteralOrConst(trimmed, elemType, constValues));
+    }
+  }
+  return list(items);
 }

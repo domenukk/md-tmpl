@@ -510,6 +510,15 @@ pub(crate) fn generate_unit_enum_impls(
         })
         .collect();
 
+    let as_str_arms: Vec<_> = variants
+        .iter()
+        .zip(deduped.iter())
+        .map(|(v, (ident, _))| {
+            let name_str = &v.name;
+            quote! { Self::#ident => #name_str }
+        })
+        .collect();
+
     let from_str_arms: Vec<_> = variants
         .iter()
         .zip(deduped.iter())
@@ -563,6 +572,13 @@ pub(crate) fn generate_unit_enum_impls(
         }
 
         impl #enum_ident {
+            /// Return the variant name as a static string slice.
+            pub const fn as_str(&self) -> &'static str {
+                match self {
+                    #(#as_str_arms),*
+                }
+            }
+
             /// All variant names as strings (in declaration order).
             pub const VARIANT_NAMES: [&'static str; #variant_count] = [#(#variant_names),*];
 

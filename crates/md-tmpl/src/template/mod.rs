@@ -12,9 +12,18 @@ use crate::{
     context::Context,
     error::TemplateError,
     frontmatter::{self, Frontmatter},
-    scope::Scope,
-    types::{VarDecl, VarType},
+    types::VarDecl,
     value::Value,
+};
+
+mod analysis;
+mod render_methods;
+#[cfg(not(feature = "std"))]
+use self::analysis::hash_source_no_std;
+use self::analysis::{
+    check_bare_enum_access, check_internal_key_access, check_name_collisions,
+    check_static_enum_in_conditions, check_undeclared_variables, check_unused_params,
+    collect_enum_type_keys, inject_enum_type_constants,
 };
 
 /// Configuration for template compilation.
@@ -76,7 +85,6 @@ impl CompileOptions<'_> {
 /// Templates can be loaded from files or parsed from in-memory strings.
 /// Variable declarations from frontmatter are used for context validation
 /// before rendering.
-#[derive(Debug, Clone)]
 pub struct Template {
     /// The template body text (after stripping frontmatter).
     body: String,
@@ -103,6 +111,56 @@ pub struct Template {
     imported_consts: Arc<HashMap<String, crate::value::Value>>,
     /// Pre-computed estimated output capacity (cached from segment tree walk).
     estimated_capacity: usize,
+    /// Cached `TypeId`s of Rust types that have passed validation.
+    ///
+    /// When `render::<T>()` is called, the first invocation runs full
+    /// `validate_context`. If it passes, `TypeId::of::<T>()` is stored
+    /// here so subsequent calls skip validation entirely.
+    #[cfg(feature = "std")]
+    checked_type_ids: std::sync::Mutex<Vec<core::any::TypeId>>,
+}
+
+impl core::fmt::Debug for Template {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Template")
+            .field("body", &self.body)
+            .field("name", &self.name)
+            .field("description", &self.description)
+            .field("segments", &self.segments)
+            .field("declared_variables", &self.declared_variables)
+            .field("source_hash", &self.source_hash)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Clone for Template {
+    fn clone(&self) -> Self {
+        Self {
+            body: self.body.clone(),
+            name: self.name.clone(),
+            description: self.description.clone(),
+            segments: self.segments.clone(),
+            declared_variables: self.declared_variables.clone(),
+            #[cfg(feature = "std")]
+            base_dir: self.base_dir.clone(),
+            inline_templates: self.inline_templates.clone(),
+            source_hash: self.source_hash,
+            max_include_depth: self.max_include_depth,
+            has_defaults: self.has_defaults,
+            consts: self.consts.clone(),
+            imported_consts: self.imported_consts.clone(),
+            estimated_capacity: self.estimated_capacity,
+            // Clone inherits cached type IDs — the validation is
+            // shape-based, not instance-based.
+            #[cfg(feature = "std")]
+            checked_type_ids: std::sync::Mutex::new(
+                self.checked_type_ids
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone(),
+            ),
+        }
+    }
 }
 
 /// Pre-compiled template data used to reconstruct a [`Template`] from cache.
@@ -346,6 +404,8 @@ impl Template {
         check_name_collisions(&fm, &inline_templates, &segments)?;
         let enum_keys = collect_enum_type_keys(&fm);
         check_bare_enum_access(&segments, &enum_keys)?;
+        check_static_enum_in_conditions(&segments, &fm.type_aliases)?;
+        check_internal_key_access(&segments)?;
 
         let has_defaults = fm.declarations.iter().any(|d| d.default_value.is_some());
         let mut consts: HashMap<String, Value> = fm
@@ -371,6 +431,7 @@ impl Template {
             consts: Arc::new(consts),
             imported_consts: Arc::new(fm.imported_consts.clone()),
             estimated_capacity,
+            checked_type_ids: std::sync::Mutex::new(Vec::new()),
         };
         Ok((tmpl, fm))
     }
@@ -402,6 +463,8 @@ impl Template {
         check_name_collisions(&fm, &inline_templates, &segments)?;
         let enum_keys = collect_enum_type_keys(&fm);
         check_bare_enum_access(&segments, &enum_keys)?;
+        check_static_enum_in_conditions(&segments, &fm.type_aliases)?;
+        check_internal_key_access(&segments)?;
 
         let has_defaults = fm.declarations.iter().any(|d| d.default_value.is_some());
         let mut consts: HashMap<String, Value> = fm
@@ -457,6 +520,7 @@ impl Template {
             consts: data.consts,
             imported_consts: data.imported_consts,
             estimated_capacity,
+            checked_type_ids: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -500,6 +564,8 @@ impl Template {
             consts: Arc::new(const_map),
             imported_consts: Arc::new(imported_const_map),
             estimated_capacity,
+            #[cfg(feature = "std")]
+            checked_type_ids: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -809,350 +875,6 @@ impl Template {
             details: parts.join("; "),
         })
     }
-
-    /// Render the template with the given context (strict mode).
-    ///
-    /// Validates the context against frontmatter declarations:
-    /// - Missing declared parameters → error
-    /// - Type mismatches → error
-    /// - Extra undeclared parameters → error
-    ///
-    /// Use [`render_ctx_allowing_extra`](Self::render_ctx_allowing_extra) to permit
-    /// undeclared parameters (e.g. when sharing a context across templates).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TemplateError`] if validation fails or a rendering error
-    /// occurs.
-    pub fn render_ctx(&self, ctx: &Context) -> Result<String, TemplateError> {
-        self.render_inner(ctx, false)
-    }
-
-    /// Render the template, allowing extra (undeclared) parameters.
-    ///
-    /// Like [`render_ctx`](Self::render_ctx), but extra context keys that aren't
-    /// declared in frontmatter are silently ignored instead of producing
-    /// an error. Useful when forwarding a shared context to multiple
-    /// templates.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TemplateError`] if validation fails or a rendering error
-    /// occurs.
-    pub fn render_ctx_allowing_extra(&self, ctx: &Context) -> Result<String, TemplateError> {
-        self.render_inner(ctx, true)
-    }
-
-    /// Render a template that takes no user-provided parameters.
-    ///
-    /// If the template declares parameters, those **must** all have defaults.
-    /// Calling `render_empty()` on a template with required (no-default)
-    /// parameters returns [`TemplateError::MissingParams`].
-    ///
-    /// This is more efficient than `render(&empty_struct)` (no serde overhead)
-    /// and more explicit than `render_ctx(&Context::new())`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use md_tmpl::Template;
-    ///
-    /// // No params — renders as-is
-    /// let tmpl = Template::from_source(
-    ///     r#"---
-    /// params: []
-    /// ---
-    /// Hello world!"#,
-    /// )
-    /// .unwrap();
-    /// assert_eq!(tmpl.render_empty().unwrap(), "Hello world!");
-    ///
-    /// // All params have defaults
-    /// let tmpl = Template::from_source(
-    ///     r#"---
-    /// params:
-    ///   - greeting = str := "Hi"
-    /// ---
-    /// {{ greeting }}!"#,
-    /// )
-    /// .unwrap();
-    /// assert_eq!(tmpl.render_empty().unwrap(), "Hi!");
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TemplateError::MissingParams`] if any declared parameter
-    /// lacks a default value.
-    pub fn render_empty(&self) -> Result<String, TemplateError> {
-        let ctx = if self.has_defaults {
-            self.defaults_context()
-        } else {
-            Context::new()
-        };
-        self.render_ctx(&ctx)
-    }
-
-    /// Like [`render_empty`](Self::render_empty), but appends to an existing buffer.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TemplateError::MissingParams`] if any declared parameter
-    /// lacks a default value.
-    pub fn render_empty_into(&self, output: &mut String) -> Result<(), TemplateError> {
-        let ctx = if self.has_defaults {
-            self.defaults_context()
-        } else {
-            Context::new()
-        };
-        self.render_ctx_into(&ctx, output)
-    }
-
-    /// Internal render path with configurable strictness.
-    fn render_inner(&self, ctx: &Context, allow_extra: bool) -> Result<String, TemplateError> {
-        let mut output = String::with_capacity(self.estimated_capacity);
-        self.render_into_inner(ctx, allow_extra, &mut output)?;
-        Ok(output)
-    }
-
-    /// Render the template directly into an existing `String` buffer.
-    ///
-    /// Unlike [`render_ctx`](Self::render_ctx), this appends to `output` without
-    /// allocating a new `String`. Useful when composing multiple template
-    /// outputs into a single buffer.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TemplateError`] if validation fails or a rendering error
-    /// occurs. On error, `output` may contain partial results.
-    pub fn render_ctx_into(&self, ctx: &Context, output: &mut String) -> Result<(), TemplateError> {
-        self.render_into_inner(ctx, false, output)
-    }
-
-    /// Like [`render_ctx_into`](Self::render_ctx_into), but allows extra (undeclared)
-    /// parameters.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TemplateError`] if validation fails or a rendering error
-    /// occurs.
-    pub fn render_ctx_into_allowing_extra(
-        &self,
-        ctx: &Context,
-        output: &mut String,
-    ) -> Result<(), TemplateError> {
-        self.render_into_inner(ctx, true, output)
-    }
-
-    /// Shared implementation for all render-into paths.
-    fn render_into_inner(
-        &self,
-        ctx: &Context,
-        allow_extra: bool,
-        output: &mut String,
-    ) -> Result<(), TemplateError> {
-        self.validate_context(ctx, allow_extra)?;
-        self.render_core(ctx, output)
-    }
-
-    /// Core rendering without any context validation.
-    ///
-    /// Used by both `render_into_inner` (after validation) and
-    /// `render_ctx_unchecked` (no validation at all).
-    fn render_core(&self, ctx: &Context, output: &mut String) -> Result<(), TemplateError> {
-        let ctx = self.inject_defaults(ctx);
-        let mut scope = Scope::new(&ctx).with_max_include_depth(self.max_include_depth);
-        // Skip Arc clones when there are no constants (common case).
-        if !self.consts.is_empty() || !self.imported_consts.is_empty() {
-            scope.set_consts(&self.consts, &self.imported_consts);
-        }
-        scope.set_inline_templates(&self.inline_templates);
-        #[cfg(feature = "std")]
-        return compiled::render::render_segments_into(
-            &self.segments,
-            &mut scope,
-            self.base_dir.as_deref(),
-            output,
-        );
-        #[cfg(not(feature = "std"))]
-        return compiled::render_segments_into_no_std(&self.segments, &mut scope, output);
-    }
-
-    /// Render the template **without** context validation.
-    ///
-    /// Skips the parameter presence, type, and extra-key checks that
-    /// [`render_ctx`](Self::render_ctx) performs on every call. This is a safe
-    /// operation — rendering errors (e.g. undefined variable) are still
-    /// reported via `Err` — but the upfront validation overhead is removed.
-    ///
-    /// Use this when the context is known-good (e.g. constructed from a
-    /// strongly-typed params struct, or pre-validated once at startup).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TemplateError`] if a rendering error occurs (e.g.
-    /// undefined variable, filter error).
-    pub fn render_ctx_unchecked(&self, ctx: &Context) -> Result<String, TemplateError> {
-        let mut output = String::with_capacity(self.estimated_capacity);
-        self.render_core(ctx, &mut output)?;
-        Ok(output)
-    }
-
-    /// Render into a buffer **without** context validation.
-    ///
-    /// Like [`render_ctx_unchecked`](Self::render_ctx_unchecked), but appends to
-    /// an existing buffer.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TemplateError`] if a rendering error occurs.
-    pub fn render_ctx_into_unchecked(
-        &self,
-        ctx: &Context,
-        output: &mut String,
-    ) -> Result<(), TemplateError> {
-        self.render_core(ctx, output)
-    }
-
-    /// Render the template using a [`TemplateCache`](crate::TemplateCache) for include resolution.
-    ///
-    /// Like [`render_ctx`](Self::render_ctx), but included templates are resolved
-    /// through the cache — unchanged includes are not re-read or re-compiled.
-    /// This is the recommended rendering path for hot-reload scenarios where
-    /// templates are re-rendered frequently.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TemplateError`] if validation fails or a rendering error
-    /// occurs.
-    #[cfg(feature = "std")]
-    pub fn render_ctx_cached<S: core::hash::BuildHasher + Send + Sync>(
-        &self,
-        ctx: &Context,
-        cache: &crate::TemplateCache<S>,
-    ) -> Result<String, TemplateError> {
-        self.validate_context(ctx, false)?;
-        let ctx = self.inject_defaults(ctx);
-        let mut scope =
-            Scope::with_cache(&ctx, cache).with_max_include_depth(self.max_include_depth);
-        if !self.consts.is_empty() || !self.imported_consts.is_empty() {
-            scope.set_consts(&self.consts, &self.imported_consts);
-        }
-        scope.set_inline_templates(&self.inline_templates);
-        compiled::render_segments(&self.segments, &mut scope, self.base_dir.as_deref())
-    }
-
-    /// Render with caching, allowing extra parameters in the context.
-    ///
-    /// Like [`render_ctx_cached()`](Self::render_ctx_cached) but does not
-    /// reject parameters not declared in the template frontmatter.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TemplateError`] if validation fails or a rendering error
-    /// occurs.
-    #[cfg(feature = "std")]
-    pub fn render_ctx_cached_allowing_extra<S: core::hash::BuildHasher + Send + Sync>(
-        &self,
-        ctx: &Context,
-        cache: &crate::TemplateCache<S>,
-    ) -> Result<String, TemplateError> {
-        self.validate_context(ctx, true)?;
-        let ctx = self.inject_defaults(ctx);
-        let mut scope =
-            Scope::with_cache(&ctx, cache).with_max_include_depth(self.max_include_depth);
-        if !self.consts.is_empty() || !self.imported_consts.is_empty() {
-            scope.set_consts(&self.consts, &self.imported_consts);
-        }
-        scope.set_inline_templates(&self.inline_templates);
-        compiled::render_segments(&self.segments, &mut scope, self.base_dir.as_deref())
-    }
-
-    /// Inject default values for any declared params not present in `ctx`.
-    ///
-    /// Returns a `Cow::Borrowed` if no defaults needed, avoiding allocation.
-    fn inject_defaults<'a>(&self, ctx: &'a Context) -> alloc::borrow::Cow<'a, Context> {
-        if !self.has_defaults {
-            return alloc::borrow::Cow::Borrowed(ctx);
-        }
-        let mut owned: Option<Context> = None;
-        for decl in self.declared_variables.iter() {
-            if let Some(ref default) = decl.default_value {
-                let effective = owned.as_ref().unwrap_or(ctx);
-                if effective.get(&decl.name).is_none() {
-                    let ctx_mut = owned.get_or_insert_with(|| ctx.clone());
-                    ctx_mut.set(decl.name.clone(), default.clone());
-                }
-            }
-        }
-        match owned {
-            Some(ctx) => alloc::borrow::Cow::Owned(ctx),
-            None => alloc::borrow::Cow::Borrowed(ctx),
-        }
-    }
-}
-
-#[cfg(feature = "serde")]
-impl Template {
-    /// Render the template from any `Serialize` struct.
-    ///
-    /// Struct fields become template variables — no manual `Context`
-    /// construction needed.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TemplateError`] if serialization fails, the value is not a
-    /// struct/map, or rendering encounters an error.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use md_tmpl::Template;
-    /// use serde::Serialize;
-    ///
-    /// #[derive(Serialize)]
-    /// struct Data {
-    ///     name: String,
-    ///     count: i64,
-    /// }
-    ///
-    /// let tmpl = Template::from_source(
-    ///     r#"---
-    /// params: [name = str, count = int]
-    /// ---
-    /// {{ name }} has {{ count }} items"#,
-    /// )
-    /// .unwrap();
-    /// let output = tmpl
-    ///     .render(&Data {
-    ///         name: "Alice".into(),
-    ///         count: 3,
-    ///     })
-    ///     .unwrap();
-    /// assert_eq!(output, "Alice has 3 items");
-    /// ```
-    pub fn render<T: serde::Serialize>(
-        &self,
-        value: &T,
-    ) -> Result<String, crate::error::TemplateError> {
-        let ctx = Context::from_serialize(value)?;
-        self.render_ctx(&ctx)
-    }
-
-    /// Like [`render`](Self::render), but appends output into an
-    /// existing buffer.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TemplateError`] if serialization fails, the value is not a
-    /// struct/map, or rendering encounters an error.
-    pub fn render_into<T: serde::Serialize>(
-        &self,
-        value: &T,
-        output: &mut String,
-    ) -> Result<(), crate::error::TemplateError> {
-        let ctx = Context::from_serialize(value)?;
-        self.render_ctx_into(&ctx, output)
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1214,336 +936,6 @@ impl<'de> serde::Deserialize<'de> for Template {
 pub fn load_template(dir: &Path, name: &str) -> Result<Template, TemplateError> {
     let path = dir.join(format!("{name}.tmpl.md"));
     Template::from_file(&path)
-}
-/// Inject enum type aliases as namespace constants.
-///
-/// For each enum type alias like `Stage = enum(Design, Build)`, this creates
-/// a dict constant `Stage` → `{Design: "Design", Build: "Build"}`.
-/// This enables expressions like `{{ kind(Stage.Design) }}` in templates.
-/// Bare access like `{{ Stage.Design }}` is rejected at compile time —
-/// users must wrap enum literals in `kind()` for explicit variant name extraction.
-///
-/// Unit variants map to `Value::Str(name)`. Struct variants map to a tagged
-/// dict with just `__kind__` set (a partial value suitable for `kind()` and
-/// match arms).
-fn inject_enum_type_constants(
-    type_aliases: &HashMap<String, VarType>,
-    consts: &mut HashMap<String, Value>,
-) {
-    for (type_name, var_type) in type_aliases {
-        let VarType::Enum(variants) = var_type else {
-            continue;
-        };
-        // Don't overwrite a user-defined constant with the same name.
-        if consts.contains_key(type_name) {
-            continue;
-        }
-        let mut variant_map = HashMap::new();
-        for variant in variants {
-            if variant.fields.is_empty() {
-                // Unit variant → simple string.
-                variant_map.insert(variant.name.clone(), Value::Str(variant.name.clone()));
-            } else {
-                // Struct variant → tagged dict with __kind__ only.
-                let mut partial = HashMap::new();
-                partial.insert(
-                    crate::consts::ENUM_TAG_KEY.into(),
-                    Value::Str(variant.name.clone()),
-                );
-                variant_map.insert(variant.name.clone(), Value::Struct(Arc::new(partial)));
-            }
-        }
-        consts.insert(type_name.clone(), Value::Struct(Arc::new(variant_map)));
-    }
-}
-
-/// Collect the set of enum type names (both local and imported).
-///
-/// For local types, stores just the type name (e.g. `"Stage"`).
-/// For imported types, stores the full `stem.TypeName` key (e.g.
-/// `"lib.Color"`), so that non-enum imports like `lib.MAX_TIMEOUT`
-/// are not incorrectly flagged.
-fn collect_enum_type_keys(fm: &Frontmatter) -> HashSet<String> {
-    let mut keys = HashSet::new();
-    // Local enum types.
-    for (name, ty) in &fm.type_aliases {
-        if matches!(ty, VarType::Enum(_)) {
-            keys.insert(name.clone());
-        }
-    }
-    // Imported enum types: recorded during frontmatter import resolution.
-    for key in &fm.imported_enum_type_keys {
-        keys.insert(key.clone());
-    }
-    keys
-}
-
-/// Reject bare enum literal expressions like `{{ Stage.Design }}`.
-///
-/// Enum type namespaces are injected as dict constants so that `kind()` can
-/// access them, but they should not be rendered directly. Instead, users
-/// must wrap them in `kind()`: `{{ kind(Stage.Design) }}`.
-///
-/// This prevents accidental confusion between enum type access and regular
-/// variable dot-access.
-fn check_bare_enum_access(
-    segments: &[compiled::Segment],
-    enum_keys: &HashSet<String>,
-) -> Result<(), TemplateError> {
-    for seg in segments {
-        match seg {
-            compiled::Segment::Expr {
-                expr: compiled::CompiledExpr::Path(path),
-                ..
-            } => {
-                let parts = path.parts();
-                if parts.len() >= 2 && is_enum_path(parts, enum_keys) {
-                    return Err(TemplateError::syntax(format!(
-                        "bare enum literal '{}' is not allowed — \
-                         use kind({}) to get the variant name as a string",
-                        path.as_str(),
-                        path.as_str(),
-                    )));
-                }
-            }
-            compiled::Segment::ForLoop { body, .. } => {
-                check_bare_enum_access(body, enum_keys)?;
-            }
-            compiled::Segment::If {
-                branches,
-                else_body,
-            } => {
-                for (_, branch_body) in branches {
-                    check_bare_enum_access(branch_body, enum_keys)?;
-                }
-                check_bare_enum_access(else_body, enum_keys)?;
-            }
-            compiled::Segment::Match { arms, .. } => {
-                for (_, arm_body) in arms {
-                    check_bare_enum_access(arm_body, enum_keys)?;
-                }
-            }
-            compiled::Segment::Include(inc) => {
-                if let Some(ref inline) = inc.inline_compiled {
-                    check_bare_enum_access(&inline.segments, enum_keys)?;
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
-/// Check if a dotted path matches a known enum type namespace.
-///
-/// - Local: `["Stage", "Design"]` → checks `"Stage"` in keys.
-/// - Imported: `["lib", "Color", "Red"]` → checks `"lib.Color"` in keys.
-fn is_enum_path(parts: &[String], enum_keys: &HashSet<String>) -> bool {
-    // Try 1-part root (local enum type).
-    if enum_keys.contains(&parts[0]) {
-        return true;
-    }
-    // Try 2-part root (imported enum type: stem.TypeName).
-    if parts.len() >= 3 {
-        let key = format!("{}.{}", parts[0], parts[1]);
-        if enum_keys.contains(&key) {
-            return true;
-        }
-    }
-    false
-}
-
-/// Enforce that all parameters referenced in the body are declared.
-///
-/// Builds the full set of declared names (params, consts, import stems, inline
-/// template names) and checks every referenced variable against it. Produces
-/// 'did you mean?' suggestions via Levenshtein distance for near-misses.
-fn check_undeclared_variables(
-    referenced: &HashSet<String>,
-    fm: &Frontmatter,
-    inline_templates: &HashMap<String, CompiledInlineTemplate>,
-) -> Result<(), TemplateError> {
-    let mut declared: HashSet<String> = fm.params.iter().cloned().collect();
-    for c in &fm.consts {
-        declared.insert(c.name.clone());
-    }
-    for import in &fm.imports {
-        declared.insert(import.stem.clone());
-    }
-    // Enum type aliases are auto-injected as namespace constants,
-    // so references like `Stage.Design` (root = `Stage`) are valid.
-    for (name, ty) in &fm.type_aliases {
-        if matches!(ty, VarType::Enum(_)) {
-            declared.insert(name.clone());
-        }
-    }
-    // Inline template names ({% tmpl NAME %}) are valid targets for
-    // {% include NAME %} and should not be flagged as undeclared variables.
-    for inline_name in inline_templates.keys() {
-        declared.insert(inline_name.clone());
-    }
-
-    let undeclared: Vec<&String> = referenced
-        .iter()
-        .filter(|v| !declared.contains(v.as_str()))
-        .collect();
-    if undeclared.is_empty() {
-        return Ok(());
-    }
-
-    let mut names: Vec<&str> = undeclared.iter().map(|s| s.as_str()).collect();
-    names.sort_unstable();
-
-    // Collect 'did you mean?' suggestions for each undeclared name.
-    let mut suggestions = Vec::new();
-    for name in &names {
-        let mut best: Option<(&str, usize)> = None;
-        for candidate in &declared {
-            let dist = crate::error::levenshtein_distance(name, candidate);
-            if dist > 0 && dist <= 2 && best.is_none_or(|b| dist < b.1) {
-                best = Some((candidate, dist));
-            }
-        }
-        if let Some((suggestion, _)) = best {
-            suggestions.push(format!("'{name}' (did you mean '{suggestion}'?)"));
-        }
-    }
-    let suffix = if suggestions.is_empty() {
-        String::new()
-    } else {
-        format!(". Suggestions: {}", suggestions.join(", "))
-    };
-    Err(TemplateError::syntax(format!(
-        "{}{}{suffix}",
-        crate::consts::ERR_UNDECLARED_PREFIX,
-        names.join(", ")
-    )))
-}
-
-/// Reject declared parameters that are never referenced in the body.
-///
-/// Skipped when `allow_unused` is `true` (set via frontmatter or API).
-fn check_unused_params(
-    declarations: &[VarDecl],
-    referenced: &HashSet<String>,
-    allow_unused: bool,
-) -> Result<(), TemplateError> {
-    if allow_unused {
-        return Ok(());
-    }
-    let unused: Vec<&str> = declarations
-        .iter()
-        .filter(|decl| !referenced.contains(&decl.name))
-        .map(|decl| decl.name.as_str())
-        .collect();
-    if unused.is_empty() {
-        return Ok(());
-    }
-    Err(TemplateError::syntax(format!(
-        "unused declared parameter(s): {}. Reference them in the template body, \
-         in a {{# comment #}}, or remove them from the frontmatter `params:` list. \
-         To suppress this check, add `allow_unused: true` to the frontmatter",
-        unused.join(", ")
-    )))
-}
-
-/// Check for namespace collisions between imports, params/consts, and inline
-/// templates (Rules 11, 12, 13).
-///
-/// - **Rule 11**: Import stem vs inline template name.
-/// - **Rule 12**: Param/const name vs inline template name.
-/// - **Rule 13**: For-loop bindings must not shadow any declared name.
-fn check_name_collisions(
-    fm: &Frontmatter,
-    inline_templates: &HashMap<String, CompiledInlineTemplate>,
-    segments: &[Segment],
-) -> Result<(), TemplateError> {
-    // Rule 11: Import stem vs inline template name collision.
-    for import in &fm.imports {
-        if inline_templates.contains_key(&import.stem) {
-            return Err(TemplateError::syntax(format!(
-                "import stem '{}' conflicts with inline template name",
-                import.stem
-            )));
-        }
-    }
-
-    // Rule 12: Param/const name vs inline template name collision.
-    // Check against params + consts only — NOT the full declared set which
-    // already contains inline template names (for undeclared-var analysis).
-    let param_and_const_names: HashSet<&str> = fm
-        .params
-        .iter()
-        .map(String::as_str)
-        .chain(fm.consts.iter().map(|c| c.name.as_str()))
-        .collect();
-    for inline_name in inline_templates.keys() {
-        if param_and_const_names.contains(inline_name.as_str()) {
-            return Err(TemplateError::syntax(format!(
-                "inline template name '{inline_name}' conflicts with a declared parameter or constant"
-            )));
-        }
-    }
-
-    // Rule 13: for-loop bindings must not shadow declared names.
-    let protected_names: HashSet<&str> = fm
-        .params
-        .iter()
-        .map(String::as_str)
-        .chain(fm.consts.iter().map(|c| c.name.as_str()))
-        .chain(fm.imports.iter().map(|i| i.stem.as_str()))
-        .chain(inline_templates.keys().map(String::as_str))
-        .collect();
-    validate_for_bindings(segments, &protected_names)
-}
-
-/// Walk compiled segments and reject any for-loop binding that shadows a
-/// protected name (param, const, import stem, or inline template).
-///
-/// Sequential for-loops with the same binding are allowed — the binding
-/// is scoped to the loop body and does not persist.
-fn validate_for_bindings(
-    segments: &[crate::compiled::Segment],
-    protected: &HashSet<&str>,
-) -> Result<(), TemplateError> {
-    use crate::compiled::Segment;
-    for seg in segments {
-        match seg {
-            Segment::ForLoop { binding, body, .. } => {
-                if protected.contains(binding.as_ref()) {
-                    return Err(TemplateError::syntax(format!(
-                        "{} declared name '{binding}'",
-                        crate::consts::ERR_FOR_BINDING_SHADOWS,
-                    )));
-                }
-                validate_for_bindings(body, protected)?;
-            }
-            Segment::If {
-                branches,
-                else_body,
-            } => {
-                for (_cond, branch_body) in branches {
-                    validate_for_bindings(branch_body, protected)?;
-                }
-                validate_for_bindings(else_body, protected)?;
-            }
-            Segment::Match { arms, .. } => {
-                for (_variants, arm_body) in arms {
-                    validate_for_bindings(arm_body, protected)?;
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(())
-}
-
-/// Simple FNV-1a hash for `no_std` environments.
-///
-/// Delegates to the shared implementation in [`crate::__private::fnv1a_hash`].
-#[cfg(not(feature = "std"))]
-fn hash_source_no_std(source: &str) -> u64 {
-    crate::__private::fnv1a_hash(source.as_bytes())
 }
 
 #[cfg(all(test, feature = "std"))]

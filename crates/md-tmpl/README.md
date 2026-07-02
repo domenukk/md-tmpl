@@ -83,6 +83,23 @@ cargo add md-tmpl-macros
 
 **MSRV:** 1.85 (Rust 2024 edition) · **`no_std`** compatible (disable default `std` feature)
 
+## Template Syntax & Features
+
+| Feature                    | Syntax / Example                                                                         |
+| -------------------------- | ---------------------------------------------------------------------------------------- |
+| **Typed parameters**       | `str`, `int`, `float`, `bool`, `list(…)`, `struct(…)`, `enum(…)`, `option(…)`, `tmpl(…)` |
+| **Type aliases**           | `types:` block defines reusable named types (`Priority = enum(High, Low)`)               |
+| **Cross-template imports** | `imports:` pulls types via dotted paths (`stem.TypeName`)                                |
+| **Constants**              | `consts:` block for file-scoped immutable values                                         |
+| **String interpolation**   | `{{ expr }}` inside all quoted strings — conditions, includes, panic messages            |
+| **For loops & else**       | `> {% for task in tasks %} … > {% else %} empty > {% /for %}`                            |
+| **Conditionals**           | `> {% if count > 0 %} … > {% elif active %} … > {% else %} … > {% /if %}`                |
+| **Enum dispatch**          | `> {% match status %} > {% case Approved %} … > {% case Rejected %} … > {% /match %}`    |
+| **Includes as links**      | `> {% include [widget](widget.tmpl.md) with title = "Hello" %}`                          |
+| **Inline templates**       | `> {% tmpl header %} … > {% /tmpl %}` (call with `{% include header %}`)                 |
+| **Built-in functions**     | `idx(b)`, `len(x)`, `kind(x)`, `kinds(Type)`, `has(x)`                                   |
+| **Filters**                | `upper`, `lower`, `trim`, `fixed(N)`, `join(sep)`, `limit(N)`, `add(N)`, `sub(N)`        |
+
 ## Build-Time Typed Structs
 
 ### `include_template!`
@@ -344,28 +361,20 @@ assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Alice (5)");
 
 ## Performance
 
-### Internal Benchmarks (Criterion)
-
-| Operation |   Small |  Medium |   Large |
-| --------- | ------: | ------: | ------: |
-| render    |  196 ns | 1.11 µs | 22.1 µs |
-| parse     | 3.65 µs | 15.3 µs | 30.8 µs |
-
 ### vs Competitors
 
 Criterion benchmarks, render only (pre-parsed template + data → output).
 ([source](../../benchmarks/benches/comparison.rs))
 
-| Scenario        |        md-tmpl |    Tera | `MiniJinja` | Handlebars |
-| --------------- | -------------: | ------: | ----------: | ---------: |
-| **simple**      |  **130 ns** 🏆 |  213 ns |      558 ns |     632 ns |
-| **loop**        |  **445 ns** 🏆 |  618 ns |     2.00 µs |    2.85 µs |
-| **conditional** |  **173 ns** 🏆 |  348 ns |      625 ns |    1.16 µs |
-| **hero**        | **2.07 µs** 🏆 | 2.09 µs |     7.62 µs |    21.4 µs |
-| **mega**        | **10.1 µs** 🏆 | 11.1 µs |     30.1 µs |    84.7 µs |
+| Scenario        |        md-tmpl |     Tera | `MiniJinja` | Handlebars |
+| --------------- | -------------: | -------: | ----------: | ---------: |
+| **simple**      |  **150 ns** 🏆 |   216 ns |      554 ns |     673 ns |
+| **loop**        |  **467 ns** 🏆 |   598 ns |     2.00 µs |    3.13 µs |
+| **conditional** |  **211 ns** 🏆 |   343 ns |      623 ns |    1.38 µs |
+| **hero**        | **2.08 µs** 🏆 |  2.20 µs |     7.51 µs |   25.42 µs |
+| **mega**        | **8.64 µs** 🏆 | 10.89 µs |    28.49 µs |   88.99 µs |
 
-_Intel Xeon @ 2.60 GHz, 3 runs × 100 Criterion samples.
-Hero/mega margins are small — treat as comparable to Tera._
+_Intel Xeon @ 2.60 GHz, 3 runs × 100 Criterion samples._
 
 ```bash
 just bench-rust          # run Criterion benchmarks

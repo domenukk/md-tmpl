@@ -156,7 +156,7 @@ bench-wasm: build-wasm
 
 # Run Python benchmarks (vs Jinja2, Mako, Chevron, Django)
 bench-python:
-    python benchmarks/python/bench_templates.py
+    {{ pyvenv }}python benchmarks/python/bench_templates.py
 
 # Run all benchmarks and update README.md + RESULTS.md tables
 bench-update:

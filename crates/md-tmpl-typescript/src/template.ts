@@ -40,6 +40,7 @@ import {
   type VarType,
   parseFrontmatter,
   varTypeToString,
+  interpolatePathStr,
 } from "./frontmatter.js";
 import {
   validateFrontmatter,
@@ -53,8 +54,35 @@ import {
   parseBody,
   renderNodes,
 } from "./parser.js";
-import { type Value, ENUM_TAG_KEY, NONE, str, dict, fromJs } from "./value.js";
-import { renderDirect } from "./direct_renderer.js";
+import {
+  type Value,
+  ENUM_TAG_KEY,
+  ENUM_VARIANTS_KEY,
+  NONE,
+  str,
+  list,
+  structVal,
+  fromJs,
+  valueToJs,
+} from "./value.js";
+import { renderDirect, type DirectRenderOptions } from "./direct_renderer.js";
+import {
+  OPTION_SOME,
+  TYPE_STR,
+  TYPE_BOOL,
+  TYPE_INT,
+  TYPE_FLOAT,
+  TYPE_LIST,
+  TYPE_STRUCT,
+  TYPE_ENUM,
+  TYPE_OPTION,
+  TYPE_NONE,
+  TYPE_ALIAS,
+  TYPE_SCALAR_LIST,
+  TYPE_UNTYPED_LIST,
+  EXPR_START,
+  isValidResolvedPath,
+} from "./consts.js";
 
 // ---------------------------------------------------------------------------
 // ITemplate — shared interface for all template backends
@@ -146,6 +174,12 @@ export class Template implements ITemplate {
   /** Pre-computed set of option-typed parameter names/paths. */
   private readonly optionParams: ReadonlySet<string>;
   private _maxIncludeDepth = 16;
+  /** Optional reference to the TemplateCache that loaded this template. */
+  _cache?: TemplateCache;
+  private readonly _includeCache = new Map<
+    string,
+    { hash: number; mtimeMs: number; cached: CachedInclude }
+  >();
 
   /** Get the base path for include resolution (if set). */
   get basePath(): string | undefined {
@@ -185,12 +219,18 @@ export class Template implements ITemplate {
         consts.set(decl.name, decl.defaultValue);
       }
     }
+    for (const [key, jsVal] of Object.entries(fm.importedConsts)) {
+      consts.set(key, fromJs(jsVal));
+    }
     this.constValues = consts;
     const constsJs = new Map<string, unknown>();
     for (const decl of fm.consts) {
       if (decl.defaultValue !== undefined) {
         constsJs.set(decl.name, valueToJs(decl.defaultValue));
       }
+    }
+    for (const [key, jsVal] of Object.entries(fm.importedConsts)) {
+      constsJs.set(key, jsVal);
     }
     this.constJsValues = constsJs;
 
@@ -222,7 +262,7 @@ export class Template implements ITemplate {
   static fromSource(source: string): Template {
     const [fm, body] = parseFrontmatter(source);
     validateFrontmatter(fm);
-    const nodes = parseBody(body);
+    const nodes = parseBody(body, false, fm.bodyStartLine ?? 1);
     const tmpl = new Template(fm, body, nodes, source);
     if (!fm.allowUnused) {
       tmpl.checkUnusedParams(body);
@@ -233,7 +273,7 @@ export class Template implements ITemplate {
       collectInlineTemplateNames(nodes),
       collectForBindings(nodes),
     );
-    validateDisplayability(nodes, fm.params);
+    validateDisplayability(nodes, fm.params, fm.consts, fm.typeAliases);
     return tmpl;
   }
 
@@ -242,10 +282,10 @@ export class Template implements ITemplate {
    */
   static fromSourceAllowingUnused(source: string): Template {
     const [fm, body] = parseFrontmatter(source);
-    const nodes = parseBody(body);
+    const nodes = parseBody(body, false, fm.bodyStartLine ?? 1);
     const tmpl = new Template(fm, body, nodes, source);
     tmpl.checkBareEnumAccess();
-    validateDisplayability(nodes, fm.params);
+    validateDisplayability(nodes, fm.params, fm.consts, fm.typeAliases);
     return tmpl;
   }
 
@@ -256,7 +296,7 @@ export class Template implements ITemplate {
     const [fm, body] = parseFrontmatter(source);
     validateFrontmatter(fm);
     const resolvedFm = resolveImportedConsts(fm, baseDir);
-    const nodes = parseBody(body);
+    const nodes = parseBody(body, false, resolvedFm.bodyStartLine ?? 1);
     const tmpl = new Template(resolvedFm, body, nodes, source, baseDir);
     if (!resolvedFm.allowUnused) {
       tmpl.checkUnusedParams(body);
@@ -267,7 +307,12 @@ export class Template implements ITemplate {
       collectInlineTemplateNames(nodes),
       collectForBindings(nodes),
     );
-    validateDisplayability(nodes, resolvedFm.params);
+    validateDisplayability(
+      nodes,
+      resolvedFm.params,
+      resolvedFm.consts,
+      resolvedFm.typeAliases,
+    );
     return tmpl;
   }
 
@@ -291,7 +336,7 @@ export class Template implements ITemplate {
     const [fm, body] = parseFrontmatter(source);
     validateFrontmatter(fm);
     const resolvedFm = resolveImportedConsts(fm, baseDir);
-    const nodes = parseBody(body);
+    const nodes = parseBody(body, false, resolvedFm.bodyStartLine ?? 1);
     const tmpl = new Template(resolvedFm, body, nodes, source, baseDir);
     if (!resolvedFm.allowUnused) {
       tmpl.checkUnusedParams(body);
@@ -302,7 +347,12 @@ export class Template implements ITemplate {
       collectInlineTemplateNames(nodes),
       collectForBindings(nodes),
     );
-    validateDisplayability(nodes, resolvedFm.params);
+    validateDisplayability(
+      nodes,
+      resolvedFm.params,
+      resolvedFm.consts,
+      resolvedFm.typeAliases,
+    );
     return tmpl;
   }
 
@@ -359,7 +409,12 @@ export class Template implements ITemplate {
       }
     }
     // Use direct renderer — no Value conversion, no Map wrapping
-    return renderDirect(this.nodes, flat, this.constJsValues);
+    return renderDirect(
+      this.nodes,
+      flat,
+      this.constJsValues,
+      this.getDirectOptions(),
+    );
   }
 
   /**
@@ -411,7 +466,12 @@ params:
       );
     }
     // All params have defaults — use direct renderer with just defaults + consts
-    return renderDirect(this.nodes, this.defaultValues, this.constJsValues);
+    return renderDirect(
+      this.nodes,
+      this.defaultValues,
+      this.constJsValues,
+      this.getDirectOptions(),
+    );
   }
 
   // ── Metadata ─────────────────────────────────────────────────────────
@@ -439,7 +499,7 @@ params:
     const result: Record<string, unknown> = {};
     for (const decl of this.fm.params) {
       if (decl.defaultValue !== undefined) {
-        if (decl.defaultValue.type === "none") {
+        if (decl.defaultValue.type === TYPE_NONE) {
           result[decl.name] = null;
         } else {
           result[decl.name] = valueToJs(decl.defaultValue);
@@ -587,35 +647,35 @@ params:
 
   private typeCheck(path: string, value: Value, varType: VarType): void {
     switch (varType.kind) {
-      case "str":
-        if (value.type !== "str") {
+      case TYPE_STR:
+        if (value.type !== TYPE_STR) {
           throw new TypeMismatchError(path, "str", value.type);
         }
         break;
-      case "bool":
-        if (value.type !== "bool") {
+      case TYPE_BOOL:
+        if (value.type !== TYPE_BOOL) {
           throw new TypeMismatchError(path, "bool", value.type);
         }
         break;
-      case "int":
-        if (value.type !== "int") {
+      case TYPE_INT:
+        if (value.type !== TYPE_INT) {
           throw new TypeMismatchError(path, "int", value.type);
         }
         break;
-      case "float":
-        if (value.type !== "float" && value.type !== "int") {
+      case TYPE_FLOAT:
+        if (value.type !== TYPE_FLOAT && value.type !== TYPE_INT) {
           throw new TypeMismatchError(path, "float", value.type);
         }
         break;
-      case "list":
-        if (value.type !== "list") {
+      case TYPE_LIST:
+        if (value.type !== TYPE_LIST) {
           throw new TypeMismatchError(path, "list", value.type);
         }
         // Check item types
         if (varType.fields.length > 0) {
           for (let i = 0; i < value.items.length; i++) {
             const item = value.items[i]!;
-            if (item.type !== "dict") {
+            if (item.type !== TYPE_STRUCT) {
               throw new TypeMismatchError(`${path}[${i}]`, "struct", item.type);
             }
             for (const field of varType.fields) {
@@ -632,8 +692,8 @@ params:
           }
         }
         break;
-      case "struct":
-        if (value.type !== "dict") {
+      case TYPE_STRUCT:
+        if (value.type !== TYPE_STRUCT) {
           throw new TypeMismatchError(path, "struct", value.type);
         }
         // Check fields
@@ -645,17 +705,19 @@ params:
           this.typeCheck(`${path}.${field.name}`, fieldVal, field.varType);
         }
         break;
-      case "enum":
+      case TYPE_ENUM:
         if (varType.isOption) {
           // Legacy isOption: transparent — none is valid, otherwise check inner
-          if (value.type === "none") break;
-          const someVariant = varType.variants.find((v) => v.name === "Some");
+          if (value.type === TYPE_NONE) break;
+          const someVariant = varType.variants.find(
+            (v) => v.name === OPTION_SOME,
+          );
           if (someVariant && someVariant.fields.length === 1) {
             this.typeCheck(path, value, someVariant.fields[0]!.varType);
           }
           break;
         }
-        if (value.type === "str") {
+        if (value.type === TYPE_STR) {
           // Unit variant as string
           const validNames = varType.variants.map((v) => v.name);
           if (!validNames.includes(value.value)) {
@@ -665,10 +727,10 @@ params:
               `str("${value.value}")`,
             );
           }
-        } else if (value.type === "dict") {
+        } else if (value.type === TYPE_STRUCT) {
           // Struct variant as struct with __kind__
           const tag = value.fields.get(ENUM_TAG_KEY);
-          if (tag === undefined || tag.type !== "str") {
+          if (tag === undefined || tag.type !== TYPE_STR) {
             throw new TypeMismatchError(
               path,
               "enum variant",
@@ -687,12 +749,12 @@ params:
           throw new TypeMismatchError(path, "enum", value.type);
         }
         break;
-      case "option":
+      case TYPE_OPTION:
         // Transparent option: none is always valid, otherwise check inner type
-        if (value.type === "none") break;
+        if (value.type === TYPE_NONE) break;
         this.typeCheck(path, value, varType.innerType);
         break;
-      case "alias":
+      case TYPE_ALIAS:
         // Resolve alias from type aliases
         {
           const resolved = this.fm.typeAliases.get(varType.name);
@@ -702,8 +764,8 @@ params:
           // If alias not found, skip check (may be imported type)
         }
         break;
-      case "scalar_list":
-        if (value.type !== "list") {
+      case TYPE_SCALAR_LIST:
+        if (value.type !== TYPE_LIST) {
           throw new TypeMismatchError(path, "list", value.type);
         }
         // Check each element against the declared element type
@@ -711,8 +773,8 @@ params:
           this.typeCheck(`${path}[${i}]`, value.items[i]!, varType.elementType);
         }
         break;
-      case "untyped_list":
-        if (value.type !== "list") {
+      case TYPE_UNTYPED_LIST:
+        if (value.type !== TYPE_LIST) {
           throw new TypeMismatchError(path, "list", value.type);
         }
         break;
@@ -729,33 +791,31 @@ params:
       maxIncludeDepth: this._maxIncludeDepth,
     };
 
-    // Wire up file-based include resolution if we have a base path
-    if (this._basePath) {
-      const basePath = this._basePath;
+    // Wire up file-based include resolution if we have a base path or cache
+    if (this._basePath || this._cache) {
+      const defaultBase = this._basePath ?? "";
       options.templateLoader = (
         includePath: string,
-      ): [Node[], Map<string, Value>, readonly VarDecl[]] | undefined => {
-        const fullPath = getPath().resolve(basePath, includePath);
-        try {
-          const source = getFs().readFileSync(fullPath, "utf-8");
-          const [fm, body] = parseFrontmatter(source);
-          const nodes = parseBody(body);
-          // Extract consts from the included template
-          const consts = new Map<string, Value>();
-          for (const decl of fm.consts) {
-            if (decl.defaultValue !== undefined) {
-              consts.set(decl.name, decl.defaultValue);
-            }
-          }
-          return [nodes, consts, fm.params];
-        } catch (err) {
-          console.debug(
-            "Template include resolution failed for path %s: %s",
-            fullPath,
-            err,
-          );
-          return undefined;
-        }
+        basePath?: string,
+      ):
+        | [
+            readonly Node[],
+            ReadonlyMap<string, Value>,
+            readonly VarDecl[],
+            string?,
+          ]
+        | undefined => {
+        const cached = this.resolveInclude(
+          includePath,
+          basePath ?? defaultBase,
+        );
+        if (!cached) return undefined;
+        return [
+          cached.nodes,
+          cached.consts,
+          cached.declarations,
+          cached.baseDir,
+        ];
       };
     }
     // Collect inline template definitions ({% tmpl name %}...{% /tmpl %})
@@ -771,7 +831,7 @@ params:
     >();
     for (const n of this.nodes) {
       if (n.kind === "tmpl") {
-        try {
+        if (n.source.trimStart().startsWith("---")) {
           const [inlineFm, inlineBody] = parseFrontmatter(n.source);
           const inlineConsts = new Map<string, Value>();
           for (const decl of inlineFm.consts) {
@@ -784,9 +844,7 @@ params:
             body: inlineBody,
             consts: inlineConsts,
           });
-        } catch {
-          // If frontmatter parsing fails, store with empty declarations.
-          // The template may not have frontmatter (pure body).
+        } else {
           inlineTmpls.set(n.name, {
             declarations: [],
             body: n.source,
@@ -808,9 +866,75 @@ params:
       if (!pattern.test(body)) {
         throw new TemplateSyntaxError(
           `unused parameter '${decl.name}' declared but not referenced in body`,
+          decl.loc?.line,
+          decl.loc?.column,
+          decl.loc?.snippet,
         );
       }
     }
+  }
+
+  private getDirectOptions(): DirectRenderOptions {
+    const inlineTemplates = new Map<
+      string,
+      {
+        declarations: readonly VarDecl[];
+        nodes: readonly Node[];
+        consts: Map<string, unknown>;
+      }
+    >();
+    for (const n of this.nodes) {
+      if (n.kind === "tmpl") {
+        if (n.source.trimStart().startsWith("---")) {
+          const [inlineFm, inlineBody] = parseFrontmatter(n.source);
+          const inlineConsts = new Map<string, unknown>();
+          for (const decl of inlineFm.consts) {
+            if (decl.defaultValue !== undefined) {
+              inlineConsts.set(decl.name, valueToJs(decl.defaultValue));
+            }
+          }
+          inlineTemplates.set(n.name, {
+            declarations: inlineFm.params,
+            nodes: parseBody(inlineBody, true),
+            consts: inlineConsts,
+          });
+        } else {
+          inlineTemplates.set(n.name, {
+            declarations: [],
+            nodes: parseBody(n.source, true),
+            consts: new Map(),
+          });
+        }
+      }
+    }
+
+    const defaultBase = this._basePath ?? "";
+    const templateLoader = (
+      includePath: string,
+      basePath?: string,
+    ):
+      | [
+          readonly Node[],
+          ReadonlyMap<string, unknown>,
+          readonly VarDecl[],
+          string?,
+        ]
+      | undefined => {
+      const cached = this.resolveInclude(includePath, basePath ?? defaultBase);
+      if (!cached) return undefined;
+      const constsJs = new Map<string, unknown>();
+      for (const [k, v] of cached.consts) {
+        constsJs.set(k, valueToJs(v));
+      }
+      return [cached.nodes, constsJs, cached.declarations, cached.baseDir];
+    };
+
+    return {
+      inlineTemplates: inlineTemplates.size > 0 ? inlineTemplates : undefined,
+      templateLoader:
+        this._basePath || this._cache ? templateLoader : undefined,
+      maxIncludeDepth: this._maxIncludeDepth,
+    };
   }
 
   /**
@@ -829,6 +953,17 @@ params:
     if (enumTypeNames.size === 0) return;
     walkNodesForBareEnumAccess(this.nodes, enumTypeNames);
   }
+
+  private resolveInclude(
+    includePath: string,
+    basePath?: string,
+  ): CachedInclude | undefined {
+    if (this._cache) {
+      return this._cache.resolveInclude(includePath, basePath);
+    }
+    const currentBase = basePath ?? this._basePath ?? "";
+    return resolveIncludeEntry(this._includeCache, includePath, currentBase);
+  }
 }
 
 /**
@@ -844,59 +979,127 @@ function jsToValue(
   value: unknown,
   varType: VarType,
   typeAliases?: ReadonlyMap<string, VarType>,
+  seen: WeakSet<object> = new WeakSet(),
+  depth = 0,
 ): Value {
+  if (depth > 256) {
+    throw new TemplateError(
+      "maximum recursion depth exceeded in template parameter",
+    );
+  }
+
   // Resolve type aliases before checking
-  if (varType.kind === "alias" && typeAliases) {
+  if (varType.kind === TYPE_ALIAS && typeAliases) {
     const resolved = typeAliases.get(varType.name);
     if (resolved) {
-      return jsToValue(value, resolved, typeAliases);
+      return jsToValue(value, resolved, typeAliases, seen, depth);
     }
   }
 
   // Option types: null/undefined → NONE, otherwise convert the inner value
-  if (varType.kind === "option") {
+  if (varType.kind === TYPE_OPTION) {
     if (value === null || value === undefined) {
       return NONE;
     }
-    return jsToValue(value, varType.innerType, typeAliases);
+    return jsToValue(value, varType.innerType, typeAliases, seen, depth);
   }
 
   // Legacy isOption handling
-  if (varType.kind === "enum" && varType.isOption) {
+  if (varType.kind === TYPE_ENUM && varType.isOption) {
     if (value === null || value === undefined) {
       return NONE;
     }
-    const someVariant = varType.variants.find((v) => v.name === "Some");
+    const someVariant = varType.variants.find((v) => v.name === OPTION_SOME);
     if (someVariant && someVariant.fields.length === 1) {
-      return jsToValue(value, someVariant.fields[0]!.varType, typeAliases);
+      return jsToValue(
+        value,
+        someVariant.fields[0]!.varType,
+        typeAliases,
+        seen,
+        depth,
+      );
     }
-    return fromJs(value);
+    return fromJs(value, seen, depth + 1);
   }
 
-  // Structs: recursively handle nested option fields
+  // Non-option enum types: handle struct variants passed as { VariantName: { fields } }
   if (
-    varType.kind === "struct" &&
+    varType.kind === TYPE_ENUM &&
+    !varType.isOption &&
     typeof value === "object" &&
     value !== null &&
     !Array.isArray(value)
   ) {
     const obj = value as Record<string, unknown>;
-    const entries: [string, Value][] = [];
-    for (const field of varType.fields) {
-      if (field.name in obj) {
-        entries.push([
-          field.name,
-          jsToValue(obj[field.name], field.varType, typeAliases),
-        ]);
+    const keys = Object.keys(obj);
+    if (keys.length === 1) {
+      const variantName = keys[0]!;
+      const variant = varType.variants.find((v) => v.name === variantName);
+      if (variant && variant.fields.length > 0) {
+        // This is a struct variant: { VariantName: { field1: val1, ... } }
+        const inner = obj[variantName];
+        if (
+          typeof inner === "object" &&
+          inner !== null &&
+          !Array.isArray(inner)
+        ) {
+          const innerObj = inner as Record<string, unknown>;
+          const entries: [string, Value][] = [[ENUM_TAG_KEY, str(variantName)]];
+          for (const field of variant.fields) {
+            if (field.name in innerObj) {
+              entries.push([
+                field.name,
+                jsToValue(
+                  innerObj[field.name],
+                  field.varType,
+                  typeAliases,
+                  seen,
+                  depth + 1,
+                ),
+              ]);
+            }
+          }
+          return structVal(entries);
+        }
       }
     }
-    // Preserve non-declared fields
-    for (const [k, v] of Object.entries(obj)) {
-      if (!varType.fields.some((f) => f.name === k)) {
-        entries.push([k, fromJs(v)]);
+  }
+
+  // Structs: recursively handle nested option fields
+  if (
+    varType.kind === TYPE_STRUCT &&
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value)
+  ) {
+    seen.add(value as object);
+    try {
+      const obj = value as Record<string, unknown>;
+      const entries: [string, Value][] = [];
+      for (const field of varType.fields) {
+        if (field.name in obj) {
+          entries.push([
+            field.name,
+            jsToValue(
+              obj[field.name],
+              field.varType,
+              typeAliases,
+              seen,
+              depth + 1,
+            ),
+          ]);
+        }
       }
+      // Preserve non-declared fields
+      for (const [k, v] of Object.entries(obj)) {
+        if (!varType.fields.some((f) => f.name === k)) {
+          entries.push([k, fromJs(v, seen, depth + 1)]);
+        }
+      }
+      return structVal(entries);
+    } finally {
+      seen.delete(value as object);
     }
-    return dict(entries);
   }
 
   // Lists with structured items: recursively handle nested option fields
@@ -905,33 +1108,44 @@ function jsToValue(
     Array.isArray(value) &&
     varType.fields.length > 0
   ) {
-    const items = value.map((item) => {
-      if (typeof item === "object" && item !== null && !Array.isArray(item)) {
-        const obj = item as Record<string, unknown>;
-        const entries: [string, Value][] = [];
-        for (const field of varType.fields) {
-          if (field.name in obj) {
-            entries.push([
-              field.name,
-              jsToValue(obj[field.name], field.varType, typeAliases),
-            ]);
+    seen.add(value as object);
+    try {
+      const items = value.map((item) => {
+        if (typeof item === "object" && item !== null && !Array.isArray(item)) {
+          const obj = item as Record<string, unknown>;
+          const entries: [string, Value][] = [];
+          for (const field of varType.fields) {
+            if (field.name in obj) {
+              entries.push([
+                field.name,
+                jsToValue(
+                  obj[field.name],
+                  field.varType,
+                  typeAliases,
+                  seen,
+                  depth + 1,
+                ),
+              ]);
+            }
           }
-        }
-        // Preserve non-declared fields
-        for (const [k, v] of Object.entries(obj)) {
-          if (!varType.fields.some((f) => f.name === k)) {
-            entries.push([k, fromJs(v)]);
+          // Preserve non-declared fields
+          for (const [k, v] of Object.entries(obj)) {
+            if (!varType.fields.some((f) => f.name === k)) {
+              entries.push([k, fromJs(v, seen, depth + 1)]);
+            }
           }
+          return structVal(entries);
         }
-        return dict(entries);
-      }
-      return fromJs(item);
-    });
-    return { type: "list", items };
+        return fromJs(item, seen, depth + 1);
+      });
+      return { type: "list", items };
+    } finally {
+      seen.delete(value as object);
+    }
   }
 
   // Default: use standard fromJs conversion
-  return fromJs(value);
+  return fromJs(value, seen, depth + 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -1099,6 +1313,16 @@ export class TypedTemplate<P extends object> {
 // ---------------------------------------------------------------------------
 
 /**
+ * A compiled include entry, ready for rendering without re-parsing.
+ */
+export interface CachedInclude {
+  readonly nodes: readonly Node[];
+  readonly consts: ReadonlyMap<string, Value>;
+  readonly declarations: readonly VarDecl[];
+  readonly baseDir: string;
+}
+
+/**
  * Content-hashed template cache for hot-reload scenarios.
  *
  * Unchanged files return cached compilations with zero re-parsing.
@@ -1113,6 +1337,10 @@ export class TypedTemplate<P extends object> {
 export class TemplateCache {
   private readonly cache: Map<string, { hash: number; template: Template }> =
     new Map();
+  private readonly includes: Map<
+    string,
+    { hash: number; mtimeMs: number; cached: CachedInclude }
+  > = new Map();
   private readonly maxEntries: number | undefined;
 
   constructor(options?: { maxEntries?: number }) {
@@ -1139,6 +1367,7 @@ export class TemplateCache {
 
     const dir = getPath().dirname(absPath);
     const tmpl = Template.fromSourceWithBaseDir(source, dir);
+    tmpl._cache = this;
     this.cache.set(absPath, { hash, template: tmpl });
 
     // LRU eviction: if maxEntries is set and we exceeded capacity, drop oldest
@@ -1155,11 +1384,30 @@ export class TemplateCache {
   /** Invalidate all cached entries. */
   clear(): void {
     this.cache.clear();
+    this.includes.clear();
   }
 
   /** Return the number of cached templates. */
   templateCount(): number {
     return this.cache.size;
+  }
+
+  /** Resolve an include from cache or compile it from disk. */
+  resolveInclude(
+    filePath: string,
+    baseDir?: string,
+  ): CachedInclude | undefined {
+    return resolveIncludeEntry(
+      this.includes,
+      filePath,
+      baseDir,
+      this.maxEntries,
+    );
+  }
+
+  /** Return the number of cached include templates. */
+  includeCount(): number {
+    return this.includes.size;
   }
 }
 
@@ -1177,28 +1425,74 @@ function hashString(s: string): number {
   return hash >>> 0; // unsigned 32-bit
 }
 
-/** Convert a Value back to plain JS for defaults/consts output. */
-function valueToJs(v: Value): unknown {
-  switch (v.type) {
-    case "str":
-      return v.value;
-    case "bool":
-      return v.value;
-    case "int":
-      return v.value;
-    case "float":
-      return v.value;
-    case "list":
-      return v.items.map(valueToJs);
-    case "dict": {
-      const obj: Record<string, unknown> = {};
-      for (const [k, val] of v.fields) {
-        obj[k] = valueToJs(val);
+function resolveIncludeEntry(
+  cache: Map<string, { hash: number; mtimeMs: number; cached: CachedInclude }>,
+  filePath: string,
+  baseDir?: string,
+  maxEntries?: number,
+): CachedInclude | undefined {
+  const currentBase = baseDir ?? "";
+  const absPath = getPath().resolve(currentBase, filePath);
+  let stat: { mtimeMs: number } | undefined;
+  try {
+    stat = getFs().statSync(absPath, { throwIfNoEntry: false });
+  } catch {
+    return undefined;
+  }
+  if (!stat) {
+    return undefined;
+  }
+  const entry = cache.get(absPath);
+  if (entry && entry.mtimeMs === stat.mtimeMs) {
+    return entry.cached;
+  }
+  let source: string;
+  try {
+    source = getFs().readFileSync(absPath, "utf-8");
+  } catch (err) {
+    console.debug(
+      "Template include resolution failed for path %s: %s",
+      absPath,
+      err,
+    );
+    return undefined;
+  }
+  const hash = hashString(source);
+  if (entry && entry.hash === hash) {
+    entry.mtimeMs = stat.mtimeMs;
+    return entry.cached;
+  }
+  try {
+    const [fm, body] = parseFrontmatter(source);
+    const nodes = parseBody(body, false, fm.bodyStartLine ?? 1);
+    const consts = new Map<string, Value>();
+    for (const decl of fm.consts) {
+      if (decl.defaultValue !== undefined) {
+        consts.set(decl.name, decl.defaultValue);
       }
-      return obj;
     }
-    case "none":
-      return null;
+    const cached: CachedInclude = {
+      nodes,
+      consts,
+      declarations: fm.params,
+      baseDir: getPath().dirname(absPath),
+    };
+    cache.delete(absPath);
+    cache.set(absPath, { hash, mtimeMs: stat.mtimeMs, cached });
+    if (maxEntries !== undefined && cache.size > maxEntries) {
+      const oldest = cache.keys().next().value;
+      if (oldest !== undefined) {
+        cache.delete(oldest);
+      }
+    }
+    return cached;
+  } catch (err) {
+    console.debug(
+      "Template include resolution failed for path %s: %s",
+      absPath,
+      err,
+    );
+    return undefined;
   }
 }
 
@@ -1221,7 +1515,7 @@ function collectOptionPaths(
   out: Set<string>,
 ): void {
   // Resolve type aliases
-  if (varType.kind === "alias") {
+  if (varType.kind === TYPE_ALIAS) {
     const resolved = typeAliases.get(varType.name);
     if (resolved) {
       collectOptionPaths(prefix, resolved, typeAliases, out);
@@ -1229,19 +1523,19 @@ function collectOptionPaths(
     return;
   }
 
-  if (varType.kind === "option") {
+  if (varType.kind === TYPE_OPTION) {
     out.add(prefix);
     return;
   }
 
   // Legacy isOption enum
-  if (varType.kind === "enum" && varType.isOption) {
+  if (varType.kind === TYPE_ENUM && varType.isOption) {
     out.add(prefix);
     return;
   }
 
   // Recurse into struct fields
-  if (varType.kind === "struct") {
+  if (varType.kind === TYPE_STRUCT) {
     for (const field of varType.fields) {
       collectOptionPaths(
         `${prefix}.${field.name}`,
@@ -1282,6 +1576,9 @@ function walkNodesForBareEnumAccess(
               throw new TemplateSyntaxError(
                 `bare enum literal '${barePath}' is not allowed` +
                   ` — use kind(${barePath}) to get the variant name as a string`,
+                node.loc?.line,
+                node.loc?.column,
+                node.loc?.snippet,
               );
             }
           }
@@ -1386,12 +1683,17 @@ function injectEnumTypeConstants(
         const jsFields: Record<string, unknown> = {
           [ENUM_TAG_KEY]: variant.name,
         };
-        valueEntries.push([variant.name, dict(fieldEntries)]);
+        valueEntries.push([variant.name, structVal(fieldEntries)]);
         jsObj[variant.name] = jsFields;
       }
     }
 
-    constValues.set(typeName, dict(valueEntries));
+    const variantNames = varType.variants.map((v) => str(v.name));
+    const jsVariantNames = varType.variants.map((v) => v.name);
+    valueEntries.push([ENUM_VARIANTS_KEY, list(variantNames)]);
+    jsObj[ENUM_VARIANTS_KEY] = jsVariantNames;
+
+    constValues.set(typeName, structVal(valueEntries));
     constJsValues.set(typeName, jsObj);
   }
 }
@@ -1411,37 +1713,39 @@ function resolveImportedConsts(fm: Frontmatter, baseDir: string): Frontmatter {
     return fm;
   }
 
+  const availableConsts = new Map<string, Value>();
+  for (const c of fm.consts) {
+    if (c.defaultValue !== undefined) {
+      availableConsts.set(c.name, c.defaultValue);
+    }
+  }
+
   const imported: Record<string, unknown> = {};
   const fsModule = getFs();
   const pathModule = getPath();
 
   for (const imp of fm.imports) {
-    const fullPath = pathModule.resolve(baseDir, imp.path);
+    let impPath = imp.path;
+    if (impPath.includes(EXPR_START)) {
+      impPath = interpolatePathStr(impPath, availableConsts);
+      if (!isValidResolvedPath(impPath) || impPath.includes(EXPR_START)) {
+        throw new TemplateSyntaxError(
+          `import path must begin with './', '../', or '/': '${impPath}'`,
+        );
+      }
+    }
+
+    const fullPath = pathModule.resolve(baseDir, impPath);
     let importSource: string;
     try {
       importSource = fsModule.readFileSync(fullPath, "utf-8");
     } catch (err) {
-      // Skip imports whose files cannot be read.
-      console.debug(
-        "Failed to read imported template file %s: %s",
-        fullPath,
-        err,
+      throw new TemplateError(
+        `cannot read imported template file '${fullPath}' for stem '${imp.stem}': ${err}`,
       );
-      continue;
     }
 
-    let importedFm: Frontmatter;
-    try {
-      [importedFm] = parseFrontmatter(importSource);
-    } catch (err) {
-      // Skip imports whose frontmatter cannot be parsed.
-      console.debug(
-        "Failed to parse frontmatter for imported template %s: %s",
-        fullPath,
-        err,
-      );
-      continue;
-    }
+    const [importedFm] = parseFrontmatter(importSource);
 
     for (const decl of importedFm.consts) {
       if (decl.defaultValue !== undefined) {
@@ -1463,6 +1767,8 @@ function resolveImportedConsts(fm: Frontmatter, baseDir: string): Frontmatter {
           jsObj[v.name] = { [ENUM_TAG_KEY]: v.name };
         }
       }
+      const jsVariantNames = varType.variants.map((v) => v.name);
+      jsObj[ENUM_VARIANTS_KEY] = jsVariantNames;
       imported[key] = jsObj;
     }
   }
@@ -1496,6 +1802,9 @@ function resolveImportedConsts(fm: Frontmatter, baseDir: string): Frontmatter {
       throw new TemplateSyntaxError(
         `unresolved default '${unresolved.text}' for param '${decl.name}': ` +
           `no imported const with that name found`,
+        decl.loc?.line,
+        decl.loc?.column,
+        decl.loc?.snippet,
       );
     }
     // Validate type compatibility

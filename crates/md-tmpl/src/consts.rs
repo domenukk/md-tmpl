@@ -13,6 +13,8 @@ pub(crate) const FN_LEN: &str = "len";
 
 /// Name of the explicit kind/variant-name function: `kind(expr)`.
 pub(crate) const FN_KIND: &str = "kind";
+/// Name of the enum variants list function: `kinds(expr)`.
+pub(crate) const FN_KINDS: &str = "kinds";
 
 /// Name of the option-presence function: `has(expr)`.
 pub(crate) const FN_HAS: &str = "has";
@@ -21,7 +23,7 @@ pub(crate) const FN_HAS: &str = "has";
 ///
 /// Used by static analysis to avoid treating function names as variable
 /// references (e.g. `idx` in `idx(item)` is not a variable).
-pub(crate) const BUILTIN_FUNCTIONS: &[&str] = &[FN_IDX, FN_LEN, FN_KIND, FN_HAS];
+pub(crate) const BUILTIN_FUNCTIONS: &[&str] = &[FN_IDX, FN_LEN, FN_KIND, FN_KINDS, FN_HAS];
 
 // -- Filter names -------------------------------------------------------------
 
@@ -49,9 +51,8 @@ pub(crate) const FILTER_SUB: &str = "sub";
 ///
 /// Uses a dunder prefix to avoid collisions with user-defined field names.
 pub const ENUM_TAG_KEY: &str = "__kind__";
-
-/// Pseudo-field suffix for legacy `.length` access.
-pub(crate) const PSEUDO_FIELD_LENGTH: &str = ".length";
+/// Struct key used for enum variant lists: `__variants__`.
+pub const ENUM_VARIANTS_KEY: &str = "__variants__";
 
 // -- Expression syntax chars --------------------------------------------------
 
@@ -95,15 +96,36 @@ pub const PATH_PREFIX_CUR_WIN: &str = ".\\";
 pub const PATH_PREFIX_PARENT_WIN: &str = "..\\";
 /// Backslash separator: `\`.
 pub const BACKSLASH: char = '\\';
+/// Newline character: `\n`.
+pub const CHAR_NEWLINE: char = '\n';
+/// Carriage return character: `\r`.
+pub const CHAR_CR: char = '\r';
+/// Space character: `' '`.
+pub const CHAR_SPACE: char = ' ';
+/// Tab character: `\t`.
+pub const CHAR_TAB: char = '\t';
 
-/// Check if a path starts with a valid import or include prefix (`/`, `./`, `../`, `.\`, or `..\`).
+/// Newline string literal: `"\n"`.
+pub const STR_NEWLINE: &str = "\n";
+/// Double newline string literal: `"\n\n"`.
+pub const STR_DOUBLE_NEWLINE: &str = "\n\n";
+/// Carriage return + newline string literal: `"\r\n"`.
+pub const STR_CRLF: &str = "\r\n";
+
+/// Check if a resolved path starts with `/`, `./`, `../`, `.\`, or `..\`.
 #[must_use]
-pub fn is_valid_include_path(path: &str) -> bool {
+pub fn is_valid_resolved_path(path: &str) -> bool {
     path.starts_with(PATH_PREFIX_SLASH)
         || path.starts_with(PATH_PREFIX_CUR)
         || path.starts_with(PATH_PREFIX_PARENT)
         || path.starts_with(PATH_PREFIX_CUR_WIN)
         || path.starts_with(PATH_PREFIX_PARENT_WIN)
+}
+
+/// Check if a path starts with a valid import or include prefix (`/`, `./`, `../`, `.\`, `..\`, or an expression `{{`).
+#[must_use]
+pub fn is_valid_include_path(path: &str) -> bool {
+    is_valid_resolved_path(path) || path.starts_with(EXPR_START)
 }
 
 /// Template extension: `.tmpl.md`.
@@ -148,6 +170,14 @@ pub(crate) const STMT_END: &str = "%}";
 pub(crate) const COMMENT_START: &str = "{#";
 /// Delimiter indicating the end of a comment: `#}`.
 pub(crate) const COMMENT_END: &str = "#}";
+#[allow(dead_code)]
+pub(crate) const COMMENT_COMPACT_OPEN: &str = ">{#";
+#[allow(dead_code)]
+pub(crate) const COMMENT_SPACED_OPEN: &str = "> {#";
+#[allow(dead_code)]
+pub(crate) const FRONTMATTER_DELIM: &str = "---";
+#[allow(dead_code)]
+pub(crate) const STMT_START_SHORT: &str = "{%";
 
 /// Whitespace control trim marker: `-`.
 pub(crate) const TRIM_MARKER: char = '-';
@@ -158,6 +188,20 @@ pub(crate) const TRIM_MARKER: char = '-';
 pub(crate) const TAG_FOR_PREFIX: &str = "for ";
 /// Spaced in keyword for loops: ` in `.
 pub(crate) const KW_IN_SPACED: &str = " in ";
+
+pub(crate) const OP_EQ: &str = " == ";
+pub(crate) const OP_NE: &str = " != ";
+pub(crate) const OP_LE: &str = " <= ";
+pub(crate) const OP_GE: &str = " >= ";
+pub(crate) const OP_LT: &str = " < ";
+pub(crate) const OP_GT: &str = " > ";
+
+/// Logical AND operator: `&&`.
+pub(crate) const OP_AND: &str = "&&";
+/// Logical OR operator: `||`.
+pub(crate) const OP_OR: &str = "||";
+/// Logical NOT operator: `!`.
+pub(crate) const OP_NOT: char = '!';
 
 /// Spaced if statement tag prefix: `if `.
 pub(crate) const TAG_IF_PREFIX: &str = "if ";
@@ -170,7 +214,17 @@ pub(crate) const KW_ELSE: &str = "else";
 pub(crate) const KW_RAW: &str = "raw";
 /// Raw custom delimiter assignment prefix: `raw=`.
 pub(crate) const KW_RAW_ASSIGN: &str = "raw=";
+#[allow(dead_code)]
+pub(crate) const KW_RAW_SPACED: &str = "raw ";
+#[allow(dead_code)]
+pub(crate) const KW_RAW_ASSIGN_SPACED: &str = "raw = ";
+#[allow(dead_code)]
+pub(crate) const CLOSE_RAW_TRIM: &str = "-/raw";
+#[allow(dead_code)]
+pub(crate) const KW_RAW_CLOSE_SPACED: &str = "raw%}";
 
+/// Include keyword: `include`.
+pub(crate) const KW_INCLUDE: &str = "include";
 /// Include statement prefix: `include `.
 pub(crate) const TAG_INCLUDE_PREFIX: &str = "include ";
 /// Include `with` override statement prefix: `with `.
@@ -185,6 +239,15 @@ pub(crate) const TAG_TMPL_PREFIX: &str = "tmpl ";
 pub(crate) const TAG_MATCH_PREFIX: &str = "match ";
 /// Case arm tag prefix: `case `.
 pub(crate) const TAG_CASE_PREFIX: &str = "case ";
+/// Spaced case keyword: ` case`.
+pub(crate) const TAG_CASE_SPACED: &str = " case";
+/// Spaced case keyword for match-as-condition: ` case `.
+pub(crate) const KW_CASE_SPACED: &str = " case ";
+/// Variant separator in match case arms: `|`.
+pub(crate) const VARIANT_SEP: char = '|';
+pub(crate) const KW_PANIC: &str = "panic";
+pub(crate) const TAG_PANIC_PREFIX: &str = "panic ";
+pub(crate) const TAG_PANIC_PAREN: &str = "panic(";
 
 // -- Closing block tags -------------------------------------------------------
 
@@ -250,11 +313,19 @@ pub(crate) const TYPE_STRUCT: &str = "struct";
 pub(crate) const TYPE_ENUM: &str = "enum";
 /// Type name for templates: `tmpl`.
 pub(crate) const TYPE_TMPL: &str = "tmpl";
+/// Type name for none/null: `none`.
+pub(crate) const TYPE_NONE: &str = "none";
 
 /// Type prefix for lists with parentheses: `list(`.
 pub(crate) const TYPE_LIST_PREFIX: &str = "list(";
 /// Type prefix for structs with parentheses: `struct(`.
 pub(crate) const TYPE_STRUCT_PREFIX: &str = "struct(";
+/// Type prefix for structs with angle brackets: `struct<`.
+pub(crate) const TYPE_STRUCT_ANGLE_PREFIX: &str = "struct<";
+/// Type prefix for structs with square brackets: `struct[`.
+pub(crate) const TYPE_STRUCT_BRACKET_PREFIX: &str = "struct[";
+/// Type prefix for structs with trailing space: `struct `.
+pub(crate) const TYPE_STRUCT_SPACE_PREFIX: &str = "struct ";
 /// Type prefix for enums with parentheses: `enum(`.
 pub(crate) const TYPE_ENUM_PREFIX: &str = "enum(";
 /// Type prefix for templates with parentheses: `tmpl(`.
@@ -270,6 +341,19 @@ pub const OPTION_SOME: &str = "Some";
 pub const OPTION_NONE: &str = "None";
 /// Field name for the inner value of `option(T)`'s `Some` variant.
 pub const OPTION_VAL_FIELD: &str = "val";
+/// Wildcard/default pattern in match arms: `_`.
+pub const MATCH_DEFAULT: &str = "_";
+
+// -- Variable prefixes --------------------------------------------------------
+
+/// Prefix for constant references: `consts.`.
+pub(crate) const PREFIX_CONSTS_DOT: &str = "consts.";
+/// Prefix for runtime options: `opts.`.
+pub(crate) const PREFIX_OPTS_DOT: &str = "opts.";
+/// Prefix for runtime options (alias): `options.`.
+pub(crate) const PREFIX_OPTIONS_DOT: &str = "options.";
+/// Prefix for parameter references: `params.`.
+pub(crate) const PREFIX_PARAMS_DOT: &str = "params.";
 
 // -- Literals -----------------------------------------------------------------
 
@@ -437,12 +521,13 @@ mod tests {
         assert!(BUILTIN_FUNCTIONS.contains(&"idx"));
         assert!(BUILTIN_FUNCTIONS.contains(&"len"));
         assert!(BUILTIN_FUNCTIONS.contains(&"kind"));
+        assert!(BUILTIN_FUNCTIONS.contains(&"kinds"));
         assert!(BUILTIN_FUNCTIONS.contains(&"has"));
     }
 
     #[test]
     fn builtin_functions_length() {
-        assert_eq!(BUILTIN_FUNCTIONS.len(), 4);
+        assert_eq!(BUILTIN_FUNCTIONS.len(), 5);
     }
 
     // -- Delimiter constants --------------------------------------------------
@@ -501,7 +586,11 @@ mod tests {
         assert!(is_valid_include_path(".\\file.tmpl.md"));
         assert!(is_valid_include_path("..\\file.tmpl.md"));
         assert!(is_valid_include_path("/file.tmpl.md"));
+        assert!(is_valid_include_path("{{ consts.DIR }}/file.tmpl.md"));
         assert!(!is_valid_include_path("file.tmpl.md"));
         assert!(!is_valid_include_path("sub/file.tmpl.md"));
+
+        assert!(is_valid_resolved_path("./file.tmpl.md"));
+        assert!(!is_valid_resolved_path("{{ consts.DIR }}/file.tmpl.md"));
     }
 }

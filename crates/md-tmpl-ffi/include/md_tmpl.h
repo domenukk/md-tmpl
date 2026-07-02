@@ -51,10 +51,15 @@ char *pt_context_set_str(PtContext *ctx, const char *key, const char *value);
 char *pt_context_set_int(PtContext *ctx, const char *key, int64_t value);
 char *pt_context_set_float(PtContext *ctx, const char *key, double value);
 char *pt_context_set_bool(PtContext *ctx, const char *key, bool value);
+char *pt_context_set_none(PtContext *ctx, const char *key);
 char *pt_context_set_json(PtContext *ctx, const char *key, const char *json);
 char *pt_context_set_tmpl(PtContext *ctx, const char *key,
                           const PtTemplate *tmpl);
 char *pt_context_merge_json(PtContext *ctx, const char *json);
+char *pt_context_set_flexbuffers(PtContext *ctx, const char *key,
+                                 const uint8_t *data, size_t len);
+char *pt_context_merge_flexbuffers(PtContext *ctx, const uint8_t *data,
+                                   size_t len);
 
 /* ---- Rendering ---------------------------------------------------------- */
 
@@ -75,6 +80,19 @@ char *pt_template_render_allowing_extra(const PtTemplate *tmpl,
  */
 char *pt_template_render_json(const PtTemplate *tmpl, const char *json,
                               bool allow_extra, char **out_err);
+
+/**
+ * Single-shot render from a FlexBuffers binary map.
+ *
+ * Deserializes FlexBuffers, builds a context, and renders — all in one FFI call.
+ * When allow_extra is true, undeclared keys are silently ignored.
+ *
+ * Returns the rendered string (caller frees with pt_free_string) or NULL
+ * on error (error written to *out_err, caller frees).
+ */
+char *pt_template_render_flexbuffers(const PtTemplate *tmpl,
+                                     const uint8_t *data, size_t len,
+                                     bool allow_extra, char **out_err);
 
 /* ---- Template metadata -------------------------------------------------- */
 

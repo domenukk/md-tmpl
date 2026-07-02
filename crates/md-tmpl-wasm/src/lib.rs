@@ -287,6 +287,18 @@ impl Template {
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
         Ok(Self::new(inner))
     }
+
+    /// Set the maximum include depth for rendering this template (`camelCase`).
+    #[wasm_bindgen(js_name = "setMaxIncludeDepth")]
+    pub fn set_max_include_depth(&mut self, depth: usize) {
+        self.inner.set_max_include_depth(depth);
+    }
+
+    /// Set the maximum include depth for rendering this template (`snake_case` alias).
+    #[wasm_bindgen(js_name = "set_max_include_depth")]
+    pub fn set_max_include_depth_alias(&mut self, depth: usize) {
+        self.inner.set_max_include_depth(depth);
+    }
 }
 
 // ---------------------------------------------------------------------------

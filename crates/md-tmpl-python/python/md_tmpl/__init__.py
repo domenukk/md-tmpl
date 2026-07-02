@@ -33,7 +33,6 @@ See the ``template()`` function for a simpler non-import-hook API.
 """
 
 import os
-from typing import Any
 
 from md_tmpl._md_tmpl import (
     Template,
@@ -44,6 +43,7 @@ from md_tmpl._exceptions import (
     ExtraParamsError,
     MissingParamsError,
     TemplateError,
+    TemplatePanicError,
     TemplateSyntaxError,
     TypeMismatchError,
 )
@@ -109,6 +109,7 @@ __all__ = [
     "Template",
     "TemplateCache",
     "TemplateError",
+    "TemplatePanicError",
     "TemplateSyntaxError",
     "TypeMismatchError",
     "generate_types_source",

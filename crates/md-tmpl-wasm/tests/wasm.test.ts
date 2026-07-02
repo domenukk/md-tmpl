@@ -1472,3 +1472,133 @@ params:
     assert.ok(t.render({ items: [{ name: "Bob" }] }).includes("Bob"));
   });
 });
+
+// =========================================================================
+// 26. Milestone M2 — panic(...) and in/not in
+// =========================================================================
+
+describe("Milestone M2 — panic(...) and in/not in", () => {
+  it("panic literal throws error cleanly", () => {
+    const t = WasmTemplate.fromSource(
+      `---
+params: []
+---
+> {% panic("halt") %}
+`,
+    );
+    assert.throws(() => {
+      t.render({});
+    }, /template panic: halt/);
+  });
+
+  it("panic interpolation throws error cleanly", () => {
+    const t = WasmTemplate.fromSource(
+      `---
+params:
+  - reason = str
+---
+> {% panic(reason) %}
+`,
+    );
+    assert.throws(() => {
+      t.render({ reason: "fatal: bad state" });
+    }, /template panic: fatal: bad state/);
+  });
+
+  it("in operator string substring", () => {
+    const t = WasmTemplate.fromSource(
+      `---
+params:
+  - role = str
+---
+> {% if "admin" in role %}
+
+YES
+
+> {% else %}
+
+NO
+
+> {% /if %}`,
+    );
+    assert.equal(t.render({ role: "superadmin user" }).trim(), "YES");
+    assert.equal(t.render({ role: "guest" }).trim(), "NO");
+  });
+
+  it("not in operator string substring", () => {
+    const t = WasmTemplate.fromSource(
+      `---
+params:
+  - role = str
+---
+> {% if !("err" in role) %}
+
+OK
+
+> {% else %}
+
+ERROR
+
+> {% /if %}`,
+    );
+    assert.equal(t.render({ role: "status_ok" }).trim(), "OK");
+    assert.equal(t.render({ role: "has_err_flag" }).trim(), "ERROR");
+  });
+
+  it("in operator list membership", () => {
+    const t = WasmTemplate.fromSource(
+      `---
+params:
+  - roles = list(str)
+---
+> {% if "admin" in roles %}
+
+ALLOWED
+
+> {% else %}
+
+DENIED
+
+> {% /if %}`,
+    );
+    assert.equal(t.render({ roles: ["user", "admin"] }).trim(), "ALLOWED");
+    assert.equal(t.render({ roles: ["guest", "user"] }).trim(), "DENIED");
+  });
+
+  it("not in operator list membership", () => {
+    const t = WasmTemplate.fromSource(
+      `---
+params:
+  - roles = list(str)
+---
+> {% if !("banned" in roles) %}
+
+WELCOME
+
+> {% else %}
+
+GO AWAY
+
+> {% /if %}`,
+    );
+    assert.equal(t.render({ roles: ["guest", "user"] }).trim(), "WELCOME");
+    assert.equal(t.render({ roles: ["user", "banned"] }).trim(), "GO AWAY");
+  });
+
+  it("in operator enum kinds", () => {
+    const t = WasmTemplate.fromSource(
+      `---
+params:
+  - status = enum(Active, Inactive, Pending)
+
+allow_unused: true
+---
+> {% if "Active" in kinds(Status) %}
+
+VALID
+
+> {% /if %}`,
+    );
+    assert.equal(t.render({ status: "Active" }).trim(), "VALID");
+  });
+});

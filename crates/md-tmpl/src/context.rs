@@ -69,8 +69,21 @@ impl Context {
     ///   — generates a strongly-typed parameter struct from your template.
     /// - [`Template::render`](crate::Template::render) (feature `serde`)
     ///   — renders directly from any `Serialize` struct.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `key` is the reserved internal key `__kind__` — this key
+    /// is used internally for enum variant tagging and must not be set
+    /// directly. Use enum types in the template frontmatter instead.
     pub fn set(&mut self, key: impl Into<String>, value: impl Into<Value>) {
-        self.values.insert(key.into(), value.into());
+        let key = key.into();
+        assert!(
+            key != crate::consts::ENUM_TAG_KEY,
+            "cannot set reserved internal key '{}' directly in Context — \
+             use enum types in the template frontmatter instead",
+            crate::consts::ENUM_TAG_KEY,
+        );
+        self.values.insert(key, value.into());
     }
 
     /// Builder-style insert — returns `self` for chaining.
@@ -237,5 +250,23 @@ mod tests {
         let b = Context::default();
         assert!(a.values.is_empty());
         assert!(b.values.is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "reserved internal key")]
+    fn set_rejects_internal_kind_key() {
+        let mut ctx = Context::new();
+        ctx.set(crate::consts::ENUM_TAG_KEY, "Variant");
+    }
+
+    #[test]
+    fn set_allows_similar_but_different_keys() {
+        // Keys that look similar but aren't ENUM_TAG_KEY should work fine.
+        let mut ctx = Context::new();
+        ctx.set("kind", "some_kind");
+        ctx.set("__type__", "some_type");
+        ctx.set("kind_of", "something");
+        assert!(ctx.get("kind").is_some());
+        assert!(ctx.get("__type__").is_some());
     }
 }

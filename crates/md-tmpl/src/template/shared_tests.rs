@@ -1,221 +1,64 @@
 //! Shared cross-backend test runner.
 //!
-//! Reads test case definitions from `tests/shared/inline_tmpl_tests.json`
-//! and `tests/shared/include_tests.json`, and runs them against the Rust
+//! Reads test case definitions from `tests/shared/inline_tmpl_tests.toml`,
+//! `tests/shared/include_tests.toml`, `tests/shared/inline_control_tests.toml`,
+//! and `tests/shared/tmpl_param_tests.toml`, and runs them against the Rust
 //! template engine.
 //!
 //! These same fixtures are consumed by the TypeScript backend's test runner,
 //! ensuring behavioral parity between implementations.
 //!
-//! Templates use `template_lines` / `parent_template_lines` (arrays of
-//! strings joined with `\n`) so the JSON stays readable without inline `\n`.
+//! Templates use `template` / `parent_template` (proper multiline TOML strings)
+//! so the fixtures stay readable and literal.
 
 use crate::{CompileOptions, Context, Template, Value};
 
-/// Minimal JSON value parser for test fixtures.
-/// Avoids adding `serde_json` as a dependency.
-#[derive(Debug, Clone)]
-enum JsonValue {
-    Null,
-    Bool(bool),
-    Number(f64),
-    Str(String),
-    Array(Vec<JsonValue>),
-    Object(Vec<(String, JsonValue)>),
-}
-
-impl JsonValue {
-    fn as_str(&self) -> Option<&str> {
-        match self {
-            JsonValue::Str(s) => Some(s),
-            _ => None,
+fn toml_to_value(val: &toml::Value) -> Value {
+    match val {
+        toml::Value::String(s) => Value::Str(s.clone()),
+        toml::Value::Integer(i) => Value::Int(*i),
+        toml::Value::Float(f) => Value::Float(*f),
+        toml::Value::Boolean(b) => Value::Bool(*b),
+        toml::Value::Datetime(dt) => Value::Str(dt.to_string()),
+        toml::Value::Array(arr) => {
+            Value::List(std::sync::Arc::new(arr.iter().map(toml_to_value).collect()))
         }
-    }
-
-    fn as_array(&self) -> Option<&[JsonValue]> {
-        match self {
-            JsonValue::Array(a) => Some(a),
-            _ => None,
-        }
-    }
-
-    fn as_object(&self) -> Option<&[(String, JsonValue)]> {
-        match self {
-            JsonValue::Object(o) => Some(o),
-            _ => None,
-        }
-    }
-
-    fn get(&self, key: &str) -> Option<&JsonValue> {
-        self.as_object()
-            .and_then(|o| o.iter().find(|(k, _)| k == key).map(|(_, v)| v))
-    }
-
-    /// Join an array of strings with `\n`, or return a plain string.
-    fn join_lines(&self) -> String {
-        match self {
-            JsonValue::Array(items) => items
+        toml::Value::Table(tbl) => {
+            let map: crate::compat::HashMap<String, Value> = tbl
                 .iter()
-                .map(|v| v.as_str().unwrap_or(""))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            JsonValue::Str(s) => s.clone(),
-            _ => String::new(),
-        }
-    }
-
-    fn to_value(&self) -> Value {
-        match self {
-            JsonValue::Null => Value::Str(String::new()),
-            JsonValue::Bool(b) => Value::Bool(*b),
-            #[allow(
-                clippy::cast_precision_loss,
-                clippy::cast_possible_truncation,
-                clippy::float_cmp
-            )]
-            JsonValue::Number(n) => {
-                let as_int = *n as i64;
-                if *n == as_int as f64 {
-                    Value::Int(as_int)
-                } else {
-                    Value::Float(*n)
-                }
-            }
-            JsonValue::Str(s) => Value::Str(s.clone()),
-            JsonValue::Array(items) => Value::List(std::sync::Arc::new(
-                items.iter().map(JsonValue::to_value).collect(),
-            )),
-            JsonValue::Object(fields) => {
-                let map: crate::compat::HashMap<String, Value> = fields
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.to_value()))
-                    .collect();
-                Value::Struct(std::sync::Arc::new(map))
-            }
-        }
-    }
-
-    fn to_context(&self) -> Context {
-        let mut ctx = Context::new();
-        if let Some(obj) = self.as_object() {
-            for (key, val) in obj {
-                ctx.set(key, val.to_value());
-            }
-        }
-        ctx
-    }
-}
-
-/// Simple recursive JSON parser.
-fn parse_json(input: &str) -> JsonValue {
-    let input = input.trim();
-    let (val, _) = parse_json_value(input);
-    val
-}
-
-fn parse_json_value(input: &str) -> (JsonValue, &str) {
-    let input = input.trim();
-    if input.starts_with('"') {
-        parse_json_string(input)
-    } else if input.starts_with('{') {
-        parse_json_object(input)
-    } else if input.starts_with('[') {
-        parse_json_array(input)
-    } else if let Some(rest) = input.strip_prefix("true") {
-        (JsonValue::Bool(true), rest)
-    } else if let Some(rest) = input.strip_prefix("false") {
-        (JsonValue::Bool(false), rest)
-    } else if let Some(rest) = input.strip_prefix("null") {
-        (JsonValue::Null, rest)
-    } else {
-        // Number
-        let end = input
-            .find(|c: char| {
-                !c.is_ascii_digit() && c != '.' && c != '-' && c != '+' && c != 'e' && c != 'E'
-            })
-            .unwrap_or(input.len());
-        let num: f64 = input[..end].parse().unwrap_or(0.0);
-        (JsonValue::Number(num), &input[end..])
-    }
-}
-
-fn parse_json_string(input: &str) -> (JsonValue, &str) {
-    assert!(input.starts_with('"'));
-    let mut result = String::new();
-    let bytes = input.as_bytes();
-    let mut i = 1;
-    while i < bytes.len() {
-        if bytes[i] == b'\\' && i + 1 < bytes.len() {
-            match bytes[i + 1] {
-                b'"' => result.push('"'),
-                b'\\' => result.push('\\'),
-                b'n' => result.push('\n'),
-                b'r' => result.push('\r'),
-                b't' => result.push('\t'),
-                b'/' => result.push('/'),
-                other => {
-                    result.push('\\');
-                    result.push(other as char);
-                }
-            }
-            i += 2;
-        } else if bytes[i] == b'"' {
-            return (JsonValue::Str(result), &input[i + 1..]);
-        } else {
-            result.push(bytes[i] as char);
-            i += 1;
-        }
-    }
-    (JsonValue::Str(result), "")
-}
-
-fn parse_json_object(input: &str) -> (JsonValue, &str) {
-    assert!(input.starts_with('{'));
-    let mut rest = input[1..].trim();
-    let mut fields = Vec::new();
-    if let Some(after) = rest.strip_prefix('}') {
-        return (JsonValue::Object(fields), after);
-    }
-    loop {
-        rest = rest.trim();
-        let (key, after_key) = parse_json_string(rest);
-        let key_str = key.as_str().unwrap().to_string();
-        rest = after_key.trim();
-        assert!(rest.starts_with(':'), "expected ':' after key, got: {rest}");
-        rest = rest[1..].trim();
-        let (val, after_val) = parse_json_value(rest);
-        fields.push((key_str, val));
-        rest = after_val.trim();
-        if rest.starts_with(',') {
-            rest = &rest[1..];
-        } else if let Some(after) = rest.strip_prefix('}') {
-            return (JsonValue::Object(fields), after);
-        } else {
-            return (JsonValue::Object(fields), rest);
+                .map(|(k, v)| (k.clone(), toml_to_value(v)))
+                .collect();
+            Value::Struct(std::sync::Arc::new(map))
         }
     }
 }
 
-fn parse_json_array(input: &str) -> (JsonValue, &str) {
-    assert!(input.starts_with('['));
-    let mut rest = input[1..].trim();
-    let mut items = Vec::new();
-    if let Some(after) = rest.strip_prefix(']') {
-        return (JsonValue::Array(items), after);
-    }
-    loop {
-        rest = rest.trim();
-        let (val, after_val) = parse_json_value(rest);
-        items.push(val);
-        rest = after_val.trim();
-        if rest.starts_with(',') {
-            rest = &rest[1..];
-        } else if let Some(after) = rest.strip_prefix(']') {
-            return (JsonValue::Array(items), after);
-        } else {
-            return (JsonValue::Array(items), rest);
+fn toml_to_context(val: Option<&toml::Value>) -> Context {
+    let mut ctx = Context::new();
+    if let Some(toml::Value::Table(tbl)) = val {
+        for (k, v) in tbl {
+            ctx.set(k, toml_to_value(v));
         }
     }
+    ctx
+}
+
+fn get_template_src(tc: &toml::Table) -> String {
+    let val = tc
+        .get("template")
+        .and_then(|v| v.as_str())
+        .expect("missing template");
+    if val.ends_with(".tmpl.md") {
+        let full_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/shared")
+            .join(val);
+        if full_path.exists() {
+            return std::fs::read_to_string(&full_path).unwrap_or_else(|e| {
+                panic!("failed to read template file {}: {e}", full_path.display())
+            });
+        }
+    }
+    val.to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -224,28 +67,30 @@ fn parse_json_array(input: &str) -> (JsonValue, &str) {
 
 #[test]
 fn shared_inline_tmpl_tests() {
-    let json_str = include_str!("../../../../tests/shared/inline_tmpl_tests.json");
-    let root = parse_json(json_str);
-    let tests = root.get("tests").unwrap().as_array().unwrap();
+    let toml_str = include_str!("../../../../tests/shared/inline_tmpl_tests.toml");
+    let root: toml::Table = toml::from_str(toml_str).expect("parse toml");
+    let tests = root
+        .get("tests")
+        .and_then(|v| v.as_array())
+        .expect("tests array");
 
-    for tc in tests {
-        let name = tc.get("name").unwrap().as_str().unwrap();
-        let template_src = tc.get("template_lines").unwrap().join_lines();
-        let params = tc.get("params").unwrap();
+    for tc_val in tests {
+        let tc = tc_val.as_table().expect("test case table");
+        let name = tc.get("name").and_then(|v| v.as_str()).unwrap();
+        let template_src = get_template_src(tc);
+        let params = tc.get("params");
 
-        if let Some(expected_output) = tc.get("expected_output") {
-            let expected = expected_output.as_str().unwrap();
+        if let Some(expected) = tc.get("expected_output").and_then(|v| v.as_str()) {
             let tmpl = Template::from_source(&template_src)
                 .unwrap_or_else(|e| panic!("[{name}] parse failed: {e}"));
-            let ctx = params.to_context();
+            let ctx = toml_to_context(params);
             let output = tmpl
                 .render_ctx(&ctx)
                 .unwrap_or_else(|e| panic!("[{name}] render failed: {e}"));
             assert_eq!(output, expected, "[{name}] output mismatch");
-        } else if let Some(expected_error) = tc.get("expected_error") {
-            let expected_substr = expected_error.as_str().unwrap();
+        } else if let Some(expected_substr) = tc.get("expected_error").and_then(|v| v.as_str()) {
             let result = Template::from_source(&template_src).and_then(|tmpl| {
-                let ctx = params.to_context();
+                let ctx = toml_to_context(params);
                 tmpl.render_ctx(&ctx)
             });
             let err = result.unwrap_err();
@@ -265,43 +110,88 @@ fn shared_inline_tmpl_tests() {
 
 #[test]
 fn shared_include_tests() {
-    let json_str = include_str!("../../../../tests/shared/include_tests.json");
-    let root = parse_json(json_str);
-    let tests = root.get("tests").unwrap().as_array().unwrap();
+    let toml_str = include_str!("../../../../tests/shared/include_tests.toml");
+    let root: toml::Table = toml::from_str(toml_str).expect("parse toml");
+    let tests = root
+        .get("tests")
+        .and_then(|v| v.as_array())
+        .expect("tests array");
 
-    for tc in tests {
-        let name = tc.get("name").unwrap().as_str().unwrap();
-        let parent_template = tc.get("parent_template_lines").unwrap().join_lines();
-        let files = tc.get("files").unwrap().as_object().unwrap();
-        let params = tc.get("params").unwrap();
+    for tc_val in tests {
+        let tc = tc_val.as_table().expect("test case table");
+        let name = tc.get("name").and_then(|v| v.as_str()).unwrap();
+        let parent_template = {
+            let val = tc
+                .get("parent_template")
+                .and_then(|v| v.as_str())
+                .expect("missing parent_template");
+            if val.ends_with(".tmpl.md") {
+                let full_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../tests/shared")
+                    .join(val);
+                if full_path.exists() {
+                    std::fs::read_to_string(&full_path).unwrap_or_else(|e| {
+                        panic!(
+                            "failed to read parent template file {}: {e}",
+                            full_path.display()
+                        )
+                    })
+                } else {
+                    val.to_string()
+                }
+            } else {
+                val.to_string()
+            }
+        };
+        let files = tc
+            .get("files")
+            .and_then(|v| v.as_table())
+            .expect("missing files table");
+        let params = tc.get("params");
 
         // Create temp dir with include files.
         let dir = tempfile::tempdir().unwrap();
-        for (filename, content) in files {
-            let content_str = content.join_lines();
-            std::fs::write(dir.path().join(filename), content_str).unwrap();
+        for (filename, content_val) in files {
+            let content_str = content_val.as_str().expect("file content must be string");
+            let content = if content_str.ends_with(".tmpl.md") {
+                let full_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../tests/shared")
+                    .join(content_str);
+                if full_path.exists() {
+                    std::fs::read_to_string(&full_path).unwrap_or_else(|e| {
+                        panic!("failed to read include file {}: {e}", full_path.display())
+                    })
+                } else {
+                    content_str.to_string()
+                }
+            } else {
+                content_str.to_string()
+            };
+            let file_path = dir.path().join(filename);
+            if let Some(parent) = file_path.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(file_path, content).unwrap();
         }
 
-        if let Some(expected_output) = tc.get("expected_output") {
-            let expected = expected_output.as_str().unwrap();
+        if let Some(expected) = tc.get("expected_output").and_then(|v| v.as_str()) {
             let (tmpl, _fm) = Template::compile(
                 &parent_template,
                 CompileOptions::default().base_dir(dir.path()),
             )
             .unwrap_or_else(|e| panic!("[{name}] parse failed: {e}"));
-            let ctx = params.to_context();
+            let ctx = toml_to_context(params);
             let output = tmpl
                 .render_ctx(&ctx)
                 .unwrap_or_else(|e| panic!("[{name}] render failed: {e}"));
             assert_eq!(output, expected, "[{name}] output mismatch");
-        } else if let Some(expected_error) = tc.get("expected_error") {
-            let expected_substr = expected_error.as_str().unwrap();
+        } else if let Some(expected_substr) = tc.get("expected_error").and_then(|v| v.as_str()) {
             let result = Template::compile(
                 &parent_template,
                 CompileOptions::default().base_dir(dir.path()),
             )
             .and_then(|(tmpl, _fm)| {
-                let ctx = params.to_context();
+                let ctx = toml_to_context(params);
                 tmpl.render_ctx(&ctx)
             });
             let err = result.unwrap_err();
@@ -321,31 +211,80 @@ fn shared_include_tests() {
 
 #[test]
 fn shared_inline_control_tests() {
-    let json_str = include_str!("../../../../tests/shared/inline_control_tests.json");
-    let root = parse_json(json_str);
-    let tests = root.get("tests").unwrap().as_array().unwrap();
+    let toml_str = include_str!("../../../../tests/shared/inline_control_tests.toml");
+    let root: toml::Table = toml::from_str(toml_str).expect("parse toml");
+    let tests = root
+        .get("tests")
+        .and_then(|v| v.as_array())
+        .expect("tests array");
 
-    for tc in tests {
-        let name = tc.get("name").unwrap().as_str().unwrap();
-        let template_src = tc.get("template_lines").unwrap().join_lines();
-        let params = tc.get("params").unwrap();
+    for tc_val in tests {
+        let tc = tc_val.as_table().expect("test case table");
+        let name = tc.get("name").and_then(|v| v.as_str()).unwrap();
+        let template_src = get_template_src(tc);
+        let params = tc.get("params");
 
-        if let Some(expected_output) = tc.get("expected_output") {
-            let expected = expected_output.as_str().unwrap();
+        if let Some(expected) = tc.get("expected_output").and_then(|v| v.as_str()) {
             let tmpl = Template::from_source(&template_src)
                 .unwrap_or_else(|e| panic!("[{name}] parse failed: {e}"));
-            let ctx = params.to_context();
+            if let Ok((fm, _)) = crate::frontmatter::parse_frontmatter(&template_src) {
+                let mut opaque_roots: crate::compat::HashSet<String> =
+                    crate::compat::HashSet::new();
+                for c in tmpl.consts.keys() {
+                    opaque_roots.insert(c.clone());
+                }
+                for c in tmpl.imported_consts.keys() {
+                    if let Some(stem) = c.split('.').next() {
+                        opaque_roots.insert(stem.to_string());
+                    }
+                }
+                let type_errors = crate::compiled::validate_field_accesses_full(
+                    &tmpl.segments,
+                    &tmpl.declared_variables,
+                    &fm.type_aliases,
+                    &opaque_roots,
+                );
+                if let Some(err) = type_errors.into_iter().next() {
+                    panic!("[{name}] static type check failed: {err}");
+                }
+            }
+            let ctx = toml_to_context(params);
             let output = tmpl
                 .render_ctx(&ctx)
                 .unwrap_or_else(|e| panic!("[{name}] render failed: {e}"));
             assert_eq!(output, expected, "[{name}] output mismatch");
-        } else if let Some(expected_error) = tc.get("expected_error") {
-            let expected_substr = expected_error.as_str().unwrap();
+        } else if let Some(expected_substr) = tc.get("expected_error").and_then(|v| v.as_str()) {
             let result = Template::from_source(&template_src).and_then(|tmpl| {
-                let ctx = params.to_context();
+                if let Ok((fm, _)) = crate::frontmatter::parse_frontmatter(&template_src) {
+                    let mut opaque_roots: crate::compat::HashSet<String> =
+                        crate::compat::HashSet::new();
+                    for c in tmpl.consts.keys() {
+                        opaque_roots.insert(c.clone());
+                    }
+                    for c in tmpl.imported_consts.keys() {
+                        if let Some(stem) = c.split('.').next() {
+                            opaque_roots.insert(stem.to_string());
+                        }
+                    }
+                    let type_errors = crate::compiled::validate_field_accesses_full(
+                        &tmpl.segments,
+                        &tmpl.declared_variables,
+                        &fm.type_aliases,
+                        &opaque_roots,
+                    );
+                    if let Some(err) = type_errors.into_iter().next() {
+                        return Err(crate::error::TemplateError::syntax(err));
+                    }
+                }
+                let ctx = toml_to_context(params);
                 tmpl.render_ctx(&ctx)
             });
-            let err = result.unwrap_err();
+            let err = match result {
+                Err(e) => e,
+                Ok(out) => panic!(
+                    "[{name}] expected error containing \"{expected_substr}\", but got Ok({out:?})"
+                ),
+            };
             assert!(
                 err.to_string()
                     .to_lowercase()
@@ -362,28 +301,30 @@ fn shared_inline_control_tests() {
 
 #[test]
 fn shared_tmpl_param_tests() {
-    let json_str = include_str!("../../../../tests/shared/tmpl_param_tests.json");
-    let root = parse_json(json_str);
-    let tests = root.get("tests").unwrap().as_array().unwrap();
+    let toml_str = include_str!("../../../../tests/shared/tmpl_param_tests.toml");
+    let root: toml::Table = toml::from_str(toml_str).expect("parse toml");
+    let tests = root
+        .get("tests")
+        .and_then(|v| v.as_array())
+        .expect("tests array");
 
-    for tc in tests {
-        let name = tc.get("name").unwrap().as_str().unwrap();
-        let template_src = tc.get("template_lines").unwrap().join_lines();
-        let params = tc.get("params").unwrap();
+    for tc_val in tests {
+        let tc = tc_val.as_table().expect("test case table");
+        let name = tc.get("name").and_then(|v| v.as_str()).unwrap();
+        let template_src = get_template_src(tc);
+        let params = tc.get("params");
 
-        if let Some(expected_output) = tc.get("expected_output") {
-            let expected = expected_output.as_str().unwrap();
+        if let Some(expected) = tc.get("expected_output").and_then(|v| v.as_str()) {
             let tmpl = Template::from_source(&template_src)
                 .unwrap_or_else(|e| panic!("[{name}] parse failed: {e}"));
-            let ctx = params.to_context();
+            let ctx = toml_to_context(params);
             let output = tmpl
                 .render_ctx(&ctx)
                 .unwrap_or_else(|e| panic!("[{name}] render failed: {e}"));
             assert_eq!(output, expected, "[{name}] output mismatch");
-        } else if let Some(expected_error) = tc.get("expected_error") {
-            let expected_substr = expected_error.as_str().unwrap();
+        } else if let Some(expected_substr) = tc.get("expected_error").and_then(|v| v.as_str()) {
             let result = Template::from_source(&template_src).and_then(|tmpl| {
-                let ctx = params.to_context();
+                let ctx = toml_to_context(params);
                 tmpl.render_ctx(&ctx)
             });
             let err = result.unwrap_err();
@@ -393,6 +334,57 @@ fn shared_tmpl_param_tests() {
                     .contains(&expected_substr.to_lowercase()),
                 "[{name}] expected error containing \"{expected_substr}\", got: \"{err}\""
             );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared feature E2E tests (Milestone E2E.2)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn shared_feature_e2e_tests() {
+    let toml_str = include_str!("../../../../tests/shared/feature_e2e_tests.toml");
+    let root: toml::Table = toml::from_str(toml_str).expect("parse toml");
+    let tests = root
+        .get("tests")
+        .and_then(|v| v.as_array())
+        .expect("tests array");
+
+    for tc_val in tests {
+        let tc = tc_val.as_table().expect("test case table");
+        let name = tc.get("name").and_then(|v| v.as_str()).unwrap();
+        let template_src = get_template_src(tc);
+        let params = tc.get("params");
+
+        if let Some(expected) = tc.get("expected_output").and_then(|v| v.as_str()) {
+            let tmpl = Template::from_source(&template_src)
+                .unwrap_or_else(|e| panic!("[{name}] parse failed: {e}"));
+            let ctx = toml_to_context(params);
+            let output = tmpl
+                .render_ctx(&ctx)
+                .unwrap_or_else(|e| panic!("[{name}] render failed: {e}"));
+            assert_eq!(output, expected, "[{name}] output mismatch");
+        } else if let Some(expected_substr) = tc.get("expected_error").and_then(|v| v.as_str()) {
+            let result = Template::from_source(&template_src).and_then(|tmpl| {
+                let ctx = toml_to_context(params);
+                tmpl.render_ctx(&ctx)
+            });
+            match result {
+                Ok(output) => {
+                    panic!(
+                        "[{name}] expected error containing \"{expected_substr}\", but template succeeded with output: \"{output}\""
+                    );
+                }
+                Err(err) => {
+                    assert!(
+                        err.to_string()
+                            .to_lowercase()
+                            .contains(&expected_substr.to_lowercase()),
+                        "[{name}] expected error containing \"{expected_substr}\", got: \"{err}\""
+                    );
+                }
+            }
         }
     }
 }

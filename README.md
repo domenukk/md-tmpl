@@ -88,19 +88,20 @@ Templates can also be loaded and validated at runtime for dynamic or hot-reload 
 
 ## Features
 
-| Feature                    | Description                                                                              |
-| -------------------------- | ---------------------------------------------------------------------------------------- |
-| **Typed parameters**       | `str`, `int`, `float`, `bool`, `list(…)`, `struct(…)`, `enum(…)`, `option(…)`, `tmpl(…)` |
-| **Type aliases**           | `types:` defines reusable named types                                                    |
-| **Cross-template imports** | `imports:` pulls types via dotted paths (`stem.TypeName`)                                |
-| **Typed lists**            | `list(title = str, score = int)` — iterate with `{% for %}`, fields validated            |
-| **Enum dispatch**          | `match`/`case` with exhaustiveness checking and field narrowing                          |
-| **Includes as links**      | `{% include [name](path.tmpl.md) with … %}` — clickable, type-checked                    |
-| **Inline templates**       | `{% tmpl name %}` — reusable fragments without separate files                            |
-| **Constants**              | `consts:` for file-scoped immutable values                                               |
-| **Built-in functions**     | `idx(b)`, `len(x)`, `kind(x)`, `has(x)` + filters (`upper`, `lower`, `trim`, `join`, …)  |
-| **Readable as markdown**   | `> {% %}` blockquote prefix keeps control flow visually separated from prose             |
-| **Markdown-safe syntax**   | Valid YAML frontmatter, clean `()` type syntax — looks good even unrendered              |
+| Feature                    | Description                                                                                         |
+| -------------------------- | --------------------------------------------------------------------------------------------------- |
+| **Typed parameters**       | `str`, `int`, `float`, `bool`, `list(…)`, `struct(…)`, `enum(…)`, `option(…)`, `tmpl(…)`            |
+| **Type aliases**           | `types:` defines reusable named types                                                               |
+| **Cross-template imports** | `imports:` pulls types via dotted paths (`stem.TypeName`)                                           |
+| **Typed lists**            | `list(title = str, score = int)` — iterate with `{% for %}`, fields validated                       |
+| **Enum dispatch**          | `match`/`case` with exhaustiveness checking and field narrowing                                     |
+| **Includes as links**      | `{% include [name](path.tmpl.md) with … %}` — clickable, type-checked                               |
+| **Inline templates**       | `{% tmpl name %}` — reusable fragments without separate files                                       |
+| **Constants**              | `consts:` for file-scoped immutable values                                                          |
+| **String interpolation**   | `{{ expr }}` inside all quoted strings — conditions, includes, panic messages                       |
+| **Built-in functions**     | `idx(b)`, `len(x)`, `kind(x)`, `kinds(t)`, `has(x)` + filters (`upper`, `lower`, `trim`, `join`, …) |
+| **Readable as markdown**   | `> {% %}` blockquote prefix keeps control flow visually separated from prose                        |
+| **Markdown-safe syntax**   | Valid YAML frontmatter, clean `()` type syntax — looks good even unrendered                         |
 
 > **Note:** The `> ` prefix is required only on `{% %}` tag lines — it is
 > stripped before compilation. Content lines between tags are normal text
@@ -137,47 +138,25 @@ Built for speed — zero-allocation rendering in Rust, native FFI in all binding
 
 ### Rust (render-only, pre-parsed)
 
-| Scenario        |         md-tmpl |     Tera | `MiniJinja` | Handlebars |
-| --------------- | --------------: | -------: | ----------: | ---------: |
-| **simple**      |   **122 ns** 🏆 |   221 ns |      552 ns |     717 ns |
-| **loop**        |   **555 ns** 🏆 |   651 ns |     1.89 µs |    3.31 µs |
-| **conditional** |   **168 ns** 🏆 |   390 ns |      612 ns |    1.38 µs |
-| **hero**        |  **2.09 µs** 🏆 |  2.17 µs |     7.43 µs |   25.18 µs |
-| **mega**        | **10.60 µs** 🏆 | 11.21 µs |    28.39 µs |   91.99 µs |
-
-### Cross-Language (render-only)
-
-| Language       |    simple |       loop | conditional |      large |
-| -------------- | --------: | ---------: | ----------: | ---------: |
-| **Rust**       | 196 ns 🏆 | 1.11 µs 🏆 |         N/A | 22.1 µs 🏆 |
-| **Go**         |    525 ns |   1,716 ns |         N/A |  24,808 ns |
-| Go `text/tmpl` |    569 ns |   6,251 ns |         N/A | 140,495 ns |
-| **TypeScript** |    610 ns |   4,135 ns |    2,011 ns |        N/A |
-| **Python**     |   0.84 µs |    1.74 µs |     0.87 µs |    6.62 µs |
+| Scenario        |        md-tmpl |     Tera | `MiniJinja` | Handlebars |
+| --------------- | -------------: | -------: | ----------: | ---------: |
+| **simple**      |  **150 ns** 🏆 |   216 ns |      554 ns |     673 ns |
+| **loop**        |  **467 ns** 🏆 |   598 ns |     2.00 µs |    3.13 µs |
+| **conditional** |  **211 ns** 🏆 |   343 ns |      623 ns |    1.38 µs |
+| **hero**        | **2.08 µs** 🏆 |  2.20 µs |     7.51 µs |   25.42 µs |
+| **mega**        | **8.64 µs** 🏆 | 10.89 µs |    28.49 µs |   88.99 µs |
 
 See the language-specific READMEs or the [benchmarks suite](benchmarks/README.md) for full details and methodology.
 
 ## Language Bindings
 
-### Rust ([README](crates/md-tmpl/README.md))
+First-class native packages across all major ecosystems — with tailored ergonomics and high-performance engines:
 
-Build-time validation via proc macros, plus a full runtime API for dynamic loading. Pre-parsed templates with zero-overhead rendering. Includes `ctx!` macro, `TypedBuilder`, `serde`, hot-reload, caching, and benchmarks.
-
-### Python ([README](crates/md-tmpl-python/README.md))
-
-Includes generated types, import hooks, pattern matching, enum construction, caching, and benchmarks.
-
-### Go ([README](go/md_tmpl/README.md))
-
-Includes `RenderStruct`, `TaggedVariant`, codegen, caching, and benchmarks.
-
-### TypeScript ([README](crates/md-tmpl-typescript/README.md))
-
-Includes `TypedTemplate(P)`, `defineVariants`, codegen, WASM backend, and benchmarks.
-
-### WASM ([README](crates/md-tmpl-wasm/README.md))
-
-WebAssembly bindings wrapping the full Rust engine via `wasm-bindgen`. Same `ITemplate` interface as the pure-TypeScript package.
+- **[Rust](crates/md-tmpl/README.md)** — Zero-allocation rendering, build-time validation via proc macros (`include_template!`), ergonomic `TypedBuilder` & `serde` integration, `ctx!` macro, caching, and hot-reload.
+- **[Python](crates/md-tmpl-python/README.md)** — 4–8× faster than Jinja2. Auto-generated dataclasses, mypy/pyright static typing stubs, native Python 3.10+ structural pattern matching (`match`/`case`), and direct import hooks (`from prompts.review import CodeReview`).
+- **[Go](go/md_tmpl/README.md)** — 3–6× faster than standard `text/template`. Zero-allocation FFI engine, idiomatic struct tag mapping (`json:"field"`), map rendering, and static enum typing via `TaggedVariant`.
+- **[TypeScript](crates/md-tmpl-typescript/README.md)** — Build-time TypeScript type generation (`generateTypesFromFile`), generic `TypedTemplate<P>` contracts, type-safe enum constructors (`defineVariants`), and exhaustive pattern matching (`match`).
+- **[WASM](crates/md-tmpl-wasm/README.md)** — Exact Rust-engine feature parity in Node.js and browsers (~200 KB `.wasm`). Supports zero-copy binary throughput (`renderFlexbuffers`) and implements the exact same `ITemplate` interface as pure TypeScript.
 
 ## Full Reference
 

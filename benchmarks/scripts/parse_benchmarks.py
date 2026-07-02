@@ -28,6 +28,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ CRITERION_GROUPS = ["simple", "loop", "conditional", "hero", "mega"]
 CRITERION_ENGINES = ["md_tmpl", "tera", "minijinja", "handlebars"]
 
 
-def parse_criterion_dir(criterion_dir: Path) -> dict:
+def parse_criterion_dir(criterion_dir: Path) -> dict[str, Any]:
     """Parse Criterion JSON output from target/criterion directories.
 
     Returns: {scenario: {engine: ns_value, ...}, ...}
@@ -93,7 +94,7 @@ PYTHON_SECTION_RE = re.compile(
 PYTHON_VALUE_RE = re.compile(r"([\d.]+)\s*µs")
 
 
-def parse_python_output(text: str) -> dict:
+def parse_python_output(text: str) -> dict[str, Any]:
     """Parse Python benchmark stdout into structured results.
 
     Returns: {
@@ -219,7 +220,7 @@ GO_BENCH_RE = re.compile(
 )
 
 
-def parse_go_output(text: str) -> dict:
+def parse_go_output(text: str) -> dict[str, Any]:
     """Parse Go benchmark output.
 
     Returns: {
@@ -268,7 +269,7 @@ TS_BENCH_RE = re.compile(
 )
 
 
-def parse_ts_output(text: str) -> dict:
+def parse_ts_output(text: str) -> dict[str, Any]:
     """Parse TypeScript benchmark output.
 
     Returns: {"parse": {name: ns, ...}, "render": {name: ns, ...}, "unchecked": {name: ns, ...}}
@@ -317,7 +318,7 @@ TS_COMP_ROW_RE = re.compile(
 )
 
 
-def parse_ts_comparison_output(text: str) -> dict:
+def parse_ts_comparison_output(text: str) -> dict[str, Any]:
     """Parse TypeScript comparison benchmark output (comparison.ts).
 
     Returns: {
@@ -392,7 +393,7 @@ def _parse_wasm_time(s: str) -> float:
     return float(s)
 
 
-def parse_wasm_output(text: str) -> dict:
+def parse_wasm_output(text: str) -> dict[str, Any]:
     """Parse WASM benchmark output.
 
     Returns: {scenario: {"wasm": {median_ns: float}, "ts": {median_ns: float}, "speedup": float}, ...}
@@ -416,7 +417,7 @@ def parse_wasm_output(text: str) -> dict:
             log.warning("Failed to parse WASM JSON output: %s", e)
 
     # Fallback: parse table output
-    results: dict[str, dict] = {}
+    results: dict[str, dict[str, Any]] = {}
     for line in text.split("\n"):
         match = WASM_ROW_RE.match(line.strip())
         if match:
@@ -442,15 +443,15 @@ def parse_wasm_output(text: str) -> dict:
 
 
 def build_unified_output(
-    rust: dict | None = None,
-    python: dict | None = None,
-    go: dict | None = None,
-    ts: dict | None = None,
-    ts_comparison: dict | None = None,
-    wasm: dict | None = None,
-) -> dict:
+    rust: dict[str, Any] | None = None,
+    python: dict[str, Any] | None = None,
+    go: dict[str, Any] | None = None,
+    ts: dict[str, Any] | None = None,
+    ts_comparison: dict[str, Any] | None = None,
+    wasm: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Build the unified JSON output structure."""
-    output: dict = {}
+    output: dict[str, Any] = {}
 
     if rust:
         output["rust"] = rust

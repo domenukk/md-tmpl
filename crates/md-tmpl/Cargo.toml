@@ -1,6 +1,6 @@
 [package]
 name = "md-tmpl"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Lightweight template engine for .tmpl.md prompt files with typed frontmatter"
@@ -47,6 +47,7 @@ md-tmpl-macros = { path = "../md-tmpl-macros", features = [
 typed-builder = { workspace = true }
 criterion = { version = "0.7", features = ["html_reports"] }
 flexbuffers = "25.12"
+toml = "0.8"
 
 [[test]]
 name = "yaml_conformance"

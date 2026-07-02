@@ -346,3 +346,89 @@ yes
         "tmpl should be truthy, got: {result}"
     );
 }
+
+#[test]
+fn test_higher_order_option_tmpl() {
+    let helper = Template::from_source(
+        r"---
+params: [test = str]
+---
+Helper: {{ test }}",
+    )
+    .unwrap();
+
+    let main = Template::from_source(
+        r#"---
+params: [cb = option(tmpl(test = str))]
+---
+> {% if has(cb) %}
+> {% include cb with test="Hello Option" %}
+> {% else %}
+
+No callback
+
+> {% /if %}"#,
+    )
+    .unwrap();
+
+    let mut ctx_some = crate::Context::new();
+    ctx_some.set("cb", Value::Tmpl(Arc::new(helper)));
+    let result_some = main.render_ctx(&ctx_some).unwrap();
+    assert!(
+        result_some.contains("Helper: Hello Option"),
+        "got: {result_some}"
+    );
+
+    let mut ctx_none = crate::Context::new();
+    ctx_none.set("cb", Value::None);
+    let result_none = main.render_ctx(&ctx_none).unwrap();
+    assert!(result_none.contains("No callback"), "got: {result_none}");
+}
+
+#[test]
+fn test_higher_order_nested_option_tmpl() {
+    let inner = Template::from_source(
+        r"---
+params: [test = str]
+---
+Inner: {{ test }}",
+    )
+    .unwrap();
+
+    let middle = Template::from_source(
+        r#"---
+params: [sub = option(tmpl(test = str))]
+---
+> {% if has(sub) %}
+> {% include sub with test="Nested Success" %}
+> {% else %}
+
+No sub
+
+> {% /if %}"#,
+    )
+    .unwrap();
+
+    let main = Template::from_source(
+        r"---
+params:
+  - cb = option(tmpl(sub = option(tmpl(test = str))))
+  - target = option(tmpl(test = str))
+---
+> {% if has(cb) %}
+> {% include cb with sub=target %}
+> {% else %}
+
+No cb
+
+> {% /if %}",
+    )
+    .unwrap();
+
+    let mut ctx = crate::Context::new();
+    ctx.set("cb", Value::Tmpl(Arc::new(middle)));
+    ctx.set("target", Value::Tmpl(Arc::new(inner)));
+
+    let result = main.render_ctx(&ctx).unwrap();
+    assert!(result.contains("Inner: Nested Success"), "got: {result}");
+}

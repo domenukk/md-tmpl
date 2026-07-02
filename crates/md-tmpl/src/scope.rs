@@ -50,7 +50,7 @@ impl CompiledPath {
     pub fn compile(raw: &str) -> Self {
         let raw: Cow<'static, str> = Cow::Owned(raw.to_string());
         let parts: Arc<[String]> = raw
-            .split('.')
+            .split(crate::consts::PATH_SEP)
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
@@ -94,6 +94,8 @@ pub enum CompiledExpr {
     Len(CompiledPath),
     /// Variant name lookup `kind(path)`.
     Kind(CompiledPath),
+    /// Enum variant names list lookup `kinds(path)`.
+    Kinds(CompiledPath),
     /// Option presence check `has(path)` — returns `true` if option is `Some`.
     Has(CompiledPath),
 }
@@ -116,6 +118,7 @@ impl CompiledExpr {
                 crate::consts::FN_IDX => Ok(Self::Idx(Cow::Owned(arg.to_string()))),
                 crate::consts::FN_LEN => Ok(Self::Len(CompiledPath::compile(arg))),
                 crate::consts::FN_KIND => Ok(Self::Kind(CompiledPath::compile(arg))),
+                crate::consts::FN_KINDS => Ok(Self::Kinds(CompiledPath::compile(arg))),
                 crate::consts::FN_HAS => Ok(Self::Has(CompiledPath::compile(arg))),
                 _ => Err(TemplateError::syntax(format!(
                     "unknown function '{func_name}'"
@@ -128,10 +131,13 @@ impl CompiledExpr {
 }
 
 /// A pre-compiled condition operand.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum ConditionOperand {
     /// A literal value (string, int, float, bool).
     Literal(Value),
+    /// An interpolated string literal containing `{{ expr }}` segments.
+    /// Compiled at parse time, evaluated at render time.
+    InterpolatedStr(alloc::vec::Vec<crate::compiled::Segment>),
     /// A dotted path lookup, optionally followed by filters.
     Path {
         /// Dotted path.
@@ -145,6 +151,8 @@ pub enum ConditionOperand {
     Len(CompiledPath),
     /// Variant name lookup `kind(path)`.
     Kind(CompiledPath),
+    /// Enum variant names list lookup `kinds(path)`.
+    Kinds(CompiledPath),
     /// Option presence check `has(path)` — returns `true` if option is `Some`.
     Has(CompiledPath),
 }
@@ -161,8 +169,12 @@ impl ConditionOperand {
             return Err(TemplateError::syntax("empty token in expression"));
         }
 
-        // 1. String literals
+        // 1. String literals (with optional {{ expr }} interpolation)
         if let Some(inner) = crate::consts::strip_string_literal(token) {
+            if inner.contains(crate::consts::EXPR_START) {
+                let segments = crate::compiled::compile_body(inner)?;
+                return Ok(Self::InterpolatedStr(segments));
+            }
             return Ok(Self::Literal(Value::Str(inner.to_string())));
         }
 
@@ -190,6 +202,7 @@ impl ConditionOperand {
                 crate::consts::FN_IDX => return Ok(Self::Idx(Cow::Owned(arg.to_string()))),
                 crate::consts::FN_LEN => return Ok(Self::Len(CompiledPath::compile(arg))),
                 crate::consts::FN_KIND => return Ok(Self::Kind(CompiledPath::compile(arg))),
+                crate::consts::FN_KINDS => return Ok(Self::Kinds(CompiledPath::compile(arg))),
                 crate::consts::FN_HAS => return Ok(Self::Has(CompiledPath::compile(arg))),
                 _ => {
                     return Err(TemplateError::syntax(format!(
@@ -197,13 +210,6 @@ impl ConditionOperand {
                     )));
                 }
             }
-        }
-
-        // Reject .length suffix
-        if let Some(base_path) = token.strip_suffix(crate::consts::PSEUDO_FIELD_LENGTH) {
-            return Err(TemplateError::syntax(format!(
-                "'.length' is not supported — use len({base_path}) instead"
-            )));
         }
 
         // 6. Dotted path (possibly with filters)
@@ -240,6 +246,10 @@ impl ConditionOperand {
     pub fn resolve<'s>(&'s self, scope: &'s Scope<'_>) -> Result<Cow<'s, Value>, TemplateError> {
         match self {
             Self::Literal(val) => Ok(Cow::Borrowed(val)),
+            Self::InterpolatedStr(segments) => {
+                let rendered = crate::compiled::render_interpolated_str(segments, scope)?;
+                Ok(Cow::Owned(Value::Str(rendered)))
+            }
             Self::Path { path, filters } => {
                 let value = scope.resolve_path(path)?;
                 if filters.is_empty() {
@@ -282,6 +292,14 @@ impl ConditionOperand {
             }
             Self::Kind(path) => {
                 let val = scope.resolve_path(path)?;
+                if scope.is_option_path(path.as_str()) {
+                    return match val {
+                        Value::None => {
+                            Ok(Cow::Owned(Value::Str(crate::consts::OPTION_NONE.into())))
+                        }
+                        _ => Ok(Cow::Owned(Value::Str(crate::consts::OPTION_SOME.into()))),
+                    };
+                }
                 match val {
                     Value::Struct(d) => {
                         if let Some(Value::Str(kind)) = d.get(crate::consts::ENUM_TAG_KEY) {
@@ -293,8 +311,27 @@ impl ConditionOperand {
                         }
                     }
                     Value::Str(s) => Ok(Cow::Owned(Value::Str(s.clone()))),
+                    Value::None => Ok(Cow::Owned(Value::Str(crate::consts::OPTION_NONE.into()))),
                     _ => Err(TemplateError::syntax(format!(
                         "kind() requires an enum value, got {}",
+                        val.type_name()
+                    ))),
+                }
+            }
+            Self::Kinds(path) => {
+                let val = scope.resolve_path(path)?;
+                match val {
+                    Value::Struct(d) => {
+                        if let Some(list_val) = d.get(crate::consts::ENUM_VARIANTS_KEY) {
+                            Ok(Cow::Borrowed(list_val))
+                        } else {
+                            Err(TemplateError::syntax(
+                                "kinds() requires an enum type namespace",
+                            ))
+                        }
+                    }
+                    _ => Err(TemplateError::syntax(format!(
+                        "kinds() requires an enum type namespace, got {}",
                         val.type_name()
                     ))),
                 }
@@ -341,6 +378,8 @@ pub struct Scope<'a> {
     consts_stack: Vec<Arc<HashMap<String, Value>>>,
     /// Stack of imported constants keyed by `stem.NAME`.
     imported_consts_stack: Vec<Arc<HashMap<String, Value>>>,
+    /// Stack of parameter declarations (used to check option types).
+    declarations_stack: Vec<Arc<[crate::types::VarDecl]>>,
 }
 
 impl<'a> Scope<'a> {
@@ -362,6 +401,7 @@ impl<'a> Scope<'a> {
             cache: None,
             consts_stack: Vec::new(),
             imported_consts_stack: Vec::new(),
+            declarations_stack: Vec::new(),
         }
     }
 
@@ -385,6 +425,7 @@ impl<'a> Scope<'a> {
             cache: Some(cache),
             consts_stack: Vec::new(),
             imported_consts_stack: Vec::new(),
+            declarations_stack: Vec::new(),
         }
     }
 
@@ -415,12 +456,18 @@ impl<'a> Scope<'a> {
         }
     }
 
-    /// Push a loop binding onto the lightweight stack.
+    /// Push a loop binding from a reference, reusing the existing string
+    /// allocation when both old and new values are strings.
+    ///
+    /// In a loop of N iterations over strings, this avoids N-1 heap
+    /// allocations by clearing and reusing the buffer from iteration 0.
+    /// For non-string types (`Int`, `Bool`, `Arc`-wrapped `List`/`Struct`),
+    /// `clone()` is already cheap.
     ///
     /// Used by for-loops to avoid `HashMap` layer overhead. The binding is
     /// checked before `HashMap` layers in `resolve()`.
     #[inline]
-    pub(crate) fn push_loop_binding(&mut self, key: &str, value: Value) {
+    pub(crate) fn push_loop_binding(&mut self, key: &str, value: &Value) {
         if self.active_loop_bindings < self.loop_bindings.len() {
             let slot = &mut self.loop_bindings[self.active_loop_bindings];
             // Skip key update if it already matches (common in for-loops
@@ -429,10 +476,18 @@ impl<'a> Scope<'a> {
                 slot.0.clear();
                 slot.0.push_str(key);
             }
-            slot.1 = value;
+            // Reuse string allocation when both old and new are strings.
+            match (&mut slot.1, value) {
+                (Value::Str(old), Value::Str(new)) if old.capacity() > 0 => {
+                    old.clear();
+                    old.push_str(new);
+                }
+                _ => slot.1 = value.clone(),
+            }
             slot.2 = None;
         } else {
-            self.loop_bindings.push((key.to_string(), value, None));
+            self.loop_bindings
+                .push((key.to_string(), value.clone(), None));
         }
         self.active_loop_bindings += 1;
     }
@@ -530,6 +585,59 @@ impl<'a> Scope<'a> {
         self.imported_consts_stack.pop();
     }
 
+    /// Set parameter declarations for this scope.
+    pub fn with_declarations(mut self, decls: &Arc<[crate::types::VarDecl]>) -> Self {
+        if !decls.is_empty() {
+            self.declarations_stack.push(Arc::clone(decls));
+        }
+        self
+    }
+
+    /// Push parameter declarations onto the stack.
+    pub(crate) fn push_declarations(&mut self, decls: &[crate::types::VarDecl]) {
+        if !decls.is_empty() {
+            self.declarations_stack.push(Arc::from(decls));
+        }
+    }
+
+    /// Pop parameter declarations from the stack.
+    pub(crate) fn pop_declarations(&mut self, decls: &[crate::types::VarDecl]) {
+        if !decls.is_empty() {
+            self.declarations_stack.pop();
+        }
+    }
+
+    /// Check if a dotted variable path resolves to an option type in declared parameters.
+    pub(crate) fn is_option_path(&self, arg: &str) -> bool {
+        let root = arg.split(crate::consts::PATH_SEP).next().unwrap_or(arg);
+        for decls in self.declarations_stack.iter().rev() {
+            if let Some(decl) = decls.iter().find(|d| d.name == root) {
+                let mut current_type = &decl.var_type;
+                if arg == root {
+                    return current_type.is_option();
+                }
+                for part in arg.split(crate::consts::PATH_SEP).skip(1) {
+                    match current_type {
+                        crate::types::VarType::Struct(fields)
+                        | crate::types::VarType::List(fields) => {
+                            if let Some(f) = fields.iter().find(|d| d.name == part) {
+                                current_type = &f.var_type;
+                            } else {
+                                return false;
+                            }
+                        }
+                        crate::types::VarType::Option(inner) => {
+                            current_type = inner;
+                        }
+                        _ => return false,
+                    }
+                }
+                return current_type.is_option();
+            }
+        }
+        false
+    }
+
     /// Push an included file's own inline templates onto the scope stack.
     /// These take priority over the top-level templates during resolution.
     pub(crate) fn push_inline_templates(
@@ -565,12 +673,13 @@ impl<'a> Scope<'a> {
     /// Returns `None` if the expression doesn't look like a function call,
     /// `Some(Ok(...))` on success, or `Some(Err(...))` on evaluation failure.
     pub(crate) fn try_call_function(&self, expr: &str) -> Option<Result<Value, TemplateError>> {
-        use crate::consts::{FN_HAS, FN_IDX, FN_KIND, FN_LEN};
+        use crate::consts::{FN_HAS, FN_IDX, FN_KIND, FN_KINDS, FN_LEN};
         let (func_name, arg) = parse_function_call(expr)?;
         match func_name {
             FN_IDX => self.call_idx(arg),
             FN_LEN => Some(self.call_len(arg)),
             FN_KIND => Some(self.call_kind(arg)),
+            FN_KINDS => Some(self.call_kinds(arg)),
             FN_HAS => Some(self.call_has(arg)),
             _ => None,
         }
@@ -604,6 +713,12 @@ impl<'a> Scope<'a> {
     fn call_kind(&self, arg: &str) -> Result<Value, TemplateError> {
         use crate::consts::ENUM_TAG_KEY;
         let val = self.resolve_path_str(arg)?;
+        if self.is_option_path(arg) {
+            return match val {
+                Value::None => Ok(Value::Str(crate::consts::OPTION_NONE.into())),
+                _ => Ok(Value::Str(crate::consts::OPTION_SOME.into())),
+            };
+        }
         match val {
             Value::Struct(d) => {
                 if let Some(Value::Str(kind)) = d.get(ENUM_TAG_KEY) {
@@ -615,9 +730,30 @@ impl<'a> Scope<'a> {
                 }
             }
             Value::Str(s) => Ok(Value::Str(s.clone())),
-            Value::None => Ok(Value::Str("None".into())),
+            Value::None => Ok(Value::Str(crate::consts::OPTION_NONE.into())),
             _ => Err(TemplateError::syntax(format!(
                 "kind() requires an enum value, got {}",
+                val.type_name()
+            ))),
+        }
+    }
+
+    /// Evaluate `kinds(path)` — returns the variant names list of an enum type namespace.
+    fn call_kinds(&self, arg: &str) -> Result<Value, TemplateError> {
+        use crate::consts::ENUM_VARIANTS_KEY;
+        let val = self.resolve_path_str(arg)?;
+        match val {
+            Value::Struct(d) => {
+                if let Some(list_val) = d.get(ENUM_VARIANTS_KEY) {
+                    Ok(list_val.clone())
+                } else {
+                    Err(TemplateError::syntax(
+                        "kinds() requires an enum type namespace",
+                    ))
+                }
+            }
+            _ => Err(TemplateError::syntax(format!(
+                "kinds() requires an enum type namespace, got {}",
                 val.type_name()
             ))),
         }
@@ -766,7 +902,7 @@ impl<'a> Scope<'a> {
                 if let Some(v) = imported.get(stem_key) {
                     let mut current = v;
                     for part in &path.parts[2..] {
-                        current = current.get_field(part).ok_or_else(|| {
+                        current = current.get_field_unchecked(part).ok_or_else(|| {
                             TemplateError::UndefinedVariable(format!(
                                 "field '{part}' not found on {}",
                                 current.type_name()
@@ -784,11 +920,20 @@ impl<'a> Scope<'a> {
             .ok_or_else(|| TemplateError::UndefinedVariable(root_key.clone()))?;
 
         let mut current = root;
-        for part in &path.parts[1..] {
-            current = current.get_field(part).ok_or_else(|| {
+        for (i, part) in path.parts[1..].iter().enumerate() {
+            current = current.get_field_unchecked(part).ok_or_else(|| {
+                let traversed: Vec<&str> =
+                    path.parts[..=i + 1].iter().map(String::as_str).collect();
+                let available = current.field_names_hint();
+                let hint = if available.is_empty() {
+                    String::new()
+                } else {
+                    format!(". Available fields: {}", available.join(", "))
+                };
                 TemplateError::UndefinedVariable(format!(
-                    "field '{part}' not found on {}",
-                    current.type_name()
+                    "field '{part}' not found on {} at path '{}'{hint}",
+                    current.type_name(),
+                    traversed.join("."),
                 ))
             })?;
         }
@@ -802,6 +947,19 @@ impl<'a> Scope<'a> {
     /// Returns [`TemplateError::UndefinedVariable`] if the key is not found.
     pub(crate) fn resolve_path_str(&self, path: &str) -> Result<&Value, TemplateError> {
         let path = path.trim();
+
+        // Strip common prefixes: consts., opts., options., params.
+        let path = if let Some(s) = path.strip_prefix(crate::consts::PREFIX_CONSTS_DOT) {
+            s.trim()
+        } else if let Some(s) = path.strip_prefix(crate::consts::PREFIX_OPTS_DOT) {
+            s.trim()
+        } else if let Some(s) = path.strip_prefix(crate::consts::PREFIX_OPTIONS_DOT) {
+            s.trim()
+        } else if let Some(s) = path.strip_prefix(crate::consts::PREFIX_PARAMS_DOT) {
+            s.trim()
+        } else {
+            path
+        };
 
         // Fast path for simple variables (no dots).
         if !path.contains(crate::consts::PATH_SEP) {
@@ -841,12 +999,21 @@ impl<'a> Scope<'a> {
             .ok_or_else(|| TemplateError::UndefinedVariable(root_key.to_string()))?;
 
         let mut current = root;
+        let mut traversed = root_key.to_string();
         for part in parts {
             let part = part.trim();
+            traversed.push('.');
+            traversed.push_str(part);
             current = current.get_field(part).ok_or_else(|| {
+                let available = current.field_names_hint();
+                let hint = if available.is_empty() {
+                    String::new()
+                } else {
+                    format!(". Available fields: {}", available.join(", "))
+                };
                 TemplateError::UndefinedVariable(format!(
-                    "field '{part}' not found on {}",
-                    current.type_name()
+                    "field '{part}' not found on {} at path '{traversed}'{hint}",
+                    current.type_name(),
                 ))
             })?;
         }
@@ -881,481 +1048,5 @@ fn parse_function_call(expr: &str) -> Option<(&str, &str)> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn make_context() -> Context {
-        let mut ctx = Context::new();
-        ctx.set("name", "Alice");
-        ctx.set("count", 3_i64);
-        ctx
-    }
-
-    // -- simple resolution --
-
-    #[test]
-    fn resolve_from_context() {
-        let ctx = make_context();
-        let scope = Scope::new(&ctx);
-        assert_eq!(scope.resolve("name"), Some(&Value::Str("Alice".into())));
-        assert_eq!(scope.resolve("count"), Some(&Value::Int(3)));
-    }
-
-    #[test]
-    fn resolve_missing_returns_none() {
-        let ctx = Context::new();
-        let scope = Scope::new(&ctx);
-        assert_eq!(scope.resolve("nope"), None);
-    }
-
-    // -- layered resolution --
-
-    #[test]
-    fn resolve_from_pushed_layer() {
-        let ctx = make_context();
-        let mut scope = Scope::new(&ctx);
-        let layer = scope.push_layer();
-        layer.insert("index".into(), Value::Int(1));
-        layer.insert("item".into(), Value::Str("task-a".into()));
-
-        assert_eq!(scope.resolve("index"), Some(&Value::Int(1)));
-        assert_eq!(scope.resolve("item"), Some(&Value::Str("task-a".into())));
-        // Context values still accessible.
-        assert_eq!(scope.resolve("name"), Some(&Value::Str("Alice".into())));
-    }
-
-    #[test]
-    fn pop_layer_restores_previous() {
-        let ctx = make_context();
-        let mut scope = Scope::new(&ctx);
-        let layer = scope.push_layer();
-        layer.insert("name".into(), Value::Str("shadowed".into()));
-        assert_eq!(scope.resolve("name"), Some(&Value::Str("shadowed".into())));
-
-        scope.pop_layer();
-        assert_eq!(scope.resolve("name"), Some(&Value::Str("Alice".into())));
-    }
-
-    // -- shadowing --
-
-    #[test]
-    fn inner_layer_shadows_outer() {
-        let ctx = make_context();
-        let mut scope = Scope::new(&ctx);
-
-        let layer1 = scope.push_layer();
-        layer1.insert("x".into(), Value::Int(10));
-
-        let layer2 = scope.push_layer();
-        layer2.insert("x".into(), Value::Int(20));
-
-        assert_eq!(scope.resolve("x"), Some(&Value::Int(20)));
-
-        scope.pop_layer();
-        assert_eq!(scope.resolve("x"), Some(&Value::Int(10)));
-
-        scope.pop_layer();
-        assert_eq!(scope.resolve("x"), None);
-    }
-
-    // -- dotted path resolution --
-
-    #[test]
-    fn resolve_path_simple() {
-        let ctx = make_context();
-        let scope = Scope::new(&ctx);
-        let val = scope.resolve_path_str("name").unwrap();
-        assert_eq!(val, &Value::Str("Alice".into()));
-    }
-
-    #[test]
-    fn resolve_path_dotted() {
-        let mut ctx = Context::new();
-        let inner = Value::Struct(Arc::new(
-            [("label".into(), Value::Str("important".into()))]
-                .into_iter()
-                .collect(),
-        ));
-        ctx.set("task", inner);
-
-        let scope = Scope::new(&ctx);
-        let val = scope.resolve_path_str("task.label").unwrap();
-        assert_eq!(val, &Value::Str("important".into()));
-    }
-
-    #[test]
-    fn resolve_path_deeply_nested() {
-        let mut ctx = Context::new();
-        let deep = Value::Struct(Arc::new(
-            [(
-                "a".into(),
-                Value::Struct(Arc::new(
-                    [(
-                        "b".into(),
-                        Value::Struct(Arc::new(
-                            [("c".into(), Value::Int(42))].into_iter().collect(),
-                        )),
-                    )]
-                    .into_iter()
-                    .collect(),
-                )),
-            )]
-            .into_iter()
-            .collect(),
-        ));
-        ctx.set("root", deep);
-
-        let scope = Scope::new(&ctx);
-        assert_eq!(
-            scope.resolve_path_str("root.a.b.c").unwrap(),
-            &Value::Int(42)
-        );
-    }
-
-    #[test]
-    fn resolve_path_missing_root() {
-        let ctx = Context::new();
-        let scope = Scope::new(&ctx);
-        let err = scope.resolve_path_str("absent").unwrap_err();
-        assert!(matches!(err, TemplateError::UndefinedVariable(_)));
-    }
-
-    #[test]
-    fn resolve_path_missing_field() {
-        let mut ctx = Context::new();
-        ctx.set(
-            "item",
-            Value::Struct(Arc::new(
-                [("name".into(), Value::Str("x".into()))]
-                    .into_iter()
-                    .collect(),
-            )),
-        );
-        let scope = Scope::new(&ctx);
-        let err = scope.resolve_path_str("item.missing").unwrap_err();
-        assert!(matches!(err, TemplateError::UndefinedVariable(_)));
-    }
-
-    #[test]
-    fn resolve_path_field_on_non_dict() {
-        let mut ctx = Context::new();
-        ctx.set("val", 10_i64);
-        let scope = Scope::new(&ctx);
-        let err = scope.resolve_path_str("val.field").unwrap_err();
-        assert!(matches!(err, TemplateError::UndefinedVariable(_)));
-    }
-
-    // -- dotted path in layers --
-
-    #[test]
-    fn resolve_path_through_layer() {
-        let ctx = Context::new();
-        let mut scope = Scope::new(&ctx);
-        let layer = scope.push_layer();
-        layer.insert(
-            "item".into(),
-            Value::Struct(Arc::new(
-                [("name".into(), Value::Str("from-layer".into()))]
-                    .into_iter()
-                    .collect(),
-            )),
-        );
-
-        let val = scope.resolve_path_str("item.name").unwrap();
-        assert_eq!(val, &Value::Str("from-layer".into()));
-    }
-
-    #[test]
-    fn test_layer_allocation_reuse() {
-        let ctx = Context::new();
-        let mut scope = Scope::new(&ctx);
-
-        // Initially empty
-        assert_eq!(scope.layers.len(), 0);
-        assert_eq!(scope.active_len, 0);
-
-        // Push 1
-        {
-            let layer = scope.push_layer();
-            layer.insert("k1".into(), Value::Int(100));
-        }
-        assert_eq!(scope.layers.len(), 1);
-        assert_eq!(scope.active_len, 1);
-        assert_eq!(scope.resolve("k1"), Some(&Value::Int(100)));
-
-        // Pop 1
-        scope.pop_layer();
-        assert_eq!(scope.layers.len(), 1); // Allocation kept
-        assert_eq!(scope.active_len, 0);
-        assert_eq!(scope.resolve("k1"), None); // k1 should not resolve because active_len is 0
-
-        // Push again - should reuse
-        {
-            let layer = scope.push_layer();
-            // Verify it was cleared! It shouldn't contain "k1" anymore.
-            assert!(layer.is_empty());
-            layer.insert("k2".into(), Value::Int(200));
-        }
-        assert_eq!(scope.layers.len(), 1); // Still 1! Reused!
-        assert_eq!(scope.active_len, 1);
-        assert_eq!(scope.resolve("k1"), None);
-        assert_eq!(scope.resolve("k2"), Some(&Value::Int(200)));
-    }
-
-    // -- kind() function tests --
-
-    #[test]
-    fn kind_extracts_enum_variant_name() {
-        let tmpl = crate::Template::from_source(
-            r"---
-params: [outcome = struct(evidence = str)]
----
-{{ kind(outcome) }}",
-        )
-        .unwrap();
-        let mut ctx = crate::Context::new();
-        ctx.set(
-            "outcome",
-            Value::Struct(Arc::new(HashMap::from([
-                (
-                    crate::consts::ENUM_TAG_KEY.into(),
-                    Value::Str("Confirmed".into()),
-                ),
-                ("evidence".into(), Value::Str("confirmed finding".into())),
-            ]))),
-        );
-        assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Confirmed");
-    }
-
-    #[test]
-    fn kind_rejects_non_dict() {
-        let tmpl = crate::Template::from_source(
-            r"---
-params: [count = int]
----
-{{ kind(count) }}",
-        )
-        .unwrap();
-        let mut ctx = crate::Context::new();
-        ctx.set("count", 42);
-        let err = tmpl.render_ctx(&ctx).unwrap_err();
-        assert!(
-            err.to_string().contains("enum"),
-            "should mention enum requirement: {err}"
-        );
-    }
-
-    #[test]
-    fn kind_rejects_dict_without_variant_tag() {
-        let tmpl = crate::Template::from_source(
-            r"---
-params: [data = struct(name = str)]
----
-{{ kind(data) }}",
-        )
-        .unwrap();
-        let mut ctx = crate::Context::new();
-        ctx.set(
-            "data",
-            Value::Struct(Arc::new(HashMap::from([(
-                "name".into(),
-                Value::Str("x".into()),
-            )]))),
-        );
-        let err = tmpl.render_ctx(&ctx).unwrap_err();
-        assert!(
-            err.to_string().contains("enum"),
-            "should mention enum requirement: {err}"
-        );
-    }
-
-    #[test]
-    fn kind_key_not_accessible_via_dot_path() {
-        // The internal __kind__ key must not be accessible as {{ outcome.__kind__ }}.
-        let tmpl = crate::Template::from_source(
-            r"---
-params: [outcome = struct(evidence = str)]
----
-{{ outcome.__kind__ }}",
-        )
-        .unwrap();
-        let mut ctx = crate::Context::new();
-        ctx.set(
-            "outcome",
-            Value::Struct(Arc::new(HashMap::from([
-                (
-                    crate::consts::ENUM_TAG_KEY.into(),
-                    Value::Str("Confirmed".into()),
-                ),
-                ("evidence".into(), Value::Str("found it".into())),
-            ]))),
-        );
-        let err = tmpl.render_ctx(&ctx).unwrap_err();
-        assert!(
-            err.to_string().contains("not found") || err.to_string().contains("undefined"),
-            "__kind__ should not be accessible from templates: {err}"
-        );
-    }
-
-    #[test]
-    fn user_field_named_tag_does_not_collide() {
-        // A user field named "tag" must not collide with the internal __kind__ key.
-        let tmpl = crate::Template::from_source(
-            r"---
-params: [entry = struct(tag = str)]
----
-{{ kind(entry) }}: {{ entry.tag }}",
-        )
-        .unwrap();
-        let mut ctx = crate::Context::new();
-        ctx.set(
-            "entry",
-            Value::Struct(Arc::new(HashMap::from([
-                (
-                    crate::consts::ENUM_TAG_KEY.into(),
-                    Value::Str("Woche".into()),
-                ),
-                ("tag".into(), Value::Str("Montag".into())),
-            ]))),
-        );
-        assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Woche: Montag");
-    }
-
-    // -- parse_function_call edge cases --
-
-    #[test]
-    fn parse_function_call_valid() {
-        let result = parse_function_call("idx(item)");
-        assert_eq!(result, Some(("idx", "item")));
-    }
-
-    #[test]
-    fn parse_function_call_empty_func_returns_none() {
-        // `(arg)` — empty function name.
-        assert_eq!(parse_function_call("(arg)"), None);
-    }
-
-    #[test]
-    fn parse_function_call_empty_arg_returns_none() {
-        // `func()` — empty argument.
-        assert_eq!(parse_function_call("func()"), None);
-    }
-
-    #[test]
-    fn parse_function_call_no_parens_returns_none() {
-        assert_eq!(parse_function_call("just_a_name"), None);
-    }
-
-    #[test]
-    fn parse_function_call_dotted_name_returns_none() {
-        // Dotted names are not valid function identifiers.
-        assert_eq!(parse_function_call("foo.bar(x)"), None);
-    }
-
-    // -- ConditionOperand compile & resolve --
-
-    #[test]
-    fn resolve_value_or_literal_string_literal() {
-        let ctx = Context::new();
-        let scope = Scope::new(&ctx);
-        let operand = ConditionOperand::compile("\"hello\"").unwrap();
-        let val = operand.resolve(&scope).unwrap();
-        assert_eq!(*val, Value::Str("hello".into()));
-    }
-
-    #[test]
-    fn resolve_value_or_literal_bool_true() {
-        let ctx = Context::new();
-        let scope = Scope::new(&ctx);
-        let operand = ConditionOperand::compile("true").unwrap();
-        assert_eq!(*operand.resolve(&scope).unwrap(), Value::Bool(true));
-    }
-
-    #[test]
-    fn resolve_value_or_literal_integer() {
-        let ctx = Context::new();
-        let scope = Scope::new(&ctx);
-        let operand = ConditionOperand::compile("42").unwrap();
-        assert_eq!(*operand.resolve(&scope).unwrap(), Value::Int(42));
-    }
-
-    #[test]
-    fn resolve_value_or_literal_float() {
-        let ctx = Context::new();
-        let scope = Scope::new(&ctx);
-        let operand = ConditionOperand::compile("2.78").unwrap();
-        assert_eq!(*operand.resolve(&scope).unwrap(), Value::Float(2.78));
-    }
-
-    #[test]
-    fn resolve_value_or_literal_empty_token_returns_error() {
-        let err = ConditionOperand::compile("").unwrap_err();
-        assert!(matches!(err, TemplateError::Syntax(_)));
-    }
-
-    // -- include depth tracking --
-
-    #[test]
-    fn enter_include_enforces_max_depth() {
-        let ctx = Context::new();
-        let mut scope = Scope::new(&ctx).with_max_include_depth(2);
-        scope.enter_include().unwrap();
-        scope.enter_include().unwrap();
-        // Third should exceed depth of 2.
-        let err = scope.enter_include().unwrap_err();
-        assert!(err.to_string().contains("maximum include depth"));
-    }
-
-    #[test]
-    fn exit_include_decrements_and_allows_reentry() {
-        let ctx = Context::new();
-        let mut scope = Scope::new(&ctx).with_max_include_depth(1);
-        scope.enter_include().unwrap();
-        scope.exit_include();
-        // After exiting, re-entering should succeed.
-        scope.enter_include().unwrap();
-    }
-
-    // -- pop_layer on empty scope --
-
-    #[test]
-    fn pop_layer_on_empty_scope_is_noop() {
-        let ctx = Context::new();
-        let mut scope = Scope::new(&ctx);
-        // Should not panic.
-        scope.pop_layer();
-        scope.pop_layer();
-        assert_eq!(scope.resolve("anything"), None);
-    }
-
-    // -- constants resolution --
-
-    #[test]
-    fn consts_take_priority_over_context() {
-        let mut ctx = Context::new();
-        ctx.set("x", "from_ctx");
-        let mut scope = Scope::new(&ctx);
-        let consts = Arc::new(HashMap::from([(
-            "x".into(),
-            Value::Str("from_const".into()),
-        )]));
-        let imported = Arc::new(HashMap::new());
-        scope.set_consts(&consts, &imported);
-        // Constants should shadow context values.
-        assert_eq!(scope.resolve("x"), Some(&Value::Str("from_const".into())));
-    }
-
-    #[test]
-    fn push_pop_consts_restores_context_value() {
-        let mut ctx = Context::new();
-        ctx.set("y", "original");
-        let mut scope = Scope::new(&ctx);
-        scope.push_consts(
-            HashMap::from([("y".into(), Value::Str("overridden".into()))]),
-            HashMap::new(),
-        );
-        assert_eq!(scope.resolve("y"), Some(&Value::Str("overridden".into())));
-        scope.pop_consts();
-        assert_eq!(scope.resolve("y"), Some(&Value::Str("original".into())));
-    }
-}
+#[path = "scope_tests.rs"]
+mod tests;

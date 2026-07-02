@@ -41,7 +41,7 @@ import string
 import sys
 import timeit
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 # ---------------------------------------------------------------------------
 # Engine imports
@@ -50,12 +50,12 @@ from typing import Any, Protocol
 from jinja2 import Environment
 from md_tmpl import Template
 
-from mako.template import Template as MakoTemplate
+from mako.template import Template as MakoTemplate  # type: ignore[import-untyped]
 
-import chevron
+import chevron  # type: ignore[import-untyped]
 
-import django
-from django.conf import settings as django_settings
+import django  # type: ignore[import-untyped]
+from django.conf import settings as django_settings  # type: ignore[import-untyped]
 
 if not django_settings.configured:
     django_settings.configure(
@@ -68,7 +68,7 @@ if not django_settings.configured:
     )
     django.setup()
 
-from django.template import Template as DjangoTemplate, Context  # noqa: E402
+from django.template import Template as DjangoTemplate, Context  # type: ignore[import-untyped]
 from django.template import Library  # noqa: E402
 
 log = logging.getLogger(__name__)
@@ -231,7 +231,7 @@ _django_lib.filter("pt_float", _django_pt_float)
 
 # Make filters available globally so templates can use them without
 # {% load %}.  We register the library in the default engine's builtins.
-from django.template.engine import Engine as _DjangoEngine  # noqa: E402
+from django.template.engine import Engine as _DjangoEngine  # type: ignore[import-untyped]
 
 _default_engine = _DjangoEngine.get_default()
 _default_engine.template_libraries["bench_filters"] = _django_lib
@@ -289,7 +289,7 @@ class Scenario:
 
     name: str
     templates: dict[str, str]  # engine name → template source
-    render_kwargs: dict  # keyword arguments for rendering
+    render_kwargs: dict[str, Any]  # keyword arguments for rendering
 
 
 # =========================================================================
@@ -326,7 +326,7 @@ DJANGO_SIMPLE = "Hello {{ name }}, welcome to {{ place }}!"
 
 STRTMPL_SIMPLE = "Hello $name, welcome to $place!"
 
-SIMPLE_KWARGS: dict = {"name": "Alice", "place": "Wonderland"}
+SIMPLE_KWARGS: dict[str, Any] = {"name": "Alice", "place": "Wonderland"}
 
 # -- 2. Loop: iterating over a list ----------------------------------------
 #
@@ -375,7 +375,7 @@ DJANGO_LOOP = """\
 
 # str.Template: no loop support.
 
-LOOP_KWARGS: dict = {
+LOOP_KWARGS: dict[str, Any] = {
     "items": [
         {"label": "Alpha", "value": 10},
         {"label": "Beta", "value": 20},
@@ -444,7 +444,7 @@ Rating: Good (score {{ score }})
 Rating: Needs Improvement
 {% endif %}"""
 
-CONDITIONAL_KWARGS: dict = {"level": "medium", "score": 75}
+CONDITIONAL_KWARGS: dict[str, Any] = {"level": "medium", "score": 75}
 
 # -- 4. Hero/Complex: nested loops + conditionals --------------------------
 #
@@ -572,7 +572,7 @@ DJANGO_HERO = """\
 """
 
 
-HERO_KWARGS: dict = {
+HERO_KWARGS: dict[str, Any] = {
     "title": "System Report",
     "sections": [
         {
@@ -674,7 +674,7 @@ class BenchResult:
         return (self.total_seconds / self.iterations) * 1_000_000
 
 
-def bench_render(label: str, engine: str, render_fn, iterations: int) -> BenchResult:
+def bench_render(label: str, engine: str, render_fn: Callable[..., Any], iterations: int) -> BenchResult:
     """Time *render_fn* over *iterations* calls, returning the best run."""
     best = min(timeit.repeat(render_fn, number=iterations, repeat=TIMEIT_REPEAT))
     return BenchResult(
@@ -874,7 +874,7 @@ def bench_compile_and_render(
             continue
 
         # Closure that compiles and then immediately renders.
-        def run(eng=engine, src=source, kw=scenario.render_kwargs):
+        def run(eng: TemplateEngine = engine, src: str = source, kw: dict[str, Any] = scenario.render_kwargs) -> Any:
             return eng.compile(src)(**kw)
 
         results[engine.name] = bench_render(

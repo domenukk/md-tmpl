@@ -652,7 +652,7 @@ after
 fn tmpl_param_include_for_each() {
     let (child, _fm) = Template::compile(
         r"---
-params: [item = str]
+params: [item = struct(label = str)]
 ---
 - {{ item.label }}
 ",
@@ -662,7 +662,7 @@ params: [item = str]
 
     let parent = Template::from_source(
         r"---
-params: [row = tmpl(item = str), items = list(label = str)]
+params: [row = tmpl(item = struct(label = str)), items = list(label = str)]
 ---
 > {% include row for item in items %}
 ",

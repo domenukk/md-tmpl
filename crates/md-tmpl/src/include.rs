@@ -50,10 +50,89 @@ pub(crate) fn resolve_include_into(
     // Track include depth to prevent infinite recursion.
     scope.enter_include()?;
 
-    let result = resolve_include_inner_into(directive, scope, base_dir, inline_compiled, output);
+    let interpolated_path;
+    let effective_directive = if directive.path.contains(crate::consts::EXPR_START) {
+        match interpolate_include_path(directive.path, scope) {
+            Ok(path) => {
+                if !crate::consts::is_valid_resolved_path(&path)
+                    || path.contains(crate::consts::EXPR_START)
+                {
+                    scope.exit_include();
+                    return Err(TemplateError::syntax(format!(
+                        "include path '{path}' must start with './', '../', or '/'"
+                    )));
+                }
+                interpolated_path = path;
+                IncludeDirective {
+                    path: &interpolated_path,
+                    with_vars: directive.with_vars.clone(),
+                    for_each: directive.for_each,
+                }
+            }
+            Err(e) => {
+                scope.exit_include();
+                return Err(e);
+            }
+        }
+    } else {
+        directive.clone()
+    };
+
+    let result = resolve_include_inner_into(
+        &effective_directive,
+        scope,
+        base_dir,
+        inline_compiled,
+        output,
+    );
     scope.exit_include();
     // Wrap errors with include path context for debugging nested includes.
-    result.map_err(|e| wrap_include_error(e, directive.path))
+    result.map_err(|e| wrap_include_error(e, effective_directive.path))
+}
+
+fn interpolate_include_path(path: &str, scope: &Scope<'_>) -> Result<String, TemplateError> {
+    let mut result = String::new();
+    let mut remaining = path;
+
+    while let Some(start_idx) = remaining.find(crate::consts::EXPR_START) {
+        result.push_str(&remaining[..start_idx]);
+        let after_start = &remaining[start_idx + crate::consts::EXPR_START.len()..];
+
+        let Some(end_idx) = after_start.find(crate::consts::EXPR_END) else {
+            return Err(TemplateError::syntax(format!(
+                "unclosed '{}' in include path '{path}'",
+                crate::consts::EXPR_START
+            )));
+        };
+
+        let expr = after_start[..end_idx].trim();
+        if expr.is_empty() {
+            return Err(TemplateError::syntax(format!(
+                "empty expression '{}{}' in include path '{path}'",
+                crate::consts::EXPR_START,
+                crate::consts::EXPR_END
+            )));
+        }
+
+        let val_str = if let Some(lit) = crate::consts::strip_string_literal(expr) {
+            lit.to_string()
+        } else {
+            let val = scope.resolve_path_str(expr).map_err(|_| {
+                TemplateError::syntax(format!(
+                    "unresolvable expression '{}{expr}{}' in include path '{path}'",
+                    crate::consts::EXPR_START,
+                    crate::consts::EXPR_END
+                ))
+            })?;
+            val.to_string()
+        };
+
+        result.push_str(&val_str);
+        remaining = &after_start[end_idx + crate::consts::EXPR_END.len()..];
+    }
+
+    result.push_str(remaining);
+    Ok(result)
 }
 
 /// Add include file path context to an error, avoiding double-wrapping.
@@ -213,6 +292,8 @@ fn validate_and_render_into(
     let overrides = build_overrides(directive, scope)?;
     validate_include_types(declarations, &overrides, directive)?;
 
+    scope.push_declarations(declarations);
+
     let ctx = IncludeRenderContext {
         segments,
         declarations,
@@ -220,11 +301,13 @@ fn validate_and_render_into(
         include_base: base_dir,
     };
 
-    if let Some((binding, list_expr)) = &directive.for_each {
+    let res = if let Some((binding, list_expr)) = &directive.for_each {
         render_iterated_include_into(&ctx, binding, list_expr, scope, output)
     } else {
         render_simple_include_into(&ctx, scope, directive, output)
-    }
+    };
+    scope.pop_declarations(declarations);
+    res
 }
 
 /// Validate that all variables declared by an included template are explicitly

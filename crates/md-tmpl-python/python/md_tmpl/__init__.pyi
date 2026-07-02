@@ -7,7 +7,14 @@ checking via mypy/pyright when the ``py.typed`` marker is present.
 
 import os
 import types as _types
-from typing import Any, Protocol, Sequence, TypeVar, runtime_checkable
+from typing import (
+    Any,
+    Protocol,
+    Sequence,
+    TypeVar,
+    runtime_checkable,
+    dataclass_transform,
+)
 
 _T = TypeVar("_T")
 
@@ -23,33 +30,18 @@ class VariantProtocol(Protocol):
 
     _md_tmpl_tag: str
     _md_tmpl_fields: dict[str, Any]
+    __match_args__: tuple[str, ...]
 
 # -- Exception hierarchy -------------------------------------------------
 
-class TemplateError(ValueError):
-    """Base class for all template errors."""
-
-    ...
-
-class TemplateSyntaxError(TemplateError):
-    """Raised when a template contains syntax errors."""
-
-    ...
-
-class MissingParamsError(TemplateError):
-    """Raised when required parameters are not provided."""
-
-    ...
-
-class TypeMismatchError(TemplateError, TypeError):
-    """Raised when a parameter value has the wrong type."""
-
-    ...
-
-class ExtraParamsError(TemplateError):
-    """Raised when undeclared parameters are provided."""
-
-    ...
+from md_tmpl._exceptions import (
+    ExtraParamsError as ExtraParamsError,
+    MissingParamsError as MissingParamsError,
+    TemplateError as TemplateError,
+    TemplatePanicError as TemplatePanicError,
+    TemplateSyntaxError as TemplateSyntaxError,
+    TypeMismatchError as TypeMismatchError,
+)
 
 # -- Core classes --------------------------------------------------------
 
@@ -98,6 +90,7 @@ class Template:
         *,
         allow_extra: bool = False,
     ) -> str: ...
+    def render_empty(self) -> str: ...
     def declarations(self) -> list[tuple[str, str]]: ...
     def source_hash(self) -> int: ...
     def defaults(self) -> dict[str, Any]: ...
@@ -176,7 +169,8 @@ def generate_types_source(path: str | os.PathLike[str]) -> str:
     """
     ...
 
-def variant(cls: type[_T]) -> type[_T]:
+@dataclass_transform()
+def variant(cls: Any) -> Any:
     """Transform a class with annotations into a matchable variant.
 
     The returned class has:
@@ -189,6 +183,7 @@ def variant(cls: type[_T]) -> type[_T]:
     """
     ...
 
+@dataclass_transform()
 class Variants:
     """Base class for defining variant enums.
 

@@ -36,6 +36,7 @@ PROJECT_ROOT = SCRIPT_DIR.parent.parent
 PARSE_SCRIPT = SCRIPT_DIR / "parse_benchmarks.py"
 UPDATE_SCRIPT = SCRIPT_DIR / "update_tables.py"
 README = PROJECT_ROOT / "README.md"
+RUST_CRATE_README = PROJECT_ROOT / "crates" / "md-tmpl" / "README.md"
 PYTHON_README = PROJECT_ROOT / "crates" / "md-tmpl-python" / "README.md"
 GO_README = PROJECT_ROOT / "go" / "md_tmpl" / "README.md"
 TS_README = PROJECT_ROOT / "crates" / "md-tmpl-typescript" / "README.md"
@@ -50,7 +51,7 @@ def run_cmd(
     cwd: Path | None = None,
     capture: bool = True,
     env_extra: dict[str, str] | None = None,
-) -> subprocess.CompletedProcess:
+) -> subprocess.CompletedProcess[str]:
     """Run a command, logging it and optionally capturing output."""
     import os
 
@@ -367,6 +368,8 @@ def main() -> None:
         str(json_path),
         "--readme",
         str(README),
+        "--rust-crate-readme",
+        str(RUST_CRATE_README),
         "--python-readme",
         str(PYTHON_README),
         "--go-readme",
@@ -385,8 +388,8 @@ def main() -> None:
     for tf in temp_files:
         try:
             tf.unlink()
-        except OSError:
-            pass
+        except OSError as e:
+            log.warning("Failed to clean up temp file %s: %s", tf, e)
 
     log.info("Done!")
 

@@ -1,0 +1,138 @@
+use alloc::{string::String, vec, vec::Vec};
+
+use super::type_check::{FieldResult, TypeEnv, resolve_field, validate_compiled_path};
+use crate::{
+    scope::{CompiledExpr, CompiledPath, ConditionOperand},
+    types::{VarDecl, VarType},
+};
+
+// ---------------------------------------------------------------------------
+// Type Resolution Helpers
+// ---------------------------------------------------------------------------
+
+/// Resolve a dotted path to its declared type.
+///
+/// Returns `None` if the root variable is unknown or if any field
+/// in the path doesn't resolve to a known type.
+///
+/// Also checks narrowed overrides at each level, so `task.cat` can be
+/// narrowed inside a match arm and `task.cat.label` resolves correctly.
+pub(super) fn resolve_path_type<'a>(path: &str, env: &'a TypeEnv<'_>) -> Option<&'a VarType> {
+    let compiled = CompiledPath::compile(path);
+    resolve_compiled_path_type(&compiled, env)
+}
+
+pub(super) fn resolve_compiled_path_type<'a>(
+    path: &CompiledPath,
+    env: &'a TypeEnv<'_>,
+) -> Option<&'a VarType> {
+    let root = &path.parts()[0];
+    let mut current = env.lookup(root)?;
+    let mut traversed = root.clone();
+
+    for field in &path.parts()[1..] {
+        // Before resolving the field, check if the full path so far + field
+        // has a narrowed override (e.g. "task.cat" narrowed inside a match).
+        traversed.push(crate::consts::PATH_SEP);
+        traversed.push_str(field);
+        if let Some(narrowed) = env.narrowed.get(&traversed) {
+            current = narrowed;
+            continue;
+        }
+
+        match resolve_field(current, field) {
+            FieldResult::Ok(ty) => current = ty,
+            _ => return None,
+        }
+    }
+
+    Some(current)
+}
+
+pub(super) fn resolve_compiled_expr_type(
+    expr: &CompiledExpr,
+    env: &TypeEnv<'_>,
+    errors: &mut Vec<String>,
+) -> Option<VarType> {
+    match expr {
+        CompiledExpr::Path(path) => {
+            validate_compiled_path(path, env, errors);
+            resolve_compiled_path_type(path, env).cloned()
+        }
+        CompiledExpr::Idx(_) => Some(VarType::Int),
+        CompiledExpr::Len(path) => {
+            validate_compiled_path(path, env, errors);
+            Some(VarType::Int)
+        }
+        CompiledExpr::Kind(path) => {
+            validate_compiled_path(path, env, errors);
+            Some(VarType::Str)
+        }
+        CompiledExpr::Kinds(path) => {
+            validate_compiled_path(path, env, errors);
+            let ty = resolve_compiled_path_type(path, env)?;
+            if !matches!(ty, VarType::Enum(_)) {
+                errors.push(format!(
+                    "kinds('{}'): expected enum type namespace, got {ty}",
+                    path.as_str()
+                ));
+            }
+            Some(VarType::List(vec![VarDecl {
+                name: String::new(),
+                var_type: VarType::Str,
+                default_value: None,
+            }]))
+        }
+        CompiledExpr::Has(path) => {
+            validate_compiled_path(path, env, errors);
+            Some(VarType::Bool)
+        }
+    }
+}
+
+pub(super) fn resolve_operand_type<'a>(
+    operand: &ConditionOperand,
+    env: &'a TypeEnv<'_>,
+) -> Option<&'a VarType> {
+    match operand {
+        ConditionOperand::Literal(_) | ConditionOperand::InterpolatedStr(_) => None,
+        ConditionOperand::Path { path, .. }
+        | ConditionOperand::Len(path)
+        | ConditionOperand::Kind(path)
+        | ConditionOperand::Kinds(path)
+        | ConditionOperand::Has(path) => resolve_compiled_path_type(path, env),
+        ConditionOperand::Idx(_) => Some(&VarType::Int),
+    }
+}
+
+pub(super) fn operand_to_str(operand: &ConditionOperand) -> &str {
+    match operand {
+        ConditionOperand::Literal(_) => "literal",
+        ConditionOperand::InterpolatedStr(_) => "interpolated string",
+        ConditionOperand::Path { path, .. }
+        | ConditionOperand::Len(path)
+        | ConditionOperand::Kind(path)
+        | ConditionOperand::Kinds(path)
+        | ConditionOperand::Has(path) => path.as_str(),
+        ConditionOperand::Idx(binding) => binding.as_ref(),
+    }
+}
+
+pub(super) fn validate_operand(
+    operand: &ConditionOperand,
+    env: &TypeEnv<'_>,
+    errors: &mut Vec<String>,
+) {
+    match operand {
+        ConditionOperand::Literal(_)
+        | ConditionOperand::Idx(_)
+        | ConditionOperand::InterpolatedStr(_) => {}
+        ConditionOperand::Path { path, .. }
+        | ConditionOperand::Len(path)
+        | ConditionOperand::Kind(path)
+        | ConditionOperand::Kinds(path)
+        | ConditionOperand::Has(path) => {
+            validate_compiled_path(path, env, errors);
+        }
+    }
+}

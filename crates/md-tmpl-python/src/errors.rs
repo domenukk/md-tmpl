@@ -7,6 +7,7 @@
 //! - `MissingParamsError`  ← `MissingParams`
 //! - `TypeMismatchError`   ← `TypeMismatch`
 //! - `ExtraParamsError`    ← `ExtraParams`
+//! - `TemplatePanicError`  ← `Panic`
 //! - `TemplateError`       ← everything else (Io, `DeclarationsMutated`)
 
 use md_tmpl::TemplateError;
@@ -38,6 +39,8 @@ pub(crate) fn template_error_to_py(err: &TemplateError) -> PyErr {
             TemplateError::TypeMismatch { .. } => "TypeMismatchError",
 
             TemplateError::ExtraParams(_) => "ExtraParamsError",
+
+            TemplateError::Panic(_) => "TemplatePanicError",
 
             // Io, DeclarationsMutated, future variants
             _ => "TemplateError",

@@ -91,7 +91,6 @@ pub(crate) fn validate_include_types(
     Ok(())
 }
 
-/// Build the override variable map from `with key=expr` clauses.
 pub(crate) fn build_overrides(
     directive: &IncludeDirective<'_>,
     scope: &Scope<'_>,
@@ -99,7 +98,14 @@ pub(crate) fn build_overrides(
     let mut overrides = HashMap::new();
     for &(key, val_expr) in &directive.with_vars {
         let value = if let Some(inner) = crate::consts::strip_string_literal(val_expr) {
-            Value::Str(inner.to_string())
+            if inner.contains(crate::consts::EXPR_START) {
+                // Interpolated string: compile {{ expr }} references and render.
+                let segments = crate::compiled::compile_body(inner)?;
+                let rendered = crate::compiled::render_interpolated_str(&segments, scope)?;
+                Value::Str(rendered)
+            } else {
+                Value::Str(inner.to_string())
+            }
         } else {
             // Evaluate as a full expression — supports paths, functions, filters.
             crate::parser::eval_expr(val_expr, scope)?

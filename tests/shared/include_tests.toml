@@ -1,0 +1,367 @@
+[[tests]]
+name = "include_correct_types_pass"
+description = "Passing the correct type to a file-based include should succeed"
+parent_template = '''
+---
+params: [num = int]
+---
+> {% include [typed](./typed.tmpl.md) with count=num %}'''
+expected_output = "42"
+
+[tests.params]
+num = 42
+
+[tests.files]
+"typed.tmpl.md" = '''
+---
+params: [count = int]
+---
+{{ count }}'''
+
+[[tests]]
+name = "include_with_defaults"
+description = "File-based include where a parameter has a default value and is not explicitly passed"
+parent_template = '''
+---
+params: [name = str]
+---
+> {% include [greet](./greet.tmpl.md) with name=name %}'''
+expected_output = "Hi World!"
+
+[tests.params]
+name = "World"
+
+[tests.files]
+"greet.tmpl.md" = '''
+---
+params:
+  - name = str
+  - greeting = str := "Hi"
+---
+{{ greeting }} {{ name }}!'''
+
+[[tests]]
+name = "include_override_takes_precedence"
+description = "Explicitly passing a parameter overrides its default value"
+parent_template = '''
+---
+params:
+  - name = str
+  - greeting = str
+---
+> {% include [greet](./greet.tmpl.md) with name=name, greeting=greeting %}'''
+expected_output = "Hey World!"
+
+[tests.params]
+name = "World"
+greeting = "Hey"
+
+[tests.files]
+"greet.tmpl.md" = '''
+---
+params:
+  - name = str
+  - greeting = str := "Hi"
+---
+{{ greeting }} {{ name }}!'''
+
+[[tests]]
+name = "contract_rejects_missing_params"
+description = "Including a template without providing required parameters should produce an error"
+parent_template = '''
+---
+params: []
+---
+> {% include [needs_vars](./needs_vars.tmpl.md) %}'''
+expected_error = "title"
+params = {}
+
+[tests.files]
+"needs_vars.tmpl.md" = '''
+---
+params: [title = str, count = int]
+---
+{{ title }} ({{ count }})'''
+
+[[tests]]
+name = "circular_includes_rejected"
+description = "Circular file-based includes should exceed max include depth and fail"
+parent_template = '''
+---
+params: []
+---
+> {% include [a](./a.tmpl.md) %}'''
+expected_error = "maximum include depth"
+params = {}
+
+[tests.files]
+"a.tmpl.md" = '''
+---
+params: []
+---
+> {% include [b](./b.tmpl.md) %}'''
+"b.tmpl.md" = '''
+---
+params: []
+---
+> {% include [a](./a.tmpl.md) %}'''
+
+[[tests]]
+name = "missing_include_file_rejected"
+description = "Including a non-existent template file should produce an error containing the filename"
+parent_template = '''
+---
+params: []
+---
+> {% include [missing](./non_existent_file.tmpl.md) %}'''
+expected_error = "non_existent_file.tmpl.md"
+params = {}
+files = {}
+
+[[tests]]
+name = "include_wrong_type_rejected"
+description = "Passing a string to an included template expecting an integer should fail type checking"
+parent_template = '''
+---
+params: [val = str]
+---
+> {% include [num](./num.tmpl.md) with x=val %}'''
+expected_error = "type mismatch"
+
+[tests.params]
+val = "not a number"
+
+[tests.files]
+"num.tmpl.md" = '''
+---
+params: [x = int]
+---
+{{ x }}'''
+
+[[tests]]
+name = "include_with_consts"
+description = "Included template constants should be accessible in its own body"
+parent_template = '''
+---
+params: []
+---
+> {% include [consts](./consts.tmpl.md) %}'''
+expected_output = "URL: https://api.example.com"
+params = {}
+
+[tests.files]
+"consts.tmpl.md" = '''
+---
+params: []
+consts:
+  - API_URL = str := "https://api.example.com"
+---
+URL: {{ API_URL }}'''
+
+[[tests]]
+name = "deeply_nested_includes"
+description = "Deeply nested includes passing parameters down 3 levels"
+parent_template = '''
+---
+params: [msg = str]
+---
+> {% include [l1](./level1.tmpl.md) with val=msg %}'''
+expected_output = "L1 -> L2 -> L3: deeply nested"
+
+[tests.params]
+msg = "deeply nested"
+
+[tests.files]
+"level3.tmpl.md" = '''
+---
+params: [val = str]
+---
+L3: {{ val }}'''
+"level2.tmpl.md" = '''
+---
+params: [val = str]
+---
+L2 -> {% include [l3](./level3.tmpl.md) with val=val %}'''
+"level1.tmpl.md" = '''
+---
+params: [val = str]
+---
+L1 -> {% include [l2](./level2.tmpl.md) with val=val %}'''
+
+[[tests]]
+name = "include_complex_types_list_struct"
+description = "Included template rendering complex list of structs"
+parent_template = '''
+---
+params: [data = list(name = str, score = int)]
+---
+> {% include [table](./table.tmpl.md) with rows=data %}'''
+expected_output = '''
+- Alice: 100
+- Bob: 95
+'''
+
+[tests.params]
+data = [{ "name" = "Alice", "score" = 100 }, { "name" = "Bob", "score" = 95 }]
+
+[tests.files]
+"table.tmpl.md" = '''
+---
+params: [rows = list(name = str, score = int)]
+---
+> {% for row in rows %}
+
+- {{ row.name }}: {{ row.score }}
+
+> {% /for %}'''
+
+[[tests]]
+name = "include_path_interpolation_const_dir_pass"
+description = "Include path with variable interpolation from local consts"
+parent_template = '''
+---
+params: [name = str]
+consts: [DIR = str := "."]
+---
+> {% include [greet]({{ consts.DIR }}/greet.tmpl.md) with name=name %}'''
+expected_output = "Hi World!"
+
+[tests.params]
+name = "World"
+
+[tests.files]
+"greet.tmpl.md" = '''
+---
+params:
+  - name = str
+  - greeting = str := "Hi"
+---
+{{ greeting }} {{ name }}!'''
+
+[[tests]]
+name = "include_path_interpolation_param_dir_pass"
+description = "Include path with variable interpolation from parameter"
+parent_template = '''
+---
+params:
+  - name = str
+  - dir = str
+---
+> {% include [greet]({{ dir }}/greet.tmpl.md) with name=name %}'''
+expected_output = "Hi World!"
+
+[tests.params]
+name = "World"
+dir = "."
+
+[tests.files]
+"greet.tmpl.md" = '''
+---
+params:
+  - name = str
+  - greeting = str := "Hi"
+---
+{{ greeting }} {{ name }}!'''
+
+[[tests]]
+name = "include_path_interpolation_unresolvable_error"
+description = "Include path with unresolvable expression should produce syntax error"
+parent_template = '''
+---
+params: [name = str]
+---
+> {% include [greet]({{ consts.NONEXISTENT }}/greet.tmpl.md) with name=name %}'''
+expected_error = "undeclared variable"
+files = {}
+
+[tests.params]
+name = "World"
+
+[[tests]]
+name = "include_path_interpolation_invalid_prefix_error"
+description = "Include path after interpolation must start with valid prefix"
+parent_template = '''
+---
+params: [name = str]
+consts: [DIR = str := "sub"]
+---
+> {% include [greet]({{ consts.DIR }}/greet.tmpl.md) with name=name %}'''
+expected_error = "must start with"
+files = {}
+
+[tests.params]
+name = "World"
+
+[[tests]]
+name = "import_path_interpolation_const_dir_pass"
+description = "Import path with variable interpolation from local consts"
+parent_template = '''
+---
+params: [name = str]
+consts: [DIR = str := "."]
+imports:
+  - [greet]({{ consts.DIR }}/greet.tmpl.md)
+---
+> {% include [greet](./greet.tmpl.md) with name=name %}'''
+expected_output = "Hi World!"
+
+[tests.params]
+name = "World"
+
+[tests.files]
+"greet.tmpl.md" = '''
+---
+params:
+  - name = str
+  - greeting = str := "Hi"
+---
+{{ greeting }} {{ name }}!'''
+
+[[tests]]
+name = "import_path_interpolation_types_pass"
+description = "Import path interpolation loading type definitions"
+parent_template = '''
+---
+params: [user_role = role.Role]
+consts: [DIR = str := "."]
+imports:
+  - [role]({{ consts.DIR }}/role.tmpl.md)
+---
+Role: {{ user_role }}'''
+expected_output = "Role: admin"
+
+[tests.params]
+user_role = "admin"
+
+[tests.files]
+"role.tmpl.md" = '''
+---
+types: [Role = enum(admin, guest)]
+---
+'''
+
+[[tests]]
+name = "import_path_interpolation_unresolvable_error"
+description = "Import path with unresolvable expression should fail"
+parent_template = '''
+---
+consts: [DIR = str := "."]
+imports:
+  - [role]({{ consts.UNKNOWN }}/role.tmpl.md)
+---
+Hello'''
+expected_error = "unresolvable expression"
+files = {}
+
+[[tests]]
+name = "import_path_interpolation_invalid_prefix_error"
+description = "Import path after interpolation must start with valid prefix"
+parent_template = '''
+---
+consts: [DIR = str := "sub"]
+imports:
+  - [role]({{ consts.DIR }}/role.tmpl.md)
+---
+Hello'''
+expected_error = "must start with"
+files = {}

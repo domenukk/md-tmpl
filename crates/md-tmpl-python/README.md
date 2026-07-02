@@ -106,6 +106,21 @@ output = tmpl.render(
 Generated class names use PascalCase: param `tasks` → class `Tasks`,
 type alias `priority` → class `Priority`.
 
+### Type Mapping
+
+| Frontmatter Type            | Python Equivalent                             |
+| :-------------------------- | :-------------------------------------------- |
+| `str`                       | `str`                                         |
+| `int`                       | `int`                                         |
+| `float`                     | `float`                                       |
+| `bool`                      | `bool`                                        |
+| `list(field = type, ...)`   | `list[GeneratedClass]`                        |
+| `list(type)`                | `list[PythonType]` (e.g. `list[str]`)         |
+| `struct(field = type, ...)` | `GeneratedClass`                              |
+| `enum(Variant, ...)`        | `GeneratedEnumClass`                          |
+| `option(type)`              | `Optional[PythonType]` (`PythonType \| None`) |
+| `tmpl(...)`                 | `Template` object or callable                 |
+
 ### `load_types()` — load types without a template object
 
 ```python
@@ -279,6 +294,7 @@ on templates where every parameter has a default.
 | `idx(binding)` | `{{ idx(item) }}` — 0-based loop index              |
 | `len(expr)`    | `{{ len(items) }}` — list or string length          |
 | `kind(expr)`   | `{{ kind(status) }}` — enum variant name            |
+| `kinds(type)`  | `{{ kinds(Status) }}` — list of enum variant names  |
 | `has(expr)`    | `{{ has(field) }}` — true if `option(T)` is present |
 
 ### Includes
@@ -357,7 +373,6 @@ Extra parameters are rejected by default — pass `allow_extra=True` to opt out.
 ## Performance
 
 **4–8× faster than Jinja2** for rendering, backed by a native-speed engine.
-The speed advantage comes from a native Rust engine — not template design alone.
 
 ### Render Time (pre-parsed template + data)
 
@@ -366,28 +381,28 @@ The speed advantage comes from a native Rust engine — not template design alon
 
 | Scenario        |        md-tmpl |   Jinja2 |    Mako |  Chevron |    Django | string.Template |
 | --------------- | -------------: | -------: | ------: | -------: | --------: | --------------: |
-| **simple**      | **0.84 µs** 🏆 |  6.32 µs | 6.29 µs |  7.01 µs |   7.81 µs |         1.62 µs |
-| **loop**        | **1.81 µs** 🏆 |  9.35 µs | 6.52 µs | 20.33 µs |  47.95 µs |             N/A |
-| **conditional** | **0.91 µs** 🏆 |  6.42 µs | 6.30 µs |      N/A |  14.70 µs |             N/A |
-| **hero**        | **6.45 µs** 🏆 | 23.87 µs | 9.12 µs |      N/A | 225.37 µs |             N/A |
+| **simple**      |        1.65 µs |  6.60 µs | 9.46 µs |  7.40 µs |   7.94 µs |  **1.63 µs** 🏆 |
+| **loop**        | **1.96 µs** 🏆 | 10.32 µs | 6.64 µs | 20.86 µs |  46.52 µs |             N/A |
+| **conditional** | **1.04 µs** 🏆 |  6.44 µs | 6.36 µs |      N/A |  14.62 µs |             N/A |
+| **hero**        | **7.03 µs** 🏆 | 24.74 µs | 9.42 µs |      N/A | 227.48 µs |             N/A |
 
 ### Parse Time (source → template object)
 
 | Scenario        |         md-tmpl |    Jinja2 |      Mako |        Chevron |    Django | string.Template |
 | --------------- | --------------: | --------: | --------: | -------------: | --------: | --------------: |
-| **simple**      |         4.31 µs | 317.35 µs | 397.38 µs | **0.13 µs** 🏆 |  20.48 µs |         0.23 µs |
-| **loop**        |         6.55 µs | 553.26 µs | 504.32 µs | **0.12 µs** 🏆 |  41.67 µs |             N/A |
-| **conditional** |  **8.30 µs** 🏆 | 663.36 µs | 561.47 µs |            N/A |  74.77 µs |             N/A |
-| **hero**        | **28.72 µs** 🏆 |   2.24 ms |   1.38 ms |            N/A | 226.71 µs |             N/A |
+| **simple**      |         4.37 µs | 313.39 µs | 394.31 µs | **0.13 µs** 🏆 |  19.16 µs |         0.22 µs |
+| **loop**        |         6.72 µs | 551.93 µs | 500.29 µs | **0.13 µs** 🏆 |  42.96 µs |             N/A |
+| **conditional** |  **8.37 µs** 🏆 | 663.49 µs | 554.38 µs |            N/A |  76.39 µs |             N/A |
+| **hero**        | **27.97 µs** 🏆 |   2.24 ms |   1.40 ms |            N/A | 231.66 µs |             N/A |
 
 ### End-to-End (parse + render)
 
 | Scenario        |         md-tmpl |    Jinja2 |      Mako |  Chevron |    Django |   str.Template |
 | --------------- | --------------: | --------: | --------: | -------: | --------: | -------------: |
-| **simple**      |         5.47 µs | 337.62 µs | 423.05 µs |  7.23 µs |  39.54 µs | **1.83 µs** 🏆 |
-| **loop**        |  **9.00 µs** 🏆 | 589.76 µs | 532.45 µs | 20.60 µs | 103.33 µs |            N/A |
-| **conditional** |  **9.68 µs** 🏆 | 693.46 µs | 589.34 µs |      N/A | 102.79 µs |            N/A |
-| **hero**        | **38.12 µs** 🏆 |   2.28 ms |   1.41 ms |      N/A | 484.18 µs |            N/A |
+| **simple**      |         5.71 µs | 336.10 µs | 427.35 µs | 11.52 µs |  42.41 µs | **1.88 µs** 🏆 |
+| **loop**        |  **9.65 µs** 🏆 | 639.43 µs | 579.59 µs | 22.56 µs | 105.59 µs |            N/A |
+| **conditional** |  **9.90 µs** 🏆 | 704.27 µs | 595.91 µs |      N/A | 104.38 µs |            N/A |
+| **hero**        | **38.39 µs** 🏆 |   2.63 ms |   1.52 ms |      N/A | 682.11 µs |            N/A |
 
 ```bash
 just bench-python          # run comparison benchmarks

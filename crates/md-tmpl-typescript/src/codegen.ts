@@ -40,6 +40,26 @@ import {
   parseFrontmatter,
 } from "./frontmatter.js";
 import type { Value } from "./value.js";
+import {
+  OPTION_SOME,
+  OPTION_NONE,
+  ENUM_TAG_KEY,
+  OPTION_VAL_FIELD,
+  LIT_TRUE,
+  LIT_FALSE,
+  TYPE_NONE,
+  TYPE_STR,
+  TYPE_BOOL,
+  TYPE_INT,
+  TYPE_FLOAT,
+  TYPE_LIST,
+  TYPE_STRUCT,
+  TYPE_ENUM,
+  TYPE_OPTION,
+  TYPE_ALIAS,
+  TYPE_SCALAR_LIST,
+  TYPE_UNTYPED_LIST,
+} from "./consts.js";
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -331,16 +351,16 @@ class CodegenContext {
 
   private varTypeToTs(fieldName: string, vt: VarType): string {
     switch (vt.kind) {
-      case "str":
+      case TYPE_STR:
         return "string";
-      case "bool":
+      case TYPE_BOOL:
         return "boolean";
-      case "int":
-      case "float":
+      case TYPE_INT:
+      case TYPE_FLOAT:
         return "number";
-      case "scalar_list":
+      case TYPE_SCALAR_LIST:
         return `readonly ${this.varTypeToTs(fieldName, vt.elementType)}[]`;
-      case "list": {
+      case TYPE_LIST: {
         if (vt.fields.length === 0) {
           return "unknown[]";
         }
@@ -349,7 +369,7 @@ class CodegenContext {
         this.emitInterface(itemName, vt.fields);
         return `readonly ${itemName}[]`;
       }
-      case "struct": {
+      case TYPE_STRUCT: {
         if (vt.fields.length === 0) {
           return "Record<string, unknown>";
         }
@@ -357,9 +377,9 @@ class CodegenContext {
         this.emitInterface(structName, vt.fields);
         return structName;
       }
-      case "enum": {
+      case TYPE_ENUM: {
         if (vt.isOption) {
-          const someVariant = vt.variants.find((v) => v.name === "Some");
+          const someVariant = vt.variants.find((v) => v.name === OPTION_SOME);
           if (someVariant && someVariant.fields.length === 1) {
             const innerType = this.varTypeToTs(
               fieldName,
@@ -372,11 +392,11 @@ class CodegenContext {
         this.emitEnum(enumName, vt.variants);
         return enumName;
       }
-      case "alias":
+      case TYPE_ALIAS:
         return vt.name;
-      case "untyped_list":
+      case TYPE_UNTYPED_LIST:
         return "unknown[]";
-      case "option": {
+      case TYPE_OPTION: {
         const innerType = this.varTypeToTs(fieldName, vt.innerType);
         return `${innerType} | null`;
       }
@@ -433,6 +453,25 @@ class CodegenContext {
 
     // Emit factory functions for each variant
     this.emitVariantFactories(name, variants);
+
+    if (variants.every((v) => v.fields.length === 0)) {
+      const upperSnake = toUpperSnake(name);
+      const items = variants.map((v) => `"${v.name}"`).join(", ");
+      const lines: string[] = [];
+      if (this.opts.jsdoc) {
+        lines.push(`/** All variants of \`${name}\`. */`);
+      }
+      lines.push(
+        `${exp}const ${upperSnake}_ALL: readonly ${name}[] = [${items}] as const;`,
+      );
+      lines.push(
+        `${exp}const ALL_${upperSnake}S: readonly ${name}[] = [${items}] as const;`,
+      );
+      lines.push(
+        `${exp}const ${upperSnake}S: readonly ${name}[] = [${items}] as const;`,
+      );
+      this.auxiliaryTypes.push(lines.join("\n"));
+    }
   }
 
   /**
@@ -448,6 +487,8 @@ class CodegenContext {
     const exp = this.opts.exportTypes ? "export " : "";
 
     for (const v of variants) {
+      if (this.generatedNames.has(v.name)) continue;
+      this.generatedNames.add(v.name);
       const lines: string[] = [];
 
       if (v.fields.length === 0) {
@@ -455,7 +496,7 @@ class CodegenContext {
         if (this.opts.jsdoc) {
           lines.push(`/** Create a \`${v.name}\` variant. */`);
         }
-        lines.push(`${exp}const ${v.name}: ${enumName} = "${v.name}";`);
+        lines.push(`${exp}const ${v.name} = "${v.name}" as const;`);
       } else {
         // Struct variant → factory function
         const ifaceName = `${enumName}_${v.name}`;
@@ -471,7 +512,7 @@ class CodegenContext {
         lines.push(
           `${exp}function ${v.name}(fields: ${fieldsType}): ${ifaceName} {`,
         );
-        lines.push(`  return { __kind__: "${v.name}", ...fields };`);
+        lines.push(`  return { ${ENUM_TAG_KEY}: "${v.name}", ...fields };`);
         lines.push("}");
       }
 
@@ -494,7 +535,7 @@ class CodegenContext {
       lines.push(`/** Variant \`${tag}\` with data fields. */`);
     }
     lines.push(`${exp}interface ${name} {`);
-    lines.push(`  readonly __kind__: "${tag}";`);
+    lines.push(`  readonly ${ENUM_TAG_KEY}: "${tag}";`);
     for (const field of fields) {
       const tsType = this.varTypeToTs(field.name, field.varType);
       lines.push(`  readonly ${field.name}: ${tsType};`);
@@ -517,33 +558,41 @@ function pascalCase(s: string): string {
     .join("");
 }
 
+/** Convert a PascalCase, camelCase, or snake_case name to UPPER_SNAKE_CASE. */
+function toUpperSnake(s: string): string {
+  return s
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[_\s-]+/g, "_")
+    .toUpperCase();
+}
+
 /** Get a human-readable label for a VarType (used in JSDoc). */
 function varTypeToLabel(vt: VarType): string {
   switch (vt.kind) {
-    case "str":
-    case "bool":
-    case "int":
-    case "float":
+    case TYPE_STR:
+    case TYPE_BOOL:
+    case TYPE_INT:
+    case TYPE_FLOAT:
       return vt.kind;
-    case "scalar_list":
+    case TYPE_SCALAR_LIST:
       return `list(${varTypeToLabel(vt.elementType)})`;
-    case "list":
+    case TYPE_LIST:
       return "list(…)";
-    case "struct":
+    case TYPE_STRUCT:
       return "struct(…)";
-    case "enum":
+    case TYPE_ENUM:
       if (vt.isOption) {
-        const someVariant = vt.variants.find((v) => v.name === "Some");
+        const someVariant = vt.variants.find((v) => v.name === OPTION_SOME);
         if (someVariant && someVariant.fields.length === 1) {
           return `option(${varTypeToLabel(someVariant.fields[0]!.varType)})`;
         }
       }
       return `enum(${vt.variants.map((v) => v.name).join(", ")})`;
-    case "alias":
+    case TYPE_ALIAS:
       return vt.name;
-    case "untyped_list":
+    case TYPE_UNTYPED_LIST:
       return "list()";
-    case "option":
+    case TYPE_OPTION:
       return `option(${varTypeToLabel(vt.innerType)})`;
   }
 }
@@ -555,24 +604,24 @@ function varTypeToTsType(
   typeAliases?: ReadonlyMap<string, VarType>,
 ): string {
   switch (vt.kind) {
-    case "str":
+    case TYPE_STR:
       return "string";
-    case "bool":
+    case TYPE_BOOL:
       return "boolean";
-    case "int":
-    case "float":
+    case TYPE_INT:
+    case TYPE_FLOAT:
       return "number";
-    case "scalar_list":
+    case TYPE_SCALAR_LIST:
       return `${varTypeToTsType(_fieldName, vt.elementType, typeAliases)}[]`;
-    case "list":
+    case TYPE_LIST:
       if (vt.fields.length === 0) return "unknown[]";
       return `Array<{ ${vt.fields.map((f) => `${f.name}: ${varTypeToTsType(f.name, f.varType, typeAliases)}`).join("; ")} }>`;
-    case "struct":
+    case TYPE_STRUCT:
       if (vt.fields.length === 0) return "Record<string, unknown>";
       return `{ ${vt.fields.map((f) => `${f.name}: ${varTypeToTsType(f.name, f.varType, typeAliases)}`).join("; ")} }`;
-    case "enum": {
+    case TYPE_ENUM: {
       if (vt.isOption) {
-        const someVariant = vt.variants.find((v) => v.name === "Some");
+        const someVariant = vt.variants.find((v) => v.name === OPTION_SOME);
         if (someVariant && someVariant.fields.length === 1) {
           return `${varTypeToTsType(_fieldName, someVariant.fields[0]!.varType, typeAliases)} | null`;
         }
@@ -585,11 +634,11 @@ function varTypeToTsType(
               `${f.name}: ${varTypeToTsType(f.name, f.varType, typeAliases)}`,
           )
           .join("; ");
-        return `{ __kind__: "${v.name}"; ${fields} }`;
+        return `{ ${ENUM_TAG_KEY}: "${v.name}"; ${fields} }`;
       });
       return parts.join(" | ");
     }
-    case "alias": {
+    case TYPE_ALIAS: {
       // Resolve the alias if we have the definition
       if (typeAliases) {
         const resolved = typeAliases.get(vt.name);
@@ -599,9 +648,9 @@ function varTypeToTsType(
       }
       return vt.name;
     }
-    case "untyped_list":
+    case TYPE_UNTYPED_LIST:
       return "unknown[]";
-    case "option": {
+    case TYPE_OPTION: {
       const inner = varTypeToTsType(_fieldName, vt.innerType, typeAliases);
       return `${inner} | null`;
     }
@@ -615,28 +664,28 @@ function varTypeToTsType(
 /** Convert a Value to its TypeScript source code representation (for codegen). */
 function valueToJsSource(v: Value): string {
   switch (v.type) {
-    case "str":
+    case TYPE_STR:
       return JSON.stringify(v.value);
-    case "bool":
-      return v.value ? "true" : "false";
-    case "int":
-    case "float":
+    case TYPE_BOOL:
+      return v.value ? LIT_TRUE : LIT_FALSE;
+    case TYPE_INT:
+    case TYPE_FLOAT:
       return String(v.value);
-    case "list":
+    case TYPE_LIST:
       return `[${v.items.map(valueToJsSource).join(", ")}]`;
-    case "dict": {
+    case TYPE_STRUCT: {
       // Option serde: None → null in codegen output
-      const kindTag = v.fields.get("__kind__");
+      const kindTag = v.fields.get(ENUM_TAG_KEY);
       if (
-        kindTag?.type === "str" &&
-        kindTag.value === "None" &&
+        kindTag?.type === TYPE_STR &&
+        kindTag.value === OPTION_NONE &&
         v.fields.size === 1
       ) {
         return "null";
       }
       // Option serde: Some → unwrapped value in codegen output
-      if (kindTag?.type === "str" && kindTag.value === "Some") {
-        const innerVal = v.fields.get("val");
+      if (kindTag?.type === TYPE_STR && kindTag.value === OPTION_SOME) {
+        const innerVal = v.fields.get(OPTION_VAL_FIELD);
         if (innerVal && v.fields.size === 2) {
           return valueToJsSource(innerVal);
         }
@@ -647,7 +696,7 @@ function valueToJsSource(v: Value): string {
       }
       return `{ ${entries.join(", ")} }`;
     }
-    case "none":
+    case TYPE_NONE:
       return "null";
   }
 }
@@ -655,23 +704,23 @@ function valueToJsSource(v: Value): string {
 /** Convert a Value to a plain JS value (for inferTypes programmatic output). */
 function valueToJsLiteral(v: Value): unknown {
   switch (v.type) {
-    case "str":
+    case TYPE_STR:
       return v.value;
-    case "bool":
+    case TYPE_BOOL:
       return v.value;
-    case "int":
-    case "float":
+    case TYPE_INT:
+    case TYPE_FLOAT:
       return v.value;
-    case "list":
+    case TYPE_LIST:
       return v.items.map(valueToJsLiteral);
-    case "dict": {
+    case TYPE_STRUCT: {
       const obj: Record<string, unknown> = {};
       for (const [k, val] of v.fields) {
         obj[k] = valueToJsLiteral(val);
       }
       return obj;
     }
-    case "none":
+    case TYPE_NONE:
       return null;
   }
 }

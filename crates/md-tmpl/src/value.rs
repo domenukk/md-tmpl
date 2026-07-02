@@ -92,7 +92,24 @@ impl Value {
             Self::List(_) => crate::consts::TYPE_LIST,
             Self::Struct(_) => crate::consts::TYPE_STRUCT,
             Self::Tmpl(_) => crate::consts::TYPE_TMPL,
-            Self::None => "none",
+            Self::None => crate::consts::TYPE_NONE,
+        }
+    }
+
+    /// Returns user-visible field names for error diagnostics.
+    ///
+    /// For [`Struct`](Self::Struct) values, returns all keys except
+    /// internal ones (e.g., `__kind__`). For other variants, returns
+    /// an empty vec.
+    #[must_use]
+    pub(crate) fn field_names_hint(&self) -> Vec<&str> {
+        match self {
+            Self::Struct(m) => m
+                .keys()
+                .filter(|k| k.as_str() != crate::consts::ENUM_TAG_KEY)
+                .map(String::as_str)
+                .collect(),
+            _ => Vec::new(),
         }
     }
     /// Access a field on a Struct value.
@@ -110,6 +127,25 @@ impl Value {
                 }
                 m.get(key)
             }
+            _ => None,
+        }
+    }
+
+    /// Access a field without the `ENUM_TAG_KEY` guard.
+    ///
+    /// This is safe because compiled template paths are validated at analysis
+    /// time — user templates can never reference `__kind__` directly.
+    /// Used by the render hot path to avoid a string comparison per access.
+    #[inline]
+    #[must_use]
+    pub(crate) fn get_field_unchecked(&self, key: &str) -> Option<&Value> {
+        debug_assert!(
+            key != crate::consts::ENUM_TAG_KEY,
+            "get_field_unchecked called with internal ENUM_TAG_KEY '{key}' — \
+             this should have been rejected at compile time",
+        );
+        match self {
+            Self::Struct(m) => m.get(key),
             _ => None,
         }
     }

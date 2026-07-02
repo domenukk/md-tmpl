@@ -21,17 +21,17 @@ pub(crate) fn codegen_segment(seg: &md_tmpl::compiled::Segment) -> proc_macro2::
         }
         Segment::ForLoop {
             binding,
-            list_path,
+            list_expr,
             body,
             else_body,
         } => {
             let body_tokens = body.iter().map(codegen_segment);
             let else_body_tokens = else_body.iter().map(codegen_segment);
-            let list_path_tokens = codegen_compiled_path(list_path);
+            let list_expr_tokens = codegen_compiled_expr(list_expr);
             quote! {
                 #cp::compiled::Segment::ForLoop {
                     binding: #cp::__private::Cow::Borrowed(#binding),
-                    list_path: #list_path_tokens,
+                    list_expr: #list_expr_tokens,
                     body: #cp::__private::vec![#(#body_tokens),*],
                     else_body: #cp::__private::vec![#(#else_body_tokens),*],
                 }
@@ -70,6 +70,12 @@ pub(crate) fn codegen_segment(seg: &md_tmpl::compiled::Segment) -> proc_macro2::
             arms,
             is_option,
         } => codegen_segment_match(expr, arms, *is_option),
+        Segment::Panic(segs) => {
+            let segs_tokens = segs.iter().map(codegen_segment);
+            quote! {
+                #cp::compiled::Segment::Panic(#cp::__private::vec![#(#segs_tokens),*])
+            }
+        }
     }
 }
 
@@ -104,20 +110,28 @@ fn codegen_segment_include(inc: &md_tmpl::compiled::CompiledInclude) -> proc_mac
 
 fn codegen_segment_match(
     expr: &md_tmpl::compiled::CompiledPath,
-    arms: &[(
-        Vec<std::borrow::Cow<'static, str>>,
-        Vec<md_tmpl::compiled::Segment>,
-    )],
+    arms: &[md_tmpl::compiled::MatchArm],
     is_option: bool,
 ) -> proc_macro2::TokenStream {
     let cp = crate_path();
-    let arm_tokens = arms.iter().map(|(variants, body)| {
-        let body_tokens = body.iter().map(codegen_segment);
-        let variant_tokens = variants.iter().map(|v| {
+    let arm_tokens = arms.iter().map(|arm| {
+        let body_tokens = arm.body.iter().map(codegen_segment);
+        let variant_tokens = arm.variants.iter().map(|v| {
             quote! { #cp::__private::Cow::Borrowed(#v) }
         });
+        let guard_tokens = arm.guard.as_ref().map_or_else(
+            || quote! { ::core::option::Option::None },
+            |g| {
+                let g_tokens = codegen_condition(g);
+                quote! { ::core::option::Option::Some(#g_tokens) }
+            },
+        );
         quote! {
-            (#cp::__private::vec![#(#variant_tokens),*], #cp::__private::vec![#(#body_tokens),*])
+            #cp::compiled::MatchArm {
+                variants: #cp::__private::vec![#(#variant_tokens),*],
+                guard: #guard_tokens,
+                body: #cp::__private::vec![#(#body_tokens),*],
+            }
         }
     });
     let expr_tokens = codegen_compiled_path(expr);
@@ -177,6 +191,32 @@ pub(crate) fn codegen_condition(c: &md_tmpl::compiled::Condition) -> proc_macro2
                 #cp::compiled::Condition::Truthy(#operand_tokens)
             }
         }
+        Condition::Not(inner) => {
+            let inner_tokens = codegen_condition(inner);
+            quote! {
+                #cp::compiled::Condition::Not(#cp::__private::Box::new(#inner_tokens))
+            }
+        }
+        Condition::And(left, right) => {
+            let left_tokens = codegen_condition(left);
+            let right_tokens = codegen_condition(right);
+            quote! {
+                #cp::compiled::Condition::And(
+                    #cp::__private::Box::new(#left_tokens),
+                    #cp::__private::Box::new(#right_tokens),
+                )
+            }
+        }
+        Condition::Or(left, right) => {
+            let left_tokens = codegen_condition(left);
+            let right_tokens = codegen_condition(right);
+            quote! {
+                #cp::compiled::Condition::Or(
+                    #cp::__private::Box::new(#left_tokens),
+                    #cp::__private::Box::new(#right_tokens),
+                )
+            }
+        }
         Condition::Comparison { left, op, right } => {
             let op_tokens = codegen_comparison_op(*op);
             let left_tokens = codegen_condition_operand(left);
@@ -186,6 +226,23 @@ pub(crate) fn codegen_condition(c: &md_tmpl::compiled::Condition) -> proc_macro2
                     left: #left_tokens,
                     op: #op_tokens,
                     right: #right_tokens,
+                }
+            }
+        }
+        Condition::MatchVariant {
+            expr,
+            variants,
+            is_option,
+        } => {
+            let expr_tokens = codegen_compiled_path(expr);
+            let variant_tokens = variants.iter().map(|v| {
+                quote! { #cp::__private::Cow::Borrowed(#v) }
+            });
+            quote! {
+                #cp::compiled::Condition::MatchVariant {
+                    expr: #expr_tokens,
+                    variants: #cp::__private::vec![#(#variant_tokens),*],
+                    is_option: #is_option,
                 }
             }
         }
@@ -218,6 +275,10 @@ fn codegen_compiled_expr(expr: &md_tmpl::compiled::CompiledExpr) -> proc_macro2:
         CompiledExpr::Kind(path) => {
             let path_tokens = codegen_compiled_path(path);
             quote! { #cp::compiled::CompiledExpr::Kind(#path_tokens) }
+        }
+        CompiledExpr::Kinds(path) => {
+            let path_tokens = codegen_compiled_path(path);
+            quote! { #cp::compiled::CompiledExpr::Kinds(#path_tokens) }
         }
         CompiledExpr::Has(path) => {
             let path_tokens = codegen_compiled_path(path);
@@ -256,9 +317,17 @@ fn codegen_condition_operand(op: &md_tmpl::compiled::ConditionOperand) -> proc_m
             let path_tokens = codegen_compiled_path(path);
             quote! { #cp::compiled::ConditionOperand::Kind(#path_tokens) }
         }
+        ConditionOperand::Kinds(path) => {
+            let path_tokens = codegen_compiled_path(path);
+            quote! { #cp::compiled::ConditionOperand::Kinds(#path_tokens) }
+        }
         ConditionOperand::Has(path) => {
             let path_tokens = codegen_compiled_path(path);
             quote! { #cp::compiled::ConditionOperand::Has(#path_tokens) }
+        }
+        ConditionOperand::InterpolatedStr(segs) => {
+            let segs_tokens = segs.iter().map(codegen_segment);
+            quote! { #cp::compiled::ConditionOperand::InterpolatedStr(#cp::__private::vec![#(#segs_tokens),*]) }
         }
     }
 }
@@ -275,6 +344,7 @@ pub(crate) fn codegen_comparison_op(
         ComparisonOp::Ge => quote! { #cp::compiled::ComparisonOp::Ge },
         ComparisonOp::Lt => quote! { #cp::compiled::ComparisonOp::Lt },
         ComparisonOp::Gt => quote! { #cp::compiled::ComparisonOp::Gt },
+        ComparisonOp::In => quote! { #cp::compiled::ComparisonOp::In },
     }
 }
 

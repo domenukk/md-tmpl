@@ -87,12 +87,12 @@ fn compile_for_loop() {
     match &segs[0] {
         Segment::ForLoop {
             binding,
-            list_path,
+            list_expr,
             body,
             else_body,
         } => {
             assert_eq!(binding, "item");
-            assert_eq!(list_path.as_str(), "items");
+            assert!(matches!(list_expr, CompiledExpr::Path(p) if p.as_str() == "items"));
             assert_eq!(body.len(), 1);
             assert!(else_body.is_empty());
         }
@@ -685,6 +685,39 @@ fn len_function_on_struct() {
     ctx.set("data", Value::Struct(Arc::new(map)));
     let result = compiled_render("{{ len(data) }}", &ctx).unwrap();
     assert_eq!(result, "3");
+}
+
+#[test]
+fn kinds_function_enum_variants() {
+    let mut ctx = Context::new();
+    let mut variant_map = HashMap::new();
+    variant_map.insert(
+        crate::consts::ENUM_VARIANTS_KEY.into(),
+        Value::List(Arc::new(vec![
+            Value::Str("Finding".into()),
+            Value::Str("Hypothesis".into()),
+            Value::Str("Question".into()),
+        ])),
+    );
+    ctx.set("Tag", Value::Struct(Arc::new(variant_map)));
+    let result = compiled_render("{{ kinds(Tag) | join(\", \") }}", &ctx).unwrap();
+    assert_eq!(result, "Finding, Hypothesis, Question");
+}
+
+#[test]
+fn for_loop_over_kinds() {
+    let mut ctx = Context::new();
+    let mut variant_map = HashMap::new();
+    variant_map.insert(
+        crate::consts::ENUM_VARIANTS_KEY.into(),
+        Value::List(Arc::new(vec![
+            Value::Str("Alpha".into()),
+            Value::Str("Beta".into()),
+        ])),
+    );
+    ctx.set("Stage", Value::Struct(Arc::new(variant_map)));
+    let result = compiled_render("> {% for s in kinds(Stage) %}[{{ s }}]{% /for %}", &ctx).unwrap();
+    assert_eq!(result, "[Alpha][Beta]");
 }
 
 #[test]
@@ -2131,5 +2164,151 @@ fn if_else_inside_match_case_arm_with_blockquotes() {
     assert!(
         !output.contains("flag is set\n"),
         "should NOT render if branch: {output:?}"
+    );
+}
+
+// -- M2: in and not in operators --
+
+#[test]
+fn in_operator_string_substring() {
+    let mut ctx = Context::new();
+    ctx.set("text", "foobar");
+    let result =
+        compiled_render("> {% if \"bar\" in text %}yes{% else %}no{% /if %}", &ctx).unwrap();
+    assert_eq!(result, "yes");
+    let result2 =
+        compiled_render("> {% if \"baz\" in text %}yes{% else %}no{% /if %}", &ctx).unwrap();
+    assert_eq!(result2, "no");
+}
+
+#[test]
+fn not_in_operator_string_substring() {
+    let mut ctx = Context::new();
+    ctx.set("text", "foobar");
+    let result = compiled_render(
+        "> {% if !(\"baz\" in text) %}yes{% else %}no{% /if %}",
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result, "yes");
+    let result2 = compiled_render(
+        "> {% if !(\"bar\" in text) %}yes{% else %}no{% /if %}",
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result2, "no");
+}
+
+#[test]
+fn in_operator_list_element() {
+    let mut ctx = Context::new();
+    ctx.set(
+        "roles",
+        Value::List(Arc::new(vec![
+            Value::Str("admin".into()),
+            Value::Str("user".into()),
+        ])),
+    );
+    let result = compiled_render(
+        "> {% if \"admin\" in roles %}yes{% else %}no{% /if %}",
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result, "yes");
+    let result2 = compiled_render(
+        "> {% if \"guest\" in roles %}yes{% else %}no{% /if %}",
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result2, "no");
+}
+
+#[test]
+fn not_in_operator_list_element() {
+    let mut ctx = Context::new();
+    ctx.set(
+        "roles",
+        Value::List(Arc::new(vec![
+            Value::Str("admin".into()),
+            Value::Str("user".into()),
+        ])),
+    );
+    let result = compiled_render(
+        "> {% if !(\"guest\" in roles) %}yes{% else %}no{% /if %}",
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result, "yes");
+    let result2 = compiled_render(
+        "> {% if !(\"admin\" in roles) %}yes{% else %}no{% /if %}",
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(result2, "no");
+}
+
+#[test]
+fn in_and_not_in_enum_variants_kinds() {
+    let mut ctx = Context::new();
+    let mut variant_map = HashMap::new();
+    variant_map.insert(
+        crate::consts::ENUM_VARIANTS_KEY.into(),
+        Value::List(Arc::new(vec![
+            Value::Str("Design".into()),
+            Value::Str("Review".into()),
+        ])),
+    );
+    ctx.set("Stage", Value::Struct(Arc::new(variant_map)));
+
+    let res_in = compiled_render(
+        "> {% if \"Design\" in kinds(Stage) %}valid{% else %}invalid{% /if %}",
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(res_in, "valid");
+
+    let res_not_in = compiled_render(
+        "> {% if !(\"Invalid\" in kinds(Stage)) %}absent{% else %}present{% /if %}",
+        &ctx,
+    )
+    .unwrap();
+    assert_eq!(res_not_in, "absent");
+}
+
+#[test]
+fn in_operator_type_mismatch_evaluates_to_false() {
+    let mut ctx = Context::new();
+    ctx.set("num", Value::Int(123));
+    let result =
+        compiled_render("> {% if \"foo\" in num %}yes{% else %}no{% /if %}", &ctx).unwrap();
+    assert_eq!(result, "no");
+
+    let result_not_in =
+        compiled_render("> {% if !(\"foo\" in num) %}yes{% else %}no{% /if %}", &ctx).unwrap();
+    assert_eq!(result_not_in, "yes");
+}
+
+// -- M2: panic statements --
+
+#[test]
+fn panic_statement_literal_string_halts_rendering() {
+    let ctx = Context::new();
+    let err = compiled_render("> {% panic(\"fatal error\") %}", &ctx)
+        .expect_err("panic should halt rendering");
+    assert!(
+        matches!(err, TemplateError::Panic(ref s) if s == "fatal error"),
+        "expected TemplateError::Panic(\"fatal error\"), got {err:?}"
+    );
+}
+
+#[test]
+fn panic_statement_variable_interpolation() {
+    let mut ctx = Context::new();
+    ctx.set("err_msg", "unsupported operation occurred");
+    let err =
+        compiled_render("> {% panic(err_msg) %}", &ctx).expect_err("panic should halt rendering");
+    assert!(
+        matches!(err, TemplateError::Panic(ref s) if s == "unsupported operation occurred"),
+        "expected TemplateError::Panic(\"unsupported operation occurred\"), got {err:?}"
     );
 }

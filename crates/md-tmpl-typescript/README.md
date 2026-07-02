@@ -29,11 +29,11 @@ You are {{ role }}. You have {{ len(tasks) }} tasks:
 > {% /for %}
 
 > {% match outcome %}
-> {% when Confirmed %}
+> {% case Confirmed %}
 
 ✅ Confirmed — {{ outcome.evidence }}
 
-> {% when Rejected %}
+> {% case Rejected %}
 
 ❌ Rejected. Retry up to {{ MAX_RETRIES }} times.
 
@@ -144,6 +144,21 @@ params:
 ```
 
 Output includes `Params`, item interfaces, enum unions, `CONSTANTS`, and `DEFAULTS` — ready to import.
+
+### Type Mapping
+
+| Frontmatter Type            | TypeScript Type                                 |
+| :-------------------------- | :---------------------------------------------- |
+| `str`                       | `string`                                        |
+| `int`                       | `number`                                        |
+| `float`                     | `number`                                        |
+| `bool`                      | `boolean`                                       |
+| `list(field = type, ...)`   | `readonly GeneratedItem[]`                      |
+| `list(type)`                | `readonly T[]` (e.g. `readonly string[]`)       |
+| `struct(field = type, ...)` | `GeneratedInterface`                            |
+| `enum(Variant, ...)`        | Union type (`Variant1 \| Variant2_Struct`)      |
+| `option(type)`              | `T \| null` (`T \| undefined` is also accepted) |
+| `tmpl(...)`                 | `ITemplate` (or callable template reference)    |
 
 ## Enum Dispatch
 
@@ -256,6 +271,7 @@ Expert: {{ name }}
 {{ len(name) }}           → 5 (string length)
 {{ idx(item) }}           → 0, 1, 2, … (loop index)
 {{ kind(status) }}        → "Done" (variant name)
+{{ kinds(Status) }}       → ["Done", "InProgress", "Blocked"] (all variant names)
 {{ has(field) }}          → true if option(T) is present
 ```
 
@@ -326,16 +342,16 @@ function renderGreeting(tmpl: ITemplate, name: string): string {
 
 Node.js 22, single-template timings (lower is better):
 
-| Scenario                 |     render | renderUnchecked |
-| ------------------------ | ---------: | --------------: |
-| simple (1 str)           | **425 ns** |          449 ns |
-| multi-param (4 types)    |   1,084 ns |      **931 ns** |
-| list (2 items)           |   2,991 ns |    **1,757 ns** |
-| list (20 items)          |  21,708 ns |             N/A |
-| enum unit variant        |     535 ns |             N/A |
-| enum struct variant      |   1,354 ns |             N/A |
-| filters (idx+add, upper) |   5,537 ns |             N/A |
-| if/elif/else             |   1,285 ns |    **1,065 ns** |
+| Scenario                 |    render | renderUnchecked |
+| ------------------------ | --------: | --------------: |
+| simple (1 str)           |    622 ns |      **594 ns** |
+| multi-param (4 types)    |  1,760 ns |    **1,163 ns** |
+| list (2 items)           |  4,031 ns |    **1,982 ns** |
+| list (20 items)          | 29,056 ns |             N/A |
+| enum unit variant        |    863 ns |             N/A |
+| enum struct variant      |  1,733 ns |             N/A |
+| filters (idx+add, upper) |  6,948 ns |             N/A |
+| if/elif/else             |  2,148 ns |    **1,615 ns** |
 
 `renderUnchecked()` skips runtime type validation — use it when TypeScript's
 static checks are sufficient.
@@ -349,11 +365,11 @@ Node.js 22, 50,000 iterations, best of 5 runs
 
 <!-- BENCHMARK:TS_COMPARISON_RENDER -->
 
-| Scenario           |      render() | renderUnchecked() |      Handlebars |      Mustache |
-| ------------------ | ------------: | ----------------: | --------------: | ------------: |
-| **simple**         | **699 ns** 🏆 |            705 ns |          918 ns |        886 ns |
-| **loop (5 items)** |      4,091 ns |          2,802 ns | **1,571 ns** 🏆 |      1,845 ns |
-| **conditional**    |      1,371 ns |          1,288 ns |        1,424 ns | **444 ns** 🏆 |
+| Scenario           | render() | renderUnchecked() | Handlebars |        Mustache |
+| ------------------ | -------: | ----------------: | ---------: | --------------: |
+| **simple**         | 1,087 ns |     **812 ns** 🏆 |   1,143 ns |          906 ns |
+| **loop (5 items)** | 5,297 ns |          2,637 ns |   2,016 ns | **1,800 ns** 🏆 |
+| **conditional**    | 2,360 ns |          1,859 ns |   1,591 ns |   **445 ns** 🏆 |
 
 <!-- /BENCHMARK:TS_COMPARISON_RENDER -->
 
@@ -363,16 +379,10 @@ Node.js 22, 50,000 iterations, best of 5 runs
 
 | Scenario           |   md-tmpl | Handlebars |        Mustache |
 | ------------------ | --------: | ---------: | --------------: |
-| **simple**         |  7,191 ns |  77,066 ns |   **895 ns** 🏆 |
-| **loop (5 items)** | 16,263 ns | 108,863 ns | **1,811 ns** 🏆 |
-| **conditional**    |       N/A |        N/A |             N/A |
+| **simple**         |  8,646 ns |  81,609 ns |   **929 ns** 🏆 |
+| **loop (5 items)** | 18,483 ns | 114,632 ns | **1,838 ns** 🏆 |
 
 <!-- /BENCHMARK:TS_COMPARISON_ROUNDTRIP -->
-
-> **Note:** Mustache wins raw render speed due to its minimal feature set — no
-> type checking, no filters, no `elif`. md-tmpl wins `renderUnchecked()`
-> for simple templates. The value proposition is **type safety and correctness**,
-> not raw throughput.
 
 A [WASM build](../md-tmpl-wasm/README.md) (~200 KB `.wasm`) is also
 available for exact feature parity. Pure TypeScript is 2–6× faster for small
@@ -387,7 +397,7 @@ just bench-ts-compare   # vs Handlebars & Mustache
 ## Testing
 
 ```bash
-just test-ts    # 798 tests
+just test-ts    # 935 tests
 just lint-ts    # strict type-check with tsc
 just fmt-ts     # format with prettier
 ```

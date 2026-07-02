@@ -104,7 +104,11 @@ impl VarType {
     /// `{% match %}` instead.
     #[must_use]
     pub fn is_displayable(&self) -> bool {
-        matches!(self, Self::Str | Self::Int | Self::Float | Self::Bool)
+        match self {
+            Self::Str | Self::Int | Self::Float | Self::Bool | Self::Enum(_) => true,
+            Self::Option(inner) => inner.is_displayable(),
+            _ => false,
+        }
     }
 
     /// Returns `true` if `value` is compatible with this declared type.
@@ -665,6 +669,7 @@ pub const BUILTIN_TYPE_NAMES: &[&str] = &[
     crate::consts::TYPE_ENUM,
     crate::consts::TYPE_TMPL,
     crate::consts::TYPE_OPTION,
+    crate::consts::TYPE_NONE,
 ];
 
 // ---------------------------------------------------------------------------

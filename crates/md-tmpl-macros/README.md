@@ -118,10 +118,12 @@ let output = greeting::Params {
 | `float`                     | `f64`                                                |
 | `bool`                      | `bool`                                               |
 | `list(field = type, ...)`   | `Vec<Params{Field}Item>` (auto-generated sub-struct) |
+| `list(type)`                | `Vec<RustType>` (e.g. `Vec<String>`)                 |
 | `struct(field = type, ...)` | `Params{Field}` (auto-generated sub-struct)          |
 | `enum(Variant, ...)`        | `Params{Field}` (auto-generated enum)                |
 | `option(T)`                 | `Option<RustType>`                                   |
 | `tmpl(field = type, ...)`   | `Params{Field}` (template callable)                  |
+| `tmpl()`                    | `Params{Field}` (template callable without args)     |
 
 ## License
 

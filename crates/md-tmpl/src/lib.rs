@@ -1,6 +1,7 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![forbid(unsafe_code)]
 #![cfg_attr(feature = "std", doc = include_str!("../README.md"))]
+#![allow(dead_code, unused)]
 
 #[macro_use]
 extern crate alloc;
@@ -72,12 +73,12 @@ pub use error::{SyntaxError, TemplateError};
 #[doc(hidden)]
 #[cfg(feature = "std")]
 pub use frontmatter::parse_frontmatter_with_base_dir;
-#[cfg(feature = "std")]
-pub use frontmatter::resolve_imports;
 pub use frontmatter::{
     Frontmatter, Import, ImportedNamespace, extract_template_stem, parse_frontmatter,
     parse_type_annotation, strip_frontmatter,
 };
+#[cfg(feature = "std")]
+pub use frontmatter::{resolve_imports, resolve_imports_with_consts};
 #[cfg(feature = "serde")]
 pub use serde_support::{DeError, SerError, from_value, to_value};
 #[cfg(feature = "std")]

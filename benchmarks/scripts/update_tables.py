@@ -23,6 +23,7 @@ import logging
 import re
 import sys
 from pathlib import Path
+from typing import Any
 
 log = logging.getLogger(__name__)
 
@@ -241,8 +242,8 @@ GO_SCENARIO_DISPLAY = {"Small": "small", "Medium": "medium", "Large": "large"}
 
 
 def build_go_table(
-    pt_data: dict[str, dict],
-    go_data: dict[str, dict],
+    pt_data: dict[str, dict[str, Any]],
+    go_data: dict[str, dict[str, Any]],
     phase: str,
 ) -> str:
     """Build a Go comparison table for a specific phase (Render/Compile/RoundTrip).
@@ -367,30 +368,31 @@ def replace_table(
 # ---------------------------------------------------------------------------
 
 
-def update_readme(readme_path: Path, data: dict) -> bool:
-    """Update benchmark tables in the root README.md (Rust only). Returns True if changed."""
+def update_readme(readme_path: Path, data: dict[str, Any]) -> bool:
+    """Update benchmark tables in a Rust README.md. Returns True if changed."""
     content = readme_path.read_text()
     changes_made = False
 
     # Rust table
     if "rust" in data:
         rust_table = build_rust_table(data["rust"], RUST_ENGINES_DISPLAY)
-        new_content = replace_table(
-            content,
-            "### Rust (render-only, pre-parsed)",
-            rust_table,
-        )
-        if new_content != content:
-            content = new_content
-            changes_made = True
-            log.info("Updated Rust table in README.md")
+        for marker in ("### Rust (render-only, pre-parsed)", "### vs Competitors"):
+            new_content = replace_table(
+                content,
+                marker,
+                rust_table,
+            )
+            if new_content != content:
+                content = new_content
+                changes_made = True
+                log.info("Updated Rust table in %s after marker %s", readme_path, marker)
 
     if changes_made:
         readme_path.write_text(content)
     return changes_made
 
 
-def update_python_readme(readme_path: Path, data: dict) -> bool:
+def update_python_readme(readme_path: Path, data: dict[str, Any]) -> bool:
     """Update benchmark tables in the Python crate README.md. Returns True if changed."""
     if "python" not in data:
         return False
@@ -451,7 +453,7 @@ def update_python_readme(readme_path: Path, data: dict) -> bool:
     return changes_made
 
 
-def update_go_readme(readme_path: Path, data: dict) -> bool:
+def update_go_readme(readme_path: Path, data: dict[str, Any]) -> bool:
     """Update benchmark tables in the Go README.md. Returns True if changed."""
     if "go" not in data:
         return False
@@ -558,10 +560,10 @@ def build_ts_comparison_render_table(
     """Build TS comparison render table (render + unchecked + HBS + Mustache)."""
     lines = []
     lines.append(
-        "| Scenario        | render() | renderUnchecked() |      Handlebars |        Mustache |"
+        "| Scenario           | render() | renderUnchecked() | Handlebars |        Mustache |"
     )
     lines.append(
-        "| --------------- | -------: | ----------------: | --------------: | --------------: |"
+        "| ------------------ | -------: | ----------------: | ---------: | --------------: |"
     )
 
     for scenario in TS_COMP_SCENARIOS:
@@ -579,7 +581,7 @@ def build_ts_comparison_render_table(
         candidates = {k: v for k, v in vals.items() if v is not None}
         winner = min(candidates, key=lambda k: candidates[k]) if candidates else None
 
-        def fmt(key: str, width: int, _vals=vals, _winner=winner) -> str:
+        def fmt(key: str, width: int, _vals: dict[str, Any] = vals, _winner: str | None = winner) -> str:
             v = _vals.get(key)
             if v is None:
                 return f"{'N/A':>{width}}"
@@ -615,10 +617,13 @@ def build_ts_comparison_roundtrip_table(
         hbs = r.get("hbs")
         mus = r.get("mus")
 
+        if pt is None and hbs is None and mus is None:
+            continue
+
         candidates = {k: v for k, v in {"pt": pt, "hbs": hbs, "mus": mus}.items() if v is not None}
         winner = min(candidates, key=lambda k: candidates[k]) if candidates else None
 
-        def fmt(key: str, val: float | None, width: int, _winner=winner) -> str:
+        def fmt(key: str, val: float | None, width: int, _winner: str | None = winner) -> str:
             if val is None:
                 return f"{'N/A':>{width}}"
             s = _format_ns_comma(val)
@@ -640,7 +645,17 @@ def build_ts_comparison_roundtrip_table(
 # ---------------------------------------------------------------------------
 
 
-def build_wasm_table(wasm_data: dict) -> str:
+WASM_REPRESENTATIVE_SCENARIOS = [
+    "parse simple",
+    "render simple (1 param)",
+    "render list/for (20 items)",
+    "render complex (nested+list+filter)",
+    "declarations()",
+    "renderJson complex (nested+list+filter)",
+]
+
+
+def build_wasm_table(wasm_data: dict[str, Any]) -> str:
     """Build WASM vs TypeScript comparison table."""
     lines = []
     lines.append(
@@ -650,7 +665,10 @@ def build_wasm_table(wasm_data: dict) -> str:
         "| -------------------------------- | ----------: | ---------: | ------: |"
     )
 
-    for scenario, data in wasm_data.items():
+    for scenario in WASM_REPRESENTATIVE_SCENARIOS:
+        data = wasm_data.get(scenario)
+        if not data:
+            continue
         wasm_ns = data.get("wasm", {}).get("median_ns")
         ts_ns = data.get("ts", {}).get("median_ns")
         speedup = data.get("speedup", 0)
@@ -677,7 +695,7 @@ def build_wasm_table(wasm_data: dict) -> str:
     return "\n".join(lines)
 
 
-def update_ts_readme(readme_path: Path, data: dict) -> bool:
+def update_ts_readme(readme_path: Path, data: dict[str, Any]) -> bool:
     """Update benchmark tables in the TypeScript/WASM README.md."""
     content = readme_path.read_text()
     changes_made = False
@@ -731,7 +749,7 @@ def update_ts_readme(readme_path: Path, data: dict) -> bool:
     return changes_made
 
 
-def update_wasm_readme(readme_path: Path, data: dict) -> bool:
+def update_wasm_readme(readme_path: Path, data: dict[str, Any]) -> bool:
     """Update benchmark tables in the WASM README.md."""
     if "wasm" not in data:
         return False
@@ -779,6 +797,12 @@ def main() -> None:
         help="Path to root README.md to update (Rust tables only)",
     )
     parser.add_argument(
+        "--rust-crate-readme",
+        type=Path,
+        default=None,
+        help="Path to crates/md-tmpl/README.md to update",
+    )
+    parser.add_argument(
         "--python-readme",
         type=Path,
         default=None,
@@ -816,7 +840,7 @@ def main() -> None:
         sys.exit(1)
 
     updated_any = False
-    has_targets = args.readme or args.python_readme or args.go_readme or args.ts_readme or args.wasm_readme
+    has_targets = args.readme or args.rust_crate_readme or args.python_readme or args.go_readme or args.ts_readme or args.wasm_readme
 
     if args.readme:
         if update_readme(args.readme, data):
@@ -824,6 +848,13 @@ def main() -> None:
             updated_any = True
         else:
             log.info("README.md — no changes needed")
+
+    if args.rust_crate_readme:
+        if update_readme(args.rust_crate_readme, data):
+            log.info("crates/md-tmpl/README.md updated successfully")
+            updated_any = True
+        else:
+            log.info("crates/md-tmpl/README.md — no changes needed")
 
     if args.python_readme:
         if update_python_readme(args.python_readme, data):

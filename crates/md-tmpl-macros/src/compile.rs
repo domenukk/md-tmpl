@@ -108,22 +108,20 @@ pub(crate) fn compile_template_to_ast(
     // their structure is resolved at runtime, not at compile time.
     // Block scope ensures `opaque_roots` (which borrows `&str` from `fm`)
     // is dropped before `fm` is moved into the return struct.
-    {
-        let mut opaque_roots: HashSet<&str> = HashSet::new();
-        for import in &fm.imports {
-            opaque_roots.insert(&import.stem);
-        }
-        for c in &fm.consts {
-            opaque_roots.insert(&c.name);
-        }
-        let type_errors = md_tmpl::compiled::validate_field_accesses_with_opaque(
-            &segments,
-            &fm.declarations,
-            &opaque_roots,
-        );
-        if !type_errors.is_empty() {
-            return Err(type_errors.join("\n"));
-        }
+    let mut opaque_roots: HashSet<String> = HashSet::new();
+    for import in &fm.imports {
+        opaque_roots.insert(import.stem.clone());
+    }
+    for c in &fm.consts {
+        opaque_roots.insert(c.name.clone());
+    }
+    let type_errors = md_tmpl::compiled::validate_field_accesses_with_opaque(
+        &segments,
+        &fm.declarations,
+        &opaque_roots,
+    );
+    if !type_errors.is_empty() {
+        return Err(type_errors.join("\n"));
     }
 
     Ok(CompiledTemplateAst {
@@ -225,9 +223,9 @@ pub(crate) fn resolve_includes_recursive(
                 )?;
             }
             md_tmpl::compiled::Segment::Match { arms, .. } => {
-                for (_, arm_body) in arms {
+                for arm in arms {
                     resolve_includes_recursive(
-                        arm_body,
+                        &mut arm.body,
                         base_dir,
                         visited_paths,
                         inline_templates,
@@ -239,7 +237,8 @@ pub(crate) fn resolve_includes_recursive(
             md_tmpl::compiled::Segment::Static(_)
             | md_tmpl::compiled::Segment::Expr { .. }
             | md_tmpl::compiled::Segment::Raw(_)
-            | md_tmpl::compiled::Segment::Comment(_) => {}
+            | md_tmpl::compiled::Segment::Comment(_)
+            | md_tmpl::compiled::Segment::Panic(_) => {}
         }
     }
     Ok(())

@@ -48,14 +48,24 @@ from __future__ import annotations
 import os
 
 from types import SimpleNamespace
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Sequence, TypeVar
+
+_T = TypeVar("_T")
+try:
+    from typing import dataclass_transform
+except ImportError:
+
+    def dataclass_transform(*args: Any, **kwargs: Any) -> Callable[[Any], Any]:  # type: ignore[misc]
+        return lambda x: x
+
 
 # ---------------------------------------------------------------------------
 # @variant decorator
 # ---------------------------------------------------------------------------
 
 
-def variant(cls: type) -> type:
+@dataclass_transform()
+def variant(cls: Any) -> Any:
     """Transform a class with type annotations into a matchable variant.
 
     The class must have annotations (``field: type``) that define the
@@ -192,12 +202,12 @@ class _UnitSentinel:
     def __repr__(self) -> str:
         return self._md_tmpl_tag
 
-    def __eq__(self, other: object) -> bool:  # type: ignore[override]
+    def __eq__(self, other: object) -> bool:
         if isinstance(other, str):
             return self._md_tmpl_tag == other
         if isinstance(other, _UnitSentinel):
             return self._md_tmpl_tag == other._md_tmpl_tag
-        return NotImplemented  # type: ignore[return-value]
+        return NotImplemented
 
     def __hash__(self) -> int:
         return hash(self._md_tmpl_tag)
@@ -337,6 +347,7 @@ def _build_variant_from_dict(name: str, fields: dict[str, type]) -> type:
     return type(name, (), namespace)
 
 
+@dataclass_transform()
 class Variants(metaclass=_VariantsMeta):
     """Base class for declaring mixed enum types.
 

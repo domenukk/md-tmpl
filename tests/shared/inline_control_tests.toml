@@ -1,0 +1,778 @@
+[[tests]]
+name = "inline_if_true"
+description = "Inline if renders body when condition is true"
+template = '''
+---
+params: [flag = bool]
+---
+> {% if flag %}yes{% /if %}'''
+expected_output = "yes"
+
+[tests.params]
+flag = true
+
+[[tests]]
+name = "inline_if_false"
+description = "Inline if renders nothing when condition is false"
+template = '''
+---
+params: [flag = bool]
+---
+> {% if flag %}yes{% /if %}'''
+expected_output = ""
+
+[tests.params]
+flag = false
+
+[[tests]]
+name = "inline_if_else_true"
+description = "Inline if-else renders if-branch when true"
+template = '''
+---
+params: [flag = bool]
+---
+> {% if flag %}yes{% else %}no{% /if %}'''
+expected_output = "yes"
+
+[tests.params]
+flag = true
+
+[[tests]]
+name = "inline_if_else_false"
+description = "Inline if-else renders else-branch when false"
+template = '''
+---
+params: [flag = bool]
+---
+> {% if flag %}yes{% else %}no{% /if %}'''
+expected_output = "no"
+
+[tests.params]
+flag = false
+
+[[tests]]
+name = "inline_elif_chain_first"
+description = "Inline elif chain renders first matching branch"
+template = '''
+---
+params: [x = int]
+---
+> {% if x == 1 %}A{% elif x == 2 %}B{% else %}C{% /if %}'''
+expected_output = "A"
+
+[tests.params]
+x = 1
+
+[[tests]]
+name = "inline_elif_chain_second"
+description = "Inline elif chain renders second branch when matched"
+template = '''
+---
+params: [x = int]
+---
+> {% if x == 1 %}A{% elif x == 2 %}B{% else %}C{% /if %}'''
+expected_output = "B"
+
+[tests.params]
+x = 2
+
+[[tests]]
+name = "inline_elif_chain_else"
+description = "Inline elif chain falls through to else"
+template = '''
+---
+params: [x = int]
+---
+> {% if x == 1 %}A{% elif x == 2 %}B{% else %}C{% /if %}'''
+expected_output = "C"
+
+[tests.params]
+x = 99
+
+[[tests]]
+name = "inline_for_loop"
+description = "Inline for loop iterates over struct list"
+template = '''
+---
+params: [items = list(name = str)]
+---
+> {% for item in items %}{{ item.name }} {% /for %}'''
+expected_output = "a b c "
+
+[tests.params]
+items = [{ "name" = "a" }, { "name" = "b" }, { "name" = "c" }]
+
+[[tests]]
+name = "for_else_empty_list"
+description = "For-else renders else body when list is empty"
+template = '''
+---
+params: [items = list(str)]
+---
+> {% for item in items %}{{ item }}{% else %}empty{% /for %}'''
+expected_output = "empty"
+
+[tests.params]
+items = []
+
+[[tests]]
+name = "for_else_nonempty_list"
+description = "For-else renders items when list is non-empty"
+template = '''
+---
+params: [items = list(str)]
+---
+> {% for item in items %}{{ item }} {% else %}empty{% /for %}'''
+expected_output = "x y "
+
+[tests.params]
+items = ["x", "y"]
+
+[[tests]]
+name = "nested_inline_if_both_true"
+description = "Nested inline if renders when both conditions are true"
+template = '''
+---
+params: [a = bool, b = bool]
+---
+> {% if a %}{% if b %}DEEP{% /if %}{% /if %}'''
+expected_output = "DEEP"
+
+[tests.params]
+a = true
+b = true
+
+[[tests]]
+name = "nested_inline_if_outer_true_inner_false"
+description = "Nested inline if — outer true, inner false"
+template = '''
+---
+params: [a = bool, b = bool]
+---
+> {% if a %}{% if b %}DEEP{% /if %}{% /if %}'''
+expected_output = ""
+
+[tests.params]
+a = true
+b = false
+
+[[tests]]
+name = "nested_inline_if_outer_false"
+description = "Nested inline if — outer false skips everything"
+template = '''
+---
+params: [a = bool, b = bool]
+---
+> {% if a %}{% if b %}DEEP{% /if %}{% /if %}'''
+expected_output = ""
+
+[tests.params]
+a = false
+b = true
+
+[[tests]]
+name = "text_around_inline_if_true"
+description = "Text before and after inline if — condition true"
+template = '''
+---
+params: [flag = bool]
+---
+prefix-{% if flag %}MIDDLE{% /if %}-suffix'''
+expected_output = "prefix-MIDDLE-suffix"
+
+[tests.params]
+flag = true
+
+[[tests]]
+name = "text_around_inline_if_false"
+description = "Text before and after inline if — condition false"
+template = '''
+---
+params: [flag = bool]
+---
+prefix-{% if flag %}MIDDLE{% /if %}-suffix'''
+expected_output = "prefix--suffix"
+
+[tests.params]
+flag = false
+
+[[tests]]
+name = "inline_match_with_else_matched"
+description = "Inline match-else renders matched body when variant matches"
+template = '''
+---
+types:
+  - State = enum(Active, Stopped, Other)
+
+params: [x = State]
+---
+> {% match x case Active %}ON{% else %}OFF{% /match %}'''
+expected_output = "ON"
+
+[tests.params]
+x = "Active"
+
+[[tests]]
+name = "inline_match_with_else_unmatched"
+description = "Inline match-else renders else body when variant doesn't match"
+template = '''
+---
+types:
+  - State = enum(Active, Stopped, Other)
+
+params: [x = State]
+---
+> {% match x case Active %}ON{% else %}OFF{% /match %}'''
+expected_output = "OFF"
+
+[tests.params]
+x = "Stopped"
+
+[[tests]]
+name = "unicode_in_inline_if"
+description = "Unicode content inside inline if renders correctly"
+template = '''
+---
+params: [flag = bool]
+---
+> {% if flag %}🎯 日本語{% /if %}'''
+expected_output = "🎯 日本語"
+
+[tests.params]
+flag = true
+
+[[tests]]
+name = "const_ref_as_param_default"
+description = "Const name used as param default resolves to const value"
+template = '''
+---
+consts:
+  - MAX = int := 10
+
+params:
+  - count = int := MAX
+---
+{{ count }}'''
+expected_output = "10"
+params = {}
+
+[[tests]]
+name = "filter_inside_inline_if_true"
+description = "Filter applied to expression inside inline if when true"
+template = '''
+---
+params: [flag = bool, name = str]
+---
+> {% if flag %}{{ name | upper }}{% /if %}'''
+expected_output = "HELLO"
+
+[tests.params]
+flag = true
+name = "hello"
+
+[[tests]]
+name = "filter_inside_inline_if_false"
+description = "Filter inside inline if — condition false renders nothing"
+template = '''
+---
+params: [flag = bool, name = str]
+---
+> {% if flag %}{{ name | upper }}{% /if %}'''
+expected_output = ""
+
+[tests.params]
+flag = false
+name = "hello"
+
+[[tests]]
+name = "filter_inside_inline_for"
+description = "Filter applied to expression inside inline for loop"
+template = '''
+---
+params: [items = list(name = str)]
+---
+> {% for item in items %}{{ item.name | lower }} {% /for %}'''
+expected_output = "foo bar "
+
+[tests.params]
+items = [{ "name" = "FOO" }, { "name" = "BAR" }]
+
+[[tests]]
+name = "nested_inline_for"
+description = "Nested inline for loops iterate over nested lists"
+template = '''
+---
+params: [groups = list(items = list(str))]
+---
+> {% for group in groups %}[{% for item in group.items %}{{ item }}{% /for %}]{% /for %}'''
+expected_output = "[ab][c]"
+
+[tests.params]
+groups = [{ "items" = ["a", "b"] }, { "items" = ["c"] }]
+
+[[tests]]
+name = "inline_match_typed_enum_matched"
+description = "Inline match with typed enum — matched variant"
+template = '''
+---
+types:
+  - Status = enum(Active, Paused, Stopped)
+
+params: [s = Status]
+---
+> {% match s case Active %}on{% else %}off{% /match %}'''
+expected_output = "on"
+
+[tests.params]
+s = "Active"
+
+[[tests]]
+name = "inline_match_typed_enum_unmatched"
+description = "Inline match with typed enum — unmatched falls to else"
+template = '''
+---
+types:
+  - Status = enum(Active, Paused, Stopped)
+
+params: [s = Status]
+---
+> {% match s case Active %}on{% else %}off{% /match %}'''
+expected_output = "off"
+
+[tests.params]
+s = "Paused"
+
+[[tests]]
+name = "multiple_inline_blocks_on_separate_lines"
+description = "Multiple blockquoted inline blocks on separate lines — no newline between"
+template = '''
+---
+params: [a = bool, b = bool]
+---
+> {% if a %}A{% /if %}
+> {% if b %}B{% /if %}'''
+expected_output = "AB"
+
+[tests.params]
+a = true
+b = true
+
+[[tests]]
+name = "inline_if_comparison_gt_positive"
+description = "Inline if with > comparison — positive result"
+template = '''
+---
+params: [count = int]
+---
+> {% if count > 0 %}positive{% else %}zero{% /if %}'''
+expected_output = "positive"
+
+[tests.params]
+count = 5
+
+[[tests]]
+name = "inline_if_comparison_gt_zero"
+description = "Inline if with > comparison — zero falls to else"
+template = '''
+---
+params: [count = int]
+---
+> {% if count > 0 %}positive{% else %}zero{% /if %}'''
+expected_output = "zero"
+
+[tests.params]
+count = 0
+
+[[tests]]
+name = "inline_if_eq_string_match"
+description = "Inline if with string equality — matched"
+template = '''
+---
+params: [mode = str]
+---
+> {% if mode == "debug" %}🐛{% else %}🚀{% /if %}'''
+expected_output = "🐛"
+
+[tests.params]
+mode = "debug"
+
+[[tests]]
+name = "inline_if_eq_string_no_match"
+description = "Inline if with string equality — not matched falls to else"
+template = '''
+---
+params: [mode = str]
+---
+> {% if mode == "debug" %}🐛{% else %}🚀{% /if %}'''
+expected_output = "🚀"
+
+[tests.params]
+mode = "release"
+
+[[tests]]
+name = "inline_match_no_else_matched"
+description = "Inline match without else — matched renders body"
+template = '''
+---
+types:
+  - State = enum(Active, Stopped, Other)
+
+params: [x = State]
+---
+> {% match x case Active %}ON{% /match %}'''
+expected_output = "ON"
+
+[tests.params]
+x = "Active"
+
+[[tests]]
+name = "inline_match_no_else_unmatched"
+description = "Inline match without else — unmatched renders empty"
+template = '''
+---
+types:
+  - State = enum(Active, Stopped, Other)
+
+params: [x = State]
+---
+> {% match x case Active %}ON{% /match %}'''
+expected_output = ""
+
+[tests.params]
+x = "Other"
+
+[[tests]]
+name = "const_str_as_param_default"
+description = "String const used as param default resolves to const value"
+template = '''
+---
+consts:
+  - GREETING = str := "Hello"
+
+params:
+  - msg = str := GREETING
+---
+{{ msg }}'''
+expected_output = "Hello"
+params = {}
+
+[[tests]]
+name = "const_str_default_overridden"
+description = "String const default can be overridden by caller"
+template = '''
+---
+consts:
+  - GREETING = str := "Hello"
+
+params:
+  - msg = str := GREETING
+---
+{{ msg }}'''
+expected_output = "Hi"
+
+[tests.params]
+msg = "Hi"
+
+[[tests]]
+name = "const_bool_as_param_default"
+description = "Bool const used as param default resolves to const value"
+template = '''
+---
+consts:
+  - DEFAULT_FLAG = bool := true
+
+params:
+  - flag = bool := DEFAULT_FLAG
+---
+> {% if flag %}yes{% else %}no{% /if %}'''
+expected_output = "yes"
+params = {}
+
+[[tests]]
+name = "const_bool_default_overridden"
+description = "Bool const default can be overridden by caller"
+template = '''
+---
+consts:
+  - DEFAULT_FLAG = bool := true
+
+params:
+  - flag = bool := DEFAULT_FLAG
+---
+> {% if flag %}yes{% else %}no{% /if %}'''
+expected_output = "no"
+
+[tests.params]
+flag = false
+
+[[tests]]
+name = "empty_inline_if_true"
+description = "Empty inline if body — true condition renders nothing extra"
+template = '''
+---
+params: [flag = bool]
+---
+before{% if flag %}{% /if %}after'''
+expected_output = "beforeafter"
+
+[tests.params]
+flag = true
+
+[[tests]]
+name = "empty_inline_if_false"
+description = "Empty inline if body — false condition also renders nothing"
+template = '''
+---
+params: [flag = bool]
+---
+before{% if flag %}{% /if %}after'''
+expected_output = "beforeafter"
+
+[tests.params]
+flag = false
+
+[[tests]]
+name = "for_loop_concat"
+description = "Inline for loop concatenates items without separator"
+template = '''
+---
+params: [items = list(str)]
+---
+> {% for item in items %}{{ item }}{% /for %}'''
+expected_output = "xyz"
+
+[tests.params]
+items = ["x", "y", "z"]
+
+[[tests]]
+name = "inline_tmpl_own_consts"
+description = "Inline template with its own consts renders them correctly"
+template = '''
+---
+params: []
+---
+> {% tmpl versioned %}
+---
+consts:
+  - V = str := "2.0"
+
+params: []
+---
+v{{ V }}
+
+> {% /tmpl %}
+
+> {% include versioned %}'''
+expected_output = '''
+v2.0
+'''
+params = {}
+
+[[tests]]
+name = "join_filter_on_list"
+description = "Join filter concatenates list items with separator"
+template = '''
+---
+params: [tags = list(str)]
+---
+[{{ tags | join(", ") }}]'''
+expected_output = "[rust, ts, go]"
+
+[tests.params]
+tags = ["rust", "ts", "go"]
+
+[[tests]]
+name = "control_deeply_nested_struct_in_loop"
+description = "For loop accessing deeply nested struct fields across lists"
+template = '''
+---
+params: [org = struct(name = str, teams = list(name = str, members = list(name = str, role = str)))]
+---
+{{ org.name }}:
+
+> {% for team in org.teams %}
+
+Team {{ team.name }}:
+
+> {% for member in team.members %}
+
+- {{ member.name }} ({{ member.role }})
+
+> {% /for %}
+
+> {% /for %}'''
+expected_output = '''
+Eng:
+Team Core:
+- Alice (Lead)
+- Bob (Dev)
+'''
+
+[tests.params]
+org = { "name" = "Eng", "teams" = [
+  { "name" = "Core", "members" = [
+    { "name" = "Alice", "role" = "Lead" },
+    { "name" = "Bob", "role" = "Dev" },
+  ] },
+] }
+
+[[tests]]
+name = "control_whitespace_stripping_loop_if"
+description = "Aggressive whitespace stripping in combined for and if blocks"
+template = '''
+---
+params: [nums = list(int)]
+---
+[X{%- for n in nums -%}{%- if n > 0 -%}{{ n }}{%- /if -%}{%- /for -%}Y]'''
+expected_output = "[X24Y]"
+
+[tests.params]
+nums = [-1, 2, -3, 4]
+
+[[tests]]
+name = "control_match_option_narrowing_complex"
+description = "Match statement on option<struct<...>> narrowing fields"
+template = '''
+---
+params: [config = option(struct(host = str, port = int))]
+---
+> {% match config %}
+
+> {% case Some %}
+
+{{ config.host }}:{{ config.port }}
+
+> {% case None %}
+
+default:80
+
+> {% /match %}'''
+expected_output = '''
+localhost:8080
+'''
+
+[tests.params]
+config = { "host" = "localhost", "port" = 8080 }
+
+[[tests]]
+name = "in_operator_string_substring_matched"
+description = "In operator on strings evaluates to true when substring is present"
+template = '''
+---
+params: [text = str]
+---
+> {% if "bar" in text %}yes{% else %}no{% /if %}'''
+expected_output = "yes"
+
+[tests.params]
+text = "foobar"
+
+[[tests]]
+name = "in_operator_string_substring_unmatched"
+description = "In operator on strings evaluates to false when substring is absent"
+template = '''
+---
+params: [text = str]
+---
+> {% if "baz" in text %}yes{% else %}no{% /if %}'''
+expected_output = "no"
+
+[tests.params]
+text = "foobar"
+
+[[tests]]
+name = "not_in_operator_string_substring_matched"
+description = "!(x in y) on strings evaluates to true when substring is absent"
+template = '''
+---
+params: [text = str]
+---
+> {% if !("baz" in text) %}yes{% else %}no{% /if %}'''
+expected_output = "yes"
+
+[tests.params]
+text = "foobar"
+
+[[tests]]
+name = "not_in_operator_string_substring_unmatched"
+description = "!(x in y) on strings evaluates to false when substring is present"
+template = '''
+---
+params: [text = str]
+---
+> {% if !("bar" in text) %}yes{% else %}no{% /if %}'''
+expected_output = "no"
+
+[tests.params]
+text = "foobar"
+
+[[tests]]
+name = "in_operator_list_element_matched"
+description = "In operator on lists evaluates to true when element is present"
+template = '''
+---
+params: [roles = list(str)]
+---
+> {% if "admin" in roles %}yes{% else %}no{% /if %}'''
+expected_output = "yes"
+
+[tests.params]
+roles = ["admin", "user"]
+
+[[tests]]
+name = "in_operator_list_element_unmatched"
+description = "In operator on lists evaluates to false when element is absent"
+template = '''
+---
+params: [roles = list(str)]
+---
+> {% if "guest" in roles %}yes{% else %}no{% /if %}'''
+expected_output = "no"
+
+[tests.params]
+roles = ["admin", "user"]
+
+[[tests]]
+name = "not_in_operator_list_element_matched"
+description = "!(x in y) on lists evaluates to true when element is absent"
+template = '''
+---
+params: [roles = list(str)]
+---
+> {% if !("guest" in roles) %}yes{% else %}no{% /if %}'''
+expected_output = "yes"
+
+[tests.params]
+roles = ["admin", "user"]
+
+[[tests]]
+name = "not_in_operator_list_element_unmatched"
+description = "!(x in y) on lists evaluates to false when element is present"
+template = '''
+---
+params: [roles = list(str)]
+---
+> {% if !("admin" in roles) %}yes{% else %}no{% /if %}'''
+expected_output = "no"
+
+[tests.params]
+roles = ["admin", "user"]
+
+[[tests]]
+name = "match_non_exhaustive_suggests_combined_arm"
+description = "Non-exhaustive match on enum with multiple missing variants suggests combined pipe case arm"
+template = '''
+---
+types:
+  - Outcome = enum(Confirmed, Rejected, Pending, Reviewing)
+
+params: [res = Outcome]
+---
+> {% match res %}
+> {% case Confirmed %}ok
+> {% case Rejected %}no
+> {% /match %}'''
+expected_error = "or combined arm: {% case Pending | Reviewing %}"
+
+[tests.params]
+res = "Confirmed"

@@ -29,11 +29,20 @@ import {
   TYPE_ENUM,
   TYPE_TMPL,
   TYPE_OPTION,
+  TYPE_ALIAS,
+  TYPE_SCALAR_LIST,
+  TYPE_UNTYPED_LIST,
   PIPE,
   QUOTE_DOUBLE,
   QUOTE_SINGLE,
   OPTION_SOME,
+  MATCH_DEFAULT,
   DOT,
+  OP_IN_SPACED,
+  NODE_EXPR,
+  NODE_IF,
+  NODE_MATCH,
+  NODE_FOR,
 } from "./consts.js";
 
 // ---------------------------------------------------------------------------
@@ -104,11 +113,11 @@ function varTypeEquals(a: VarType, b: VarType): boolean {
     case TYPE_BOOL:
     case TYPE_INT:
     case TYPE_FLOAT:
-    case "untyped_list":
+    case TYPE_UNTYPED_LIST:
       return true;
-    case "alias":
+    case TYPE_ALIAS:
       return (b as typeof a).name === a.name;
-    case "scalar_list":
+    case TYPE_SCALAR_LIST:
       return varTypeEquals(a.elementType, (b as typeof a).elementType);
     case TYPE_LIST:
     case TYPE_STRUCT: {
@@ -154,11 +163,11 @@ function varTypeReferencesAlias(
   aliasName?: string,
 ): boolean {
   if (varTypeEquals(ty, aliasType)) return true;
-  // An alias reference (kind: "alias") matches if the name is the same
-  if (ty.kind === "alias" && aliasName && ty.name === aliasName) return true;
+  // An alias reference (kind: TYPE_ALIAS) matches if the name is the same
+  if (ty.kind === TYPE_ALIAS && aliasName && ty.name === aliasName) return true;
 
   switch (ty.kind) {
-    case "scalar_list":
+    case TYPE_SCALAR_LIST:
       return varTypeReferencesAlias(ty.elementType, aliasType, aliasName);
     case TYPE_LIST:
     case TYPE_STRUCT:
@@ -180,6 +189,13 @@ function varTypeReferencesAlias(
 // Validation
 // ---------------------------------------------------------------------------
 
+function throwErr(
+  msg: string,
+  loc?: { line: number; column?: number; snippet?: string },
+): never {
+  throw new TemplateSyntaxError(msg, loc?.line, loc?.column, loc?.snippet);
+}
+
 /**
  * Validate frontmatter collision and naming rules.
  *
@@ -192,16 +208,12 @@ export function validateFrontmatter(fm: Frontmatter): void {
   // ── Reserved keyword check ──────────────────────────────────────────
   for (const decl of fm.params) {
     if (RESERVED_NAMES.has(decl.name)) {
-      throw new TemplateSyntaxError(
-        `reserved keyword used as name: '${decl.name}'`,
-      );
+      throwErr(`reserved keyword used as name: '${decl.name}'`, decl.loc);
     }
   }
   for (const decl of fm.consts) {
     if (RESERVED_NAMES.has(decl.name)) {
-      throw new TemplateSyntaxError(
-        `reserved keyword used as name: '${decl.name}'`,
-      );
+      throwErr(`reserved keyword used as name: '${decl.name}'`, decl.loc);
     }
   }
   for (const aliasName of fm.typeAliases.keys()) {
@@ -217,9 +229,7 @@ export function validateFrontmatter(fm: Frontmatter): void {
     const seenParams = new Set<string>();
     for (const decl of fm.params) {
       if (seenParams.has(decl.name)) {
-        throw new TemplateSyntaxError(
-          `duplicate parameter name: '${decl.name}'`,
-        );
+        throwErr(`duplicate parameter name: '${decl.name}'`, decl.loc);
       }
       seenParams.add(decl.name);
     }
@@ -228,9 +238,7 @@ export function validateFrontmatter(fm: Frontmatter): void {
     const seenConsts = new Set<string>();
     for (const decl of fm.consts) {
       if (seenConsts.has(decl.name)) {
-        throw new TemplateSyntaxError(
-          `duplicate constant name: '${decl.name}'`,
-        );
+        throwErr(`duplicate constant name: '${decl.name}'`, decl.loc);
       }
       seenConsts.add(decl.name);
     }
@@ -253,8 +261,9 @@ export function validateFrontmatter(fm: Frontmatter): void {
   for (const param of fm.params) {
     for (const cst of fm.consts) {
       if (param.name === cst.name) {
-        throw new TemplateSyntaxError(
+        throwErr(
           `parameter name conflicts with constant name: '${param.name}' is declared as both a param and a constant`,
+          param.loc,
         );
       }
     }
@@ -271,7 +280,10 @@ export function validateFrontmatter(fm: Frontmatter): void {
         if (varTypeEquals(decl.varType, aliasType)) {
           continue;
         }
-        if (decl.varType.kind === "alias" && decl.varType.name === aliasName) {
+        if (
+          decl.varType.kind === TYPE_ALIAS &&
+          decl.varType.name === aliasName
+        ) {
           continue;
         }
         // Enum type aliases are auto-injected as constants, so a user-defined
@@ -282,8 +294,9 @@ export function validateFrontmatter(fm: Frontmatter): void {
         const label = fm.consts.some((c) => c.name === decl.name)
           ? "constant"
           : "param";
-        throw new TemplateSyntaxError(
+        throwErr(
           `type alias name conflicts with parameter name (PascalCase collision): ${label} '${decl.name}' (PascalCase: '${declPascal}') conflicts with type alias '${aliasName}'`,
+          decl.loc,
         );
       }
     }
@@ -293,8 +306,9 @@ export function validateFrontmatter(fm: Frontmatter): void {
   for (const imp of fm.imports) {
     for (const aliasName of fm.typeAliases.keys()) {
       if (aliasName === imp.stem) {
-        throw new TemplateSyntaxError(
+        throwErr(
           `type alias shadows import alias: '${aliasName}' shadows '${imp.stem}'`,
+          imp.loc,
         );
       }
     }
@@ -308,8 +322,9 @@ export function validateFrontmatter(fm: Frontmatter): void {
         const label = fm.consts.some((c) => c.name === decl.name)
           ? "constant"
           : "param";
-        throw new TemplateSyntaxError(
+        throwErr(
           `parameter name (PascalCase) shadows import alias: ${label} '${decl.name}' (PascalCase: '${declPascal}') shadows import '${imp.stem}'`,
+          decl.loc,
         );
       }
     }
@@ -352,8 +367,9 @@ export function validateBodyCollisions(
   // ── Rule 9: Import stem ↔ inline template name collision ──────────
   for (const imp of fm.imports) {
     if (inlineTemplateNames.has(imp.stem)) {
-      throw new TemplateSyntaxError(
+      throwErr(
         `inline template name conflicts with import stem: '${imp.stem}'`,
+        imp.loc,
       );
     }
   }
@@ -361,15 +377,17 @@ export function validateBodyCollisions(
   // ── Rule 10: Param/const ↔ inline template name collision ─────────
   for (const decl of fm.params) {
     if (inlineTemplateNames.has(decl.name)) {
-      throw new TemplateSyntaxError(
+      throwErr(
         `inline template name conflicts with parameter name: '${decl.name}'`,
+        decl.loc,
       );
     }
   }
   for (const decl of fm.consts) {
     if (inlineTemplateNames.has(decl.name)) {
-      throw new TemplateSyntaxError(
+      throwErr(
         `inline template name conflicts with constant name: '${decl.name}'`,
+        decl.loc,
       );
     }
   }
@@ -397,7 +415,7 @@ export function validateBodyCollisions(
 function isDisplayableType(ty: VarType): boolean {
   // Alias types can't be resolved here (we'd need the full type alias map).
   // Conservatively allow them — the resolved type may be scalar.
-  if (ty.kind === "alias") return true;
+  if (ty.kind === TYPE_ALIAS) return true;
   return (
     ty.kind === TYPE_STR ||
     ty.kind === TYPE_INT ||
@@ -413,8 +431,8 @@ const SCALAR_FUNCTIONS = new Set(["len", "idx", "kind", "has", TYPE_STR]);
 function varTypeLabel(ty: VarType): string {
   switch (ty.kind) {
     case TYPE_LIST:
-    case "scalar_list":
-    case "untyped_list":
+    case TYPE_SCALAR_LIST:
+    case TYPE_UNTYPED_LIST:
       return TYPE_LIST;
     case TYPE_STRUCT:
       return TYPE_STRUCT;
@@ -431,8 +449,8 @@ function varTypeLabel(ty: VarType): string {
 function displayHint(ty: VarType): string {
   switch (ty.kind) {
     case TYPE_LIST:
-    case "scalar_list":
-    case "untyped_list":
+    case TYPE_SCALAR_LIST:
+    case TYPE_UNTYPED_LIST:
       return "use {% for %} to iterate, or | join()";
     case TYPE_STRUCT:
       return "access fields with dot notation, e.g. {{ x.field }}";
@@ -456,26 +474,29 @@ function displayHint(ty: VarType): string {
 class TypeEnv {
   private readonly decls: readonly VarDecl[];
   private readonly narrowings: ReadonlyMap<string, VarType>;
+  private readonly typeAliases?: ReadonlyMap<string, VarType>;
 
   constructor(
     decls: readonly VarDecl[],
     narrowings?: ReadonlyMap<string, VarType>,
+    typeAliases?: ReadonlyMap<string, VarType>,
   ) {
     this.decls = decls;
     this.narrowings = narrowings ?? new Map();
+    this.typeAliases = typeAliases;
   }
 
   /** Create a new env with an additional narrowing. */
   withNarrowing(path: string, ty: VarType): TypeEnv {
     const next = new Map(this.narrowings);
     next.set(path, ty);
-    return new TypeEnv(this.decls, next);
+    return new TypeEnv(this.decls, next, this.typeAliases);
   }
 
   /** Create a new env with an additional variable binding (e.g. for-loop). */
   withBinding(name: string, ty: VarType): TypeEnv {
     const nextDecls = [...this.decls, { name, varType: ty }];
-    return new TypeEnv(nextDecls, this.narrowings);
+    return new TypeEnv(nextDecls, this.narrowings, this.typeAliases);
   }
 
   /**
@@ -521,8 +542,19 @@ class TypeEnv {
       currentType = rootNarrowed;
     } else {
       const rootDecl = this.decls.find((d) => d.name === root);
-      if (!rootDecl) return undefined;
-      currentType = rootDecl.varType;
+      if (!rootDecl) {
+        const alias = this.typeAliases?.get(root);
+        if (!alias) return undefined;
+        currentType = alias;
+      } else {
+        currentType = rootDecl.varType;
+      }
+    }
+
+    while (currentType.kind === TYPE_ALIAS && this.typeAliases) {
+      const aliasType = this.typeAliases.get(currentType.name);
+      if (!aliasType) break;
+      currentType = aliasType;
     }
 
     // Walk remaining path segments
@@ -531,6 +563,11 @@ class TypeEnv {
       const resolved = resolveFieldType(currentType, field);
       if (resolved === undefined) return undefined;
       currentType = resolved;
+      while (currentType.kind === TYPE_ALIAS && this.typeAliases) {
+        const aliasType = this.typeAliases.get(currentType.name);
+        if (!aliasType) break;
+        currentType = aliasType;
+      }
     }
 
     return currentType;
@@ -606,6 +643,45 @@ function extractHasNarrowing(
   return undefined;
 }
 
+interface ValidationError {
+  message: string;
+  loc?: import("./parser.js").SourceLocation;
+}
+
+/** Validate static condition checks at compile time (e.g., literal in kinds(Enum)). */
+function validateStaticCondition(
+  condition: string,
+  env: TypeEnv,
+  errors: ValidationError[],
+  loc?: import("./parser.js").SourceLocation,
+): void {
+  const trimmed = condition.trim();
+  const inIdx = trimmed.indexOf(OP_IN_SPACED);
+  if (inIdx !== -1) {
+    const left = trimmed.slice(0, inIdx).trim();
+    const right = trimmed.slice(inIdx + OP_IN_SPACED.length).trim();
+    const kindsMatch = /^kinds\(\s*([a-zA-Z0-9_-]+)\s*\)$/.exec(right);
+    if (kindsMatch) {
+      const enumName = kindsMatch[1]!;
+      const enumType = env.resolveExprType(enumName);
+      if (enumType?.kind === TYPE_ENUM) {
+        if (
+          (left.startsWith(QUOTE_DOUBLE) && left.endsWith(QUOTE_DOUBLE)) ||
+          (left.startsWith(QUOTE_SINGLE) && left.endsWith(QUOTE_SINGLE))
+        ) {
+          const strVal = left.slice(1, -1);
+          if (!enumType.variants.some((v) => v.name === strVal)) {
+            errors.push({
+              message: `static string "${strVal}" is not a valid variant of enum '${enumName}'`,
+              loc,
+            });
+          }
+        }
+      }
+    }
+  }
+}
+
 /**
  * Walk AST nodes with flow-sensitive narrowing, collecting displayability errors.
  *
@@ -615,24 +691,26 @@ function extractHasNarrowing(
 function walkNodesWithNarrowing(
   nodes: readonly import("./parser.js").Node[],
   env: TypeEnv,
-  errors: string[],
+  errors: ValidationError[],
 ): void {
   for (const node of nodes) {
     switch (node.kind) {
-      case "expr": {
+      case NODE_EXPR: {
         const resolvedType = env.resolveExprType(node.expr);
         if (resolvedType === undefined) continue;
         if (!isDisplayableType(resolvedType)) {
           const hint = displayHint(resolvedType);
-          errors.push(
-            `'${node.expr.trim()}': cannot display value of type ${varTypeLabel(resolvedType)} — ${hint}`,
-          );
+          errors.push({
+            message: `'${node.expr.trim()}': cannot display value of type ${varTypeLabel(resolvedType)} — ${hint}`,
+            loc: node.loc,
+          });
         }
         break;
       }
 
-      case "if": {
+      case NODE_IF: {
         for (const branch of node.branches) {
+          validateStaticCondition(branch.condition, env, errors, node.loc);
           // Check for has() narrowing
           const narrowing = extractHasNarrowing(branch.condition, env);
           if (narrowing) {
@@ -649,7 +727,7 @@ function walkNodesWithNarrowing(
         break;
       }
 
-      case "match": {
+      case NODE_MATCH: {
         const exprPath = node.expr.trim();
         const exprType = env.resolveExprType(exprPath);
 
@@ -661,16 +739,43 @@ function walkNodesWithNarrowing(
             );
             if (matchedVariants.length > 0) {
               const narrowedType: VarType = {
-                kind: "enum",
+                kind: TYPE_ENUM,
                 variants: matchedVariants,
               };
               const narrowedEnv = env.withNarrowing(exprPath, narrowedType);
               walkNodesWithNarrowing(arm.body, narrowedEnv, errors);
-            } else if (arm.variants.length === 1 && arm.variants[0] === "_") {
+            } else if (
+              arm.variants.length === 1 &&
+              arm.variants[0] === MATCH_DEFAULT
+            ) {
               // Default arm — no narrowing
               walkNodesWithNarrowing(arm.body, env, errors);
             } else {
               walkNodesWithNarrowing(arm.body, env, errors);
+            }
+          }
+          if (
+            node.arms.length > 1 &&
+            !node.elseArm &&
+            !node.arms.some((a) => a.variants.includes(MATCH_DEFAULT))
+          ) {
+            const covered = new Set<string>();
+            for (const arm of node.arms) {
+              for (const v of arm.variants) covered.add(v);
+            }
+            const missing = exprType.variants
+              .filter((v) => !covered.has(v.name))
+              .map((v) => v.name);
+            if (missing.length > 0) {
+              const cases = missing.map((m) => `{% case ${m} %}`).join(" ");
+              const suggestion =
+                missing.length > 1
+                  ? `Try adding explicit arms: ${cases} or combined arm: {% case ${missing.join(" | ")} %}`
+                  : `Try adding explicit arm: ${cases}`;
+              errors.push({
+                message: `match on '${exprPath}': non-exhaustive — missing variant(s): ${missing.join(", ")}. ${suggestion}`,
+                loc: node.loc,
+              });
             }
           }
         } else if (exprType?.kind === TYPE_OPTION) {
@@ -705,7 +810,7 @@ function walkNodesWithNarrowing(
             );
             if (matchedVariants.length > 0) {
               const narrowedType: VarType = {
-                kind: "enum",
+                kind: TYPE_ENUM,
                 variants: matchedVariants,
               };
               const narrowedEnv = env.withNarrowing(exprPath, narrowedType);
@@ -724,17 +829,17 @@ function walkNodesWithNarrowing(
         break;
       }
 
-      case "for": {
+      case NODE_FOR: {
         // Resolve the iterator expression type to determine element type
         const iterType = env.resolveExprType(node.iterExpr);
         if (iterType) {
           let elementType: VarType | undefined;
           if (iterType.kind === TYPE_LIST) {
             // list(name = str, ...) → struct(name = str, ...)
-            elementType = { kind: "struct", fields: iterType.fields };
-          } else if (iterType.kind === "scalar_list") {
+            elementType = { kind: TYPE_STRUCT, fields: iterType.fields };
+          } else if (iterType.kind === TYPE_SCALAR_LIST) {
             elementType = iterType.elementType;
-          } else if (iterType.kind === "untyped_list") {
+          } else if (iterType.kind === TYPE_UNTYPED_LIST) {
             // Can't determine element type
             elementType = undefined;
           }
@@ -778,13 +883,22 @@ function walkNodesWithNarrowing(
 export function validateDisplayability(
   nodes: readonly import("./parser.js").Node[],
   declarations: readonly VarDecl[],
+  consts?: readonly VarDecl[],
+  typeAliases?: ReadonlyMap<string, VarType>,
 ): void {
-  const env = new TypeEnv(declarations);
-  const errors: string[] = [];
+  const allDecls = consts ? [...declarations, ...consts] : declarations;
+  const env = new TypeEnv(allDecls, undefined, typeAliases);
+  const errors: ValidationError[] = [];
 
   walkNodesWithNarrowing(nodes, env, errors);
 
   if (errors.length > 0) {
-    throw new TemplateSyntaxError(errors[0]!);
+    const err = errors[0]!;
+    throw new TemplateSyntaxError(
+      err.message,
+      err.loc?.line,
+      err.loc?.column,
+      err.loc?.snippet,
+    );
   }
 }

@@ -35,6 +35,8 @@
  * @module
  */
 
+import { ENUM_TAG_KEY } from "./consts.js";
+
 // ---------------------------------------------------------------------------
 // Variant protocol
 // ---------------------------------------------------------------------------
@@ -267,11 +269,11 @@ export function match<R>(
       // VariantInstance protocol
       tag = obj._md_tmpl_tag;
       fields = (obj._md_tmpl_fields as Record<string, unknown>) ?? {};
-    } else if (typeof obj.__kind__ === "string") {
+    } else if (typeof obj[ENUM_TAG_KEY] === "string") {
       // __kind__ protocol (from generated types)
-      tag = obj.__kind__;
+      tag = obj[ENUM_TAG_KEY] as string;
       fields = { ...obj };
-      delete fields.__kind__;
+      delete fields[ENUM_TAG_KEY];
     } else {
       throw new TypeError("match(): value is not a variant");
     }
@@ -305,7 +307,7 @@ export function isVariant(value: unknown, variantName: string): boolean {
   if (value !== null && typeof value === "object") {
     const obj = value as Record<string, unknown>;
     if (obj._md_tmpl_tag === variantName) return true;
-    if (obj.__kind__ === variantName) return true;
+    if (obj[ENUM_TAG_KEY] === variantName) return true;
   }
   return false;
 }

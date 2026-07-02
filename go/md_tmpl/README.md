@@ -7,7 +7,7 @@ Strongly-typed prompt templates for LLMs.
 - **Markdown-native** — prompts live in `.tmpl.md` files, readable in any editor or on GitHub.
 - **Strict typing** — every parameter declares a type; mismatches are caught at render time with clear errors.
 - **Agent-safe** — when an LLM edits prompts, the engine catches drift immediately.
-- **Fast** — native Rust engine via CGo FFI, 3–6× faster than `text/template` on medium/large templates.
+- **Fast** — 3–6× faster than `text/template` on medium/large templates.
 
 ## Quick Example
 
@@ -28,11 +28,11 @@ params:
 ## Step {{ idx(step) }}: {{ step.tool }}
 
 > {% match step.status %}
-> {% when Search %}
+> {% case Search %}
 
 Searching — {{ step.status.reason }}
 
-> {% when Done %}
+> {% case Done %}
 
 ✅ Complete
 
@@ -85,7 +85,7 @@ result, _ := tmpl.RenderStruct(RunParams{
 
 ## Prerequisites
 
-The Go binding calls a native library via CGo. Build it first:
+You must compile the native library before running Go tests or builds:
 
 ```bash
 # Option A: using just (recommended)
@@ -95,7 +95,7 @@ just build-go-ffi
 cargo build -p md-tmpl-ffi --release
 ```
 
-You need a working [Rust toolchain](https://rustup.rs/) for the build step.
+You will need a working [Rust toolchain](https://rustup.rs/) installed in your environment.
 
 ## Installation
 
@@ -129,6 +129,21 @@ result, err := tmpl.RenderStruct(ReviewParams{
     Severity: "high",
 })
 ```
+
+### Type Mapping
+
+| Frontmatter Type            | Go Type in Struct                                    |
+| :-------------------------- | :--------------------------------------------------- |
+| `str`                       | `string`                                             |
+| `int`                       | `int`, `int64`                                       |
+| `float`                     | `float64`                                            |
+| `bool`                      | `bool`                                               |
+| `list(field = type, ...)`   | `[]StructType`                                       |
+| `list(type)`                | `[]GoType` (e.g. `[]string`)                         |
+| `struct(field = type, ...)` | `StructType`                                         |
+| `enum(Variant, ...)`        | `any` (or embedded `TaggedVariant` / `Variant`)      |
+| `option(type)`              | `*GoType` (pointer, e.g. `*string`, `nil` if absent) |
+| `tmpl(...)`                 | `*Template`                                          |
 
 ## Map-Based Rendering
 
@@ -271,6 +286,7 @@ result, _ := tmpl.RenderMap(map[string]any{"name": "Alice"})
 {{ len(items) }}          → 3 (list length)
 {{ len(name) }}           → 5 (string length)
 {{ kind(status) }}        → "Done" (variant name)
+{{ kinds(Status) }}       → ["Search", "Done"] (enum variant names)
 {{ has(field) }}          → true if option(T) is present
 ```
 
@@ -370,17 +386,17 @@ vs Go's `text/template`, median of 3 runs
 
 | Scenario   |          md-tmpl | Go `text/template` | speedup |
 | ---------- | ---------------: | -----------------: | ------: |
-| **small**  |           514 ns |             523 ns |   ~1.0× |
-| **medium** |  **1,709 ns** 🏆 |           5,902 ns |    3.5× |
-| **large**  | **24,385 ns** 🏆 |         133,680 ns |    5.5× |
+| **small**  |         1,612 ns |           1,383 ns |   ~1.0× |
+| **medium** |  **2,915 ns** 🏆 |          11,897 ns |    4.1× |
+| **large**  | **63,329 ns** 🏆 |         210,691 ns |    3.3× |
 
 **Round-trip** (parse + render):
 
 | Scenario   |          md-tmpl | Go `text/template` | speedup |
 | ---------- | ---------------: | -----------------: | ------: |
-| **small**  |         5,548 ns |           5,076 ns |   ~1.0× |
-| **medium** |        20,115 ns |          19,699 ns |   ~1.0× |
-| **large**  | **65,056 ns** 🏆 |         160,838 ns |    2.5× |
+| **small**  | **12,530 ns** 🏆 |          14,254 ns |   1.14× |
+| **medium** | **34,097 ns** 🏆 |          64,677 ns |   1.90× |
+| **large**  | **85,915 ns** 🏆 |         469,556 ns |    5.5× |
 
 **Filters:**
 

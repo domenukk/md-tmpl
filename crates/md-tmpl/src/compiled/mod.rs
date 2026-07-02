@@ -9,9 +9,11 @@ mod blockquote;
 mod inline;
 pub(crate) mod render;
 pub(crate) mod type_check;
+pub(crate) mod type_resolve;
 
 use alloc::{
     borrow::Cow,
+    boxed::Box,
     string::{String, ToString},
     sync::Arc,
     vec::Vec,
@@ -19,15 +21,19 @@ use alloc::{
 
 // Re-export submodule items used by the rest of the crate.
 pub use analysis::collect_referenced_params;
+use analysis::parse_condition;
 #[cfg(feature = "std")]
 pub(crate) use render::register_loop_meta;
+pub(crate) use render::render_interpolated_str;
 #[cfg(feature = "std")]
 pub(crate) use render::render_segments;
 #[cfg(feature = "std")]
 pub(crate) use render::render_segments_into;
 #[cfg(not(feature = "std"))]
 pub(crate) use render::render_segments_into_no_std;
-pub use type_check::{validate_field_accesses, validate_field_accesses_with_opaque};
+pub use type_check::{
+    validate_field_accesses, validate_field_accesses_full, validate_field_accesses_with_opaque,
+};
 
 pub use crate::scope::{CompiledExpr, CompiledPath, ConditionOperand};
 use crate::{
@@ -63,10 +69,22 @@ pub struct CompiledInlineTemplate {
 // Types
 // ---------------------------------------------------------------------------
 
-/// A list of match-arm pairs: `(variant_names, body_segments)`.
+/// A single arm in a match block.
 ///
-/// Each arm may match one or more variants: `{% case A | B %}`.
-pub type MatchArms = Vec<(Vec<Cow<'static, str>>, Vec<Segment>)>;
+/// Each arm may match one or more variants: `{% case A | B %}`,
+/// and may have an optional guard condition (`&& guard`).
+#[derive(Debug, Clone)]
+pub struct MatchArm {
+    /// Variant names matched by this arm.
+    pub variants: Vec<Cow<'static, str>>,
+    /// Optional guard condition: `{% case Variant && guard %}`.
+    pub guard: Option<Condition>,
+    /// Body segments to render when this arm matches.
+    pub body: Vec<Segment>,
+}
+
+/// A list of match arms.
+pub type MatchArms = Vec<MatchArm>;
 
 /// Pre-compiled template instruction.
 #[derive(Debug, Clone)]
@@ -78,10 +96,10 @@ pub enum Segment {
         expr: CompiledExpr,
         filters: Vec<ParsedFilter>,
     },
-    /// `{% for binding in list_path %}body{% /for %}`.
+    /// `{% for binding in list_expr %}body{% /for %}`.
     ForLoop {
         binding: Cow<'static, str>,
-        list_path: CompiledPath,
+        list_expr: CompiledExpr,
         body: Vec<Segment>,
         else_body: Vec<Segment>,
     },
@@ -112,21 +130,39 @@ pub enum Segment {
     /// `{# comment #}` — produces no output, but variable references
     /// inside the comment are tracked for unused-variable analysis.
     Comment(Vec<Cow<'static, str>>),
+    /// `{% panic(...) %}` — aborts template rendering with an error message.
+    Panic(Vec<Segment>),
 }
 
 /// Pre-compiled condition for `{% if %}` blocks.
 ///
 /// Parsed once at compile time so rendering never re-scans the condition
-/// string for operators.
+/// string for operators.  Supports recursive boolean expressions with
+/// `&&`, `||`, `!`, and `()` grouping.
 #[derive(Debug, Clone)]
 pub enum Condition {
     /// Simple truthiness check: `{% if show %}` or `{% if has(opt) %}`.
     Truthy(ConditionOperand),
+    /// Unary negation: `{% if !show %}` or `{% if !(a > 0) %}`.
+    Not(Box<Condition>),
     /// Binary comparison: `{% if count > 0 %}`.
     Comparison {
         left: ConditionOperand,
         op: ComparisonOp,
         right: ConditionOperand,
+    },
+    /// Logical AND (short-circuit): `{% if a > 0 && b > 0 %}`.
+    And(Box<Condition>, Box<Condition>),
+    /// Logical OR (short-circuit): `{% if a > 0 || b > 0 %}`.
+    Or(Box<Condition>, Box<Condition>),
+    /// Match-as-condition: `{% if match status case Active %}`.
+    MatchVariant {
+        /// Expression path to match on.
+        expr: CompiledPath,
+        /// Variant names to check against.
+        variants: Vec<Cow<'static, str>>,
+        /// `true` when matching on `option(T)` values.
+        is_option: bool,
     },
 }
 
@@ -145,6 +181,8 @@ pub enum ComparisonOp {
     Lt,
     /// `>`
     Gt,
+    /// `in`
+    In,
 }
 
 /// A pre-parsed filter with typed kind and optional argument.
@@ -323,7 +361,7 @@ fn extract_error_hint(msg: &str) -> Option<&str> {
 }
 /// Internal compilation — used for block bodies that have already been
 /// validated and stripped.
-fn compile_body(input: &str) -> Result<Vec<Segment>, TemplateError> {
+pub(crate) fn compile_body(input: &str) -> Result<Vec<Segment>, TemplateError> {
     let mut segments = Vec::new();
     let mut remaining: &str = input;
 
@@ -388,11 +426,21 @@ fn compile_body(input: &str) -> Result<Vec<Segment>, TemplateError> {
     Ok(segments)
 }
 
-/// Push a static text segment, skipping empty strings.
+/// Push a static text segment, coalescing with the previous one if possible.
+///
+/// Adjacent `Static` segments are common after comment/tag stripping.
+/// Merging them at compile time reduces per-segment dispatch overhead
+/// in the render loop.
 fn push_static(segments: &mut Vec<Segment>, text: &str) {
-    if !text.is_empty() {
-        segments.push(Segment::Static(Cow::Owned(text.to_string())));
+    if text.is_empty() {
+        return;
     }
+    // Coalesce with previous Static segment if possible.
+    if let Some(Segment::Static(cow)) = segments.last_mut() {
+        cow.to_mut().push_str(text);
+        return;
+    }
+    segments.push(Segment::Static(Cow::Owned(text.to_string())));
 }
 
 /// Strip trailing whitespace from the last `Segment::Static` entry.
@@ -543,6 +591,17 @@ fn compile_statement<'a>(
         )
     } else if stmt.starts_with(TAG_INCLUDE_PREFIX) {
         compile_include(stmt, after_tag)
+    } else if stmt.starts_with(crate::consts::TAG_PANIC_PAREN)
+        || stmt.starts_with(crate::consts::TAG_PANIC_PREFIX)
+        || stmt == crate::consts::KW_PANIC
+    {
+        let panic_arg = if stmt.strip_prefix(crate::consts::TAG_PANIC_PAREN).is_some() {
+            &stmt[5..]
+        } else {
+            stmt.strip_prefix(crate::consts::TAG_PANIC_PREFIX)
+                .unwrap_or_default()
+        };
+        compile_panic(panic_arg, after_tag)
     } else if stmt == KW_ELSE
         || stmt.starts_with(TAG_ELIF_PREFIX)
         || stmt == CLOSE_IF
@@ -616,7 +675,7 @@ fn compile_for_loop<'a>(
     after_tag: &'a str,
 ) -> Result<(Segment, &'a str), TemplateError> {
     let (binding, list_path) = parser::parse_for_tag(stmt_body)?;
-    let list_compiled = CompiledPath::compile(list_path);
+    let list_compiled = CompiledExpr::compile(list_path)?;
     let (body_text, rest) = parser::find_closing_block(after_tag, TAG_FOR_PREFIX, CLOSE_FOR)?;
 
     // Split body at {% else %} if present (respecting nesting).
@@ -630,7 +689,7 @@ fn compile_for_loop<'a>(
     Ok((
         Segment::ForLoop {
             binding: Cow::Owned(binding.to_string()),
-            list_path: list_compiled,
+            list_expr: list_compiled,
             body,
             else_body,
         },
@@ -692,10 +751,10 @@ fn compile_raw_block<'a>(
 /// Called once at compile time so the renderer can use a discriminant check
 /// (`Value::None` vs not) instead of scanning arm names on every render.
 fn arms_are_option(arms: &MatchArms) -> bool {
-    arms.iter().any(|(variants, _)| {
-        variants
-            .iter()
-            .any(|v| v.as_ref() == "Some" || v.as_ref() == "None")
+    arms.iter().any(|arm| {
+        arm.variants.iter().any(|v| {
+            v.as_ref() == crate::consts::OPTION_SOME || v.as_ref() == crate::consts::OPTION_NONE
+        })
     })
 }
 
@@ -709,18 +768,19 @@ fn compile_match<'a>(
     after_tag: &'a str,
 ) -> Result<(Segment, &'a str), TemplateError> {
     // Check for inline form: `match expr case Variant`
-    let (expr, inline_variant) = if let Some(case_pos) = match_body.find(" case ") {
-        let expr = match_body[..case_pos].trim();
-        let variant = match_body[case_pos + " case ".len()..].trim();
-        if variant.is_empty() {
-            return Err(TemplateError::syntax(
-                "match: empty variant name after 'case'".to_string(),
-            ));
-        }
-        (expr, Some(variant))
-    } else {
-        (match_body, None)
-    };
+    let (expr, inline_variant) =
+        if let Some(case_pos) = match_body.find(crate::consts::TAG_CASE_SPACED) {
+            let expr = match_body[..case_pos].trim();
+            let variant = match_body[case_pos + crate::consts::TAG_CASE_SPACED.len()..].trim();
+            if variant.is_empty() {
+                return Err(TemplateError::syntax(
+                    "match: empty variant name after 'case'".to_string(),
+                ));
+            }
+            (expr, Some(variant))
+        } else {
+            (match_body, None)
+        };
 
     if expr.is_empty() {
         return Err(TemplateError::syntax(
@@ -736,17 +796,35 @@ fn compile_match<'a>(
         // Inline form: check for {% else %} to create a default arm.
         let (case_text, else_text) = split_for_else(body_text);
         let case_body = compile_body(case_text).map_err(|e| enrich_error(e, case_text))?;
-        let mut arms = vec![(
-            variant
+
+        // Parse guard: `Variant && guard_condition`.
+        let (variant_part, guard_str) = if let Some(pos) = variant.find(" && ") {
+            (&variant[..pos], Some(variant[pos + 4..].trim()))
+        } else {
+            (variant, None)
+        };
+        let guard = if let Some(g) = guard_str {
+            Some(parse_condition(g)?)
+        } else {
+            None
+        };
+
+        let mut arms = vec![MatchArm {
+            variants: variant_part
                 .split(crate::consts::PIPE)
                 .map(|v| Cow::Owned(v.trim().to_string()))
                 .collect(),
-            case_body,
-        )];
+            guard,
+            body: case_body,
+        }];
         if let Some(else_body_text) = else_text {
             let else_body =
                 compile_body(else_body_text).map_err(|e| enrich_error(e, else_body_text))?;
-            arms.push((vec![Cow::Borrowed("_")], else_body));
+            arms.push(MatchArm {
+                variants: vec![Cow::Borrowed(crate::consts::MATCH_DEFAULT)],
+                guard: None,
+                body: else_body,
+            });
         }
         let is_option = arms_are_option(&arms);
         Ok((
@@ -821,8 +899,14 @@ fn split_match_arms(body: &str) -> Result<MatchArms, TemplateError> {
                         ));
                     }
 
-                    let variant = variant.trim();
-                    if variant.is_empty() {
+                    // Parse guard: `Variant && guard_condition`.
+                    let (variant_part, guard_str) = if let Some(pos) = variant.find(" && ") {
+                        (&variant[..pos], Some(variant[pos + 4..].trim()))
+                    } else {
+                        (variant, None)
+                    };
+                    let variant_part = variant_part.trim();
+                    if variant_part.is_empty() {
                         return Err(TemplateError::syntax(
                             "match: empty variant name in {% case %}".to_string(),
                         ));
@@ -832,11 +916,20 @@ fn split_match_arms(body: &str) -> Result<MatchArms, TemplateError> {
                     let arm_body = scan_to_next_case_or_end(after)?;
                     let arm_segments =
                         compile_body(arm_body).map_err(|e| enrich_error(e, arm_body))?;
-                    let variants = variant
+                    let variants = variant_part
                         .split(crate::consts::PIPE)
                         .map(|v| Cow::Owned(v.trim().to_string()))
                         .collect();
-                    arms.push((variants, arm_segments));
+                    let guard = if let Some(g) = guard_str {
+                        Some(parse_condition(g)?)
+                    } else {
+                        None
+                    };
+                    arms.push(MatchArm {
+                        variants,
+                        guard,
+                        body: arm_segments,
+                    });
 
                     remaining = &after[arm_body.len()..];
                     if remaining.is_empty() {
@@ -854,7 +947,11 @@ fn split_match_arms(body: &str) -> Result<MatchArms, TemplateError> {
                     let arm_body = scan_to_next_case_or_end(after)?;
                     let arm_segments =
                         compile_body(arm_body).map_err(|e| enrich_error(e, arm_body))?;
-                    arms.push((vec![Cow::Borrowed("_")], arm_segments));
+                    arms.push(MatchArm {
+                        variants: vec![Cow::Borrowed(crate::consts::MATCH_DEFAULT)],
+                        guard: None,
+                        body: arm_segments,
+                    });
 
                     remaining = &after[arm_body.len()..];
                     if remaining.is_empty() {
@@ -957,6 +1054,37 @@ fn compile_include<'a>(
         }),
         after_tag,
     ))
+}
+
+/// Compile a panic directive.
+fn compile_panic<'a>(
+    panic_arg: &str,
+    after_tag: &'a str,
+) -> Result<(Segment, &'a str), TemplateError> {
+    let mut arg = panic_arg.trim();
+    if let Some(stripped) = arg.strip_prefix('(') {
+        if let Some(inner) = stripped.strip_suffix(')') {
+            arg = inner.trim();
+        } else {
+            return Err(TemplateError::syntax(
+                "panic(...) is missing closing parenthesis",
+            ));
+        }
+    }
+    if arg.is_empty() {
+        return Err(TemplateError::syntax(
+            "panic statement requires an argument",
+        ));
+    }
+    let body_src = if (arg.starts_with('"') && arg.ends_with('"') && arg.len() >= 2)
+        || (arg.starts_with('\'') && arg.ends_with('\'') && arg.len() >= 2)
+    {
+        alloc::borrow::Cow::Borrowed(&arg[1..arg.len() - 1])
+    } else {
+        alloc::borrow::Cow::Owned(alloc::format!("{{{{ {arg} }}}}"))
+    };
+    let segments = compile_body(&body_src)?;
+    Ok((Segment::Panic(segments), after_tag))
 }
 
 #[cfg(all(test, feature = "std"))]

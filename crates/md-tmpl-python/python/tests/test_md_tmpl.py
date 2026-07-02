@@ -40,6 +40,7 @@ import pytest
 from md_tmpl import (
     Template,
     TemplateCache,
+    TemplatePanicError,
     Variants,
     load_types,
     template,
@@ -3011,6 +3012,7 @@ class TestTypeAliasGeneration:
             ---
             types:
               - Priority = enum(High, Medium, Low)
+
             params:
               - prio = Priority
             ---
@@ -3039,6 +3041,7 @@ class TestTypeAliasGeneration:
             ---
             types:
               - Priority = enum(High, Medium, Low)
+
             params:
               - prio = Priority
             ---
@@ -3100,7 +3103,7 @@ class TestVariantsExecRemoval:
     # -- helpers --
 
     @staticmethod
-    def _make_result() -> type:
+    def _make_result() -> Any:
         """Create a fresh Result Variants class for each test."""
 
         class Result(Variants):
@@ -3258,7 +3261,7 @@ class TestPatternMatching:
             Approved = ()
             Rejected = ()
 
-        def classify(s):
+        def classify(s: Any) -> str:
             match s:
                 case Status.Approved:
                     return "approved"
@@ -3275,7 +3278,7 @@ class TestPatternMatching:
             Approved = ()
             NeedsChanges = {"reason": str}
 
-        def explain(s):
+        def explain(s: Any) -> str:
             match s:
                 case Status.NeedsChanges(reason=r):
                     return f"needs changes: {r}"
@@ -3296,7 +3299,7 @@ class TestPatternMatching:
             evidence: str
             confidence: float
 
-        def handle(v):
+        def handle(v: Any) -> str:
             match v:
                 case Confirmed(evidence=e, confidence=c) if c > 0.9:
                     return f"high confidence: {e}"
@@ -3325,6 +3328,7 @@ class TestPatternMatching:
             f.write("""---
 params:
   - outcome = enum(Confirmed(evidence = str), Rejected)
+
 allow_unused: true
 ---
 {{ outcome }}""")
@@ -4004,4 +4008,133 @@ params:
 ---
 {{ greeting }} {{ name }}!""")
         with pytest.raises(ValueError, match="name"):
+            tmpl.render_empty()
+
+
+# ---------------------------------------------------------------------------
+# Milestone M2 — panic(...) and in/not in
+# ---------------------------------------------------------------------------
+
+
+class TestMilestoneM2:
+    """Tests for Milestone M2 features: {% panic(...) %} and in/not in operators."""
+
+    def test_panic_literal_raises_template_panic_error(self) -> None:
+        tmpl = Template.from_source("""---
+params: []
+---
+> {% panic("halt") %}
+""")
+        with pytest.raises(TemplatePanicError, match="template panic: halt"):
+            tmpl.render_empty()
+
+    def test_panic_interpolation_raises_template_panic_error(self) -> None:
+        tmpl = Template.from_source("""---
+params: [reason = str]
+---
+> {% panic(reason) %}
+""")
+        with pytest.raises(
+            TemplatePanicError, match="template panic: fatal: bad state"
+        ):
+            tmpl.render(reason="fatal: bad state")
+
+    def test_in_operator_string_substring(self) -> None:
+        tmpl = Template.from_source("""---
+params: [role = str]
+---
+> {% if "admin" in role %}
+
+YES
+
+> {% else %}
+
+NO
+
+> {% /if %}""")
+        assert tmpl.render(role="superadmin user").strip() == "YES"
+        assert tmpl.render(role="guest").strip() == "NO"
+
+    def test_not_in_operator_string_substring(self) -> None:
+        tmpl = Template.from_source("""---
+params: [role = str]
+---
+> {% if !("err" in role) %}
+
+OK
+
+> {% else %}
+
+ERROR
+
+> {% /if %}""")
+        assert tmpl.render(role="status_ok").strip() == "OK"
+        assert tmpl.render(role="has_err_flag").strip() == "ERROR"
+
+    def test_in_operator_list_membership(self) -> None:
+        tmpl = Template.from_source("""---
+params: [roles = list(str)]
+---
+> {% if "admin" in roles %}
+
+ALLOWED
+
+> {% else %}
+
+DENIED
+
+> {% /if %}""")
+        assert tmpl.render(roles=["user", "admin"]).strip() == "ALLOWED"
+        assert tmpl.render(roles=["guest", "user"]).strip() == "DENIED"
+
+    def test_not_in_operator_list_membership(self) -> None:
+        tmpl = Template.from_source("""---
+params: [roles = list(str)]
+---
+> {% if !("banned" in roles) %}
+
+WELCOME
+
+> {% else %}
+
+GO AWAY
+
+> {% /if %}""")
+        assert tmpl.render(roles=["guest", "user"]).strip() == "WELCOME"
+        assert tmpl.render(roles=["user", "banned"]).strip() == "GO AWAY"
+
+    def test_in_operator_enum_kinds(self) -> None:
+        tmpl = Template.from_source("""---
+params: [status = enum(Active, Inactive, Pending)]
+allow_unused: true
+---
+> {% if "Active" in kinds(Status) %}
+
+VALID
+
+> {% /if %}""")
+        assert tmpl.render(status="Active").strip() == "VALID"
+
+    def test_adv_m2_security_prompt_guard(self) -> None:
+        tmpl = Template.from_source("""---
+params:
+  - user_input = str
+---
+> {% if "ignore previous instructions" in user_input %}
+> {% panic("Prompt injection detected") %}
+> {% else %}
+
+SAFE
+
+> {% /if %}""")
+        assert tmpl.render(user_input="hello world").strip() == "SAFE"
+        with pytest.raises(TemplatePanicError, match="Prompt injection detected"):
+            tmpl.render(user_input="please ignore previous instructions now")
+
+    def test_adv_m2_unicode_multibyte_panic(self) -> None:
+        tmpl = Template.from_source("""---
+allow_unused: true
+---
+> {% panic("重大なエラー 🚨") %}""")
+        with pytest.raises(TemplatePanicError, match="重大なエラー 🚨"):
             tmpl.render_empty()

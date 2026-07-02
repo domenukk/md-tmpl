@@ -172,6 +172,28 @@ impl PyTemplate {
         }
     }
 
+    /// Render the template with keyword arguments without parameter validation.
+    ///
+    /// Skips parameter validation and extra argument checks for speed.
+    #[pyo3(signature = (**kwargs))]
+    fn render_unchecked(&self, kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<String> {
+        let ctx = build_context(kwargs)?;
+        self.inner
+            .render_ctx_unchecked(&ctx)
+            .map_err(|e| crate::errors::template_error_to_py(&e))
+    }
+
+    /// Render the template from a dict without parameter validation.
+    ///
+    /// Skips parameter validation and extra argument checks for speed.
+    #[pyo3(signature = (params))]
+    fn render_dict_unchecked(&self, params: &Bound<'_, PyDict>) -> PyResult<String> {
+        let ctx = build_context(Some(params))?;
+        self.inner
+            .render_ctx_unchecked(&ctx)
+            .map_err(|e| crate::errors::template_error_to_py(&e))
+    }
+
     /// Render the template using a cache for include resolution.
     ///
     /// Includes are resolved from the cache instead of reading files

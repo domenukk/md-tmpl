@@ -37,3 +37,7 @@ class ExtraParamsError(TemplateError):
 
     Suppressed when ``allow_extra=True`` is passed.
     """
+
+
+class TemplatePanicError(TemplateError):
+    """Raised when template rendering is halted by an explicit {% panic(...) %} statement."""

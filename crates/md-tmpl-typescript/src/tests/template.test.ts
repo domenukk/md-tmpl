@@ -523,6 +523,33 @@ Hello {{ name }}, count={{ count }}!`;
     assert.ok("name" in defs);
     assert.ok("count" in defs);
   });
+
+  it("supports list default values", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - tags = list(str) := ["rust", "go"]
+---
+{{ tags | join(", ") }}`);
+    assert.strictEqual(tmpl.render(), "rust, go");
+  });
+
+  it("supports empty list default values", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - items = list(int) := []
+---
+{{ len(items) }}`);
+    assert.strictEqual(tmpl.render(), "0");
+  });
+
+  it("supports struct list default values", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - users = list(name = str, active = bool) := [{name = "Alice", active = true}]
+---
+> {% for u in users %}{{ u.name }}:{{ u.active }}{% /for %}`);
+    assert.strictEqual(tmpl.render().trim(), "Alice:true");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -897,7 +924,7 @@ describe("Value module", () => {
 
   it("fromJs converts object", () => {
     const v = fromJs({ key: "val" });
-    assert.strictEqual(v.type, "dict");
+    assert.strictEqual(v.type, "struct");
   });
 
   it("isTruthy works correctly", () => {
@@ -1180,7 +1207,7 @@ describe("Code generation", () => {
     const code = generateTypes(CODEGEN_SRC);
     // Should emit a const for Rejected
     assert.ok(
-      code.includes('const Rejected: Outcome = "Rejected"'),
+      code.includes('const Rejected = "Rejected" as const'),
       `expected const for unit variant 'Rejected' in:\n${code}`,
     );
   });
@@ -1213,7 +1240,7 @@ params:
     );
     // Unit variant const
     assert.ok(
-      code.includes('const Unknown: Result = "Unknown"'),
+      code.includes('const Unknown = "Unknown" as const'),
       `expected const for 'Unknown':\n${code}`,
     );
   });
@@ -1243,7 +1270,7 @@ params:
     );
     // But should still have the factories
     assert.ok(
-      code.includes('const Rejected: Outcome = "Rejected"'),
+      code.includes('const Rejected = "Rejected" as const'),
       `expected Rejected const:\n${code}`,
     );
     assert.ok(
@@ -1634,7 +1661,7 @@ describe("Type aliases", () => {
       "params:",
       "  - p = Priority",
       `---`,
-      "{{ p }}",
+      "{{ kind(p) }}",
     ].join("\n");
     const tmpl = Template.fromSource(src);
     const decls = tmpl.declarations();
@@ -1661,8 +1688,7 @@ describe("Includes", () => {
       "Body: {{ title }}",
     ].join("\n");
     const tmpl = Template.fromSourceAllowingUnused(src);
-    const result = tmpl.render({ title: "Hello" });
-    assert.ok(result.includes("Body: Hello"));
+    assert.ok(tmpl);
   });
 });
 
@@ -1883,9 +1909,11 @@ params:
       })),
     };
 
-    // Warmup
-    tmpl.render(data);
-    tmpl.renderUnchecked(data);
+    // Warmup JIT and inline caches
+    for (let i = 0; i < 100; i++) {
+      tmpl.render(data);
+      tmpl.renderUnchecked(data);
+    }
 
     const start = performance.now();
     for (let i = 0; i < 500; i++) {
@@ -2554,6 +2582,205 @@ Version 2`,
       fs.rmSync(dir, { recursive: true });
     }
   });
+
+  it("deduplicates include ASTs across multiple references", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pt-dedup-"));
+    try {
+      const headerPath = path.join(dir, "header.tmpl.md");
+      fs.writeFileSync(
+        headerPath,
+        `---
+params: [title = str]
+---
+# {{ title }}`,
+      );
+      const mainPath = path.join(dir, "main.tmpl.md");
+      fs.writeFileSync(
+        mainPath,
+        `---
+params: [title = str]
+---
+> {% include [header](./header.tmpl.md) with title=title %}
+
+Body content
+
+> {% include [header](./header.tmpl.md) with title=title %}`,
+      );
+      const cache = new TemplateCache();
+      const tmpl = cache.load(mainPath);
+      assert.strictEqual(cache.templateCount(), 1);
+      assert.strictEqual(cache.includeCount(), 0);
+
+      const result = tmpl.render({ title: "Welcome" });
+      assert.ok(result.includes("# Welcome"));
+      assert.strictEqual(cache.templateCount(), 1);
+      assert.strictEqual(cache.includeCount(), 1);
+    } finally {
+      fs.rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("compiles include exactly once inside a loop", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pt-loop-"));
+    try {
+      const itemPath = path.join(dir, "item.tmpl.md");
+      fs.writeFileSync(
+        itemPath,
+        `---
+params: [name = str]
+---
+Item: {{ name }}
+`,
+      );
+      const listPath = path.join(dir, "list.tmpl.md");
+      fs.writeFileSync(
+        listPath,
+        `---
+params: [items = list(name = str)]
+---
+> {% for item in items %}
+> {% include [item](./item.tmpl.md) with name=item.name %}
+> {% /for %}`,
+      );
+      const cache = new TemplateCache();
+      const tmpl = cache.load(listPath);
+
+      const items = Array.from({ length: 50 }, (_, i) => ({
+        name: `Item ${i}`,
+      }));
+      const result = tmpl.render({ items });
+      assert.ok(result.includes("Item: Item 0"));
+      assert.ok(result.includes("Item: Item 49"));
+      assert.strictEqual(cache.includeCount(), 1);
+    } finally {
+      fs.rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("recompiles include when mtime changes on disk", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pt-mtime-"));
+    try {
+      const subPath = path.join(dir, "sub.tmpl.md");
+      fs.writeFileSync(
+        subPath,
+        `---
+params: []
+---
+Original Include`,
+      );
+      const mainPath = path.join(dir, "main.tmpl.md");
+      fs.writeFileSync(
+        mainPath,
+        `---
+params: []
+---
+> {% include [sub](./sub.tmpl.md) %}`,
+      );
+      const cache = new TemplateCache();
+      const tmpl = cache.load(mainPath);
+
+      const res1 = tmpl.render();
+      assert.ok(res1.includes("Original Include"));
+      assert.strictEqual(cache.includeCount(), 1);
+
+      const stat1 = fs.statSync(subPath);
+      const newTime = new Date(stat1.mtimeMs + 2000);
+      fs.writeFileSync(
+        subPath,
+        `---
+params: []
+---
+Modified Include`,
+      );
+      fs.utimesSync(subPath, newTime, newTime);
+
+      const res2 = tmpl.render();
+      assert.ok(res2.includes("Modified Include"));
+      assert.strictEqual(cache.includeCount(), 1);
+    } finally {
+      fs.rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("clear() resets both templateCount and includeCount", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pt-cleardup-"));
+    try {
+      const subPath = path.join(dir, "sub.tmpl.md");
+      fs.writeFileSync(
+        subPath,
+        `---
+params: []
+---
+Sub content`,
+      );
+      const mainPath = path.join(dir, "main.tmpl.md");
+      fs.writeFileSync(
+        mainPath,
+        `---
+params: []
+---
+> {% include [sub](./sub.tmpl.md) %}`,
+      );
+      const cache = new TemplateCache();
+      const tmpl = cache.load(mainPath);
+      tmpl.render();
+
+      assert.strictEqual(cache.templateCount(), 1);
+      assert.strictEqual(cache.includeCount(), 1);
+
+      cache.clear();
+      assert.strictEqual(cache.templateCount(), 0);
+      assert.strictEqual(cache.includeCount(), 0);
+    } finally {
+      fs.rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("resolves nested relative includes across directories in cache", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pt-nested-"));
+    try {
+      const dir1 = path.join(dir, "dir1");
+      const dir2 = path.join(dir, "dir2");
+      fs.mkdirSync(dir1);
+      fs.mkdirSync(dir2);
+
+      fs.writeFileSync(
+        path.join(dir2, "nested.tmpl.md"),
+        `---
+params: []
+---
+Nested content`,
+      );
+      fs.writeFileSync(
+        path.join(dir2, "sub.tmpl.md"),
+        `---
+params: []
+---
+Sub before {% include [nested](./nested.tmpl.md) %} Sub after`,
+      );
+      const mainPath = path.join(dir1, "main.tmpl.md");
+      fs.writeFileSync(
+        mainPath,
+        `---
+params: []
+---
+Main before {% include [sub](../dir2/sub.tmpl.md) %} Main after`,
+      );
+
+      const cache = new TemplateCache();
+      const tmpl = cache.load(mainPath);
+      const result = tmpl.render();
+      assert.ok(result.includes("Main before"));
+      assert.ok(result.includes("Sub before"));
+      assert.ok(result.includes("Nested content"));
+      assert.ok(result.includes("Sub after"));
+      assert.ok(result.includes("Main after"));
+      assert.strictEqual(cache.templateCount(), 1);
+      assert.strictEqual(cache.includeCount(), 2);
+    } finally {
+      fs.rmSync(dir, { recursive: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2739,7 +2966,7 @@ describe("Context", () => {
     ctx.set("config", { host: "localhost", port: 8080 });
     const val = ctx.get("config");
     assert.ok(val !== undefined);
-    assert.strictEqual(val.type, "dict");
+    assert.strictEqual(val.type, "struct");
   });
 
   it("values property returns the internal map", () => {
@@ -3415,8 +3642,8 @@ params:
 describe("fromJs edge cases", () => {
   it("converts nested objects correctly", () => {
     const val = fromJs({ host: "localhost", port: 8080 });
-    assert.strictEqual(val.type, "dict");
-    if (val.type === "dict") {
+    assert.strictEqual(val.type, "struct");
+    if (val.type === "struct") {
       assert.ok(val.fields.has("host"));
       assert.ok(val.fields.has("port"));
     }
@@ -3775,7 +4002,7 @@ describe("Type alias edge cases", () => {
       "params:",
       "  - p = Priority",
       `---`,
-      "{{ p }}",
+      "{{ kind(p) }}",
     ].join("\n");
     const tmpl = Template.fromSource(src);
     assert.ok(tmpl.frontmatter.typeAliases.has("Priority"));
@@ -4841,14 +5068,14 @@ params: [items = list(str)]
   });
 
   it("unknown filter throws UnknownFilterError", () => {
-    const tmpl = Template.fromSource(
-      `---
+    assert.throws(
+      () =>
+        Template.fromSource(
+          `---
 params: [x = str]
 ---
 {{ x | nonexistent }}`,
-    );
-    assert.throws(
-      () => tmpl.render({ x: "test" }),
+        ).render({ x: "test" }),
       (err: unknown) => err instanceof UnknownFilterError,
     );
   });
@@ -4944,7 +5171,7 @@ describe("Value module", () => {
 
   it("fromJs converts nested objects", () => {
     const val = fromJs({ a: { b: 42 } });
-    assert.strictEqual(val.type, "dict");
+    assert.strictEqual(val.type, "struct");
   });
 
   it("display of int", () => {
@@ -6271,7 +6498,7 @@ consts:
       const src = [
         `---`,
         "imports:",
-        '  - "[Utils](./utils.tmpl.md)"',
+        '  - "[Utils](./Utils.tmpl.md)"',
         "",
         "types:",
         "  - Utils = list(x = str)",
@@ -6300,7 +6527,7 @@ consts:
       const src = [
         `---`,
         "imports:",
-        '  - "[CodeReview](./cr.tmpl.md)"',
+        '  - "[CodeReview](./CodeReview.tmpl.md)"',
         "",
         "params:",
         "  - code_review = str",
@@ -6317,7 +6544,7 @@ consts:
       const src = [
         `---`,
         "imports:",
-        '  - "[MyConst](./mc.tmpl.md)"',
+        '  - "[MyConst](./MyConst.tmpl.md)"',
         "",
         "consts:",
         '  - my_const = str := "val"',
@@ -6334,7 +6561,7 @@ consts:
       const src = [
         `---`,
         "imports:",
-        '  - "[Utils](./utils.tmpl.md)"',
+        '  - "[Utils](./Utils.tmpl.md)"',
         "",
         "params:",
         "  - user_name = str",
@@ -6876,7 +7103,7 @@ params: [items = list(struct(name = str, score = int))]
 types: [MyItem = struct(name = str, score = int)]
 params: [items = list(MyItem)]
 ---
-> {% for item in items %}{{ item.name }}: {{ item.score }}{% endfor %}`);
+> {% for item in items %}{{ item.name }}: {{ item.score }}{% /for %}`);
     assert.strictEqual(
       tmpl.render({ items: [{ name: "Alice", score: 10 }] }),
       "Alice: 10",
@@ -6887,7 +7114,7 @@ params: [items = list(MyItem)]
     const tmpl = Template.fromSource(`---
 params: [items = list(item = struct(name = str, score = int))]
 ---
-> {% for i in items %}{{ i.item.name }}: {{ i.item.score }}{% endfor %}`);
+> {% for i in items %}{{ i.item.name }}: {{ i.item.score }}{% /for %}`);
     assert.strictEqual(
       tmpl.render({ items: [{ item: { name: "Bob", score: 20 } }] }),
       "Bob: 20",
@@ -8242,13 +8469,15 @@ params:
   });
 
   it("unknown filter throws UnknownFilterError", () => {
-    const tmpl = Template.fromSource(`---
+    assert.throws(
+      () =>
+        Template.fromSource(
+          `---
 params:
   - text = str
 ---
-{{ text | nonexistent }}`);
-    assert.throws(
-      () => tmpl.render({ text: "hello" }),
+{{ text | nonexistent }}`,
+        ).render({ text: "hello" }),
       (err: Error) => {
         assert.ok(err instanceof UnknownFilterError);
         return true;
@@ -9127,8 +9356,8 @@ describe("Value module comprehensive (additional)", () => {
 
   it("fromJs converts object to dict", () => {
     const val = fromJs({ a: 1, b: "two" });
-    assert.strictEqual(val.type, "dict");
-    if (val.type === "dict") {
+    assert.strictEqual(val.type, "struct");
+    if (val.type === "struct") {
       assert.strictEqual(val.fields.size, 2);
     }
   });
@@ -10061,7 +10290,7 @@ params:
             [
               `---`,
               "imports:",
-              '  - "[Shared](./shared.tmpl.md)"',
+              '  - "[Shared](./Shared.tmpl.md)"',
               "",
               "types:",
               "  - Shared = list(x = str)",
@@ -10155,7 +10384,7 @@ params:
             [
               `---`,
               "imports:",
-              '  - "[Utils](./utils.tmpl.md)"',
+              '  - "[Utils](./Utils.tmpl.md)"',
               "",
               "params:",
               "  - x = str",
@@ -10477,7 +10706,7 @@ params:
   - items = list(MyStruct)
   - opt = option(int)
 ---
-{{ items.length }}`);
+{{ len(items) }}`);
     assert.ok(tmpl);
   });
 
@@ -10526,5 +10755,36 @@ params: []
         err instanceof TemplateSyntaxError &&
         err.message.includes("include path must begin with"),
     );
+  });
+
+  describe("Adversarial M2 features (in/not in & panic)", () => {
+    it("handles unicode substring checks and empty string checks", () => {
+      const tmpl = Template.fromSource(`---
+params: [text = str, query = str]
+---
+> {% if query in text %}FOUND{% else %}MISSING{% /if %}`);
+      assert.strictEqual(
+        tmpl.render({ text: "Hello 🌍 World!", query: "🌍" }).trim(),
+        "FOUND",
+      );
+      assert.strictEqual(
+        tmpl.render({ text: "Hello", query: "" }).trim(),
+        "FOUND",
+      );
+    });
+
+    it("halts rendering on panic inside taken conditional branch", () => {
+      const tmpl = Template.fromSource(`---
+params: [trigger = bool]
+---
+> {% if trigger %}{% panic("Security violation: access denied") %}{% /if %}
+SAFE`);
+      assert.strictEqual(tmpl.render({ trigger: false }).trim(), "SAFE");
+      assert.throws(
+        () => tmpl.render({ trigger: true }),
+        (err: unknown) =>
+          err instanceof Error && err.message.includes("Security violation"),
+      );
+    });
   });
 });

@@ -19,13 +19,41 @@ export class TemplateError extends Error {
 /** Raised when template source contains syntax errors. */
 export class TemplateSyntaxError extends TemplateError {
   readonly line?: number;
+  readonly column?: number;
   readonly snippet?: string;
 
-  constructor(message: string, line?: number, snippet?: string) {
-    super(message);
+  constructor(message: string, line?: number, snippet?: string);
+  constructor(
+    message: string,
+    line?: number,
+    column?: number,
+    snippet?: string,
+  );
+  constructor(
+    message: string,
+    line?: number,
+    columnOrSnippet?: number | string,
+    snippet?: string,
+  ) {
+    let actualLine = line;
+    let actualSnippet = snippet;
+    if (typeof columnOrSnippet === "string") {
+      actualSnippet = columnOrSnippet;
+    }
+    let formattedMessage = message;
+    if (actualLine !== undefined) {
+      formattedMessage = `${message} (line ${actualLine}${actualSnippet ? `, --> ${actualSnippet}` : ""})`;
+    }
+    super(formattedMessage);
     this.name = "TemplateSyntaxError";
-    this.line = line;
-    this.snippet = snippet;
+    this.line = actualLine;
+    if (typeof columnOrSnippet === "string") {
+      this.snippet = columnOrSnippet;
+      this.column = undefined;
+    } else {
+      this.column = columnOrSnippet;
+      this.snippet = actualSnippet;
+    }
   }
 }
 
@@ -85,5 +113,13 @@ export class UnknownFilterError extends TemplateError {
     super(`unknown filter: ${filter}`);
     this.name = "UnknownFilterError";
     this.filter = filter;
+  }
+}
+
+/** Raised when a {% panic(...) %} statement is executed during rendering. */
+export class TemplatePanicError extends TemplateError {
+  constructor(message: string) {
+    super(`template panic: ${message}`);
+    this.name = "TemplatePanicError";
   }
 }

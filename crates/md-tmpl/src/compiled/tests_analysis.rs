@@ -758,11 +758,11 @@ fn blockquote_if_compact() {
     let mut ctx = Context::new();
     ctx.set("show", Value::Bool(true));
     let result = compiled_render(
-        r">{% if show %}
+        r"> {% if show %}
 
 yes
 
->{% /if %}",
+> {% /if %}",
         &ctx,
     )
     .unwrap();
@@ -790,15 +790,15 @@ fn blockquote_if_else() {
     let mut ctx = Context::new();
     ctx.set("show", Value::Bool(false));
     let result = compiled_render(
-        r">{% if show %}
+        r"> {% if show %}
 
 yes
 
->{% else %}
+> {% else %}
 
 no
 
->{% /if %}",
+> {% /if %}",
         &ctx,
     )
     .unwrap();
@@ -816,11 +816,11 @@ fn blockquote_for_loop() {
         ])),
     );
     let result = compiled_render(
-        r">{% for x in items %}
+        r"> {% for x in items %}
 
 - {{ x }}
 
->{% /for %}",
+> {% /for %}",
         &ctx,
     )
     .unwrap();
@@ -845,19 +845,19 @@ fn blockquote_elif() {
     let mut ctx = Context::new();
     ctx.set("status", "paused");
     let result = compiled_render(
-        r#">{% if status == "active" %}
+        r#"> {% if status == "active" %}
 
 running
 
->{% elif status == "paused" %}
+> {% elif status == "paused" %}
 
 paused
 
->{% else %}
+> {% else %}
 
 stopped
 
->{% /if %}"#,
+> {% /if %}"#,
         &ctx,
     )
     .unwrap();
@@ -871,11 +871,11 @@ fn blockquote_if_false_renders_empty() {
     let mut ctx = Context::new();
     ctx.set("show", Value::Bool(false));
     let result = compiled_render(
-        r">{% if show %}
+        r"> {% if show %}
 
 yes
 
->{% /if %}",
+> {% /if %}",
         &ctx,
     )
     .unwrap();
@@ -945,11 +945,11 @@ fn blockquote_mixed_with_expressions() {
     let result = compiled_render(
         r"Hello {{ name }}!
 
->{% if show %}
+> {% if show %}
 
 Visible.
 
->{% /if %}",
+> {% /if %}",
         &ctx,
     )
     .unwrap();
@@ -989,11 +989,11 @@ fn blockquote_for_single_item() {
         Value::List(Arc::new(vec![Value::Str("only".into())])),
     );
     let result = compiled_render(
-        r">{% for x in items %}
+        r"> {% for x in items %}
 
 {{ x }}
 
->{% /for %}",
+> {% /for %}",
         &ctx,
     )
     .unwrap();
@@ -1005,11 +1005,11 @@ fn blockquote_for_empty_list() {
     let mut ctx = Context::new();
     ctx.set("items", Value::List(Arc::new(vec![])));
     let result = compiled_render(
-        r">{% for x in items %}
+        r"> {% for x in items %}
 
 {{ x }}
 
->{% /for %}",
+> {% /for %}",
         &ctx,
     )
     .unwrap();
@@ -1189,4 +1189,26 @@ params:
     ctx.set("children", Value::List(Arc::new(vec![])));
     let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(result.trim(), "solo");
+}
+
+#[test]
+fn refs_not_keyword_creates_bad_var() {
+    // `not flag` parses as a truthiness check on path "not flag",
+    // which should be caught as an undeclared variable.
+    let r = refs("> {% if not flag %}yes{% /if %}");
+    assert!(
+        r.contains("not flag"),
+        "should contain 'not flag' as referenced variable, got: {r:?}",
+    );
+}
+
+#[test]
+fn refs_not_in_operator_creates_bad_var() {
+    // `x not in items` parses as `x not` (left) `in` (op) `items` (right),
+    // and "x not" is flagged as undeclared by the template compiler.
+    let r = refs("> {% if x not in items %}yes{% /if %}");
+    assert!(
+        r.contains("x not"),
+        "should contain 'x not' as referenced variable, got: {r:?}",
+    );
 }

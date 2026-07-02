@@ -800,6 +800,48 @@ params:
     );
 }
 
+#[test]
+fn for_loop_on_enum_suggests_kinds() {
+    let decls = vec![VarDecl {
+        name: "Stage".to_string(),
+        var_type: VarType::Enum(vec![unit_variant("A"), unit_variant("B")]),
+        default_value: None,
+    }];
+    let tmpl = r"---
+name: t
+params:
+  - Stage = enum(A, B)
+---
+> {% for s in Stage %}{{ s }}{% /for %}";
+    let errors = compile_and_check(tmpl, &decls);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("use kinds(Stage) to iterate over variant names")),
+        "expected kinds suggestion for enum loop: {errors:?}"
+    );
+}
+
+#[test]
+fn for_loop_over_kinds_ok() {
+    let decls = vec![VarDecl {
+        name: "Stage".to_string(),
+        var_type: VarType::Enum(vec![unit_variant("A"), unit_variant("B")]),
+        default_value: None,
+    }];
+    let tmpl = r"---
+name: t
+params:
+  - Stage = enum(A, B)
+---
+> {% for s in kinds(Stage) %}{{ s }}{% /for %}";
+    let errors = compile_and_check(tmpl, &decls);
+    assert!(
+        errors.is_empty(),
+        "for loop over kinds(Stage) should pass type checking: {errors:?}"
+    );
+}
+
 // -- Scalar field access ---------------------------------------------
 
 #[test]
@@ -1399,7 +1441,7 @@ fn include_inside_for_loop() {
     }];
     let segments = vec![Segment::ForLoop {
         binding: "item".into(),
-        list_path: CompiledPath::compile("items"),
+        list_expr: CompiledExpr::compile("items").unwrap(),
         body: vec![Segment::Include(inc)],
         else_body: vec![],
     }];
@@ -1433,7 +1475,11 @@ fn include_inside_match_arm() {
     }];
     let segments = vec![Segment::Match {
         expr: CompiledPath::compile("outcome"),
-        arms: vec![(vec!["Confirmed".into()], vec![Segment::Include(inc)])],
+        arms: vec![crate::compiled::MatchArm {
+            variants: vec!["Confirmed".into()],
+            guard: None,
+            body: vec![Segment::Include(inc)],
+        }],
         is_option: false,
     }];
     let errors = validate_field_accesses(&segments, &parent_decls);
@@ -2010,7 +2056,7 @@ fn compile_and_check_with_opaque(
     let (_fm, body) = crate::parse_frontmatter(template).expect("parse");
     let empty_aliases = crate::compat::HashMap::new();
     let (segments, _) = crate::compiled::compile(body, &empty_aliases).expect("compile");
-    let opaque_set: HashSet<&str> = opaque.iter().copied().collect();
+    let opaque_set: HashSet<String> = opaque.iter().copied().map(String::from).collect();
     validate_field_accesses_with_opaque(&segments, decls, &opaque_set)
 }
 
@@ -2191,6 +2237,72 @@ params:
     assert!(
         errors[0].contains("cannot display") && errors[0].contains("include"),
         "should suggest using include, got: {}",
+        errors[0]
+    );
+}
+
+// -- Option narrowing and inverse tests ------------------------------
+
+#[test]
+fn option_field_access_inside_has_guard_ok() {
+    let decls = vec![VarDecl {
+        name: "opt".to_string(),
+        var_type: VarType::Option(Box::new(VarType::Struct(vec![str_decl("title")]))),
+        default_value: None,
+    }];
+    let tmpl = r"---
+name: t
+params:
+  - opt = option(struct(title = str))
+---
+> {% if has(opt) %}{{ opt.title }}{% /if %}";
+    let errors = compile_and_check(tmpl, &decls);
+    assert!(
+        errors.is_empty(),
+        "field access inside has() guard should pass: {errors:?}"
+    );
+}
+
+#[test]
+fn option_field_access_without_has_guard_is_error() {
+    let decls = vec![VarDecl {
+        name: "opt".to_string(),
+        var_type: VarType::Option(Box::new(VarType::Struct(vec![str_decl("title")]))),
+        default_value: None,
+    }];
+    let tmpl = r"---
+name: t
+params:
+  - opt = option(struct(title = str))
+---
+{{ opt.title }}";
+    let errors = compile_and_check(tmpl, &decls);
+    assert_eq!(errors.len(), 1, "expected error: {errors:?}");
+    assert!(
+        errors[0].contains("cannot access field") && errors[0].contains("option"),
+        "got: {}",
+        errors[0]
+    );
+}
+
+#[test]
+fn option_field_access_in_else_arm_is_error() {
+    let decls = vec![VarDecl {
+        name: "opt".to_string(),
+        var_type: VarType::Option(Box::new(VarType::Struct(vec![str_decl("title")]))),
+        default_value: None,
+    }];
+    let tmpl = r"---
+name: t
+params:
+  - opt = option(struct(title = str))
+---
+> {% if has(opt) %}present{% else %}{{ opt.title }}{% /if %}";
+    let errors = compile_and_check(tmpl, &decls);
+    assert_eq!(errors.len(), 1, "expected error in else arm: {errors:?}");
+    assert!(
+        errors[0].contains("cannot access field") && errors[0].contains("option"),
+        "got: {}",
         errors[0]
     );
 }

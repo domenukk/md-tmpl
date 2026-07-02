@@ -8,7 +8,7 @@
 use alloc::string::ToString;
 use alloc::{borrow::Cow, string::String, sync::Arc};
 
-use super::{ComparisonOp, CompiledInclude, Condition, ParsedFilter, Segment};
+use super::{ComparisonOp, CompiledInclude, Condition, MatchArm, ParsedFilter, Segment};
 use crate::{
     error::TemplateError,
     parser,
@@ -22,6 +22,78 @@ const ESTIMATED_EXPR_SIZE: usize = 32;
 /// Estimated iteration count for for-loop capacity estimation.
 const ESTIMATED_LOOP_ITERATIONS: usize = 4;
 
+/// Maximum precision for the fast integer-math path.
+/// Above this, f64 loses precision so we fall back to std formatting.
+const MAX_FAST_FIXED_PRECISION: usize = 18;
+
+/// Pre-computed powers of 10 for precision 0..=18.
+const POW10: [f64; 19] = {
+    let mut table = [1.0; 19];
+    let mut i = 1;
+    while i < 19 {
+        table[i] = table[i - 1] * 10.0;
+        i += 1;
+    }
+    table
+};
+
+/// Write a float with fixed precision into `output`, avoiding the heavy
+/// `std::fmt::float_to_decimal_common_exact` machinery.
+///
+/// For precision ≤ 18, this uses multiply-round-truncate + `itoa`, which
+/// is ~3× faster than `write!("{f:.precision$}")`.
+#[inline]
+fn write_fixed_float(f: f64, precision: usize, output: &mut String) {
+    if precision > MAX_FAST_FIXED_PRECISION || !f.is_finite() {
+        // Fallback for extreme precision or NaN/Inf.
+        use core::fmt::Write;
+        write!(output, "{f:.precision$}").expect("fmt::Write for String is infallible");
+        return;
+    }
+
+    let is_neg = f.is_sign_negative() && f != 0.0;
+    let abs = f.abs();
+
+    // Multiply by 10^precision and round to nearest integer.
+    let scale = POW10[precision];
+    // Safety: abs >= 0, scale > 0 → always positive; precision ≤ 18 → fits u64.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let scaled = (abs * scale + 0.5) as u64;
+
+    if precision == 0 {
+        if is_neg {
+            output.push('-');
+        }
+        let mut buf = itoa::Buffer::new();
+        output.push_str(buf.format(scaled));
+        return;
+    }
+
+    // Split into integer and fractional parts.
+    // Safety: POW10 entries are exact positive integers ≤ 10^18, all fit u64.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let divisor = scale as u64;
+    let int_part = scaled / divisor;
+    let frac_part = scaled % divisor;
+
+    if is_neg {
+        output.push('-');
+    }
+
+    let mut buf = itoa::Buffer::new();
+    output.push_str(buf.format(int_part));
+    output.push('.');
+
+    // Pad fractional part with leading zeros.
+    let mut frac_buf = itoa::Buffer::new();
+    let frac_str = frac_buf.format(frac_part);
+    let pad = precision - frac_str.len();
+    for _ in 0..pad {
+        output.push('0');
+    }
+    output.push_str(frac_str);
+}
+
 /// Estimate the total static text size for `String::with_capacity`.
 #[must_use]
 pub fn estimate_output_capacity(segments: &[Segment]) -> usize {
@@ -29,7 +101,9 @@ pub fn estimate_output_capacity(segments: &[Segment]) -> usize {
     for seg in segments {
         match seg {
             Segment::Static(s) | Segment::Raw(s) => size += s.len(),
-            Segment::Expr { .. } | Segment::Include(_) => size += ESTIMATED_EXPR_SIZE,
+            Segment::Expr { .. } | Segment::Include(_) | Segment::Panic(_) => {
+                size += ESTIMATED_EXPR_SIZE;
+            }
             Segment::Comment(_) => {} // No output.
             Segment::ForLoop {
                 body, else_body, ..
@@ -51,8 +125,8 @@ pub fn estimate_output_capacity(segments: &[Segment]) -> usize {
             Segment::Match { arms, .. } => {
                 // At most one arm is rendered — use the max, not the sum.
                 let mut max_arm = 0;
-                for (_, arm_body) in arms {
-                    max_arm = max_arm.max(estimate_output_capacity(arm_body));
+                for arm in arms {
+                    max_arm = max_arm.max(estimate_output_capacity(&arm.body));
                 }
                 size += max_arm;
             }
@@ -95,13 +169,13 @@ pub(crate) fn render_segments_into(
             }
             Segment::ForLoop {
                 binding,
-                list_path,
+                list_expr,
                 body,
                 else_body,
             } => {
                 render_for_loop(
                     binding.as_ref(),
-                    list_path,
+                    list_expr,
                     body,
                     else_body,
                     scope,
@@ -124,6 +198,10 @@ pub(crate) fn render_segments_into(
             }
             Segment::Include(inc) => {
                 render_include(inc, scope, base_dir, output)?;
+            }
+            Segment::Panic(segments) => {
+                let msg = render_segments(segments, scope, base_dir)?;
+                return Err(TemplateError::panic(msg));
             }
             Segment::Comment(_) => {
                 // Comments produce no output.
@@ -150,13 +228,13 @@ pub(crate) fn render_segments_into_no_std(
             }
             Segment::ForLoop {
                 binding,
-                list_path,
+                list_expr,
                 body,
                 else_body,
             } => {
                 render_for_loop_no_std(
                     binding.as_ref(),
-                    list_path,
+                    list_expr,
                     body,
                     else_body,
                     scope,
@@ -178,6 +256,11 @@ pub(crate) fn render_segments_into_no_std(
             }
             Segment::Include(inc) => {
                 render_include_no_std(inc, scope, output)?;
+            }
+            Segment::Panic(segments) => {
+                let mut msg = String::new();
+                render_segments_into_no_std(segments, scope, &mut msg)?;
+                return Err(TemplateError::panic(msg));
             }
             Segment::Comment(_) => {
                 // Comments produce no output.
@@ -233,54 +316,49 @@ fn eval_compiled_expr_into(
         return Ok(());
     }
 
-    let value = match expr {
-        CompiledExpr::Path(path) => {
+    if filters.is_empty() {
+        if let CompiledExpr::Path(path) = expr {
             let val = scope.resolve_path(path)?;
-            if filters.is_empty() {
-                // Hot path: render borrowed value directly
-                return render_value_into(val, output);
-            }
-            Cow::Borrowed(val)
+            return render_value_into(val, output);
         }
-        CompiledExpr::Idx(binding) => {
-            let meta = scope.get_loop_meta(binding).ok_or_else(|| {
-                TemplateError::syntax(alloc::format!(
-                    "idx() requires active loop binding '{binding}'"
-                ))
-            })?;
-            Cow::Owned(Value::Int(meta.index))
-        }
-        CompiledExpr::Len(path) => {
+        if let CompiledExpr::Kind(path) = expr {
             let val = scope.resolve_path(path)?;
-            // Collection lengths are bounded by available memory and cannot
-            // exceed isize::MAX (< i64::MAX) on any supported platform.
-            let count = match val {
-                Value::List(l) => i64::try_from(l.len()).expect("collection length fits i64"),
-                Value::Str(s) => i64::try_from(s.len()).expect("string length fits i64"),
-                Value::Struct(d) => i64::try_from(d.len()).expect("struct length fits i64"),
-                _ => {
-                    return Err(TemplateError::syntax(
-                        "len() requires a list, string, or struct",
-                    ));
+            if scope.is_option_path(path.as_str()) {
+                match val {
+                    Value::None => output.push_str(crate::consts::OPTION_NONE),
+                    _ => output.push_str(crate::consts::OPTION_SOME),
                 }
-            };
-            Cow::Owned(Value::Int(count))
-        }
-        CompiledExpr::Kind(path) => match eval_kind_expr(path, filters, scope, output)? {
-            Some(cow) => cow,
-            None => return Ok(()),
-        },
-        CompiledExpr::Has(path) => {
-            let val = scope.resolve_path(path)?;
-            let result = Scope::is_option_some(val);
-            if filters.is_empty() {
-                output.push_str(if result { "true" } else { "false" });
                 return Ok(());
             }
-            Cow::Owned(Value::Bool(result))
+            match val {
+                Value::Struct(d) => {
+                    if let Some(Value::Str(k)) = d.get(crate::consts::ENUM_TAG_KEY) {
+                        output.push_str(k);
+                        return Ok(());
+                    }
+                    return Err(TemplateError::syntax(
+                        "kind() requires an enum value (dict with variant tag)",
+                    ));
+                }
+                Value::Str(s) => {
+                    output.push_str(s);
+                    return Ok(());
+                }
+                Value::None => {
+                    output.push_str(crate::consts::OPTION_NONE);
+                    return Ok(());
+                }
+                _ => {
+                    return Err(TemplateError::syntax(alloc::format!(
+                        "kind() requires an enum value, got {}",
+                        val.type_name()
+                    )));
+                }
+            }
         }
-    };
+    }
 
+    let value = eval_compiled_expr_val(expr, scope)?;
     apply_filters_and_render(value, filters, output)
 }
 
@@ -299,9 +377,7 @@ fn try_fast_path_fixed_filter(
                 let val = scope.resolve_path(path)?;
                 match val {
                     Value::Float(f) => {
-                        use core::fmt::Write;
-                        write!(output, "{f:.precision$}")
-                            .expect("fmt::Write for String is infallible");
+                        write_fixed_float(*f, precision, output);
                         return Ok(true);
                     }
                     Value::Int(i) => {
@@ -326,63 +402,83 @@ fn try_fast_path_fixed_filter(
     Ok(false)
 }
 
-/// Evaluate `kind()` expression, resolving the enum variant tag.
-///
-/// Returns `Ok(None)` if the result was written directly to output
-/// (no-filter fast path), `Ok(Some(cow))` if filters still need to
-/// be applied.
-fn eval_kind_expr<'a>(
-    path: &CompiledPath,
-    filters: &[ParsedFilter],
+fn eval_compiled_expr_val<'a>(
+    expr: &'a CompiledExpr,
     scope: &'a Scope<'_>,
-    output: &mut String,
-) -> Result<Option<Cow<'a, Value>>, TemplateError> {
-    let val = scope.resolve_path(path)?;
-    // Fast path: kind() is almost never filtered, so write directly
-    // to output without cloning the string.
-    if filters.is_empty() {
-        match val {
-            Value::Struct(d) => {
-                if let Some(Value::Str(k)) = d.get(crate::consts::ENUM_TAG_KEY) {
-                    output.push_str(k);
-                    return Ok(None);
+) -> Result<Cow<'a, Value>, TemplateError> {
+    match expr {
+        CompiledExpr::Path(path) => scope.resolve_path(path).map(Cow::Borrowed),
+        CompiledExpr::Idx(binding) => {
+            let meta = scope.get_loop_meta(binding).ok_or_else(|| {
+                TemplateError::syntax(alloc::format!(
+                    "idx() requires active loop binding '{binding}'"
+                ))
+            })?;
+            Ok(Cow::Owned(Value::Int(meta.index)))
+        }
+        CompiledExpr::Len(path) => {
+            let val = scope.resolve_path(path)?;
+            let count = match val {
+                Value::List(l) => i64::try_from(l.len()).expect("collection length fits i64"),
+                Value::Str(s) => i64::try_from(s.len()).expect("string length fits i64"),
+                Value::Struct(d) => i64::try_from(d.len()).expect("struct length fits i64"),
+                _ => {
+                    return Err(TemplateError::syntax(
+                        "len() requires a list, string, or struct",
+                    ));
                 }
-                return Err(TemplateError::syntax(
-                    "kind() requires an enum value (dict with variant tag)",
-                ));
+            };
+            Ok(Cow::Owned(Value::Int(count)))
+        }
+        CompiledExpr::Kind(path) => {
+            let val = scope.resolve_path(path)?;
+            if scope.is_option_path(path.as_str()) {
+                return match val {
+                    Value::None => Ok(Cow::Owned(Value::Str(crate::consts::OPTION_NONE.into()))),
+                    _ => Ok(Cow::Owned(Value::Str(crate::consts::OPTION_SOME.into()))),
+                };
             }
-            Value::Str(s) => {
-                output.push_str(s);
-                return Ok(None);
-            }
-            _ => {
-                return Err(TemplateError::syntax(alloc::format!(
+            match val {
+                Value::Struct(d) => {
+                    if let Some(Value::Str(k)) = d.get(crate::consts::ENUM_TAG_KEY) {
+                        Ok(Cow::Owned(Value::Str(k.clone())))
+                    } else {
+                        Err(TemplateError::syntax(
+                            "kind() requires an enum value (dict with variant tag)",
+                        ))
+                    }
+                }
+                Value::Str(s) => Ok(Cow::Owned(Value::Str(s.clone()))),
+                Value::None => Ok(Cow::Owned(Value::Str(crate::consts::OPTION_NONE.into()))),
+                _ => Err(TemplateError::syntax(alloc::format!(
                     "kind() requires an enum value, got {}",
                     val.type_name()
-                )));
+                ))),
             }
+        }
+        CompiledExpr::Kinds(path) => {
+            let val = scope.resolve_path(path)?;
+            match val {
+                Value::Struct(d) => {
+                    if let Some(list_val) = d.get(crate::consts::ENUM_VARIANTS_KEY) {
+                        Ok(Cow::Borrowed(list_val))
+                    } else {
+                        Err(TemplateError::syntax(
+                            "kinds() requires an enum type namespace",
+                        ))
+                    }
+                }
+                _ => Err(TemplateError::syntax(alloc::format!(
+                    "kinds() requires an enum type namespace, got {}",
+                    val.type_name()
+                ))),
+            }
+        }
+        CompiledExpr::Has(path) => {
+            let val = scope.resolve_path(path)?;
+            Ok(Cow::Owned(Value::Bool(Scope::is_option_some(val))))
         }
     }
-    // Slow path: filters present — need to clone into a Value.
-    let kind = match val {
-        Value::Struct(d) => {
-            if let Some(Value::Str(k)) = d.get(crate::consts::ENUM_TAG_KEY) {
-                k.clone()
-            } else {
-                return Err(TemplateError::syntax(
-                    "kind() requires an enum value (dict with variant tag)",
-                ));
-            }
-        }
-        Value::Str(s) => s.clone(),
-        _ => {
-            return Err(TemplateError::syntax(alloc::format!(
-                "kind() requires an enum value, got {}",
-                val.type_name()
-            )));
-        }
-    };
-    Ok(Some(Cow::Owned(Value::Str(kind))))
 }
 
 /// Apply filters to a resolved value and render the result.
@@ -410,15 +506,16 @@ fn apply_filters_and_render(
 ///
 /// After pushing a scope layer and inserting the binding variable,
 /// call this to associate `{{ idx(binding) }}` metadata.
+#[inline]
 pub(crate) fn register_loop_meta(scope: &mut Scope<'_>, binding: &str, i: usize) {
-    scope.set_loop_meta(
-        binding,
-        crate::scope::LoopMeta {
-            // Loop iteration count is bounded by collection `.len()`,
-            // which cannot exceed `isize::MAX`.
-            index: i64::try_from(i).expect("loop index <= isize::MAX < i64::MAX"),
-        },
-    );
+    // SAFETY: `usize` always fits in `i64` on both 32-bit and 64-bit
+    // platforms (`usize::MAX <= i64::MAX` even on 64-bit because
+    // `usize::MAX` is 2^64-1 which exceeds `i64::MAX`, but collection
+    // lengths are bounded by `isize::MAX` which always fits).
+    #[allow(clippy::cast_possible_wrap)]
+    let index = i as i64;
+    debug_assert!(index >= 0, "loop index overflowed i64");
+    scope.set_loop_meta(binding, crate::scope::LoopMeta { index });
 }
 
 /// Render a compiled for-loop.
@@ -426,24 +523,28 @@ pub(crate) fn register_loop_meta(scope: &mut Scope<'_>, binding: &str, i: usize)
 #[inline]
 fn render_for_loop(
     binding: &str,
-    list_expr: &CompiledPath,
+    list_expr: &CompiledExpr,
     body: &[Segment],
     else_body: &[Segment],
     scope: &mut Scope<'_>,
     base_dir: Option<&std::path::Path>,
     output: &mut String,
 ) -> Result<(), TemplateError> {
-    // Borrow the value and extract a clone of the Arc (O(1) refcount bump)
-    // without cloning the entire Value enum.
-    let list_ref = scope.resolve_path(list_expr)?;
-    let items = match list_ref {
-        Value::List(items) => Arc::clone(items),
-        _ => {
-            return Err(TemplateError::syntax(alloc::format!(
-                "'{}' is not a list",
-                list_expr.as_str()
-            )));
-        }
+    let list_ref = eval_compiled_expr_val(list_expr, scope)?;
+    let items = if let Value::List(items) = &*list_ref {
+        Arc::clone(items)
+    } else {
+        let expr_str = match list_expr {
+            CompiledExpr::Path(p)
+            | CompiledExpr::Len(p)
+            | CompiledExpr::Kind(p)
+            | CompiledExpr::Kinds(p)
+            | CompiledExpr::Has(p) => p.as_str(),
+            CompiledExpr::Idx(b) => b.as_ref(),
+        };
+        return Err(TemplateError::syntax(alloc::format!(
+            "'{expr_str}' is not a list"
+        )));
     };
 
     if items.is_empty() && !else_body.is_empty() {
@@ -451,7 +552,7 @@ fn render_for_loop(
     }
 
     for (i, item) in items.iter().enumerate() {
-        scope.push_loop_binding(binding, item.clone());
+        scope.push_loop_binding(binding, item);
         register_loop_meta(scope, binding, i);
         render_segments_into(body, scope, base_dir, output)?;
         scope.pop_loop_binding();
@@ -464,19 +565,27 @@ fn render_for_loop(
 #[cfg(not(feature = "std"))]
 fn render_for_loop_no_std(
     binding: &str,
-    list_expr: &CompiledPath,
+    list_expr: &CompiledExpr,
     body: &[Segment],
     else_body: &[Segment],
     scope: &mut Scope<'_>,
     output: &mut String,
 ) -> Result<(), TemplateError> {
-    let list_ref = scope.resolve_path(list_expr)?;
-    let items = match list_ref {
+    let list_ref = eval_compiled_expr_val(list_expr, scope)?;
+    let items = match &*list_ref {
         Value::List(items) => Arc::clone(items),
         _ => {
+            let expr_str = match list_expr {
+                CompiledExpr::Path(p)
+                | CompiledExpr::Len(p)
+                | CompiledExpr::Kind(p)
+                | CompiledExpr::Kinds(p)
+                | CompiledExpr::Has(p) => p.as_str(),
+                CompiledExpr::Idx(b) => b.as_ref(),
+            };
             return Err(TemplateError::syntax(alloc::format!(
                 "'{}' is not a list",
-                list_expr.as_str()
+                expr_str
             )));
         }
     };
@@ -486,7 +595,7 @@ fn render_for_loop_no_std(
     }
 
     for (i, item) in items.iter().enumerate() {
-        scope.push_loop_binding(binding, item.clone());
+        scope.push_loop_binding(binding, item);
         register_loop_meta(scope, binding, i);
         render_segments_into_no_std(body, scope, output)?;
         scope.pop_loop_binding();
@@ -552,7 +661,7 @@ fn render_if_no_std(
 #[cfg(feature = "std")]
 fn render_match(
     expr: &CompiledPath,
-    arms: &[(alloc::vec::Vec<Cow<'static, str>>, alloc::vec::Vec<Segment>)],
+    arms: &[MatchArm],
     is_option: bool,
     scope: &mut Scope<'_>,
     base_dir: Option<&std::path::Path>,
@@ -560,12 +669,19 @@ fn render_match(
 ) -> Result<(), TemplateError> {
     let active_variant = resolve_match_variant(expr, is_option, scope)?;
 
-    for (variants, body) in arms {
-        if variants
+    for arm in arms {
+        let variant_matches = arm
+            .variants
             .iter()
-            .any(|v| v.as_ref() == "_" || active_variant == v.as_ref())
-        {
-            return render_segments_into(body, scope, base_dir, output);
+            .any(|v| v.as_ref() == crate::consts::MATCH_DEFAULT || active_variant == v.as_ref());
+        if variant_matches {
+            // Evaluate guard if present.
+            if let Some(ref guard) = arm.guard {
+                if !eval_condition(guard, scope)? {
+                    continue;
+                }
+            }
+            return render_segments_into(&arm.body, scope, base_dir, output);
         }
     }
 
@@ -578,19 +694,25 @@ fn render_match(
 #[cfg(not(feature = "std"))]
 fn render_match_no_std(
     expr: &CompiledPath,
-    arms: &[(alloc::vec::Vec<Cow<'static, str>>, alloc::vec::Vec<Segment>)],
+    arms: &[MatchArm],
     is_option: bool,
     scope: &mut Scope<'_>,
     output: &mut String,
 ) -> Result<(), TemplateError> {
     let active_variant = resolve_match_variant(expr, is_option, scope)?;
 
-    for (variants, body) in arms {
-        if variants
+    for arm in arms {
+        let variant_matches = arm
+            .variants
             .iter()
-            .any(|v| v.as_ref() == "_" || active_variant == v.as_ref())
-        {
-            return render_segments_into_no_std(body, scope, output);
+            .any(|v| v.as_ref() == crate::consts::MATCH_DEFAULT || active_variant == v.as_ref());
+        if variant_matches {
+            if let Some(ref guard) = arm.guard {
+                if !eval_condition(guard, scope)? {
+                    continue;
+                }
+            }
+            return render_segments_into_no_std(&arm.body, scope, output);
         }
     }
 
@@ -610,9 +732,9 @@ fn resolve_match_variant<'a>(
 
     match value {
         // Absent option value → "None" variant.
-        Value::None => Ok("None"),
+        Value::None => Ok(crate::consts::OPTION_NONE),
         // For option(T): any non-None value is the "Some" branch.
-        _ if is_option => Ok("Some"),
+        _ if is_option => Ok(crate::consts::OPTION_SOME),
         // Unit enum variant stored as plain string.
         Value::Str(s) => Ok(s.as_str()),
         // Struct variant stored as dict with "tag" key.
@@ -749,6 +871,24 @@ pub(super) fn eval_condition(
             let value = operand.resolve(scope)?;
             Ok(value.is_truthy())
         }
+        Condition::Not(inner) => {
+            let result = eval_condition(inner, scope)?;
+            Ok(!result)
+        }
+        Condition::And(left, right) => {
+            // Short-circuit: if left is false, don't evaluate right.
+            if !eval_condition(left, scope)? {
+                return Ok(false);
+            }
+            eval_condition(right, scope)
+        }
+        Condition::Or(left, right) => {
+            // Short-circuit: if left is true, don't evaluate right.
+            if eval_condition(left, scope)? {
+                return Ok(true);
+            }
+            eval_condition(right, scope)
+        }
         Condition::Comparison { left, op, right } => {
             let left_val = left.resolve(scope)?;
             let right_val = right.resolve(scope)?;
@@ -763,8 +903,38 @@ pub(super) fn eval_condition(
                     .is_some_and(core::cmp::Ordering::is_lt),
                 ComparisonOp::Gt => partial_cmp_values(&left_val, &right_val)
                     .is_some_and(core::cmp::Ordering::is_gt),
+                ComparisonOp::In => match &*right_val {
+                    Value::List(right_items) => match &*left_val {
+                        Value::List(left_items) => {
+                            left_items.iter().all(|l| right_items.contains(l))
+                        }
+                        scalar => right_items.contains(scalar),
+                    },
+                    Value::Str(right_str) => match &*left_val {
+                        Value::Str(left_str) => right_str.contains(left_str.as_str()),
+                        Value::List(left_items) => left_items.iter().all(|l| {
+                            if let Value::Str(s) = l {
+                                right_str.contains(s.as_str())
+                            } else {
+                                false
+                            }
+                        }),
+                        _ => false,
+                    },
+                    _ => false,
+                },
             };
             Ok(result)
+        }
+        Condition::MatchVariant {
+            expr,
+            variants,
+            is_option,
+        } => {
+            let active_variant = resolve_match_variant(expr, *is_option, scope)?;
+            Ok(variants.iter().any(|v| {
+                v.as_ref() == crate::consts::MATCH_DEFAULT || active_variant == v.as_ref()
+            }))
         }
     }
 }
@@ -939,10 +1109,13 @@ fn validate_and_render_no_std(
     let overrides = build_overrides(directive, scope)?;
     validate_include_types(declarations, &overrides, directive)?;
 
-    if let Some((binding, list_expr)) = &directive.for_each {
+    scope.push_declarations(declarations);
+
+    let res = if let Some((binding, list_expr)) = &directive.for_each {
         // Iterated include.
         let list_value = crate::parser::eval_expr(list_expr.trim(), scope)?;
         let Value::List(items) = list_value else {
+            scope.pop_declarations(declarations);
             return Err(TemplateError::syntax(alloc::format!(
                 "'{list_expr}' is not a list"
             )));
@@ -961,6 +1134,7 @@ fn validate_and_render_no_std(
             render_segments_into_no_std(segments, scope, output)?;
             scope.pop_layer();
         }
+        Ok(())
     } else {
         // Simple include.
         let has_defaults = declarations.iter().any(|d| d.default_value.is_some());
@@ -972,183 +1146,54 @@ fn validate_and_render_no_std(
             }
             inject_defaults_into_layer(layer, declarations, &overrides);
         }
-        render_segments_into_no_std(segments, scope, output)?;
+        let r = render_segments_into_no_std(segments, scope, output);
         if needs_layer {
             scope.pop_layer();
         }
-    }
+        r
+    };
+    scope.pop_declarations(declarations);
+    res
+}
 
-    Ok(())
+// ---------------------------------------------------------------------------
+// String interpolation helper
+// ---------------------------------------------------------------------------
+
+/// Render interpolated string segments (from `{{ expr }}` inside quoted strings)
+/// against an **immutable** scope.
+///
+/// This is a lightweight renderer that handles only `Static`/`Raw` and `Expr`
+/// segments — the only segment types produced by `compile_body` on a simple
+/// interpolated string literal (no control flow tags allowed inside string
+/// literals). Any other segment type is a compile-time logic error and will
+/// produce a syntax error.
+pub(crate) fn render_interpolated_str(
+    segments: &[Segment],
+    scope: &Scope<'_>,
+) -> Result<String, TemplateError> {
+    let mut output = String::new();
+    for segment in segments {
+        match segment {
+            Segment::Static(text) | Segment::Raw(text) => output.push_str(text),
+            Segment::Expr { expr, filters } => {
+                eval_compiled_expr_into(expr, filters, scope, &mut output)?;
+            }
+            Segment::Comment(_) => {}
+            _ => {
+                return Err(TemplateError::syntax(
+                    "control-flow tags are not allowed inside interpolated strings",
+                ));
+            }
+        }
+    }
+    Ok(output)
 }
 
 // ---------------------------------------------------------------------------
 // Tests for numeric comparison helpers
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
-mod tests {
-    use core::cmp::Ordering;
-
-    use super::*;
-
-    // -- cmp_int_float: NaN --
-
-    #[test]
-    fn cmp_int_float_nan_returns_none() {
-        assert_eq!(cmp_int_float(0, f64::NAN), None);
-        assert_eq!(cmp_int_float(i64::MAX, f64::NAN), None);
-        assert_eq!(cmp_int_float(i64::MIN, f64::NAN), None);
-    }
-
-    // -- cmp_int_float: infinity --
-
-    #[test]
-    fn cmp_int_float_positive_infinity() {
-        // Any integer is less than +∞.
-        assert_eq!(cmp_int_float(0, f64::INFINITY), Some(Ordering::Less));
-        assert_eq!(cmp_int_float(i64::MAX, f64::INFINITY), Some(Ordering::Less));
-        assert_eq!(cmp_int_float(i64::MIN, f64::INFINITY), Some(Ordering::Less));
-    }
-
-    #[test]
-    fn cmp_int_float_negative_infinity() {
-        // Any integer is greater than -∞.
-        assert_eq!(cmp_int_float(0, f64::NEG_INFINITY), Some(Ordering::Greater));
-        assert_eq!(
-            cmp_int_float(i64::MIN, f64::NEG_INFINITY),
-            Some(Ordering::Greater)
-        );
-    }
-
-    // -- cmp_int_float: exact equality --
-
-    #[test]
-    fn cmp_int_float_exact_zero() {
-        assert_eq!(cmp_int_float(0, 0.0), Some(Ordering::Equal));
-        assert_eq!(cmp_int_float(0, -0.0), Some(Ordering::Equal));
-    }
-
-    #[test]
-    fn cmp_int_float_exact_integer_values() {
-        assert_eq!(cmp_int_float(1, 1.0), Some(Ordering::Equal));
-        assert_eq!(cmp_int_float(-1, -1.0), Some(Ordering::Equal));
-        assert_eq!(cmp_int_float(100, 100.0), Some(Ordering::Equal));
-    }
-
-    // -- cmp_int_float: fractional values --
-
-    #[test]
-    fn cmp_int_float_integer_less_than_float_with_fraction() {
-        // 1 < 1.5
-        assert_eq!(cmp_int_float(1, 1.5), Some(Ordering::Less));
-    }
-
-    #[test]
-    fn cmp_int_float_integer_greater_than_float_with_fraction() {
-        // 2 > 1.5
-        assert_eq!(cmp_int_float(2, 1.5), Some(Ordering::Greater));
-    }
-
-    #[test]
-    fn cmp_int_float_negative_fraction() {
-        // -2 < -1.5 (i.e., -2 is more negative)
-        assert_eq!(cmp_int_float(-2, -1.5), Some(Ordering::Less));
-        // -1 > -1.5
-        assert_eq!(cmp_int_float(-1, -1.5), Some(Ordering::Greater));
-    }
-
-    // -- cmp_int_float: extreme values --
-
-    #[test]
-    fn cmp_int_float_i64_max() {
-        // i64::MAX (2^63-1) cannot be represented exactly in f64.
-        // i64::MAX as f64 rounds to 2^63, so i64::MAX < (i64::MAX as f64).
-        // Using the numeric constant directly to avoid an i64→f64 cast lint.
-        let f: f64 = 9_223_372_036_854_775_808.0; // 2^63 (rounded i64::MAX)
-        assert_eq!(cmp_int_float(i64::MAX, f), Some(Ordering::Less));
-    }
-
-    #[test]
-    fn cmp_int_float_i64_min() {
-        // i64::MIN (-2^63) CAN be represented exactly in f64.
-        // Using the numeric constant directly to avoid an i64→f64 cast lint.
-        let f: f64 = -9_223_372_036_854_775_808.0; // i64::MIN
-        assert_eq!(cmp_int_float(i64::MIN, f), Some(Ordering::Equal));
-    }
-
-    // -- cmp_int_float: subnormals --
-
-    #[test]
-    fn cmp_int_float_subnormal() {
-        // Subnormal numbers are very close to zero but not zero.
-        let subnormal = f64::MIN_POSITIVE / 2.0;
-        assert!(subnormal > 0.0 && subnormal < f64::MIN_POSITIVE);
-        // 0 < subnormal (subnormal has a fractional part, int part = 0)
-        assert_eq!(cmp_int_float(0, subnormal), Some(Ordering::Less));
-        // 1 > subnormal
-        assert_eq!(cmp_int_float(1, subnormal), Some(Ordering::Greater));
-    }
-
-    // -- decompose_f64 --
-
-    #[test]
-    fn decompose_f64_zero() {
-        let (int_part, has_frac, negative) = decompose_f64(0.0);
-        assert_eq!(int_part, 0);
-        assert!(!has_frac);
-        assert!(!negative);
-    }
-
-    #[test]
-    fn decompose_f64_negative_zero() {
-        let (int_part, has_frac, negative) = decompose_f64(-0.0);
-        assert_eq!(int_part, 0);
-        assert!(!has_frac);
-        assert!(negative);
-    }
-
-    #[test]
-    fn decompose_f64_positive_integer() {
-        let (int_part, has_frac, negative) = decompose_f64(42.0);
-        assert_eq!(int_part, 42);
-        assert!(!has_frac);
-        assert!(!negative);
-    }
-
-    #[test]
-    fn decompose_f64_negative_with_fraction() {
-        let (int_part, has_frac, negative) = decompose_f64(-2.78);
-        assert_eq!(int_part, 2);
-        assert!(has_frac);
-        assert!(negative);
-    }
-
-    #[test]
-    fn decompose_f64_subnormal() {
-        let subnormal = f64::MIN_POSITIVE / 2.0;
-        let (int_part, has_frac, negative) = decompose_f64(subnormal);
-        assert_eq!(int_part, 0);
-        assert!(has_frac); // subnormals are tiny fractions
-        assert!(!negative);
-    }
-
-    #[test]
-    fn decompose_f64_exact_float_int_boundary() {
-        // 2^52 is the largest integer where all integers up to it are
-        // exactly representable in f64.
-        // Using the numeric constant directly to avoid a u64→f64 cast lint.
-        let boundary: f64 = 4_503_599_627_370_496.0; // 2^52
-        let (int_part, has_frac, negative) = decompose_f64(boundary);
-        assert_eq!(int_part, 1_u64 << 52);
-        assert!(!has_frac);
-        assert!(!negative);
-    }
-
-    #[test]
-    fn decompose_f64_value_less_than_one() {
-        let (int_part, has_frac, negative) = decompose_f64(0.5);
-        assert_eq!(int_part, 0);
-        assert!(has_frac);
-        assert!(!negative);
-    }
-}
+#[cfg(all(test, feature = "std"))]
+#[path = "render_tests.rs"]
+mod render_tests;

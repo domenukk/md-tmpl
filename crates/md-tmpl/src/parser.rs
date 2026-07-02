@@ -49,7 +49,7 @@ pub(crate) enum ScanResult<'a> {
 }
 
 /// Parsed include directive.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct IncludeDirective<'a> {
     /// Path to the included template.
     pub path: &'a str,
@@ -555,7 +555,7 @@ pub(crate) fn parse_include_tag(tag_body: &str) -> Result<IncludeDirective<'_>, 
         .strip_prefix(TAG_INCLUDE_PREFIX)
         .unwrap_or(tag_body)
         .trim();
-    if tag_body.is_empty() || tag_body == "include" {
+    if tag_body.is_empty() || tag_body == crate::consts::KW_INCLUDE {
         return Err(TemplateError::syntax("include: missing path".to_string()));
     }
     let (path, rest) = parse_quoted_path(tag_body)?;

@@ -53,6 +53,7 @@
 // Core classes and interfaces
 export {
   type ITemplate,
+  type CachedInclude,
   Template,
   TypedTemplate,
   TemplateCache,

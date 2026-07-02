@@ -6,32 +6,10 @@ and quick-start examples.
 
 ---
 
-## Table of Contents
-
-1. [File Format](#file-format)
-2. [Frontmatter & Type System](#frontmatter--type-system)
-3. [Type Aliases](#type-aliases)
-4. [Cross-Template Imports](#cross-template-imports)
-5. [Constants](#constants)
-6. [Enum Literal Expressions](#enum-literal-expressions)
-7. [Naming Conventions & Collision Rules](#naming-conventions--collision-rules)
-8. [Expression Syntax](#expression-syntax)
-9. [Filters](#filters)
-10. [Built-in Functions](#built-in-functions)
-11. [Control Flow](#control-flow)
-12. [Includes](#includes)
-13. [Inline Templates](#inline-templates)
-14. [Raw Blocks](#raw-blocks)
-15. [Comments](#comments)
-16. [Whitespace Control](#whitespace-control)
-17. [Error Diagnostics](#error-diagnostics)
-
----
-
 ## File Format
 
-Template files use the `.tmpl.md` extension. They are valid markdown
-files with a required YAML frontmatter block followed by a body:
+By default, template files use the `.tmpl.md` extension for md-tmpl parsable files.
+They are valid markdown files with a required YAML frontmatter block followed by a body:
 
 ```markdown
 ---
@@ -70,24 +48,10 @@ is enforced via `serde_yaml` cross-validation tests. In practice:
   will break because YAML splits on `,` inside flow sequences `[…]`.
   Use the block list format for anything beyond simple scalars.
 
-**Standalone control-flow tags** (`{% %}`) on their own line must carry a `>`
-blockquote prefix. **Content lines inside blocks do not** — only the `{% %}`
-tags themselves need the prefix. The prose, expressions (`{{ }}`), and other
-text between the tags should be written normally. The prefix is stripped before
-compilation and has no effect on output. In a markdown editor it renders as a
-blockquote, visually separating logic from prose:
-
-<!-- prettier-ignore -->
-```markdown
-
-> {% if condition %}
-
-Some prose.
-
-> {% /if %}
-```
-
-**Inline tags** on a single line work without any prefix:
+**Standalone control-flow tags** (`{% %}`) and comments (`{# #}`) at
+line start must carry a `> ` blockquote prefix — see
+[Markdown Blockquotes, Statement Tags, and Comments](#markdown-blockquotes-statement-tags-and-comments)
+for the full rules. **Inline tags** on a single line work without any prefix:
 
 ```markdown
 {% if x %}yes{% else %}no{% /if %}
@@ -99,6 +63,12 @@ Some prose.
 
 All frontmatter keys are **optional** — only the `---` delimiters are
 mandatory. Omitted keys default to empty / absent.
+
+- **`name:`** / **`description:`** — template metadata, queryable via
+  the API (e.g. `.name()`, `.description()` in Rust) but **not** injected
+  into the body scope. They do not collide with `params:` names.
+- **`allow_unused:`** — set to `true` to suppress errors for unused
+  parameters and type aliases (default: `false`).
 
 ```yaml
 ---
@@ -184,9 +154,9 @@ A template with `params: [age = int]` does NOT match ❌
 
 #### Compound Type Delimiters & Quoting
 
-For all compound types (`list`, `struct`, `enum`, `option`, `tmpl`), enclosing delimiters **must** be parentheses `(...)` (e.g., `list(str)`, `option(int)`, `struct(name = str)`). Angle brackets `<...>` and square brackets `[...]` fallback are strictly prohibited and will produce a syntax error.
+For all compound types (`list`, `struct`, `enum`, `option`, `tmpl`), enclosing delimiters **must** be parentheses `(...)` (e.g., `list(str)`, `option(int)`, `struct(name = str)`).
 
-In YAML frontmatter declarations, outer quotes around type expressions (or entire parameter/type declarations) are automatically stripped before parsing (e.g., `items = "list(str)"`). Unquoted placeholder notation (such as legacy `<str>` or `<int>`) is strictly prohibited.
+In YAML frontmatter declarations, outer quotes around type expressions (or entire parameter/type declarations) are automatically stripped before parsing (e.g., `items = "list(str)"`).
 
 ### Type Nesting Rules
 
@@ -270,10 +240,8 @@ Append `:= {literal}` after the type:
   The referenced constant's type must match the parameter's declared type.
   Local consts are parsed before params, so order within frontmatter does
   not matter. Imported constants are resolved after import resolution.
-- **YAML constraint**: the inline format (`params: [...]`) only works
-  for simple scalar params without commas in the type or default.
-  Compound types and `[…]`/`{…}` defaults must use the block list
-  format (`params:` on its own line, each param as `- …`).
+- **YAML constraint**: see [YAML validity](#file-format) — use block
+  list format for compound types and defaults containing commas.
 
 Defaults are type-checked at compile/parse time. If a param with a default is
 omitted from the render context, the default is injected automatically.
@@ -446,6 +414,17 @@ importing template's directory (same as `{% include %}`).
 
 **Strict Path Requirement**: All relative file import paths **must** begin explicitly with `./` or `../`. Bare relative filenames (e.g., `[my_types](my_types.tmpl.md)`) are rejected with syntax errors. Absolute paths beginning with `/` are also permitted.
 
+### Dynamic Import Path Interpolation
+
+Import paths in `imports:` declarations support constant interpolation (e.g., `"[my_types]({{ consts.SHARED_DIR }}/types.tmpl.md)"`). Any `{{ expression }}` within the path is evaluated **prior** to file system lookup or stem validation. Because imports are declared in the YAML frontmatter, only constants (`consts:` from the local template or previously resolved imports) are available during import path evaluation; parameters and loop variables cannot be used in frontmatter import paths.
+
+**Error Behavior:**
+
+- **Unclosed expression**: If a `{{` is not closed by a matching `}}`, a syntax error is raised (e.g., `unclosed '{{' in import path '...'`).
+- **Empty expression**: An empty expression `{{}}` or `{{ }}` raises a syntax error (e.g., `empty expression '{{}}' in import path '...'`).
+- **Unresolvable expression**: If the referenced constant is undefined or cannot be evaluated, a syntax error is raised (e.g., `unresolvable expression '{{consts.UNKNOWN}}' in import path '...'`).
+- **Invalid resulting path**: After interpolation, the resulting path must still satisfy the strict path requirement (it must begin explicitly with `./`, `../`, or `/`). Otherwise, a syntax error is raised.
+
 ### Stem Validation
 
 The link text (stem) **must** match the filename without `.tmpl.md`.
@@ -469,8 +448,35 @@ with a clear error message.
 ### Transitive Imports
 
 Imported templates that themselves have imports are resolved
-transitively. Types from transitive imports are accessible through
-nested dotted paths.
+transitively. However, transitive types are **not** re-exported — each
+template must directly import the templates whose types it uses:
+
+```yaml
+# base.tmpl.md
+---
+types:
+  - Priority = enum(High, Medium, Low)
+params: []
+---
+# middle.tmpl.md — imports base, uses Priority
+---
+imports:
+  - "[base](./base.tmpl.md)"
+params:
+  - prio = base.Priority
+---
+# top.tmpl.md — must import base directly to use Priority
+---
+imports:
+  - "[base](./base.tmpl.md)"
+  - "[middle](./middle.tmpl.md)"
+params:
+  - prio = base.Priority
+---
+```
+
+`top.tmpl.md` cannot access `base.Priority` via `middle.base.Priority` —
+nested dotted paths through transitive imports are not supported.
 
 ---
 
@@ -562,18 +568,26 @@ work the same way — `kind()` extracts the variant name as a string
 (e.g., `kind(Stage.Design)` → `"Design"`,
 `kind(Status.Paused)` → `"Paused"`).
 
-### Bare Access Is a Compile Error
+### Iterating over Variant Names with `kinds()`
 
-Using an enum literal without `kind()` is rejected at compile time:
+To get a list of all variant names of an enum type (in declaration order), use the `kinds()` built-in function:
 
 ```markdown
-{{ Stage.Design }} {# ❌ COMPILE ERROR #}
+---
+types:
+  - Stage = enum(Design, Build, Deploy)
+---
+
+All stages: {{ kinds(Stage) | join(", ") }}
+
+> {% for stage in kinds(Stage) %}
+
+- Stage: {{ stage }}
+
+> {% /for %}
 ```
 
-Error message:
-
-> bare enum literal 'Stage.Design' is not allowed — use
-> kind(Stage.Design) to get the variant name as a string
+Attempting to iterate over an enum type directly without `kinds()` (e.g., `{% for s in Stage %}`) is rejected at compile time with an error suggesting `kinds(Stage)`.
 
 **Rationale:** requiring `kind()` prevents confusion between enum type
 namespace access and regular variable dot-access (e.g., `struct.field`).
@@ -633,70 +647,37 @@ Type alias names in `types:` are used as-is (they should already be
 
 ### Collision Rules
 
-The following naming rules prevent ambiguity. All checks run at
-parse time and produce syntax errors.
+All naming checks run at parse time and produce syntax errors.
 
-1. **Reserved keywords** — `str`, `bool`, `int`, `float`, `list`,
-   `struct`, `enum`, `tmpl`, and `params` cannot be used as parameter
-   names, constant names, or type alias names.
+**Reserved names** — built-in type names (`str`, `bool`, `int`, `float`,
+`list`, `struct`, `enum`, `tmpl`, `params`) cannot be used as parameter,
+constant, or type alias names.
 
-2. **Duplicate names** — duplicate param names, duplicate constant
-   names, and duplicate type alias names are each rejected within
-   their own block.
+**Reserved internal key** — the key `__kind__` is reserved for internal
+enum variant tagging. Accessing it via dot-path (e.g., `{{ item.__kind__ }}`)
+is a **compile-time error**. Setting it directly in `Context` causes a
+runtime panic. Use `kind(expr)` to extract variant names instead.
 
-3. **Param ↔ const conflict** — a parameter and a constant cannot
-   share the same name. Both occupy the same runtime scope, so the
-   constant would silently shadow the parameter value.
+**No duplicate names** — within each block (`params:`, `consts:`,
+`types:`), names must be unique.
 
-4. **Type/param `PascalCase` conflict** — if a `types:` entry exists
-   whose name equals the `PascalCase` of a param or constant name
-   (e.g., type `Tasks` and param `tasks`), the declaration's type
-   **must** be that alias. `tasks = Tasks` is valid; `tasks = str` when
-   type `Tasks` exists is an error.
+**Cross-namespace uniqueness** — the following names must all be
+distinct from each other: param names, const names, type alias names,
+import stems, and inline template names. Additionally, the `PascalCase`
+form of a param/const name must not collide with a type alias or
+import stem.
 
-5. **Type alias ↔ import stem** — a type alias cannot have the same
-   name as an import stem (e.g., `types: [Shared = …]` when
-   `imports: ["[Shared](./shared.tmpl.md)"]`).
+**PascalCase type binding** — if a `types:` entry exists whose name
+equals the `PascalCase` of a param or const (e.g., type `Tasks` and
+param `tasks`), the declaration's type **must** be that alias.
 
-6. **Param `PascalCase` ↔ import stem** — a param whose `PascalCase`
-   name equals an import stem is rejected.
+**Unused type aliases** — a `types:` entry never referenced by any
+param or const is rejected (unless `allow_unused: true`). Enum types
+are exempt — their variants are injected as namespace constants.
 
-7. **Built-in shadowing** — a type alias cannot shadow a built-in type
-   name (`str`, `bool`, `int`, `float`, `list`, `struct`, `enum`, `tmpl`).
-
-8. **Unused type aliases** — a `types:` entry that is never referenced
-   by any parameter or constant declaration is rejected (unless
-   `allow_unused: true`). Enum types are exempt — they are always
-   considered used because their variants are injected as namespace
-   constants. Pure type-library templates (no params, no consts)
-   skip this check entirely.
-
-9. **Import stem ↔ inline template** — an import stem cannot collide
-   with an inline template name (`{% tmpl name %}`), since both are
-   reachable via `{% include %}`.
-
-10. **Param/const ↔ inline template** — a param or constant name
-    cannot collide with an inline template name.
-
-11. **For-loop binding shadowing** — a `{% for %}` binding must not
-    shadow a declared param, constant, import stem, or inline template
-    name. The binding is scoped to the loop body and does not persist
-    after `{% /for %}`, so **sequential loops may reuse the same
-    binding name**.
-
-    ```markdown
-    {# OK — sequential reuse #}
-
-    > {% for item in list_a %}{{ item.name }}
-    > {% /for %}
-    > {% for item in list_b %}{{ item.name }}
-    > {% /for %}
-
-    {# ERROR — 'x' shadows declared param 'x' #}
-
-    > {% for x in items %}{{ x.name }}
-    > {% /for %}
-    ```
+**For-loop binding shadowing** — a `{% for %}` binding must not shadow
+a declared param, const, import stem, or inline template name.
+Sequential loops may reuse the same binding name.
 
 ---
 
@@ -724,17 +705,8 @@ Only **scalar types** can appear directly in `{{ }}` expressions:
 | `float` | Decimal float (e.g. `3.14`) |
 | `bool`  | `true` or `false`           |
 
-Attempting to render a non-scalar type directly is a **compile-time error**:
-
-```markdown
-{{ items }} {# ❌ ERROR: cannot display list — use {% for %} #}
-{{ config }} {# ❌ ERROR: cannot display struct — access fields #}
-{{ status }} {# ❌ ERROR: cannot display enum — use {% match %} or kind() #}
-{{ widget }} {# ❌ ERROR: cannot display tmpl — use {% include %} #}
-{{ maybe_x }} {# ❌ ERROR: cannot display option — use {% if has(x) %} #}
-```
-
-**How to use non-scalar types:**
+Attempting to render a non-scalar type directly is a **compile-time error**.
+Use the appropriate construct instead:
 
 | Type     | Correct usage                                                       |
 | -------- | ------------------------------------------------------------------- |
@@ -753,6 +725,8 @@ variants via the `kind()` function — see
 ## Filters
 
 Pipe operator chains transforms left-to-right: `{{ expr | filter | filter }}`
+
+Attempting to use an unrecognized filter name is rejected with a syntax error at compile time.
 
 ```markdown
 {{ name | upper }}
@@ -776,12 +750,13 @@ Pipe operator chains transforms left-to-right: `{{ expr | filter | filter }}`
 
 ## Built-in Functions
 
-| Function       | Returns | Description                                                                                                                                           |
-| -------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `idx(binding)` | int     | 0-based loop index of a `for` binding                                                                                                                 |
-| `len(expr)`    | int     | Length of a list, string, or struct                                                                                                                   |
-| `kind(expr)`   | str     | Variant name of an enum value (errors on non-enum). Also works with [enum literal expressions](#enum-literal-expressions), e.g. `kind(Status.Paused)` |
-| `has(expr)`    | bool    | `true` if an `option(T)` value is `Some`, `false` if `None`. See [Option Types](#option-types)                                                        |
+| Function       | Returns | Description                                                                                                                                                                                 |
+| -------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `idx(binding)` | int     | 0-based loop index of a `for` binding                                                                                                                                                       |
+| `len(expr)`    | int     | Length of a list, string, or struct                                                                                                                                                         |
+| `kind(expr)`   | str     | Variant name of an enum value or option value (returns `"Some"` or `"None"` for options). Also works with [enum literal expressions](#enum-literal-expressions), e.g. `kind(Status.Paused)` |
+| `kinds(type)`  | list    | List of strings representing all variant names of an enum type (in declaration order), e.g. `kinds(Status)`. Errors on non-enum                                                             |
+| `has(expr)`    | bool    | `true` if an `option(T)` value is `Some`, `false` if `None`. See [Option Types](#option-types)                                                                                              |
 
 `idx()` tracks each loop variable independently in nested loops:
 
@@ -804,6 +779,67 @@ assert_eq!(output, "0.0 0.1 1.0 1.1 ");
 
 ---
 
+## String Interpolation
+
+Quoted string literals inside **statements** support `{{ expr }}` interpolation.
+The embedded expressions are evaluated at render time, just like top-level
+`{{ }}` tags in the template body.
+
+This applies uniformly wherever a quoted string appears in a statement:
+
+| Context                          | Example                                                    |
+| -------------------------------- | ---------------------------------------------------------- |
+| **Condition comparisons** (`if`) | `{% if role == "admin_{{ env }}" %}`                       |
+| **`in` operator**                | `{% if "item_{{ key }}" in items %}`                       |
+| **Panic messages**               | `{% panic("unsupported: {{ kind(status) }}") %}`           |
+| **Include `with` values**        | `{% include widget with title = "{{ name }}'s profile" %}` |
+
+Expressions inside interpolations follow the same rules as body expressions:
+dotted paths, function calls (`len()`, `kind()`, etc.), and filters
+(`| upper`, `| trim`, etc.) are all supported.
+
+### Examples
+
+```markdown
+---
+params: [role = str, env = str]
+---
+
+> {% if role == "admin_{{ env }}" %}
+> You are an admin on {{ env }}.
+> {% else %}
+> Access denied.
+> {% /if %}
+```
+
+```markdown
+---
+params: [name = str]
+---
+
+> {% panic("unknown user: {{ name | upper }}") %}
+```
+
+Plain strings without `{{ }}` are treated as literal values with no
+interpolation overhead.
+
+### String Literal Syntax
+
+String literals in statements are delimited by double quotes (`"`).
+No escape sequences are supported — `\"`, `\n`, etc. are **not** interpreted.
+If the content requires a double quote, use the variable indirection pattern
+(assign the value in the calling context).
+
+### Error Behavior
+
+| Condition                              | Error                                   |
+| -------------------------------------- | --------------------------------------- |
+| Unclosed `{{` (no matching `}}`)       | Syntax error: `unclosed '{{'`           |
+| Empty expression `{{ }}`               | Syntax error: `empty expression '{{}}'` |
+| Unresolvable expression inside `{{ }}` | Render error (undefined variable)       |
+
+---
+
 ## Control Flow
 
 ### For Loops
@@ -817,6 +853,8 @@ assert_eq!(output, "0.0 0.1 1.0 1.1 ");
 ```
 
 `{% for x in y %}` requires `y` to be a `list` type — enforced at compile time.
+Iterating over an `option(list(...))` is a type error; use
+`{% if has(y) %}{% for x in y %}...{% /for %}{% /if %}` instead.
 
 #### `for...else`
 
@@ -860,8 +898,55 @@ No agents available.
 > {% /if %}
 ```
 
-Operators: `==`, `!=`, `<`, `>`, `<=`, `>=`. Plain identifiers are evaluated
-for truthiness.
+Comparison operators: `==`, `!=`, `<`, `>`, `<=`, `>=`, `in`.
+
+Boolean operators: `&&` (logical AND), `||` (logical OR), `!` (unary NOT), `()` (grouping).
+
+Plain identifiers are evaluated for truthiness. String literal operands
+support `{{ }}` interpolation (see [String Interpolation](#string-interpolation)).
+
+#### Operator Precedence
+
+From highest to lowest:
+
+| Precedence  | Operator(s)                            | Description    |
+| ----------- | -------------------------------------- | -------------- |
+| 1 (highest) | `!`                                    | Unary negation |
+| 2           | `==`, `!=`, `<`, `>`, `<=`, `>=`, `in` | Comparisons    |
+| 3           | `&&`                                   | Logical AND    |
+| 4 (lowest)  | `\|\|`                                 | Logical OR     |
+
+#### Boolean Expression Examples
+
+```markdown
+{# AND: both conditions must be true #}
+
+> {% if a > 0 && b > 0 %}both positive{% /if %}
+
+{# OR: at least one condition must be true #}
+
+> {% if a > 0 || b > 0 %}at least one positive{% /if %}
+
+{# NOT: negate a function call #}
+
+> {% if !has(x) %}x is missing{% /if %}
+
+{# NOT with grouping: negate a comparison #}
+
+> {% if !(a > 0) %}a is not positive{% /if %}
+
+{# Combined: grouping controls evaluation order #}
+
+> {% if (a || b) && c %}complex condition met{% /if %}
+```
+
+The `in` operator checks for substring or element membership, or static enum variant validity:
+
+- **String / List membership**: `{% if "admin" in roles %}` or `{% if !("err" in status_str) %}`.
+- **Enum variant checking with `kinds()`**: You can statically check whether a string literal matches an enum variant using `{% if "Superuser" in kinds(Role) %}`. When the right-hand side is `kinds(EnumType)` and the left-hand side is a static string literal, the engine validates at compile time that the string literal is indeed a valid variant of that enum type!
+
+> **Note:** Use `!` for negation (e.g. `!flag`, `!(x in y)`).
+> The `not` keyword is not supported.
 
 #### Truthiness
 
@@ -882,6 +967,8 @@ Values are evaluated as follows:
 | `{}` (empty struct) | ❌      |
 | non-empty struct    | ✅      |
 | any `tmpl`          | ✅      |
+| `option`: `None`    | ❌      |
+| `option`: `Some(…)` | ✅      |
 
 > **Note:** Enum values cannot be compared with `==`/`!=`. Use `{% match %}` for
 > enum dispatch — it provides exhaustiveness checking and struct variant support.
@@ -963,7 +1050,60 @@ after type narrowing:
    new variant to the enum and forgetting to handle it is a compile error.
    Use `{% else %}` as a catch-all if you don't need per-variant handling.
 5. **No `==` on enums** — comparing an enum with `==` or `!=` is a compile error.
-   Use `{% match %}` instead, which is exhaustive and supports struct variants.
+   Do not use `kind()` to work around this — string comparisons defeat
+   exhaustiveness checking and break silently when variants are renamed.
+   Always use `{% match %}` for enum dispatch.
+6. **Syntax validity** — a `match` block without an expression, without any case arms, or with empty variant names in `{% case %}` is a syntax error at compile time.
+
+#### Match as Boolean Condition
+
+A `match X case Y` expression can be used inside `{% if %}` as a boolean
+sub-expression. It evaluates to `true` if the variant matches, `false`
+otherwise:
+
+```markdown
+> {% if match status case Active %}status is active{% /if %}
+
+> {% if match status case Active | Pending %}actionable{% /if %}
+```
+
+**Multi-variant**: `match X case A | B` matches if the value is variant
+A or variant B.
+
+**Combining with boolean operators**: `match ... case ...` can be combined
+with `&&`, `||`, and `!` like any other boolean expression:
+
+```markdown
+> {% if match status case Approved | Pending && count > 0 %}
+> process items
+> {% /if %}
+```
+
+> **Note:** No field narrowing occurs in the `{% if %}` body when using
+> `match` as a boolean condition. Use `{% match %}` blocks for field access.
+
+#### Match Guards
+
+Inline `{% match %}` blocks support an optional guard expression using
+`&&`. The guard is evaluated after the variant matches; the body is
+rendered only if both the variant matches **and** the guard is truthy:
+
+```markdown
+> {% match status case Approved && status.score > 80 %}
+> high-scoring approval: {{ status.score }}
+> {% /match %}
+```
+
+**Multi-variant with guard**: the guard applies to all listed variants:
+
+```markdown
+> {% match status case Approved | Pending && count > 0 %}
+> actionable item
+> {% /match %}
+```
+
+Inside the match body, field narrowing still applies — the matched
+variant's fields are accessible via `expr.field` as usual.
 
 ---
 
@@ -984,21 +1124,20 @@ params:
 like any other type. There is no automatic default to `None`. If you want
 the parameter to be optional, you must explicitly declare `:= None`.
 
-### Transparent Representation
+### Representation
 
-Option values are **transparent** — the inner value is used directly. This means `{{ name }}` renders
-the value directly, without needing `.val` (as long it's been checked with match or if has() before).
+Option values are **transparent** — the inner value is used directly:
 
-| Input (JS/Python/Go) | Template `Value`    | `{{ x }}` output |
-| -------------------- | ------------------- | ---------------- |
-| `null` / `None`      | `NoneValue`         | `""` (empty)     |
-| `42`                 | `IntValue(42)`      | `42`             |
-| `"hello"`            | `StrValue("hello")` | `hello`          |
+| Host input (`null`/value) | Template `Value`    | `{{ x }}` output | JS repr   |
+| ------------------------- | ------------------- | ---------------- | --------- |
+| `null` / `None`           | `NoneValue`         | `""` (empty)     | `null`    |
+| `42`                      | `IntValue(42)`      | `42`             | `42`      |
+| `"hello"`                 | `StrValue("hello")` | `hello`          | `"hello"` |
 
 ### Checking presence with `has()`
 
-The `has()` built-in function returns `true` when an option holds a value
-(`Some`) and `false` when it is `None`:
+`has(x)` returns `true` when the option holds a value (`Some`), `false`
+when `None`:
 
 ```markdown
 > {% if has(name) %}
@@ -1012,9 +1151,15 @@ Hello stranger!
 > {% /if %}
 ```
 
-### Matching with `{% match %}`
+### Inspecting variant name with `kind()`
 
-Use `{% match %}` for exhaustive option handling:
+`kind(opt)` returns `"Some"` or `"None"` as a string:
+
+```markdown
+Option status: {{ kind(name) }} {# renders "Some" or "None" #}
+```
+
+### Matching with `{% match %}`
 
 ```markdown
 > {% match name %}
@@ -1032,16 +1177,6 @@ _(no name provided)_
 Inside `{% case Some %}`, `{{ name }}` renders the inner value directly.
 Outside the match, `{{ name }}` on a `None` value renders as empty string.
 
-### Runtime representation
-
-At runtime, option values use **transparent** representation:
-
-| Template value    | Runtime `Value` | JS representation |
-| ----------------- | --------------- | ----------------- |
-| `None`            | `NoneValue`     | `null`            |
-| `Some(val = "x")` | `StrValue("x")` | `"x"`             |
-| `Some(val = 42)`  | `IntValue(42)`  | `42`              |
-
 ### Nesting
 
 Options can be nested with any type:
@@ -1052,6 +1187,29 @@ params:
   - meta = option(struct(k = str)) # optional struct
   - nested = option(option(int)) # double-optional (unusual but valid)
 ```
+
+---
+
+## Panic Statements
+
+The `{% panic(...) %}` statement tag halts rendering with a fatal error.
+
+```markdown
+> {% if count < 0 %}
+> {% panic("count must not be negative") %}
+> {% /if %}
+
+> {% if !has(config.host) %}
+> {% panic(config.error_message) %}
+> {% /if %}
+```
+
+- **Literal strings**: `{% panic("error message") %}` — fails with
+  `template panic: error message`. String content supports `{{ }}`
+  interpolation (see [String Interpolation](#string-interpolation)):
+  `{% panic("unsupported role: {{ role }}") %}`.
+- **Variable reference**: `{% panic(err_msg) %}` — evaluates the
+  expression and uses its value as the error message.
 
 ---
 
@@ -1067,8 +1225,11 @@ params:
 - The `[name]` part is a standard markdown link — clickable in editors.
 - The `(path.tmpl.md)` is the file path, resolved **relative to the including
   template's directory**. All relative include paths **must** begin explicitly with `./` or `../`. Bare relative filenames (e.g., `[child](child.tmpl.md)`) are rejected with syntax errors. Named template references (e.g. `{% include my_tmpl %}`) and absolute paths starting with `/` do not require relative path prefixes.
+- **Dynamic include path interpolation**: Include directive file paths support variable and constant interpolation (e.g., `{% include [foo]({{ consts.SOME_DIR }}/foo.tmpl.md) %}` or `{% include [bar]({{ param_dir }}/bar.tmpl.md) %}`). Any `{{ expression }}` within the path is evaluated against the active scope **prior** to file system lookup or template caching.
+  - **Error Behavior**: If an expression in the path is unclosed (`unclosed '{{' in include path '...'`), empty (`empty expression '{{}}' in include path '...'`), or cannot be resolved against the current scope (`unresolvable expression '{{expr}}' in include path '...'`), a syntax error is raised. After interpolation, the resulting path must satisfy the standard path prefix requirement (beginning with `./`, `../`, or `/`), or else a syntax error is raised.
 - **Explicit parameter passing** via `with` is required; no implicit scope
-  leaking.
+  leaking. String literal values support `{{ }}` interpolation
+  (see [String Interpolation](#string-interpolation)).
 - **Iterated includes** via `for binding in list` unroll the list: for
   each element, the included template is rendered with `binding` set to the
   current item. The binding name satisfies the included template's
@@ -1085,27 +1246,9 @@ params:
 ### Depth Limits
 
 - **Runtime**: Maximum nesting depth defaults to 16. Configurable via
-  `.with_max_include_depth(n)` (builder-style) or `.set_max_include_depth(n)`
-  (mutable setter) on the `Template`:
-
-  ```rust
-  let dir = tempfile::tempdir().unwrap();
-  let path = dir.path().join("deep.tmpl.md");
-  std::fs::write(
-      &path, "---\nparams: []\n---\nok"
-  ).unwrap();
-
-  let tmpl = md_tmpl::Template::from_file(&path)
-      .unwrap()
-      .with_max_include_depth(4); // builder-style
-
-  let mut tmpl2 = md_tmpl::Template::from_file(&path).unwrap();
-  tmpl2.set_max_include_depth(4); // mutable setter
-  ```
-
-- **Compile-time** (`include_template!`): Maximum depth
-  defaults to 64. Override with the `MD_TMPL_MAX_INCLUDE_DEPTH`
-  environment variable at build time.
+  `.with_max_include_depth(n)` on the `Template`.
+- **Compile-time** (`include_template!`): Maximum depth defaults to 64.
+  Override with the `MD_TMPL_MAX_INCLUDE_DEPTH` environment variable.
 - **Circular includes** are detected at both compile time (via canonical
   path tracking) and runtime (via depth limit). A cycle is not a hard error
   at compile time — the included template's declarations are loaded for
@@ -1345,49 +1488,16 @@ assert_eq!(output, "helloworldbye");
 
 ## Error Diagnostics
 
-All errors are returned as `TemplateError` variants with structured fields:
+All errors include structured context for debugging:
 
-```rust
-use md_tmpl::{Context, Template, TemplateError};
+- **Syntax errors** — line number, column, source snippet, and descriptive
+  message (e.g. unknown filter, unclosed tag, undeclared variable).
+- **Type mismatches** — the full dotted field path to the failing value
+  (e.g. `items[1].score`), expected type, and actual type.
+- **Missing/extra parameters** — lists of param names that were required
+  but absent, or provided but undeclared.
+- **Panic** — the rendered panic message from `{% panic("...") %}`.
 
-let err = Template::from_source("---
-params:
-  - x = str
----
-{{ x | badfilter }}").unwrap_err();
-
-if let TemplateError::Syntax(syn) = &err {
-    assert!(syn.line.is_some());
-    assert!(syn.snippet.is_some());
-    assert!(syn.message.contains("badfilter"));
-}
-```
-
-Type mismatches include the path to the failing field:
-
-```rust
-use md_tmpl::{VarType, VarDecl, TypeCheckError, Value};
-use std::sync::Arc;
-
-let var_type = VarType::List(vec![VarDecl {
-    name: "score".into(),
-    var_type: VarType::Int,
-    default_value: None,
-}]);
-
-let items = Value::List(Arc::new(vec![
-    Value::Struct(Arc::new([("score".into(), Value::Int(10))].into())),
-    Value::Struct(Arc::new([("score".into(), Value::Str("bad".into()))].into())),
-]));
-
-let err = var_type.check(&items).unwrap_err();
-assert_eq!(err.path, "[1].score");
-assert_eq!(err.expected, "int");
-assert_eq!(err.actual, "str");
-```
-
----
-
-> **Rust API & SDK Documentation**: For language-specific APIs (macros,
-> `CompileOptions`, loading, caching, serde integration,
-> typed-builder), see the [README](README.md).
+For language-specific error APIs and host-language integration
+(value coercion, caching, code generation, typed builders), see the
+[README](README.md).

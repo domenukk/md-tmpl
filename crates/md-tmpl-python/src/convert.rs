@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use hashbrown::HashMap;
+use hashbrown::{HashMap, HashSet};
 use md_tmpl::{Frontmatter, Value};
 use pyo3::{
     Py,
@@ -15,29 +15,26 @@ use pyo3::{
 const ENUM_TAG_KEY: &str = md_tmpl::consts::ENUM_TAG_KEY;
 
 /// Convert a Python object into a template [`Value`].
-///
-/// Handles (in order):
-/// - `bool` → `Value::Bool`  (checked before int — `bool` subclasses `int`)
-/// - `int`  → `Value::Int`
-/// - `float` → `Value::Float`
-/// - `str`  → `Value::Str`
-/// - `list` → `Value::List`  (recursive)
-/// - `dict` → `Value::Struct`  (recursive)
-/// - objects with `_md_tmpl_tag` → enum variant dicts
-/// - `enum.Enum` members (have `_name_`) → `Value::Str` or tagged dict
-/// - objects with `__dict__` → `Value::Struct` (dataclass-like)
-///
-/// # Errors
-///
-/// Returns a `PyErr` if the value type is not supported or conversion fails.
 pub(crate) fn py_to_value(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
-    // Python None maps to the template engine's transparent `Value::None`,
-    // representing an absent optional value.
+    let mut visited = HashSet::new();
+    py_to_value_inner(obj, &mut visited, 0)
+}
+
+fn py_to_value_inner(
+    obj: &Bound<'_, PyAny>,
+    visited: &mut HashSet<usize>,
+    depth: usize,
+) -> PyResult<Value> {
+    if depth > 256 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "maximum recursion depth exceeded in template parameter",
+        ));
+    }
+
     if obj.is_none() {
         return Ok(Value::None);
     }
 
-    // Bool must be checked before int because bool is a subclass of int.
     if obj.is_instance_of::<PyBool>() {
         return Ok(Value::Bool(obj.extract::<bool>()?));
     }
@@ -50,50 +47,57 @@ pub(crate) fn py_to_value(obj: &Bound<'_, PyAny>) -> PyResult<Value> {
     if obj.is_instance_of::<PyString>() {
         return Ok(Value::Str(obj.extract::<String>()?));
     }
-    // Template objects → Value::Tmpl (must be before __dict__ fallback).
     if obj.is_instance_of::<crate::template::PyTemplate>() {
         let py_template: PyRef<'_, crate::template::PyTemplate> = obj.extract()?;
         return Ok(Value::Tmpl(Arc::new(py_template.inner().clone())));
     }
-    if obj.is_instance_of::<PyList>() {
-        let list = obj.cast::<PyList>()?;
-        let mut items = Vec::with_capacity(list.len());
-        for item in list.iter() {
-            items.push(py_to_value(&item)?);
+
+    let ptr = obj.as_ptr() as usize;
+    if !visited.insert(ptr) {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "cyclic object detected in template parameter",
+        ));
+    }
+
+    let res = (|| -> PyResult<Value> {
+        if obj.is_instance_of::<PyList>() {
+            let list = obj.cast::<PyList>()?;
+            let mut items = Vec::with_capacity(list.len());
+            for item in list.iter() {
+                items.push(py_to_value_inner(&item, visited, depth + 1)?);
+            }
+            return Ok(Value::List(Arc::new(items)));
         }
-        return Ok(Value::List(Arc::new(items)));
-    }
-    if obj.is_instance_of::<PyDict>() {
-        return py_dict_to_value(obj.cast::<PyDict>()?);
-    }
+        if obj.is_instance_of::<PyDict>() {
+            return py_dict_to_value(obj.cast::<PyDict>()?, visited, depth + 1);
+        }
 
-    // Check for generated enum variant instances (have `_md_tmpl_tag`).
-    if let Some(value) = try_convert_tagged_variant(obj)? {
-        return Ok(value);
-    }
+        if let Some(value) = try_convert_tagged_variant(obj, visited, depth + 1)? {
+            return Ok(value);
+        }
 
-    // Check for Python enum.Enum members (have `_name_`).
-    if let Some(value) = try_convert_enum_member(obj)? {
-        return Ok(value);
-    }
+        if let Some(value) = try_convert_enum_member(obj, visited, depth + 1)? {
+            return Ok(value);
+        }
 
-    // Fallback: dataclass-like objects with __dict__.
-    if let Some(value) = try_convert_dict_object(obj)? {
-        return Ok(value);
-    }
+        if let Some(value) = try_convert_dict_object(obj, visited, depth + 1)? {
+            return Ok(value);
+        }
 
-    Err(pyo3::exceptions::PyTypeError::new_err(format!(
-        "cannot convert Python type '{}' to template Value",
-        obj.get_type().qualname()?
-    )))
+        Err(pyo3::exceptions::PyTypeError::new_err(format!(
+            "cannot convert Python type '{}' to template Value",
+            obj.get_type().qualname()?
+        )))
+    })();
+    visited.remove(&ptr);
+    res
 }
 
-/// Try to convert an object with `_md_tmpl_tag` + `_md_tmpl_fields`.
-///
-/// Returns `Ok(None)` if the object doesn't have the tag attribute,
-/// `Ok(Some(value))` on success, or `Err` on conversion failure.
-fn try_convert_tagged_variant(obj: &Bound<'_, PyAny>) -> PyResult<Option<Value>> {
-    // Check if the object has the tag — either as instance attr or class attr.
+fn try_convert_tagged_variant(
+    obj: &Bound<'_, PyAny>,
+    visited: &mut HashSet<usize>,
+    depth: usize,
+) -> PyResult<Option<Value>> {
     let Ok(tag_attr) = obj.getattr("_md_tmpl_tag") else {
         return Ok(None);
     };
@@ -105,31 +109,29 @@ fn try_convert_tagged_variant(obj: &Bound<'_, PyAny>) -> PyResult<Option<Value>>
     let mut map = HashMap::new();
     map.insert(ENUM_TAG_KEY.to_string(), Value::Str(tag_str));
 
-    // Extract payload fields — this MUST succeed if tag exists.
     let fields_attr = obj.getattr("_md_tmpl_fields").map_err(|_| {
         pyo3::exceptions::PyAttributeError::new_err(
             "object has _md_tmpl_tag but missing _md_tmpl_fields",
         )
     })?;
 
-    // _md_tmpl_fields may be a property returning a dict or a stored dict.
     let fields_dict = fields_attr.cast::<PyDict>().map_err(|_| {
         pyo3::exceptions::PyTypeError::new_err("_md_tmpl_fields must return a dict")
     })?;
 
     for (k, v) in fields_dict.iter() {
         let key: String = k.extract()?;
-        map.insert(key, py_to_value(&v)?);
+        map.insert(key, py_to_value_inner(&v, visited, depth)?);
     }
 
     Ok(Some(Value::Struct(Arc::new(map))))
 }
 
-/// Try to convert a `enum.Enum` member (has `_name_` attribute).
-///
-/// Returns `Ok(None)` if the object isn't an enum member,
-/// `Ok(Some(value))` on success, or `Err` on conversion failure.
-fn try_convert_enum_member(obj: &Bound<'_, PyAny>) -> PyResult<Option<Value>> {
+fn try_convert_enum_member(
+    obj: &Bound<'_, PyAny>,
+    visited: &mut HashSet<usize>,
+    depth: usize,
+) -> PyResult<Option<Value>> {
     let Ok(name_attr) = obj.getattr("_name_") else {
         return Ok(None);
     };
@@ -138,7 +140,6 @@ fn try_convert_enum_member(obj: &Bound<'_, PyAny>) -> PyResult<Option<Value>> {
         .extract()
         .map_err(|_| pyo3::exceptions::PyTypeError::new_err("enum _name_ must be a string"))?;
 
-    // If the enum member's value is a dict, treat as struct variant.
     let Ok(value_attr) = obj.getattr("_value_") else {
         return Ok(Some(Value::Str(name)));
     };
@@ -149,7 +150,7 @@ fn try_convert_enum_member(obj: &Bound<'_, PyAny>) -> PyResult<Option<Value>> {
             map.insert(ENUM_TAG_KEY.to_string(), Value::Str(name));
             for (k, v) in dict.iter() {
                 let key: String = k.extract()?;
-                map.insert(key, py_to_value(&v)?);
+                map.insert(key, py_to_value_inner(&v, visited, depth)?);
             }
             Ok(Some(Value::Struct(Arc::new(map))))
         }
@@ -157,26 +158,30 @@ fn try_convert_enum_member(obj: &Bound<'_, PyAny>) -> PyResult<Option<Value>> {
     }
 }
 
-/// Try to convert an object with `__dict__` (dataclass-like).
-///
-/// Returns `Ok(None)` if the object doesn't have `__dict__` or it's not a dict.
-fn try_convert_dict_object(obj: &Bound<'_, PyAny>) -> PyResult<Option<Value>> {
+fn try_convert_dict_object(
+    obj: &Bound<'_, PyAny>,
+    visited: &mut HashSet<usize>,
+    depth: usize,
+) -> PyResult<Option<Value>> {
     let Ok(dict_attr) = obj.getattr("__dict__") else {
         return Ok(None);
     };
 
     match dict_attr.cast::<PyDict>() {
-        Ok(dict) => py_dict_to_value(dict).map(Some),
+        Ok(dict) => py_dict_to_value(dict, visited, depth).map(Some),
         Err(_) => Ok(None),
     }
 }
 
-/// Convert a Python dict to `Value::Struct`.
-fn py_dict_to_value(dict: &Bound<'_, PyDict>) -> PyResult<Value> {
+fn py_dict_to_value(
+    dict: &Bound<'_, PyDict>,
+    visited: &mut HashSet<usize>,
+    depth: usize,
+) -> PyResult<Value> {
     let mut map = HashMap::with_capacity(dict.len());
     for (k, v) in dict.iter() {
         let key: String = k.extract()?;
-        map.insert(key, py_to_value(&v)?);
+        map.insert(key, py_to_value_inner(&v, visited, depth)?);
     }
     Ok(Value::Struct(Arc::new(map)))
 }
