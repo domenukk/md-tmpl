@@ -375,23 +375,30 @@ impl Template {
         ctx: &Context,
         output: &mut String,
     ) -> Result<(), crate::error::TemplateError> {
-        let type_id = core::any::TypeId::of::<T>();
-        let already_checked = self
-            .checked_type_ids
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(&type_id);
+        #[cfg(feature = "std")]
+        {
+            let type_id = core::any::TypeId::of::<T>();
+            let already_checked = self
+                .checked_type_ids
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(&type_id);
 
-        if already_checked {
-            // Type has been validated before — skip straight to render.
-            self.render_core(ctx, output)
-        } else {
+            if already_checked {
+                // Type has been validated before — skip straight to render.
+                return self.render_core(ctx, output);
+            }
             // First time seeing this type — validate, then cache on success.
             self.validate_context(ctx, false)?;
             self.checked_type_ids
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(type_id);
+            self.render_core(ctx, output)
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            self.validate_context(ctx, false)?;
             self.render_core(ctx, output)
         }
     }
