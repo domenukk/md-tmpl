@@ -21,3 +21,6 @@ dist/
 SKILL.md
 node_modules
 benchmarks/target
+
+# Rlease stuff
+*.tgz

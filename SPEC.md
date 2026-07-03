@@ -279,6 +279,54 @@ Disable both checks with `allow_unused: true` in frontmatter, or call
 > **Note:** Undeclared params (referenced in the body but absent from
 > `params:`) are always rejected, even with `allow_unused: true`.
 
+#### Best Practice: `allow_unused` vs Comment Suppression
+
+**Prefer comment-based suppression** (`{# unused: {{ type }} #}`) over
+`allow_unused: true` in most cases. Comments are explicit, self-documenting,
+and preserve the compiler's ability to catch genuinely unused declarations:
+
+```markdown
+> {# unused: {{ artist.PathList }}, {{ artist.StringList }} #}
+```
+
+**Reserve `allow_unused: true`** for **type library templates** — files
+whose sole purpose is defining shared types/constants for other templates
+to import. These files typically have no body content and exist purely as
+a type namespace. Since every importing template uses a different subset,
+suppressing unused checks in the library itself is appropriate:
+
+```yaml
+---
+name: shared_types
+description: Shared type definitions
+allow_unused: true
+types:
+  - Severity = enum(Low, Medium, High, Critical)
+  - Status = enum(Open, Closed)
+  - ItemList = list(name = str)
+---
+
+> {# Type library — no body content #}
+```
+
+Templates that **import** such a library should use comment suppression
+for any imported types they don't use, rather than setting
+`allow_unused: true` on themselves:
+
+```yaml
+---
+imports:
+  - "[shared_types](./shared_types.tmpl.md)"
+
+params:
+  - severity = shared_types.Severity
+---
+
+> {# unused: {{ shared_types.ItemList }} #}
+
+Content using {{ severity }}...
+```
+
 ---
 
 ### Markdown Blockquotes, Statement Tags, and Comments
@@ -327,7 +375,7 @@ types:
 
 params:
   - tasks = TaskList
-  - components = list(name = str, category = Labelled)
+  - components = list(name = str, category = Category)
   - cfg = Config
 ---
 ```
@@ -456,20 +504,29 @@ template must directly import the templates whose types it uses:
 ---
 types:
   - Priority = enum(High, Medium, Low)
+
 params: []
 ---
+```
+
+```yaml
 # middle.tmpl.md — imports base, uses Priority
 ---
 imports:
   - "[base](./base.tmpl.md)"
+
 params:
   - prio = base.Priority
 ---
+```
+
+```yaml
 # top.tmpl.md — must import base directly to use Priority
 ---
 imports:
   - "[base](./base.tmpl.md)"
   - "[middle](./middle.tmpl.md)"
+
 params:
   - prio = base.Priority
 ---
@@ -806,9 +863,13 @@ params: [role = str, env = str]
 ---
 
 > {% if role == "admin_{{ env }}" %}
-> You are an admin on {{ env }}.
+
+You are an admin on {{ env }}.
+
 > {% else %}
-> Access denied.
+
+Access denied.
+
 > {% /if %}
 ```
 
