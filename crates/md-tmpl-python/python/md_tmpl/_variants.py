@@ -51,9 +51,11 @@ from types import SimpleNamespace
 from typing import Any, Callable, Sequence, TypeVar
 
 _T = TypeVar("_T")
-try:
+import sys
+
+if sys.version_info >= (3, 11):
     from typing import dataclass_transform
-except ImportError:
+else:
 
     def dataclass_transform(*args: Any, **kwargs: Any) -> Callable[[Any], Any]:  # type: ignore[misc]
         return lambda x: x

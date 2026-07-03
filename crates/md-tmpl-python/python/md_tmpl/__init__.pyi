@@ -6,6 +6,7 @@ checking via mypy/pyright when the ``py.typed`` marker is present.
 """
 
 import os
+import sys
 import types as _types
 from typing import (
     Any,
@@ -13,8 +14,12 @@ from typing import (
     Sequence,
     TypeVar,
     runtime_checkable,
-    dataclass_transform,
 )
+
+if sys.version_info >= (3, 11):
+    from typing import dataclass_transform
+else:
+    from typing_extensions import dataclass_transform
 
 _T = TypeVar("_T")
 
