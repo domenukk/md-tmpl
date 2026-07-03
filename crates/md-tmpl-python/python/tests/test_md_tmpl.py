@@ -45,6 +45,7 @@ from md_tmpl import (
     load_types,
     template,
     variant,
+    TemplateSyntaxError,
 )
 
 # ---------------------------------------------------------------------------
@@ -1146,14 +1147,13 @@ class TestKindCollisionProtection:
 
     def test_kind_key_not_accessible(self) -> None:
         """{{ outcome.__kind__ }} must error, not expose internal."""
-        tmpl = Template.from_source(textwrap.dedent("""\
-            ---
-            params:
-              - outcome = struct(evidence = str)
-            ---
-            {{ outcome.__kind__ }}"""))
-        with pytest.raises(ValueError):
-            tmpl.render(outcome={"__kind__": "Confirmed", "evidence": "x"})
+        with pytest.raises(TemplateSyntaxError, match="__kind__"):
+            Template.from_source(textwrap.dedent("""\
+                ---
+                params:
+                  - outcome = struct(evidence = str)
+                ---
+                {{ outcome.__kind__ }}"""))
 
     def test_user_field_named_tag(self) -> None:
         """A user field named 'tag' should work normally (no collision)."""
