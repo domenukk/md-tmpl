@@ -21,7 +21,7 @@ macros = ["dep:md-tmpl-macros"]
 
 [dependencies]
 md-tmpl-core = { version = "0.5.2", path = "../md-tmpl-core", default-features = false }
-md-tmpl-macros = { path = "../md-tmpl-macros", optional = true, features = [
+md-tmpl-macros = { version = "0.5.2", path = "../md-tmpl-macros", optional = true, features = [
   "serde",
   "typed-builder",
 ] }

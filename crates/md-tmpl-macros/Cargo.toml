@@ -19,7 +19,7 @@ serde = []
 typed-builder = []
 
 [dependencies]
-md-tmpl-core = { version = "0.5", path = "../md-tmpl-core", default-features = false, features = [
+md-tmpl-core = { version = "0.5.2", path = "../md-tmpl-core", default-features = false, features = [
   "std",
   "serde",
   "typed-builder",
@@ -32,7 +32,6 @@ quote = "1"
 proc-macro2 = "1"
 
 [dev-dependencies]
-md-tmpl = { path = "../md-tmpl", features = ["serde", "typed-builder"] }
 serde = { version = "1", features = ["derive"] }
 typed-builder = { workspace = true }
 

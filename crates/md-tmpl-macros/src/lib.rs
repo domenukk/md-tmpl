@@ -319,6 +319,7 @@ fn err_tokens(span: proc_macro2::Span, rel_path: &str, e: &str) -> TokenStream {
 /// # Examples
 ///
 /// ```rust
+/// extern crate md_tmpl_core as md_tmpl;
 /// md_tmpl_macros::include_template!("prompts/simple_greeting.tmpl.md");
 ///
 /// let output = simple_greeting::Params {
@@ -463,6 +464,7 @@ pub fn include_template(input: TokenStream) -> TokenStream {
 /// # Examples
 ///
 /// ```rust
+/// extern crate md_tmpl_core as md_tmpl;
 /// md_tmpl_macros::template!(
 ///     r#"
 /// ---

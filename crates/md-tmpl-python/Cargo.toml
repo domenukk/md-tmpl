@@ -16,7 +16,7 @@ name = "_md_tmpl"
 crate-type = ["cdylib"]
 
 [dependencies]
-md-tmpl = { path = "../md-tmpl", features = ["serde"] }
+md-tmpl = { version = "0.5.2", path = "../md-tmpl", features = ["serde"] }
 pyo3 = { version = "0.29", features = ["extension-module"] }
 hashbrown = { version = "0.17", default-features = false, features = [
   "default-hasher",

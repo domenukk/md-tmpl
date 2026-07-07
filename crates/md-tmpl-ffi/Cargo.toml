@@ -11,7 +11,10 @@ publish = false
 crate-type = ["staticlib"]
 
 [dependencies]
-md-tmpl = { path = "../md-tmpl", features = ["std", "serde"] }
+md-tmpl = { version = "0.5.2", path = "../md-tmpl", features = [
+  "std",
+  "serde",
+] }
 
 [lints]
 workspace = true

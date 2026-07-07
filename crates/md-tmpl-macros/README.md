@@ -33,6 +33,7 @@ module with the pre-parsed template, typed parameter struct, sub-structs,
 constants, and type aliases.
 
 ```rust
+extern crate md_tmpl_core as md_tmpl;
 use md_tmpl_macros::include_template;
 
 include_template!("prompts/simple_greeting.tmpl.md");
@@ -46,6 +47,7 @@ assert_eq!(output, "\nHello World!\n");
 Override the module name:
 
 ```rust
+extern crate md_tmpl_core as md_tmpl;
 use md_tmpl_macros::include_template;
 
 include_template!("prompts/simple_greeting.tmpl.md" => my_greet);
@@ -74,6 +76,7 @@ Like `include_template!`, but for inline template strings. The
 `=> module_name` is required.
 
 ```rust
+extern crate md_tmpl_core as md_tmpl;
 md_tmpl_macros::template!(r#"
 ---
 params:
@@ -94,6 +97,7 @@ Combine build-time types with runtime loading — iterate on prompt
 wording without recompiling, while keeping your type guarantees:
 
 ```rust
+extern crate md_tmpl_core as md_tmpl;
 use md_tmpl::Template;
 
 md_tmpl_macros::include_template!("prompts/greeting.tmpl.md");
