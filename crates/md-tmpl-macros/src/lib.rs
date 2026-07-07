@@ -50,7 +50,7 @@ fn with_crate_path<F: FnOnce() -> R, R>(path: proc_macro2::TokenStream, f: F) ->
 /// `include_template!("path" as StructName)`,
 /// `include_template!("path" as StructName => custom_mod_name)`,
 /// `include_template!("path", crate = ::my_crate::reexport)`, or
-/// `include_template!("path", env = { KEY: "value", KEY2: env!("VAR") })`.
+/// `include_template!("path", env = { KEY: "value", KEY2: 42 })`.
 struct IncludeTemplateInput {
     path: LitStr,
     struct_name: Option<Ident>,
@@ -197,8 +197,8 @@ fn make_module_ident(stem: &str) -> Ident {
 
 /// Parse an env block: `{ KEY: expr, KEY2: expr, ... }`.
 ///
-/// Each key is an identifier and each value is an arbitrary Rust expression
-/// (typically a string literal or `env!("VAR_NAME")`).
+/// Each key is an identifier and each value is a literal expression
+/// (string, int, float, or bool).
 fn parse_env_block(input: ParseStream) -> syn::Result<Vec<(String, syn::Expr)>> {
     let content;
     syn::braced!(content in input);
@@ -222,7 +222,6 @@ fn parse_env_block(input: ParseStream) -> syn::Result<Vec<(String, syn::Expr)>> 
 /// - Integer literals: `42` → `Value::Int(42)`
 /// - Float literals: `3.14` → `Value::Float(3.14)`
 /// - Bool literals: `true`/`false` → `Value::Bool(true/false)`
-/// - `env!("VAR")` → reads `std::env::var("VAR")` at compile time → `Value::Str(...)`
 fn eval_env_expr(expr: &syn::Expr) -> Result<md_tmpl_core::Value, String> {
     match expr {
         syn::Expr::Lit(lit) => match &lit.lit {
@@ -240,28 +239,8 @@ fn eval_env_expr(expr: &syn::Expr) -> Result<md_tmpl_core::Value, String> {
                 Ok(md_tmpl_core::Value::Float(n))
             }
             syn::Lit::Bool(b) => Ok(md_tmpl_core::Value::Bool(b.value)),
-            _ => Err(
-                "env value must be a string, int, float, bool literal, or env!(\"VAR\")"
-                    .to_string(),
-            ),
+            _ => Err("env value must be a string, int, float, or bool literal".to_string()),
         },
-        syn::Expr::Macro(m) => {
-            // Support env!("VAR_NAME")
-            let path = &m.mac.path;
-            let is_env = path.is_ident("env");
-            if !is_env {
-                return Err(format!(
-                    "only literals and env!() are supported in macro env values, got: {}",
-                    quote! { #expr }
-                ));
-            }
-            let tokens = &m.mac.tokens;
-            let var_name: LitStr = syn::parse2(tokens.clone())
-                .map_err(|e| format!("env!() argument must be a string literal: {e}"))?;
-            let val = std::env::var(var_name.value())
-                .map_err(|e| format!("env!(\"{}\") at compile time: {e}", var_name.value()))?;
-            Ok(md_tmpl_core::Value::Str(val))
-        }
         // Handle `true` and `false` as path expressions (syn parses
         // bare `true`/`false` as Expr::Path, not Expr::Lit, in some contexts).
         syn::Expr::Path(p) => {
@@ -271,13 +250,13 @@ fn eval_env_expr(expr: &syn::Expr) -> Result<md_tmpl_core::Value, String> {
                 Ok(md_tmpl_core::Value::Bool(false))
             } else {
                 Err(format!(
-                    "env value must be a literal or env!(\"VAR\"), got path: {}",
+                    "env value must be a literal, got path: {}",
                     quote! { #expr }
                 ))
             }
         }
         _ => Err(format!(
-            "env value must be a literal or env!(\"VAR\"), got: {}",
+            "env value must be a literal, got: {}",
             quote! { #expr }
         )),
     }
@@ -332,8 +311,7 @@ fn err_tokens(span: proc_macro2::Span, rel_path: &str, e: &str) -> TokenStream {
 ///
 /// # Panics
 ///
-/// Panics if an `env` expression cannot be evaluated at macro expansion time
-/// (e.g. a referenced environment variable is not set).
+/// Panics if an `env` expression cannot be evaluated at macro expansion time.
 #[proc_macro]
 pub fn include_template(input: TokenStream) -> TokenStream {
     let parsed = parse_macro_input!(input as IncludeTemplateInput);
@@ -483,8 +461,7 @@ pub fn include_template(input: TokenStream) -> TokenStream {
 ///
 /// # Panics
 ///
-/// Panics if an `env` expression cannot be evaluated at macro expansion time
-/// (e.g. a referenced environment variable is not set).
+/// Panics if an `env` expression cannot be evaluated at macro expansion time.
 #[proc_macro]
 pub fn template(input: TokenStream) -> TokenStream {
     let parsed = parse_macro_input!(input as InlineTemplateInput);

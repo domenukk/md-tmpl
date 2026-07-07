@@ -1,6 +1,6 @@
 [package]
 name = "md-tmpl-macros"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2024"
 rust-version = "1.85"
 description = "Proc macros for build-time template validation and pre-parsing"
@@ -19,7 +19,7 @@ serde = []
 typed-builder = []
 
 [dependencies]
-md-tmpl-core = { version = "0.5.2", path = "../md-tmpl-core", default-features = false, features = [
+md-tmpl-core = { version = "0.5.3", path = "../md-tmpl-core", default-features = false, features = [
   "std",
   "serde",
   "typed-builder",

@@ -1274,6 +1274,9 @@ fn types_compatible(provided: &VarType, expected: &VarType) -> bool {
         // Enum types: compare variant names and field types.
         (VarType::Enum(a), VarType::Enum(b)) => a == b,
 
+        // Option types: compatible if inner types are compatible.
+        (VarType::Option(a), VarType::Option(b)) => types_compatible(a, b),
+
         // Template types: compare signatures.
         (VarType::Tmpl(a), VarType::Tmpl(b)) => a == b,
 

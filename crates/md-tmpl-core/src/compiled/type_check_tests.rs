@@ -1420,6 +1420,33 @@ fn types_compatible_cross_kind() {
     assert!(!types_compatible(&VarType::Struct(vec![]), &VarType::Int));
 }
 
+#[test]
+fn types_compatible_option_types() {
+    // Same inner type: compatible.
+    assert!(types_compatible(
+        &VarType::Option(Box::new(VarType::Str)),
+        &VarType::Option(Box::new(VarType::Str)),
+    ));
+    assert!(types_compatible(
+        &VarType::Option(Box::new(VarType::Int)),
+        &VarType::Option(Box::new(VarType::Int)),
+    ));
+    // Different inner types: not compatible.
+    assert!(!types_compatible(
+        &VarType::Option(Box::new(VarType::Str)),
+        &VarType::Option(Box::new(VarType::Int)),
+    ));
+    // Option vs non-option: not compatible.
+    assert!(!types_compatible(
+        &VarType::Option(Box::new(VarType::Str)),
+        &VarType::Str,
+    ));
+    assert!(!types_compatible(
+        &VarType::Str,
+        &VarType::Option(Box::new(VarType::Str)),
+    ));
+}
+
 // -- Include inside control flow ------------------------------------
 
 #[test]
@@ -2304,5 +2331,96 @@ params:
         errors[0].contains("cannot access field") && errors[0].contains("option"),
         "got: {}",
         errors[0]
+    );
+}
+
+// -- for...else type checking -----------------------------------------
+
+#[test]
+fn for_else_body_type_checked() {
+    // Variables in the else body should be type-checked.
+    let decls = vec![
+        VarDecl {
+            name: "items".to_string(),
+            var_type: VarType::List(vec![VarDecl {
+                name: "title".to_string(),
+                var_type: VarType::Str,
+                default_value: None,
+            }]),
+            default_value: None,
+        },
+        VarDecl {
+            name: "fallback".to_string(),
+            var_type: VarType::Str,
+            default_value: None,
+        },
+    ];
+    let tmpl = r"---
+name: t
+params:
+  - items = list(title = str)
+  - fallback = str
+---
+> {% for item in items %}{{ item.title }}{% else %}{{ fallback }}{% /for %}";
+    let errors = compile_and_check(tmpl, &decls);
+    assert!(
+        errors.is_empty(),
+        "else body with valid var should pass: {errors:?}"
+    );
+}
+
+#[test]
+fn for_else_body_undeclared_variable_is_error() {
+    // Undeclared variables in the else body should be caught.
+    let decls = vec![VarDecl {
+        name: "items".to_string(),
+        var_type: VarType::List(vec![VarDecl {
+            name: "title".to_string(),
+            var_type: VarType::Str,
+            default_value: None,
+        }]),
+        default_value: None,
+    }];
+    let tmpl = r"---
+name: t
+params:
+  - items = list(title = str)
+---
+> {% for item in items %}{{ item.title }}{% else %}{{ ghost }}{% /for %}";
+    let errors = compile_and_check(tmpl, &decls);
+    assert!(
+        errors.iter().any(|e| e.contains("undeclared")),
+        "should catch undeclared var in else body: {errors:?}"
+    );
+}
+
+#[test]
+fn for_else_loop_binding_not_in_else_body() {
+    // The loop binding (item) should not be accessible in the else body,
+    // since the else body only executes when the list is empty.
+    // The type checker doesn't need to produce an error for this —
+    // the loop binding is just not narrowed in the else body scope.
+    // This test verifies the else body is walked without the binding.
+    let decls = vec![VarDecl {
+        name: "items".to_string(),
+        var_type: VarType::List(vec![VarDecl {
+            name: "title".to_string(),
+            var_type: VarType::Str,
+            default_value: None,
+        }]),
+        default_value: None,
+    }];
+    let tmpl = r"---
+name: t
+params:
+  - items = list(title = str)
+---
+> {% for item in items %}{{ item.title }}{% else %}{{ item.title }}{% /for %}";
+    let errors = compile_and_check(tmpl, &decls);
+    // item is not declared as a root variable, so accessing it in else
+    // should produce an undeclared error.
+    assert!(
+        errors.iter().any(|e| e.contains("undeclared")),
+        "loop binding should not be accessible in else body: {errors:?}"
     );
 }

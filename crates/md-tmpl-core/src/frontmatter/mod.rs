@@ -276,8 +276,7 @@ type FmResolutionResult = Result<
 ///
 /// If the value is already the correct type, it is returned as-is.
 /// If the value is `Value::Str` but the declared type is a scalar
-/// (int, bool, float), the string is auto-parsed — this supports the
-/// common case where env values come from OS environment variables.
+/// (int, bool, float), the string is auto-parsed for convenience.
 fn validate_env_value(
     name: &str,
     value: &crate::value::Value,
@@ -285,7 +284,7 @@ fn validate_env_value(
 ) -> Result<crate::value::Value, TemplateError> {
     use crate::value::Value;
     match (value, var_type) {
-        // String auto-parse for scalar types (backward compat with string-based env).
+        // String auto-parse for scalar types.
         (Value::Str(raw), VarType::Int) => raw
             .parse::<i64>()
             .map(Value::Int)
