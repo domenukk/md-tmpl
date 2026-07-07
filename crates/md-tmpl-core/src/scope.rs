@@ -279,12 +279,8 @@ impl ConditionOperand {
                         .map_err(|_| TemplateError::syntax("list length exceeds i64::MAX"))?,
                     Value::Str(s) => i64::try_from(s.len())
                         .map_err(|_| TemplateError::syntax("string length exceeds i64::MAX"))?,
-                    Value::Struct(d) => i64::try_from(d.len())
-                        .map_err(|_| TemplateError::syntax("struct length exceeds i64::MAX"))?,
                     _ => {
-                        return Err(TemplateError::syntax(
-                            "len() requires a list, string, or struct",
-                        ));
+                        return Err(TemplateError::syntax("len() requires a list or string"));
                     }
                 };
 
@@ -691,17 +687,16 @@ impl<'a> Scope<'a> {
         Some(Ok(Value::Int(meta.index)))
     }
 
-    /// Evaluate `len(path)` — returns the length of a list, string, or dict.
+    /// Evaluate `len(path)` — returns the length of a list or string.
     fn call_len(&self, arg: &str) -> Result<Value, TemplateError> {
         let val = self.resolve_path_str(arg)?;
         let count = match val {
             // `.len()` cannot exceed `isize::MAX`, which always fits in `i64`.
             Value::List(l) => i64::try_from(l.len()).expect("len <= isize::MAX < i64::MAX"),
             Value::Str(s) => i64::try_from(s.len()).expect("len <= isize::MAX < i64::MAX"),
-            Value::Struct(d) => i64::try_from(d.len()).expect("len <= isize::MAX < i64::MAX"),
             _ => {
                 return Err(TemplateError::syntax(format!(
-                    "len() requires a list, string, or struct, got {}",
+                    "len() requires a list or string, got {}",
                     val.type_name()
                 )));
             }
@@ -774,7 +769,7 @@ impl<'a> Scope<'a> {
     /// This means a non-option enum `Str("Active")` would also return `true`,
     /// which is acceptable since `has()` should only be used on `option(T)` types.
     pub(crate) fn is_option_some(val: &Value) -> bool {
-        use crate::consts::{ENUM_TAG_KEY, OPTION_NONE, OPTION_SOME};
+        use crate::consts::{ENUM_TAG_KEY, OPTION_SOME};
         match val {
             // Explicit absent value — always not-present.
             Value::None => false,
@@ -787,9 +782,7 @@ impl<'a> Scope<'a> {
                     true
                 }
             }
-            // Unit variant: "None" → false, anything else → true.
-            Value::Str(s) => s != OPTION_NONE,
-            // Other value types: treat as present.
+            // Any other value (including strings): treat as present.
             _ => true,
         }
     }
@@ -1042,11 +1035,3 @@ fn parse_function_call(expr: &str) -> Option<(&str, &str)> {
     }
     Some((func_name, arg))
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-#[path = "scope_tests.rs"]
-mod tests;

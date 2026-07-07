@@ -776,3 +776,374 @@ expected_error = "or combined arm: {% case Pending | Reviewing %}"
 
 [tests.params]
 res = "Confirmed"
+
+# ---------------------------------------------------------------------------
+# Whitespace trim modifier tests
+# ---------------------------------------------------------------------------
+
+[[tests]]
+name = "trim_expr_left"
+description = "Left trim {{- strips whitespace before the expression"
+template = '''
+---
+params: [n = str]
+---
+hello  {{- n }} bye'''
+expected_output = "helloW bye"
+
+[tests.params]
+n = "W"
+
+[[tests]]
+name = "trim_expr_right"
+description = "Right trim -}} strips whitespace after the expression"
+template = '''
+---
+params: [n = str]
+---
+hello {{ n -}}  bye'''
+expected_output = "hello Wbye"
+
+[tests.params]
+n = "W"
+
+[[tests]]
+name = "trim_expr_both"
+description = "Both trims {{- -}} strip whitespace on both sides"
+template = '''
+---
+params: [n = str]
+---
+hello  {{- n -}}  bye'''
+expected_output = "helloWbye"
+
+[tests.params]
+n = "W"
+
+[[tests]]
+name = "trim_stmt_for_loop"
+description = "Trim modifiers on inline for loop remove surrounding whitespace"
+template = '''
+---
+params: [items = list(str)]
+---
+[{%- for item in items -%}{{ item }}{%- /for -%}]'''
+expected_output = "[abc]"
+
+[tests.params]
+items = ["a", "b", "c"]
+
+[[tests]]
+name = "trim_stmt_if_else"
+description = "Trim modifiers on inline if-else remove surrounding whitespace"
+template = '''
+---
+params: [flag = bool]
+---
+X{%- if flag -%}Y{%- else -%}N{%- /if -%}Z'''
+expected_output = "XYZ"
+
+[tests.params]
+flag = true
+
+[[tests]]
+name = "trim_stmt_if_else_false"
+description = "Trim modifiers on inline if-else — false branch"
+template = '''
+---
+params: [flag = bool]
+---
+X{%- if flag -%}Y{%- else -%}N{%- /if -%}Z'''
+expected_output = "XNZ"
+
+[tests.params]
+flag = false
+
+[[tests]]
+name = "trim_comment_inline"
+description = "Trim modifiers on inline comments remove surrounding whitespace"
+template = '''
+---
+params: [x = str]
+---
+before  {#- this is trimmed -#}  after {{ x }}'''
+expected_output = "beforeafter 1"
+
+[tests.params]
+x = "1"
+
+[[tests]]
+name = "trim_comment_left_only"
+description = "Left trim on comment only strips before"
+template = '''
+---
+params: [x = str]
+---
+hello  {#- note #}  world {{ x }}'''
+expected_output = "hello  world 1"
+
+[tests.params]
+x = "1"
+
+[[tests]]
+name = "trim_comment_right_only"
+description = "Right trim on comment only strips after"
+template = '''
+---
+params: [x = str]
+---
+hello  {# note -#}  world {{ x }}'''
+expected_output = "hello  world 1"
+
+[tests.params]
+x = "1"
+
+# ---------------------------------------------------------------------------
+# Blockquote standalone tag whitespace preservation
+# ---------------------------------------------------------------------------
+
+[[tests]]
+name = "bq_tag_content_1_blank"
+description = "Tag followed by 1 blank line (mandatory) — blank consumed, no extra whitespace"
+template = '''
+---
+allow_unused: true
+params: [flag = bool]
+---
+> {% if flag %}
+
+content
+
+> {% /if %}'''
+expected_output = '''
+content
+'''
+
+[tests.params]
+flag = true
+
+[[tests]]
+name = "bq_tag_content_2_blanks"
+description = "Tag followed by 2 blank lines — 1 consumed, 1 preserved as extra newline"
+template = '''
+---
+allow_unused: true
+params: [flag = bool]
+---
+> {% if flag %}
+
+
+content
+
+> {% /if %}'''
+expected_output = '''
+
+content
+'''
+
+[tests.params]
+flag = true
+
+[[tests]]
+name = "bq_tag_content_3_blanks"
+description = "Tag followed by 3 blank lines — 1 consumed, 2 preserved as extra newlines"
+template = '''
+---
+allow_unused: true
+params: [flag = bool]
+---
+> {% if flag %}
+
+
+
+content
+
+> {% /if %}'''
+expected_output = '''
+
+
+content
+'''
+
+[tests.params]
+flag = true
+
+[[tests]]
+name = "bq_content_tag_1_blank"
+description = "Content followed by 1 blank line before tag — blank consumed"
+template = '''
+---
+allow_unused: true
+params: [flag = bool]
+---
+> {% if flag %}
+
+content
+
+> {% /if %}
+
+trailing'''
+expected_output = '''
+content
+trailing'''
+
+[tests.params]
+flag = true
+
+[[tests]]
+name = "bq_content_tag_2_blanks"
+description = "Content followed by 2 blank lines before tag — 1 consumed, 1 preserved"
+template = '''
+---
+allow_unused: true
+params: [flag = bool]
+---
+> {% if flag %}
+
+content
+
+
+> {% /if %}
+
+trailing'''
+expected_output = '''
+content
+
+trailing'''
+
+[tests.params]
+flag = true
+
+[[tests]]
+name = "bq_tag_tag_all_consumed"
+description = "Between consecutive standalone tags, all blank lines are consumed"
+template = '''
+---
+allow_unused: true
+params: [a = bool, b = bool]
+---
+> {% if a %}
+> {% if b %}
+
+content
+
+> {% /if %}
+> {% /if %}'''
+expected_output = '''
+content
+'''
+
+[tests.params]
+a = true
+b = true
+
+# ============================================================================
+# Trim modifier redundancy on standalone blockquote tags
+# ============================================================================
+
+[[tests]]
+name = "bq_trim_redundant_if_open_left"
+description = "Trim {%- on standalone if open is redundant — same output as non-trim"
+template = '''
+---
+allow_unused: true
+params: [flag = bool]
+---
+before   
+
+> {%- if flag %}
+
+content
+
+> {% /if %}'''
+expected_output = '''
+before   
+content
+'''
+
+[tests.params]
+flag = true
+
+[[tests]]
+name = "bq_trim_redundant_if_open_right"
+description = "Trim -%} on standalone if open is redundant — same output as non-trim"
+template = '''
+---
+allow_unused: true
+params: [flag = bool]
+---
+> {% if flag -%}
+
+content
+
+> {% /if %}'''
+expected_output = '''
+content
+'''
+
+[tests.params]
+flag = true
+
+[[tests]]
+name = "bq_trim_redundant_if_close_left"
+description = "Trim {%- on standalone /if is redundant — same output as non-trim"
+template = '''
+---
+allow_unused: true
+params: [flag = bool]
+---
+> {% if flag %}
+
+content   
+
+> {%- /if %}'''
+expected_output = '''
+content   
+'''
+
+[tests.params]
+flag = true
+
+[[tests]]
+name = "bq_trim_redundant_if_both"
+description = "Trim {%- -%} on standalone if is redundant — same output as non-trim"
+template = '''
+---
+allow_unused: true
+params: [flag = bool]
+---
+before   
+
+> {%- if flag -%}
+
+content
+
+> {%- /if -%}'''
+expected_output = '''
+before   
+content
+'''
+
+[tests.params]
+flag = true
+
+[[tests]]
+name = "bq_trim_redundant_for"
+description = "Trim modifiers on standalone for loop are redundant"
+template = '''
+---
+allow_unused: true
+params: [items = list(name = str)]
+---
+> {%- for item in items -%}
+
+{{ item.name }}
+
+> {%- /for -%}'''
+expected_output = '''
+a
+b
+'''
+
+[tests.params]
+items = [{ name = "a" }, { name = "b" }]

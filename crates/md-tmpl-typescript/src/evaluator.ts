@@ -129,9 +129,8 @@ function resolveExpr(expr: string, scope: Scope): Value {
         const val = scope.resolvePath(arg);
         if (val.type === TYPE_LIST) return int(val.items.length);
         if (val.type === TYPE_STR) return int(val.value.length);
-        if (val.type === TYPE_STRUCT) return int(val.fields.size);
         throw new TemplateSyntaxError(
-          `len() requires a list, string, or struct, got ${typeName(val)}`,
+          `len() requires a list or string, got ${typeName(val)}`,
         );
       }
       case FN_KIND: {
@@ -838,6 +837,8 @@ function compareValues(
       return l <= r;
     case OP_GE:
       return l >= r;
+    default:
+      throw new TemplateSyntaxError(`unknown comparison operator '${op}'`);
   }
 }
 

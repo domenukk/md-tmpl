@@ -17,6 +17,7 @@ import {
   TemplateError,
   TemplateSyntaxError,
   TemplatePanicError,
+  UndefinedVariableError,
 } from "./errors.js";
 import {
   type VarDecl,
@@ -311,7 +312,10 @@ export function renderNodes(
                 optParams.add(decl.name);
               }
             }
-            const childScope = new Scope(iterCtx, consts, optParams);
+            // Merge parent consts into child scope so included templates
+            // can reference imported consts (e.g. session_layout.*).
+            const mergedConsts = mergeConsts(scope, consts);
+            const childScope = new Scope(iterCtx, mergedConsts, optParams);
             results.push(renderNodes(includedNodes, childScope, fileChildOpts));
           }
           parts.push(results.join(""));
@@ -350,7 +354,10 @@ export function renderNodes(
           }
         }
 
-        const childScope = new Scope(childCtx, consts, optParams);
+        // Merge parent consts into child scope so included templates
+        // can reference imported consts (e.g. session_layout.*).
+        const mergedConsts = mergeConsts(scope, consts);
+        const childScope = new Scope(childCtx, mergedConsts, optParams);
         parts.push(renderNodes(includedNodes, childScope, fileChildOpts));
         break;
       }
@@ -367,6 +374,14 @@ export function renderNodes(
   }
 
   return parts.join("");
+}
+
+/** Check if an unknown error is an UndefinedVariableError. */
+function isUndefinedVariableError(err: unknown): boolean {
+  return (
+    err instanceof UndefinedVariableError ||
+    (err instanceof Error && err.message.includes("undefined variable"))
+  );
 }
 
 function interpolateIncludePath(path: string, scope: Scope): string {
@@ -396,14 +411,11 @@ function interpolateIncludePath(path: string, scope: Scope): string {
       valStr = lit;
     } else {
       try {
-        let val: any;
+        let val: Value;
         try {
           val = evaluateExpression(expr, scope);
-        } catch (err: any) {
-          if (
-            err?.name === "UndefinedVariableError" ||
-            err?.message?.includes("undefined variable")
-          ) {
+        } catch (err: unknown) {
+          if (isUndefinedVariableError(err)) {
             let stripped = expr;
             if (stripped.startsWith(PREFIX_CONSTS_DOT))
               stripped = stripped.slice(PREFIX_CONSTS_DOT.length).trim();
@@ -427,11 +439,8 @@ function interpolateIncludePath(path: string, scope: Scope): string {
           }
         }
         valStr = display(val);
-      } catch (err: any) {
-        if (
-          err?.name === "UndefinedVariableError" ||
-          err?.message?.includes("undefined variable")
-        ) {
+      } catch (err: unknown) {
+        if (isUndefinedVariableError(err)) {
           throw new TemplateSyntaxError(
             `undeclared variable '${expr}' in include path '${path}'`,
           );
@@ -451,4 +460,27 @@ function interpolateIncludePath(path: string, scope: Scope): string {
     );
   }
   return result;
+}
+
+/**
+ * Merge parent scope's consts into child consts for include resolution.
+ *
+ * When a child template is included, it should inherit the parent's
+ * imported consts (e.g. `session_layout.*`) so it can reference them.
+ * Child consts take precedence over parent consts.
+ */
+function mergeConsts(
+  parentScope: Scope,
+  childConsts: ReadonlyMap<string, Value>,
+): ReadonlyMap<string, Value> {
+  const parentConsts = parentScope.allValues();
+  // Start with parent's consts, then overlay child's own consts
+  const merged = new Map<string, Value>();
+  for (const [k, v] of parentConsts) {
+    merged.set(k, v);
+  }
+  for (const [k, v] of childConsts) {
+    merged.set(k, v);
+  }
+  return merged;
 }

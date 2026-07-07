@@ -82,6 +82,7 @@ export const FM_PARAMS_PREFIX = "params:";
 export const FM_TYPES_PREFIX = "types:";
 export const FM_IMPORTS_PREFIX = "imports:";
 export const FM_CONSTS_PREFIX = "consts:";
+export const FM_ENV_PREFIX = "env:";
 export const FM_ALLOW_UNUSED_PREFIX = "allow_unused:";
 export const FM_DELIMITER = "---";
 export const BLOCKQUOTE_PREFIX = ">";

@@ -16,8 +16,23 @@ use crate::{error::TemplateError, types::VarType};
 /// - R4: No unused type aliases (explicitly declared types that are never
 ///   referenced by any param declaration).
 pub(crate) fn validate_collision_rules(fm: &Frontmatter) -> Result<(), TemplateError> {
-    // R1: Type alias vs param/const name collision (PascalCase).
-    for decl in fm.declarations.iter().chain(fm.consts.iter()) {
+    check_type_alias_vs_decl_collision(fm)?;
+    check_param_const_collision(fm)?;
+    check_const_env_collision(fm)?;
+    check_type_alias_shadows_import(fm)?;
+    check_decl_shadows_import(fm)?;
+    check_unused_type_aliases(fm)?;
+    Ok(())
+}
+
+/// R1: Type alias vs param/const/env name collision (`PascalCase`).
+fn check_type_alias_vs_decl_collision(fm: &Frontmatter) -> Result<(), TemplateError> {
+    for decl in fm
+        .declarations
+        .iter()
+        .chain(fm.consts.iter())
+        .chain(fm.env.iter())
+    {
         let decl_pascal = crate::types::to_pascal_case(&decl.name);
         for (alias_name, alias_type) in &fm.type_aliases {
             if decl_pascal == *alias_name {
@@ -25,11 +40,7 @@ pub(crate) fn validate_collision_rules(fm: &Frontmatter) -> Result<(), TemplateE
                 if decl.var_type == *alias_type {
                     continue;
                 }
-                let label = if fm.consts.contains(decl) {
-                    "constant"
-                } else {
-                    "param"
-                };
+                let label = decl_kind_label(fm, decl);
                 return Err(TemplateError::syntax(format!(
                     "{}: {label} '{}' (PascalCase: '{}') conflicts with type alias '{}'",
                     crate::consts::ERR_TYPE_PARAM_CONFLICT,
@@ -40,23 +51,48 @@ pub(crate) fn validate_collision_rules(fm: &Frontmatter) -> Result<(), TemplateE
             }
         }
     }
+    Ok(())
+}
 
-    // R3: param name vs const name (exact match).
-    // Both occupy the same runtime scope, so a const would silently
-    // shadow the param value provided by the caller.
+/// R3: param name vs const/env name (exact match).
+fn check_param_const_collision(fm: &Frontmatter) -> Result<(), TemplateError> {
     for param in &fm.declarations {
-        for cst in &fm.consts {
+        for cst in fm.consts.iter().chain(fm.env.iter()) {
             if param.name == cst.name {
+                let label = if fm.env.contains(cst) {
+                    "env variable"
+                } else {
+                    "constant"
+                };
                 return Err(TemplateError::syntax(format!(
-                    "{}: '{}' is declared as both a param and a constant",
+                    "{}: '{}' is declared as both a param and a {label}",
                     crate::consts::ERR_PARAM_CONST_CONFLICT,
                     param.name,
                 )));
             }
         }
     }
+    Ok(())
+}
 
-    // R2: Type alias shadows import stem.
+/// R3b: const name vs env name (exact match).
+fn check_const_env_collision(fm: &Frontmatter) -> Result<(), TemplateError> {
+    for cst in &fm.consts {
+        for env in &fm.env {
+            if cst.name == env.name {
+                return Err(TemplateError::syntax(format!(
+                    "{}: '{}' is declared as both a constant and an env variable",
+                    crate::consts::ERR_DUPLICATE_CONST,
+                    cst.name,
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// R2: Type alias shadows import stem.
+fn check_type_alias_shadows_import(fm: &Frontmatter) -> Result<(), TemplateError> {
     for import in &fm.imports {
         for alias_name in fm.type_aliases.keys() {
             if alias_name == &import.stem {
@@ -69,17 +105,21 @@ pub(crate) fn validate_collision_rules(fm: &Frontmatter) -> Result<(), TemplateE
             }
         }
     }
+    Ok(())
+}
 
-    // R2b: Param/const name (PascalCase) shadows import stem.
+/// R2b: Param/const/env name (`PascalCase`) shadows import stem.
+fn check_decl_shadows_import(fm: &Frontmatter) -> Result<(), TemplateError> {
     for import in &fm.imports {
-        for decl in fm.declarations.iter().chain(fm.consts.iter()) {
+        for decl in fm
+            .declarations
+            .iter()
+            .chain(fm.consts.iter())
+            .chain(fm.env.iter())
+        {
             let decl_pascal = crate::types::to_pascal_case(&decl.name);
             if decl_pascal == import.stem {
-                let label = if fm.consts.contains(decl) {
-                    "constant"
-                } else {
-                    "param"
-                };
+                let label = decl_kind_label(fm, decl);
                 return Err(TemplateError::syntax(format!(
                     "{}: {label} '{}' (PascalCase: '{}') shadows import '{}'",
                     crate::consts::ERR_PARAM_SHADOWS_IMPORT,
@@ -90,30 +130,46 @@ pub(crate) fn validate_collision_rules(fm: &Frontmatter) -> Result<(), TemplateE
             }
         }
     }
-    // R4: Unused type alias check.
-    if !fm.allow_unused
-        && !fm.type_aliases.is_empty()
-        && (!fm.declarations.is_empty() || !fm.consts.is_empty())
+    Ok(())
+}
+
+/// R4: Unused type alias check.
+fn check_unused_type_aliases(fm: &Frontmatter) -> Result<(), TemplateError> {
+    if fm.allow_unused
+        || fm.type_aliases.is_empty()
+        || (fm.declarations.is_empty() && fm.consts.is_empty() && fm.env.is_empty())
     {
-        for (alias_name, alias_type) in &fm.type_aliases {
-            if matches!(alias_type, VarType::Enum(_)) {
-                continue;
-            }
-            let is_used = fm
-                .declarations
-                .iter()
-                .chain(fm.consts.iter())
-                .any(|d| var_type_references_alias(&d.var_type, alias_type));
-            if !is_used {
-                return Err(TemplateError::syntax(format!(
-                    "{}: '{alias_name}'",
-                    crate::consts::ERR_UNUSED_TYPE_ALIAS,
-                )));
-            }
+        return Ok(());
+    }
+    for (alias_name, alias_type) in &fm.type_aliases {
+        if matches!(alias_type, VarType::Enum(_)) {
+            continue;
+        }
+        let is_used = fm
+            .declarations
+            .iter()
+            .chain(fm.consts.iter())
+            .chain(fm.env.iter())
+            .any(|d| var_type_references_alias(&d.var_type, alias_type));
+        if !is_used {
+            return Err(TemplateError::syntax(format!(
+                "{}: '{alias_name}'",
+                crate::consts::ERR_UNUSED_TYPE_ALIAS,
+            )));
         }
     }
-
     Ok(())
+}
+
+/// Return a human-readable label for a declaration's kind.
+fn decl_kind_label(fm: &Frontmatter, decl: &crate::types::VarDecl) -> &'static str {
+    if fm.consts.contains(decl) {
+        "constant"
+    } else if fm.env.contains(decl) {
+        "env"
+    } else {
+        "param"
+    }
 }
 
 /// Check if a [`VarType`] references a specific type alias (by structural equality).
@@ -122,14 +178,25 @@ fn var_type_references_alias(ty: &VarType, alias_type: &VarType) -> bool {
         return true;
     }
     match ty {
-        VarType::List(fields) | VarType::Struct(fields) => fields
-            .iter()
-            .any(|f| var_type_references_alias(&f.var_type, alias_type)),
+        VarType::List(fields) | VarType::Struct(fields) => {
+            // Check if the alias was a struct that got flattened into this
+            // container (e.g. `list(MyStruct)` unwraps struct fields into list
+            // fields — see parse_compound_type_list).
+            if let VarType::Struct(alias_fields) = alias_type {
+                if fields == alias_fields {
+                    return true;
+                }
+            }
+            fields
+                .iter()
+                .any(|f| var_type_references_alias(&f.var_type, alias_type))
+        }
         VarType::Enum(variants) => variants.iter().any(|v| {
             v.fields
                 .iter()
                 .any(|f| var_type_references_alias(&f.var_type, alias_type))
         }),
+        VarType::Option(inner) => var_type_references_alias(inner, alias_type),
         _ => false,
     }
 }
@@ -172,6 +239,7 @@ mod tests {
             type_aliases: HashMap::new(),
             imports: vec![],
             consts: vec![],
+            env: vec![],
             imported_consts: HashMap::new(),
             imported_enum_type_keys: vec![],
         }
@@ -501,6 +569,32 @@ mod tests {
         assert!(
             !fm.type_aliases.contains_key("MaxRetries"),
             "should NOT generate alias for scalar const"
+        );
+    }
+
+    #[test]
+    fn struct_alias_with_nested_enum_used_in_list() {
+        // Reproducer: struct alias that contains an enum alias field,
+        // used via list(ThreadCard). Should NOT trigger "unused type alias".
+        let source = "\
+---
+types:
+  - ScoreSign = enum(Positive(display = str), Negative(display = str), Neutral)
+  - ThreadCard = struct(path = str, title = str, tags = list(str), upvotes = int, downvotes = int, score = ScoreSign, post_count = int)
+
+params:
+  - top_rated = list(ThreadCard)
+---
+> {% for t in top_rated %}
+
+{{ t.title }}
+
+> {% /for %}";
+        let result = crate::Template::from_source(source);
+        assert!(
+            result.is_ok(),
+            "struct alias with nested enum used in list() should compile: {:?}",
+            result.err()
         );
     }
 }

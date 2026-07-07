@@ -186,12 +186,11 @@ pub(crate) fn interpolate_path_str(
             )));
         }
 
-        let mut val_opt = None;
-        if let Some(lit) = crate::consts::strip_string_literal(expr) {
-            val_opt = Some(Value::Str(lit.into()));
+        let mut val_opt = if let Some(lit) = crate::consts::strip_string_literal(expr) {
+            Some(Value::Str(lit.into()))
         } else {
-            val_opt = available_consts.get(expr).cloned();
-        }
+            available_consts.get(expr).cloned()
+        };
 
         if val_opt.is_none() {
             // Strip common prefixes: consts., opts., options., params.
@@ -307,6 +306,11 @@ pub fn resolve_imports<S: core::hash::BuildHasher>(
 
 /// Resolve imports with available constants for path interpolation.
 ///
+/// Imports are processed **sequentially**: literal-path imports are resolved
+/// first, and their exported constants are accumulated into the available set.
+/// This allows later imports to use expressions like `{{ env.PROMPTS_DIR }}`
+/// in their paths, where `env` was resolved by an earlier import.
+///
 /// # Errors
 ///
 /// Returns [`TemplateError`] if an import path cannot be interpolated, read, parsed, or forms a cycle.
@@ -318,10 +322,45 @@ pub fn resolve_imports_with_consts<S: core::hash::BuildHasher>(
     visited: &mut std::collections::HashSet<PathBuf, S>,
     available_consts: &HashMap<String, Value>,
 ) -> Result<HashMap<String, ImportedNamespace>, TemplateError> {
-    interpolate_imports(imports, available_consts)?;
     let mut result = HashMap::new();
+    // Start with the caller-provided consts (from the template's own `consts:` block).
+    let mut accumulated_consts = available_consts.clone();
 
-    for import in imports {
+    for import in imports.iter_mut() {
+        // Interpolate this import's path using all consts accumulated so far.
+        {
+            #[cfg(feature = "std")]
+            let path_str = import.path.to_string_lossy().to_string();
+            #[cfg(not(feature = "std"))]
+            let path_str = import.path.clone();
+
+            if path_str.contains(crate::consts::EXPR_START) {
+                let interpolated = interpolate_path_str(&path_str, &accumulated_consts)?;
+                if !crate::consts::is_valid_resolved_path(&interpolated)
+                    || interpolated.contains(crate::consts::EXPR_START)
+                {
+                    return Err(TemplateError::syntax(format!(
+                        "import path '{interpolated}' must start with './', '../', or '/'"
+                    )));
+                }
+                let expected_stem = extract_template_stem_str(&interpolated);
+                if import.stem != expected_stem {
+                    return Err(TemplateError::syntax(format!(
+                        "import stem '{}' does not match filename stem '{expected_stem}' (from '{interpolated}')",
+                        import.stem
+                    )));
+                }
+                #[cfg(feature = "std")]
+                {
+                    import.path = PathBuf::from(interpolated);
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    import.path = interpolated;
+                }
+            }
+        }
+
         let resolved_path = if import.path.is_absolute() {
             import.path.clone()
         } else {
@@ -360,6 +399,11 @@ pub fn resolve_imports_with_consts<S: core::hash::BuildHasher>(
                 .filter_map(|d| d.default_value.clone().map(|v| (d.name.clone(), v)))
                 .collect(),
         };
+
+        // Accumulate this import's consts so subsequent imports can reference them.
+        for (name, val) in &ns.consts {
+            accumulated_consts.insert(format!("{}.{name}", import.stem), val.clone());
+        }
 
         result.insert(import.stem.clone(), ns);
     }
@@ -651,5 +695,63 @@ mod tests {
 
         interpolate_imports(&mut imports, &consts).unwrap();
         assert_eq!(imports[0].path, PathBuf::from("./shared/header.tmpl.md"));
+    }
+
+    /// Cascading imports: import A (env) provides a const, then import B's
+    /// path uses `{{ env.PROMPTS_DIR }}` to resolve its location.
+    #[cfg(feature = "std")]
+    #[test]
+    fn cascading_imports_resolve_sequentially() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = dir.path();
+
+        // Create env.tmpl.md with a PROMPTS_DIR const pointing to a subdirectory.
+        let sub = base.join("sub");
+        std::fs::create_dir_all(&sub).expect("mkdir");
+        std::fs::write(
+            base.join("env.tmpl.md"),
+            format!(
+                "---\nname: env\nconsts:\n  - PROMPTS_DIR = str := \"{}\"\n---\n",
+                sub.display()
+            ),
+        )
+        .expect("write env");
+
+        // Create the target template in the subdirectory.
+        std::fs::write(
+            sub.join("layout.tmpl.md"),
+            "---\nname: layout\nconsts:\n  - MAX = int := 42\n---\n",
+        )
+        .expect("write layout");
+
+        // Simulate the import list: env first (literal path), then layout (expression path).
+        let mut imports = vec![
+            Import {
+                stem: "env".to_string(),
+                path: PathBuf::from("./env.tmpl.md"),
+            },
+            Import {
+                stem: "layout".to_string(),
+                path: PathBuf::from("{{ env.PROMPTS_DIR }}/layout.tmpl.md"),
+            },
+        ];
+
+        let initial_consts = HashMap::new();
+        let mut visited = std::collections::HashSet::new();
+        let result =
+            resolve_imports_with_consts(&mut imports, base, &mut visited, &initial_consts).unwrap();
+
+        // Both imports should be resolved.
+        assert!(result.contains_key("env"), "env import should be resolved");
+        assert!(
+            result.contains_key("layout"),
+            "layout import should be resolved"
+        );
+        // layout's consts should be accessible.
+        assert_eq!(
+            result["layout"].consts.get("MAX"),
+            Some(&Value::Int(42)),
+            "layout's MAX const should be 42"
+        );
     }
 }

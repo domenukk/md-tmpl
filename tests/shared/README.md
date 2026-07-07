@@ -27,6 +27,13 @@ The following table catalogs the core feature areas covered by the E2E test infr
 | 2   | `in` / `not in` operators (list membership & string substring) | ORIGINAL_REQUEST §R2 | 5      | 5      | ✓      | ✓      |
 | 3   | Syntax error diagnostics (`line`, `column`, `snippet`)         | ORIGINAL_REQUEST §R1 | 5      | 5      | ✓      | ✓      |
 | 4   | `{% panic(...) %}` statement                                   | ORIGINAL_REQUEST §R3 | 5      | 5      | ✓      | ✓      |
+| 5   | Boolean expressions (`&&`, `\|\|`, `!`, grouping)              | SPEC §Conditions     | 10     | 10     | ✓      | —      |
+| 6   | String interpolation in conditions (`"{{ expr }}"`)            | SPEC §Conditions     | 5      | 5      | —      | —      |
+| 7   | Option types (`option(T)`, `has()`, `None`/`Some`, for+match)  | SPEC §Types          | 10     | 5      | ✓      | —      |
+| 8   | Filters (`upper`, `lower`, `trim`, `fixed`, `join`, `limit`)   | SPEC §Filters        | 7      | 4      | ✓      | —      |
+| 9   | Built-in functions (`kind()`, `kinds()`)                       | SPEC §Functions      | 4      | 3      | —      | —      |
+| 10  | For loop edge cases (`idx()` nested, empty list)               | SPEC §ForLoops       | 2      | —      | —      | —      |
+| 11  | Raw blocks and comments (`{% raw %}`, `{# ... #}`)             | SPEC §Raw/Comments   | 2      | —      | —      | —      |
 
 ### Tier Definitions
 
@@ -48,7 +55,7 @@ The E2E test suite utilizes a unified, language-agnostic TOML fixture architectu
   - **Mechanism**: Uses `include_str!("../../../../tests/shared/*.toml")` at compile time with `toml::from_str`. It evaluates inline `template` strings via `Template::from_source_with_base_dir` and external references via `Template::from_file`, converting `"params"` via `params.to_context()` and rendering via `tmpl.render_ctx(&ctx)`.
 - **TypeScript (`crates/md-tmpl-typescript/src/tests/shared_tests.test.ts`)**:
   - **Integration**: Executed via `npm test` / `node --test` using standard `node:test` (`describe`, `it`) blocks.
-  - **Mechanism**: Reads fixtures from `tests/shared/` using `fs.readFileSync` and `@iarna/toml`. It resolves templates via `Template.fromSourceWithBaseDir` or `Template.fromFile`, casting parameters and verifying rendering results or caught error substrings.
+  - **Mechanism**: Reads fixtures from `tests/shared/` using `fs.readFileSync` and `smol-toml` (TOML v1.0). It resolves templates via `Template.fromSourceWithBaseDir` or `Template.fromFile`, casting parameters and verifying rendering results or caught error substrings.
 - **Python & WASM Bindings**:
   - **Current State**: Python unit tests reside in `crates/md-tmpl-python/python/tests/test_md_tmpl.py` and WASM tests in `crates/md-tmpl-wasm/tests/wasm.test.ts`.
   - **E2E Integration Plan**: Both Python and WASM bindings will execute these exact same shared TOML fixtures once shared test harnesses (`test_shared.py` loading `tomllib` via `pytest`, and `shared.test.ts` using `node:test`) are added to their test suites. Because the TOML schema requires only standard dictionary passing and substring error matching, no changes to the fixtures will be required when these harnesses come online.
@@ -78,6 +85,12 @@ items = ["rust", "ts"]
 - **`name`** _(string, required)_: A unique identifier for the test case across the test suite.
 - **`description`** _(string, required)_: Explains what specific requirement, operator, or boundary condition is being verified.
 - **`params`** _(table, optional)_: Key-value dictionary representing runtime variables passed into the template evaluation scope. When testing frontmatter parameter defaults (`:=`), omitting a key from this table forces the engine to evaluate the declared default.
+  - **Option Value Convention**: TOML has no null literal, so test runners interpret string values as follows:
+    - `"None"` → null / `Value::None` — represents an absent option value.
+    - `"Some(x)"` → the literal string `x` — escape hatch when you need the string `"None"` as an actual value.
+    - All other strings → passed through unchanged.
+    - Non-string TOML values (integers, booleans, arrays, tables) → unaffected.
+    - This transformation is applied recursively to arrays and nested tables.
 - **Template Definition** _(exactly one required)_:
   - **`template`** _(string)_: Inline template source code defined as a multiline literal TOML string (`'''`), or a relative file path from `tests/shared/` to an external `.tmpl.md` template file (e.g., `"templates/inline_tmpl/basic.tmpl.md"`).
   - **`parent_template`** _(optional)_: Used in inheritance and include tests to specify calling templates alongside child templates.

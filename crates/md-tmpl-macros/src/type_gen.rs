@@ -9,30 +9,32 @@ use crate::{
 ///
 /// Used to decide whether serde derives should be suppressed on generated
 /// sub-structs — `Arc<Template>` does not implement `Serialize` / `Deserialize`.
-fn contains_tmpl_field(decls: &[md_tmpl::VarDecl]) -> bool {
+fn contains_tmpl_field(decls: &[md_tmpl_core::VarDecl]) -> bool {
     decls.iter().any(|d| var_type_has_tmpl(&d.var_type))
 }
 
 /// Recursively check whether a [`VarType`] contains a `Tmpl` variant.
-fn var_type_has_tmpl(vt: &md_tmpl::VarType) -> bool {
+fn var_type_has_tmpl(vt: &md_tmpl_core::VarType) -> bool {
     match vt {
-        md_tmpl::VarType::Tmpl(_) => true,
-        md_tmpl::VarType::List(fields) | md_tmpl::VarType::Struct(fields) => {
+        md_tmpl_core::VarType::Tmpl(_) => true,
+        md_tmpl_core::VarType::List(fields) | md_tmpl_core::VarType::Struct(fields) => {
             contains_tmpl_field(fields)
         }
-        md_tmpl::VarType::Enum(variants) => variants.iter().any(|v| contains_tmpl_field(&v.fields)),
+        md_tmpl_core::VarType::Enum(variants) => {
+            variants.iter().any(|v| contains_tmpl_field(&v.fields))
+        }
         _ => false,
     }
 }
 
 /// Generate a sub-struct and setter for a typed list (`list(field = type, ...)`).
 pub(crate) fn typed_list_codegen(
-    inner_fields: &[md_tmpl::VarDecl],
+    inner_fields: &[md_tmpl_core::VarDecl],
     parent_struct: &str,
     field_name: &str,
     sub_structs: &mut Vec<proc_macro2::TokenStream>,
 ) -> (proc_macro2::TokenStream, SetterFn) {
-    let capitalized = md_tmpl::to_pascal_case(field_name);
+    let capitalized = md_tmpl_core::to_pascal_case(field_name);
     let item_struct_name = format_ident!("{parent_struct}{capitalized}Item");
 
     let mut item_fields = Vec::new();
@@ -85,12 +87,12 @@ pub(crate) fn typed_list_codegen(
 
 /// Generate a sub-struct and setter for a typed struct (`struct(field = type, ...)`).
 pub(crate) fn typed_dict_codegen(
-    inner_fields: &[md_tmpl::VarDecl],
+    inner_fields: &[md_tmpl_core::VarDecl],
     parent_struct: &str,
     field_name: &str,
     sub_structs: &mut Vec<proc_macro2::TokenStream>,
 ) -> (proc_macro2::TokenStream, SetterFn) {
-    let capitalized = md_tmpl::to_pascal_case(field_name);
+    let capitalized = md_tmpl_core::to_pascal_case(field_name);
     let dict_struct_name = format_ident!("{parent_struct}{capitalized}");
 
     let mut dict_fields = Vec::new();
@@ -208,12 +210,12 @@ pub(crate) fn deduplicate_variant_idents(names: &[String]) -> Vec<(syn::Ident, O
 
 /// Generate a sub-enum and setter for enum variables (`enum[Variant1(fields...), Variant2]`).
 pub(crate) fn typed_enum_codegen(
-    variants: &[md_tmpl::VariantDecl],
+    variants: &[md_tmpl_core::VariantDecl],
     parent_struct: &str,
     field_name: &str,
     sub_structs: &mut Vec<proc_macro2::TokenStream>,
 ) -> (proc_macro2::TokenStream, SetterFn) {
-    let capitalized = md_tmpl::to_pascal_case(field_name);
+    let capitalized = md_tmpl_core::to_pascal_case(field_name);
     let enum_name = quote::format_ident!("{parent_struct}{capitalized}");
 
     let mut variant_tokens = Vec::new();
@@ -313,7 +315,7 @@ pub(crate) fn typed_enum_codegen(
 /// - `None` → `Value::None`
 /// - `Some(v)` → the inner value directly (e.g. `Value::Int(42)`)
 pub(crate) fn typed_option_codegen(
-    var_type: &md_tmpl::VarType,
+    var_type: &md_tmpl_core::VarType,
     parent_struct: &str,
     field_name: &str,
     sub_structs: &mut Vec<proc_macro2::TokenStream>,
@@ -373,7 +375,7 @@ pub(crate) fn typed_option_codegen(
 /// - `VARIANTS` constant (list of all variants)
 /// - `all()` convenience method
 pub(crate) fn generate_type_alias_tokens(
-    type_aliases: &hashbrown::HashMap<String, md_tmpl::VarType>,
+    type_aliases: &hashbrown::HashMap<String, md_tmpl_core::VarType>,
 ) -> Vec<proc_macro2::TokenStream> {
     let mut tokens = Vec::new();
 
@@ -383,19 +385,19 @@ pub(crate) fn generate_type_alias_tokens(
 
     for (name, var_type) in aliases {
         match var_type {
-            md_tmpl::VarType::Option(_) => {
+            md_tmpl_core::VarType::Option(_) => {
                 tokens.push(generate_toplevel_option_alias(name, var_type));
             }
-            md_tmpl::VarType::Enum(_) if var_type.is_option() => {
+            md_tmpl_core::VarType::Enum(_) if var_type.is_option() => {
                 tokens.push(generate_toplevel_option_alias(name, var_type));
             }
-            md_tmpl::VarType::Enum(variants) => {
+            md_tmpl_core::VarType::Enum(variants) => {
                 tokens.push(generate_toplevel_enum(name, variants));
             }
-            md_tmpl::VarType::List(fields) => {
+            md_tmpl_core::VarType::List(fields) => {
                 tokens.push(generate_toplevel_list_item(name, fields));
             }
-            md_tmpl::VarType::Struct(fields) => {
+            md_tmpl_core::VarType::Struct(fields) => {
                 tokens.push(generate_toplevel_dict(name, fields));
             }
             // Scalar aliases (str, int, float, bool) don't generate new types —
@@ -410,7 +412,7 @@ pub(crate) fn generate_type_alias_tokens(
 /// Generate a top-level enum from a `types:` alias.
 pub(crate) fn generate_toplevel_enum(
     name: &str,
-    variants: &[md_tmpl::VariantDecl],
+    variants: &[md_tmpl_core::VariantDecl],
 ) -> proc_macro2::TokenStream {
     let enum_ident = format_ident!("{}", name);
     let has_data_variants = variants.iter().any(|v| !v.fields.is_empty());
@@ -495,7 +497,7 @@ pub(crate) fn generate_toplevel_enum(
 /// Generate `Display`, `FromStr`, `VARIANTS`, and `all()` for unit-variant-only enums.
 pub(crate) fn generate_unit_enum_impls(
     enum_ident: &syn::Ident,
-    variants: &[md_tmpl::VariantDecl],
+    variants: &[md_tmpl_core::VariantDecl],
 ) -> proc_macro2::TokenStream {
     let variant_count = variants.len();
     let names: Vec<String> = variants.iter().map(|v| v.name.clone()).collect();
@@ -593,7 +595,7 @@ pub(crate) fn generate_unit_enum_impls(
 /// The generated struct represents a single item in the list.
 pub(crate) fn generate_toplevel_list_item(
     name: &str,
-    fields: &[md_tmpl::VarDecl],
+    fields: &[md_tmpl_core::VarDecl],
 ) -> proc_macro2::TokenStream {
     if fields.is_empty() || (fields.len() == 1 && fields[0].name.is_empty()) {
         return quote! {};
@@ -632,7 +634,7 @@ pub(crate) fn generate_toplevel_list_item(
 /// Generate a top-level struct for a `struct(field = type, ...)` type alias.
 pub(crate) fn generate_toplevel_dict(
     name: &str,
-    fields: &[md_tmpl::VarDecl],
+    fields: &[md_tmpl_core::VarDecl],
 ) -> proc_macro2::TokenStream {
     if fields.is_empty() {
         return quote! {};
@@ -668,7 +670,7 @@ pub(crate) fn generate_toplevel_dict(
 /// If the inner type is complex (struct, list), sub-types are generated first.
 pub(crate) fn generate_toplevel_option_alias(
     name: &str,
-    var_type: &md_tmpl::VarType,
+    var_type: &md_tmpl_core::VarType,
 ) -> proc_macro2::TokenStream {
     let inner_vt = var_type
         .option_inner_type()

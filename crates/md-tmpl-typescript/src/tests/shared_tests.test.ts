@@ -14,9 +14,49 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-import TOML from "@iarna/toml";
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const TOML = require("smol-toml") as {
+  parse: (s: string) => Record<string, unknown>;
+};
 
 import { Template } from "../index.js";
+
+// ---------------------------------------------------------------------------
+// TOML option-convention helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Transform TOML option convention values:
+ * - String "None" → null
+ * - String "Some(x)" → "x" (escape for literal "None")
+ * - Recurse into arrays and objects
+ */
+function transformOptionValues(
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(params)) {
+    result[key] = transformValue(value);
+  }
+  return result;
+}
+
+function transformValue(value: unknown): unknown {
+  if (typeof value === "string") {
+    if (value === "None") return null;
+    if (value.startsWith("Some(") && value.endsWith(")")) {
+      return value.slice(5, -1);
+    }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(transformValue);
+  }
+  if (value !== null && typeof value === "object") {
+    return transformOptionValues(value as Record<string, unknown>);
+  }
+  return value;
+}
 
 // ---------------------------------------------------------------------------
 // Fixture paths
@@ -32,6 +72,7 @@ const INLINE_CONTROL_FIXTURES = path.join(
 );
 const TMPL_PARAM_FIXTURES = path.join(FIXTURES_DIR, "tmpl_param_tests.toml");
 const FEATURE_E2E_FIXTURES = path.join(FIXTURES_DIR, "feature_e2e_tests.toml");
+const ENV_FIXTURES = path.join(FIXTURES_DIR, "env_tests.toml");
 
 // ---------------------------------------------------------------------------
 // Types
@@ -47,6 +88,17 @@ interface InlineTmplTestCase {
   expected_error?: string;
 }
 
+interface EnvTestCase {
+  name: string;
+  description: string;
+  template_lines?: string[];
+  template?: string;
+  env?: Record<string, string>;
+  params?: Record<string, unknown>;
+  expected_output?: string;
+  expected_error?: string;
+}
+
 interface IncludeTestCase {
   name: string;
   description: string;
@@ -54,6 +106,7 @@ interface IncludeTestCase {
   parent_template_lines?: string[];
   parent_template?: string;
   params: Record<string, unknown>;
+  env?: Record<string, string>;
   expected_output?: string;
   expected_error?: string;
 }
@@ -92,7 +145,7 @@ describe("Shared: Inline template tests", () => {
 
       if (tc.expected_output !== undefined) {
         const tmpl = Template.fromSource(src);
-        const output = tmpl.render(tc.params || {});
+        const output = tmpl.render(transformOptionValues(tc.params || {}));
         assert.strictEqual(
           output,
           tc.expected_output,
@@ -102,7 +155,7 @@ describe("Shared: Inline template tests", () => {
         assert.throws(
           () => {
             const tmpl = Template.fromSource(src);
-            tmpl.render(tc.params || {});
+            tmpl.render(transformOptionValues(tc.params || {}));
           },
           (err: unknown) => {
             if (!(err instanceof Error)) return false;
@@ -160,8 +213,13 @@ describe("Shared: File-based include tests", () => {
         }
 
         if (tc.expected_output !== undefined) {
-          const tmpl = Template.fromSourceWithBaseDir(parentSrc, dir);
-          const output = tmpl.render(tc.params || {});
+          const tmpl = tc.env
+            ? Template.fromSourceWithEnv(parentSrc, {
+                env: tc.env,
+                baseDir: dir,
+              })
+            : Template.fromSourceWithBaseDir(parentSrc, dir);
+          const output = tmpl.render(transformOptionValues(tc.params || {}));
           assert.strictEqual(
             output,
             tc.expected_output,
@@ -171,8 +229,13 @@ describe("Shared: File-based include tests", () => {
           const expectedSubstring = tc.expected_error;
           assert.throws(
             () => {
-              const tmpl = Template.fromSourceWithBaseDir(parentSrc, dir);
-              tmpl.render(tc.params || {});
+              const tmpl = tc.env
+                ? Template.fromSourceWithEnv(parentSrc, {
+                    env: tc.env,
+                    baseDir: dir,
+                  })
+                : Template.fromSourceWithBaseDir(parentSrc, dir);
+              tmpl.render(transformOptionValues(tc.params || {}));
             },
             (err: Error) => {
               assert.ok(
@@ -209,7 +272,7 @@ describe("Shared: Inline control flow tests", () => {
 
       if (tc.expected_output !== undefined) {
         const tmpl = Template.fromSource(templateSrc);
-        const output = tmpl.render(tc.params || {});
+        const output = tmpl.render(transformOptionValues(tc.params || {}));
         assert.strictEqual(
           output,
           tc.expected_output,
@@ -220,7 +283,7 @@ describe("Shared: Inline control flow tests", () => {
         assert.throws(
           () => {
             const tmpl = Template.fromSource(templateSrc);
-            tmpl.render(tc.params || {});
+            tmpl.render(transformOptionValues(tc.params || {}));
           },
           (err: Error) => {
             assert.ok(
@@ -254,7 +317,7 @@ describe("Shared: tmpl() parameter tests", () => {
 
       if (tc.expected_output !== undefined) {
         const tmpl = Template.fromSource(templateSrc);
-        const output = tmpl.render(tc.params || {});
+        const output = tmpl.render(transformOptionValues(tc.params || {}));
         assert.strictEqual(
           output,
           tc.expected_output,
@@ -265,7 +328,7 @@ describe("Shared: tmpl() parameter tests", () => {
         assert.throws(
           () => {
             const tmpl = Template.fromSource(templateSrc);
-            tmpl.render(tc.params || {});
+            tmpl.render(transformOptionValues(tc.params || {}));
           },
           (err: Error) => {
             assert.ok(
@@ -299,7 +362,7 @@ describe("Shared: Feature E2E tests (Milestone E2E.2)", () => {
 
       if (tc.expected_output !== undefined) {
         const tmpl = Template.fromSource(templateSrc);
-        const output = tmpl.render(tc.params || {});
+        const output = tmpl.render(transformOptionValues(tc.params || {}));
         assert.strictEqual(
           output,
           tc.expected_output,
@@ -310,7 +373,7 @@ describe("Shared: Feature E2E tests (Milestone E2E.2)", () => {
         assert.throws(
           () => {
             const tmpl = Template.fromSource(templateSrc);
-            tmpl.render(tc.params || {});
+            tmpl.render(transformOptionValues(tc.params || {}));
           },
           (err: Error) => {
             assert.ok(
@@ -322,6 +385,69 @@ describe("Shared: Feature E2E tests (Milestone E2E.2)", () => {
             return true;
           },
           `${tc.description}: expected error`,
+        );
+      }
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Shared env: tests (compile-time environment variables)
+// ---------------------------------------------------------------------------
+
+describe("Shared: Env tests", () => {
+  const raw = fs.readFileSync(ENV_FIXTURES, "utf-8");
+  const { tests } = TOML.parse(raw) as unknown as {
+    tests: EnvTestCase[];
+  };
+
+  function getEnvTemplateSrc(tc: EnvTestCase): string {
+    if (tc.template) {
+      if (tc.template.endsWith(".tmpl.md")) {
+        const fullPath = path.resolve(FIXTURES_DIR, tc.template);
+        if (fs.existsSync(fullPath)) {
+          return fs.readFileSync(fullPath, "utf-8");
+        }
+      }
+      return tc.template;
+    }
+    return joinLines(tc.template_lines || []);
+  }
+
+  for (const tc of tests) {
+    it(tc.name, () => {
+      const src = getEnvTemplateSrc(tc);
+
+      if (tc.expected_output !== undefined) {
+        const tmpl = Template.fromSourceWithEnv(src, {
+          env: tc.env ?? {},
+        });
+        const output = tmpl.render(transformOptionValues(tc.params ?? {}));
+        assert.strictEqual(
+          output,
+          tc.expected_output,
+          `${tc.description}: output mismatch`,
+        );
+      } else if (tc.expected_error !== undefined) {
+        assert.throws(
+          () => {
+            const tmpl = Template.fromSourceWithEnv(src, {
+              env: tc.env ?? {},
+            });
+            tmpl.render(transformOptionValues(tc.params ?? {}));
+          },
+          (err: unknown) => {
+            if (!(err instanceof Error)) return false;
+            return (
+              err.message
+                .toLowerCase()
+                .includes(tc.expected_error!.toLowerCase()) ||
+              err.constructor.name
+                .toLowerCase()
+                .includes(tc.expected_error!.toLowerCase())
+            );
+          },
+          `${tc.description}: expected error containing '${tc.expected_error}'`,
         );
       }
     });

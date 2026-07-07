@@ -1500,3 +1500,606 @@ params: [outer = struct(inner = struct(value = int))]
 [tests.params.outer.inner]
 value = 42
 expected_error = "not found"
+
+[[tests]]
+name = "len_on_struct_rejected"
+description = "len() should reject struct values — only list and string are valid"
+template = '''
+---
+params:
+  - data = struct(a = int, b = int)
+---
+{{ len(data) }}'''
+expected_error = "len() requires a list or string"
+
+[tests.params]
+data = { a = 1, b = 2 }
+
+# ============================================================================
+# F7: Option Types — None/Some Convention
+#
+# TOML has no null. The shared test runners use this convention:
+#   - String "None"    → Value::None (null)
+#   - String "Some(x)" → Value::Str(x)  (escapes the literal string "None")
+#   - Omitted key      → parameter not provided (uses default if declared)
+#   - Any other value   → normal (transparent Some for option types)
+# ============================================================================
+
+# -- Option + For loop interaction --
+
+[[tests]]
+name = "option_for_match_some_none"
+description = "Iterating list(option(str)) and matching Some/None inside the loop"
+template = '''
+---
+params:
+  - items = list(option(str))
+---
+> {% for item in items %}{% match item %}{% case Some %}{{ item }}{% case None %}[empty]{% /match %} {% /for %}'''
+expected_output = "hello [empty] world "
+[tests.params]
+items = ["hello", "None", "world"]
+
+[[tests]]
+name = "option_for_has_check_str"
+description = "Iterating list(option(str)) and using has() to check presence"
+template = '''
+---
+params:
+  - items = list(option(str))
+---
+> {% for s in items %}{% if has(s) %}{{ s }}{% else %}N/A{% /if %},{% /for %}'''
+expected_output = "a,N/A,c,"
+[tests.params]
+items = ["a", "None", "c"]
+
+[[tests]]
+name = "option_for_has_check_int"
+description = "Iterating list(option(int)) and using has() to check presence"
+template = '''
+---
+params:
+  - scores = list(option(int))
+---
+> {% for s in scores %}{% if has(s) %}{{ s }}{% else %}N/A{% /if %},{% /for %}'''
+expected_output = "42,N/A,99,"
+[tests.params]
+scores = [42, "None", 99]
+
+[[tests]]
+name = "option_for_all_none"
+description = "Iterating list(option(str)) where all items are None"
+template = '''
+---
+params:
+  - items = list(option(str))
+---
+> {% for item in items %}{% if has(item) %}{{ item }}{% else %}X{% /if %}{% /for %}'''
+expected_output = "XXX"
+[tests.params]
+items = ["None", "None", "None"]
+
+# -- Option top-level params --
+
+[[tests]]
+name = "option_str_none_has"
+description = "option(str) set to None detected by has()"
+template = '''
+---
+params:
+  - label = option(str)
+---
+> {% if has(label) %}[{{ label }}]{% else %}[absent]{% /if %}'''
+expected_output = "[absent]"
+[tests.params]
+label = "None"
+
+[[tests]]
+name = "option_str_some_has"
+description = "option(str) with a value detected by has() and rendered"
+template = '''
+---
+params:
+  - label = option(str)
+---
+> {% if has(label) %}[{{ label }}]{% else %}[absent]{% /if %}'''
+expected_output = "[hello]"
+[tests.params]
+label = "hello"
+
+[[tests]]
+name = "option_str_some_none_escape"
+description = "Some(None) escapes the literal string 'None' for option(str)"
+template = '''
+---
+params:
+  - label = option(str)
+---
+> {% if has(label) %}[{{ label }}]{% else %}[absent]{% /if %}'''
+expected_output = "[None]"
+[tests.params]
+label = "Some(None)"
+
+[[tests]]
+name = "option_int_none_has"
+description = "has() returns false for option(int) set to None"
+template = '''
+---
+params:
+  - count = option(int)
+---
+> {% if has(count) %}{{ count }}{% else %}absent{% /if %}'''
+expected_output = "absent"
+[tests.params]
+count = "None"
+
+[[tests]]
+name = "option_int_some_has"
+description = "has() returns true for option(int) with a value"
+template = '''
+---
+params:
+  - count = option(int)
+---
+> {% if has(count) %}{{ count }}{% else %}absent{% /if %}'''
+expected_output = "42"
+[tests.params]
+count = 42
+
+[[tests]]
+name = "option_default_none_omitted"
+description = "option(str) := None uses default when param omitted"
+template = '''
+---
+params:
+  - label = option(str) := None
+---
+> {% if has(label) %}{{ label }}{% else %}default_none{% /if %}'''
+expected_output = "default_none"
+params = {}
+
+[[tests]]
+name = "option_default_none_explicit_none"
+description = "option(str) := None explicitly passed None stays None"
+template = '''
+---
+params:
+  - label = option(str) := None
+---
+> {% if has(label) %}{{ label }}{% else %}still_none{% /if %}'''
+expected_output = "still_none"
+[tests.params]
+label = "None"
+
+[[tests]]
+name = "option_default_none_explicit_value"
+description = "option(str) := None explicitly passed a value overrides to Some"
+template = '''
+---
+params:
+  - label = option(str) := None
+---
+> {% if has(label) %}{{ label }}{% else %}none{% /if %}'''
+expected_output = "override"
+[tests.params]
+label = "override"
+
+# -- Option match inside for --
+
+[[tests]]
+name = "option_for_match_with_idx"
+description = "option + for + idx() interaction: index tracks correctly across None elements"
+template = '''
+---
+params:
+  - items = list(option(str))
+---
+> {% for item in items %}{{ idx(item) }}:{% if has(item) %}{{ item }}{% else %}nil{% /if %} {% /for %}'''
+expected_output = "0:alpha 1:nil 2:gamma "
+[tests.params]
+items = ["alpha", "None", "gamma"]
+
+# -- Option in struct fields --
+
+[[tests]]
+name = "option_in_struct_field"
+description = "option(str) field inside a struct renders correctly when None"
+template = '''
+---
+params:
+  - user = struct(name = str, bio = option(str))
+---
+{{ user.name }}: {% if has(user.bio) %}{{ user.bio }}{% else %}no bio{% /if %}'''
+expected_output = "Alice: no bio"
+[tests.params.user]
+name = "Alice"
+bio = "None"
+
+[[tests]]
+name = "option_in_struct_field_some"
+description = "option(str) field inside a struct renders correctly when Some"
+template = '''
+---
+params:
+  - user = struct(name = str, bio = option(str))
+---
+{{ user.name }}: {% if has(user.bio) %}{{ user.bio }}{% else %}no bio{% /if %}'''
+expected_output = "Bob: Rust developer"
+[tests.params.user]
+name = "Bob"
+bio = "Rust developer"
+
+# -- Mixed list with Some(None) escape --
+
+[[tests]]
+name = "option_list_with_escape"
+description = "list(option(str)) with Some(None) escape renders literal 'None'"
+template = '''
+---
+params:
+  - tags = list(option(str))
+---
+> {% for t in tags %}{% if has(t) %}{{ t }}{% else %}[nil]{% /if %},{% /for %}'''
+expected_output = "hello,[nil],None,world,"
+[tests.params]
+tags = ["hello", "None", "Some(None)", "world"]
+
+# ============================================================================
+# F8: Filters — upper, lower, trim, fixed, join, limit
+# ============================================================================
+
+[[tests]]
+name = "filter_upper"
+description = "upper filter converts string to uppercase"
+template = '''
+---
+params:
+  - name = str
+---
+{{ name | upper }}'''
+expected_output = "HELLO WORLD"
+[tests.params]
+name = "hello world"
+
+[[tests]]
+name = "filter_lower"
+description = "lower filter converts string to lowercase"
+template = '''
+---
+params:
+  - name = str
+---
+{{ name | lower }}'''
+expected_output = "hello world"
+[tests.params]
+name = "HELLO WORLD"
+
+[[tests]]
+name = "filter_trim"
+description = "trim filter strips leading/trailing whitespace"
+template = '''
+---
+params:
+  - text = str
+---
+[{{ text | trim }}]'''
+expected_output = "[hello]"
+[tests.params]
+text = "  hello  "
+
+[[tests]]
+name = "filter_chain_trim_upper"
+description = "chained trim | upper filters"
+template = '''
+---
+params:
+  - text = str
+---
+{{ text | trim | upper }}'''
+expected_output = "HELLO"
+[tests.params]
+text = "  hello  "
+
+[[tests]]
+name = "filter_chain_trim_lower"
+description = "chained trim | lower filters"
+template = '''
+---
+params:
+  - text = str
+---
+{{ text | trim | lower }}'''
+expected_output = "hello"
+[tests.params]
+text = "  HELLO  "
+
+[[tests]]
+name = "filter_fixed_two_decimals"
+description = "fixed(2) formats float with 2 decimal places"
+template = '''
+---
+params:
+  - score = float
+---
+{{ score | fixed(2) }}'''
+expected_output = "3.14"
+[tests.params]
+score = 3.14159
+
+[[tests]]
+name = "filter_fixed_zero_decimals"
+description = "fixed(0) formats float with no decimal places"
+template = '''
+---
+params:
+  - score = float
+---
+{{ score | fixed(0) }}'''
+expected_output = "3"
+[tests.params]
+score = 3.14159
+
+[[tests]]
+name = "filter_join_basic"
+description = "join filter concatenates list items with separator"
+template = '''
+---
+params:
+  - items = list(str)
+---
+{{ items | join(", ") }}'''
+expected_output = "a, b, c"
+[tests.params]
+items = ["a", "b", "c"]
+
+[[tests]]
+name = "filter_join_empty_list"
+description = "join on empty list produces empty string"
+template = '''
+---
+params:
+  - items = list(str)
+---
+[{{ items | join(", ") }}]'''
+expected_output = "[]"
+[tests.params]
+items = []
+
+[[tests]]
+name = "filter_join_single_element"
+description = "join on single-element list produces no separator"
+template = '''
+---
+params:
+  - items = list(str)
+---
+{{ items | join(", ") }}'''
+expected_output = "only"
+[tests.params]
+items = ["only"]
+
+[[tests]]
+name = "filter_limit_basic"
+description = "limit(N) takes first N elements, combined with join"
+template = '''
+---
+params:
+  - items = list(str)
+---
+{{ items | limit(2) | join(", ") }}'''
+expected_output = "a, b"
+[tests.params]
+items = ["a", "b", "c", "d"]
+
+[[tests]]
+name = "filter_limit_beyond_length"
+description = "limit(N) with N > list length returns full list"
+template = '''
+---
+params:
+  - items = list(str)
+---
+{{ items | limit(10) | join(", ") }}'''
+expected_output = "a, b"
+[tests.params]
+items = ["a", "b"]
+
+[[tests]]
+name = "filter_limit_zero"
+description = "limit(0) returns empty list"
+template = '''
+---
+params:
+  - items = list(str)
+---
+[{{ items | limit(0) | join(", ") }}]'''
+expected_output = "[]"
+[tests.params]
+items = ["a", "b", "c"]
+
+[[tests]]
+name = "filter_unknown_rejected"
+description = "unknown filter is rejected at compile time"
+template = '''
+---
+params:
+  - name = str
+---
+{{ name | nonexistent }}'''
+expected_error = "unknown filter"
+[tests.params]
+name = "test"
+
+# ============================================================================
+# F9: Built-in Functions — kind(), kinds()
+# ============================================================================
+
+[[tests]]
+name = "kind_enum_variant"
+description = "kind() returns the variant name of an enum value"
+template = '''
+---
+params:
+  - status = enum(Active, Paused, Stopped)
+---
+{{ kind(status) }}'''
+expected_output = "Active"
+[tests.params]
+status = "Active"
+
+[[tests]]
+name = "kind_enum_in_condition"
+description = "kind() used in conditional to check variant"
+template = '''
+---
+params:
+  - status = enum(Active, Paused, Stopped)
+---
+> {% if kind(status) == "Paused" %}PAUSED{% else %}RUNNING{% /if %}'''
+expected_output = "PAUSED"
+[tests.params]
+status = "Paused"
+
+[[tests]]
+name = "kind_option_some"
+description = "kind() returns Some for a present option value"
+template = '''
+---
+params:
+  - val = option(str)
+---
+{{ kind(val) }}'''
+expected_output = "Some"
+[tests.params]
+val = "hello"
+
+[[tests]]
+name = "kind_option_none"
+description = "kind() returns None for an absent option value"
+template = '''
+---
+params:
+  - val = option(str)
+---
+{{ kind(val) }}'''
+expected_output = "None"
+[tests.params]
+val = "None"
+
+[[tests]]
+name = "kinds_enum_iteration"
+description = "kinds() returns list of variant names for iteration"
+template = '''
+---
+types:
+  - Status = enum(Active, Paused, Stopped)
+
+params:
+  - status = Status
+
+allow_unused: true
+---
+> {% for v in kinds(Status) %}{{ v }} {% /for %}'''
+expected_output = "Active Paused Stopped "
+[tests.params]
+status = "Active"
+
+[[tests]]
+name = "kinds_enum_in_operator"
+description = "kinds() with in operator checks variant membership"
+template = '''
+---
+types:
+  - Role = enum(Admin, User, Guest)
+
+params:
+  - role = Role
+  - check = str
+
+allow_unused: true
+---
+> {% if check in kinds(Role) %}valid{% else %}invalid{% /if %}'''
+expected_output = "valid"
+[tests.params]
+role = "Admin"
+check = "User"
+
+[[tests]]
+name = "kinds_enum_in_operator_miss"
+description = "kinds() with in operator — variant not found"
+template = '''
+---
+types:
+  - Role = enum(Admin, User, Guest)
+
+params:
+  - role = Role
+  - check = str
+
+allow_unused: true
+---
+> {% if check in kinds(Role) %}valid{% else %}invalid{% /if %}'''
+expected_output = "invalid"
+[tests.params]
+role = "Admin"
+check = "Superadmin"
+
+# ============================================================================
+# F10: For loop edge cases — idx() nested, empty list
+# ============================================================================
+
+[[tests]]
+name = "for_idx_nested"
+description = "idx() tracks independently in nested loops"
+template = '''
+---
+params:
+  - outer = list(str)
+  - inner = list(str)
+---
+> {% for o in outer %}{% for i in inner %}{{ idx(o) }}.{{ idx(i) }} {% /for %}{% /for %}'''
+expected_output = "0.0 0.1 1.0 1.1 "
+[tests.params]
+outer = ["a", "b"]
+inner = ["X", "Y"]
+
+[[tests]]
+name = "for_empty_list_no_output"
+description = "for loop over empty list produces no output"
+template = '''
+---
+params:
+  - items = list(str)
+---
+> {% for x in items %}{{ x }}{% /for %}'''
+expected_output = ""
+[tests.params]
+items = []
+
+# ============================================================================
+# F11: Raw blocks and comments
+# ============================================================================
+
+[[tests]]
+name = "raw_block_preserves_tags"
+description = "raw block preserves template syntax verbatim"
+template = '''
+---
+params:
+---
+> {% raw %}{{ not_a_var }}{% /raw %}'''
+expected_output = "{{ not_a_var }}"
+params = {}
+
+[[tests]]
+name = "comment_suppressed"
+description = "comment block produces no output"
+template = '''
+---
+params:
+  - name = str
+---
+> {{ name }}{# hidden #} end'''
+expected_output = "> hello end"
+[tests.params]
+name = "hello"

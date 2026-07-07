@@ -26,6 +26,10 @@ extern "C" {
     /// A JS value typed as `Record<string, unknown>` in TypeScript (for return).
     #[wasm_bindgen(typescript_type = "Record<string, unknown>")]
     pub type JsRecord;
+
+    /// A JS object typed as `Record<string, unknown>` in TypeScript (for env vars).
+    #[wasm_bindgen(typescript_type = "Record<string, unknown>")]
+    pub type JsEnvRecord;
 }
 
 /// Set a property on a JS object, panicking on failure.
@@ -288,6 +292,57 @@ impl Template {
         Ok(Self::new(inner))
     }
 
+    /// Parse a template from source with compile-time environment variables.
+    ///
+    /// The `env` object provides `key → value` pairs that are resolved at compile
+    /// time against `env:` declarations in the frontmatter.
+    ///
+    /// Throws if the source has errors, required env vars are missing, or types mismatch.
+    #[wasm_bindgen(js_name = "fromSourceWithEnv")]
+    pub fn from_source_with_env(source: &str, env: &JsEnvRecord) -> Result<Template, JsValue> {
+        let env_pairs = js_env_to_values(env.as_ref())?;
+        let env_refs: Vec<(&str, md_tmpl::Value)> = env_pairs
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.clone()))
+            .collect();
+        let (inner, _fm) =
+            md_tmpl::Template::compile(source, md_tmpl::CompileOptions::default().env(&env_refs))
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(Self::new(inner))
+    }
+
+    /// Parse a template from source with full compile options.
+    ///
+    /// Accepts optional `base_dir`, `env`, and `allow_unused` parameters.
+    #[wasm_bindgen(js_name = "fromSourceWithOptions")]
+    #[allow(clippy::needless_pass_by_value)] // wasm_bindgen requires owned types
+    pub fn from_source_with_options(
+        source: &str,
+        base_dir: Option<String>,
+        env: Option<JsEnvRecord>,
+        allow_unused: Option<bool>,
+    ) -> Result<Template, JsValue> {
+        let env_pairs = if let Some(ref env_val) = env {
+            js_env_to_values(env_val.as_ref())?
+        } else {
+            Vec::new()
+        };
+        let env_refs: Vec<(&str, md_tmpl::Value)> = env_pairs
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.clone()))
+            .collect();
+        let mut opts = md_tmpl::CompileOptions::default().env(&env_refs);
+        if let Some(allow) = allow_unused {
+            opts = opts.allow_unused(allow);
+        }
+        if let Some(ref dir) = base_dir {
+            opts = opts.base_dir(std::path::Path::new(dir));
+        }
+        let (inner, _fm) = md_tmpl::Template::compile(source, opts)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(Self::new(inner))
+    }
+
     /// Set the maximum include depth for rendering this template (`camelCase`).
     #[wasm_bindgen(js_name = "setMaxIncludeDepth")]
     pub fn set_max_include_depth(&mut self, depth: usize) {
@@ -312,6 +367,52 @@ fn u32_from_usize(n: usize) -> u32 {
         u32::MAX
     } else {
         n as u32
+    }
+}
+
+/// Extract `(key, value)` pairs from a JS `Record<string, unknown>` object.
+fn js_env_to_values(val: &JsValue) -> Result<Vec<(String, md_tmpl::Value)>, JsValue> {
+    if val.is_null() || val.is_undefined() {
+        return Ok(Vec::new());
+    }
+    let obj: &Object = val
+        .dyn_ref::<Object>()
+        .ok_or_else(|| JsValue::from_str("env must be an object"))?;
+    let keys = Object::keys(obj);
+    let mut pairs = Vec::with_capacity(keys.length() as usize);
+    for i in 0..keys.length() {
+        let key = keys.get(i);
+        let key_str = key
+            .as_string()
+            .ok_or_else(|| JsValue::from_str("env key must be a string"))?;
+        let val =
+            Reflect::get(obj, &key).map_err(|_| JsValue::from_str("failed to read env value"))?;
+        let typed_val = js_to_env_value(&val)?;
+        pairs.push((key_str, typed_val));
+    }
+    Ok(pairs)
+}
+
+/// Convert a JS value to a template Value for env.
+fn js_to_env_value(val: &JsValue) -> Result<md_tmpl::Value, JsValue> {
+    if val.is_string() {
+        Ok(md_tmpl::Value::Str(val.as_string().unwrap()))
+    } else if let Some(b) = val.as_bool() {
+        Ok(md_tmpl::Value::Bool(b))
+    } else if let Some(n) = val.as_f64() {
+        // Check if it's an integer.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+        if n.fract() == 0.0 && n >= i64::MIN as f64 && n <= i64::MAX as f64 {
+            Ok(md_tmpl::Value::Int(n as i64))
+        } else {
+            Ok(md_tmpl::Value::Float(n))
+        }
+    } else if val.is_null() || val.is_undefined() {
+        Ok(md_tmpl::Value::None)
+    } else {
+        // Complex objects (arrays, objects) — use serde.
+        serde_wasm_bindgen::from_value(val.clone())
+            .map_err(|e| JsValue::from_str(&format!("env value conversion error: {e}")))
     }
 }
 

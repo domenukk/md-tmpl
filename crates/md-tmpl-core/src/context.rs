@@ -10,7 +10,7 @@ use crate::{compat::HashMap, value::Value};
 ///
 /// From an iterator of tuples:
 /// ```
-/// use md_tmpl::{Context, Value};
+/// use md_tmpl_core::{Context, Value};
 ///
 /// let ctx: Context = vec![
 ///     ("name", Value::from("Alice")),

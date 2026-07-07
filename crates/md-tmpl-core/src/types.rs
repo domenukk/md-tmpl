@@ -684,7 +684,7 @@ pub const BUILTIN_TYPE_NAMES: &[&str] = &[
 /// # Examples
 ///
 /// ```
-/// use md_tmpl::to_pascal_case;
+/// use md_tmpl_core::to_pascal_case;
 /// assert_eq!(to_pascal_case("code_review"), "CodeReview");
 /// assert_eq!(to_pascal_case("task-report"), "TaskReport");
 /// ```
@@ -1187,5 +1187,154 @@ mod tests {
                 "BUILTIN_TYPE_NAMES should contain '{name}'"
             );
         }
+    }
+
+    // -- Structural (duck) typing: extra fields silently accepted ----------
+
+    #[test]
+    fn struct_accepts_extra_fields() {
+        // struct(title = str) should accept {title: "x", extra: 42}
+        let var_type = VarType::Struct(vec![VarDecl {
+            name: "title".into(),
+            var_type: VarType::Str,
+            default_value: None,
+        }]);
+
+        let value = Value::Struct(Arc::new(HashMap::from([
+            ("title".into(), Value::Str("hello".into())),
+            ("extra_field".into(), Value::Int(42)),
+            ("another".into(), Value::Bool(true)),
+        ])));
+        assert!(
+            var_type.matches(&value),
+            "struct with extra fields should match (duck typing)"
+        );
+        // Also confirm check() returns Ok
+        assert!(var_type.check(&value).is_ok());
+    }
+
+    #[test]
+    fn list_items_accept_extra_fields() {
+        // list(name = str) should accept items with extra fields
+        let var_type = VarType::List(vec![VarDecl {
+            name: "name".into(),
+            var_type: VarType::Str,
+            default_value: None,
+        }]);
+
+        let item = Value::Struct(Arc::new(HashMap::from([
+            ("name".into(), Value::Str("Alice".into())),
+            ("age".into(), Value::Int(30)),
+            ("email".into(), Value::Str("alice@example.com".into())),
+        ])));
+        assert!(
+            var_type.matches(&Value::List(Arc::new(vec![item]))),
+            "list items with extra fields should match (duck typing)"
+        );
+    }
+
+    #[test]
+    fn nested_struct_accepts_extra_fields_at_every_depth() {
+        // struct(meta = struct(version = int)) — extra fields at both levels
+        let var_type = VarType::Struct(vec![VarDecl {
+            name: "meta".into(),
+            var_type: VarType::Struct(vec![VarDecl {
+                name: "version".into(),
+                var_type: VarType::Int,
+                default_value: None,
+            }]),
+            default_value: None,
+        }]);
+
+        let value = Value::Struct(Arc::new(HashMap::from([
+            (
+                "meta".into(),
+                Value::Struct(Arc::new(HashMap::from([
+                    ("version".into(), Value::Int(3)),
+                    ("build_hash".into(), Value::Str("abc123".into())),
+                ]))),
+            ),
+            ("top_level_extra".into(), Value::Bool(false)),
+        ])));
+        assert!(
+            var_type.matches(&value),
+            "nested structs should accept extra fields at every depth"
+        );
+    }
+
+    #[test]
+    fn enum_struct_variant_accepts_extra_fields() {
+        // enum(Confirmed(evidence = str), Inconclusive)
+        let var_type = VarType::Enum(vec![
+            VariantDecl {
+                name: "Confirmed".into(),
+                fields: vec![VarDecl {
+                    name: "evidence".into(),
+                    var_type: VarType::Str,
+                    default_value: None,
+                }],
+            },
+            VariantDecl {
+                name: "Inconclusive".into(),
+                fields: vec![],
+            },
+        ]);
+
+        // Struct variant with extra fields
+        let value = Value::Struct(Arc::new(HashMap::from([
+            (ENUM_TAG_KEY.into(), Value::Str("Confirmed".into())),
+            ("evidence".into(), Value::Str("found it".into())),
+            ("debug_info".into(), Value::Str("extra debug".into())),
+        ])));
+        assert!(
+            var_type.matches(&value),
+            "enum struct variant with extra fields should match"
+        );
+    }
+
+    #[test]
+    fn struct_still_rejects_missing_required_fields() {
+        // Confirm duck typing doesn't weaken required-field checking
+        let var_type = VarType::Struct(vec![
+            VarDecl {
+                name: "title".into(),
+                var_type: VarType::Str,
+                default_value: None,
+            },
+            VarDecl {
+                name: "count".into(),
+                var_type: VarType::Int,
+                default_value: None,
+            },
+        ]);
+
+        // Has extra fields but missing "count"
+        let value = Value::Struct(Arc::new(HashMap::from([
+            ("title".into(), Value::Str("hello".into())),
+            ("bonus".into(), Value::Int(99)),
+        ])));
+        assert!(
+            !var_type.matches(&value),
+            "extra fields don't compensate for missing required fields"
+        );
+    }
+
+    #[test]
+    fn struct_still_rejects_wrong_types_even_with_extras() {
+        let var_type = VarType::Struct(vec![VarDecl {
+            name: "count".into(),
+            var_type: VarType::Int,
+            default_value: None,
+        }]);
+
+        // Has the field but wrong type, plus extras
+        let value = Value::Struct(Arc::new(HashMap::from([
+            ("count".into(), Value::Str("not a number".into())),
+            ("extra".into(), Value::Int(42)),
+        ])));
+        assert!(
+            !var_type.matches(&value),
+            "extra fields don't fix type mismatches"
+        );
     }
 }

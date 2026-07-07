@@ -34,7 +34,7 @@ use std::{
 use md_tmpl::{CompileOptions, Context, Template, TemplateCache, Value};
 
 mod json;
-use json::{json_to_value, parse_json_string_pairs};
+use json::{json_to_value, parse_json_env_object, parse_json_string_pairs};
 
 // ---------------------------------------------------------------------------
 // Opaque handles
@@ -146,6 +146,48 @@ pub unsafe extern "C" fn pt_template_from_source_allowing_unused(
         Err(e) => return err_to_cstring(&e),
     };
     match Template::compile(source, CompileOptions::default().allow_unused(true)) {
+        Ok((tmpl, _fm)) => {
+            let handle = Box::new(PtTemplate { inner: tmpl });
+            unsafe { *out = Box::into_raw(handle) };
+            ptr::null_mut()
+        }
+        Err(e) => err_to_cstring(&e.to_string()),
+    }
+}
+
+/// Parse a template with compile-time environment variables.
+///
+/// `env_json` must be a JSON object string mapping env names to typed values,
+/// e.g. `{"PROMPTS_DIR": "/path", "MAX_RETRIES": 5}`.
+///
+/// # Safety
+///
+/// - `source` must be a valid NUL-terminated UTF-8 string.
+/// - `env_json` must be a valid NUL-terminated UTF-8 string containing a JSON object.
+/// - `out` must be a valid pointer to a `*mut PtTemplate`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pt_template_from_source_with_env(
+    source: *const c_char,
+    env_json: *const c_char,
+    out: *mut *mut PtTemplate,
+) -> *mut c_char {
+    let source = match unsafe { cstr_to_str(source) } {
+        Ok(s) => s,
+        Err(e) => return err_to_cstring(&e),
+    };
+    let env_json_str = match unsafe { cstr_to_str(env_json) } {
+        Ok(s) => s,
+        Err(e) => return err_to_cstring(&e),
+    };
+    let env_pairs = match parse_json_env_object(env_json_str) {
+        Ok(pairs) => pairs,
+        Err(e) => return err_to_cstring(&e),
+    };
+    let env_refs: Vec<(&str, Value)> = env_pairs
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.clone()))
+        .collect();
+    match Template::compile(source, CompileOptions::default().env(&env_refs)) {
         Ok((tmpl, _fm)) => {
             let handle = Box::new(PtTemplate { inner: tmpl });
             unsafe { *out = Box::into_raw(handle) };
@@ -782,7 +824,9 @@ pub unsafe extern "C" fn pt_template_declarations(tmpl: *const PtTemplate) -> *m
         .map(|d| format!("[\"{}\",\"{}\"]", d.name, d.var_type))
         .collect();
     let json = format!("[{}]", decls.join(","));
-    CString::new(json).unwrap().into_raw()
+    CString::new(json)
+        .unwrap_or_else(|_| CString::new("<NUL byte in output>").unwrap())
+        .into_raw()
 }
 
 /// Set the maximum include depth.
@@ -856,7 +900,9 @@ pub unsafe extern "C" fn pt_template_defaults_json(tmpl: *const PtTemplate) -> *
         .map(|(k, v)| format!("\"{k}\": {}", value_to_json(v)))
         .collect();
     let json = format!("{{{}}}", pairs.join(", "));
-    CString::new(json).unwrap().into_raw()
+    CString::new(json)
+        .unwrap_or_else(|_| CString::new("<NUL byte in output>").unwrap())
+        .into_raw()
 }
 
 /// Returns the constants as a JSON object string.
@@ -883,7 +929,9 @@ pub unsafe extern "C" fn pt_template_consts_json(tmpl: *const PtTemplate) -> *mu
         .map(|(k, v)| format!("\"{k}\": {}", value_to_json(v)))
         .collect();
     let json = format!("{{{}}}", pairs.join(", "));
-    CString::new(json).unwrap().into_raw()
+    CString::new(json)
+        .unwrap_or_else(|_| CString::new("<NUL byte in output>").unwrap())
+        .into_raw()
 }
 
 /// Create a context pre-filled with all default parameter values.
@@ -1003,7 +1051,9 @@ pub unsafe extern "C" fn pt_template_from_source_with_frontmatter(
                 params.join(",")
             );
             unsafe {
-                *out_fm = CString::new(json).unwrap().into_raw();
+                *out_fm = CString::new(json)
+                    .unwrap_or_else(|_| CString::new("<NUL byte in output>").unwrap())
+                    .into_raw();
             }
             ptr::null_mut()
         }
@@ -1139,7 +1189,9 @@ pub unsafe extern "C" fn pt_template_imported_consts_json(tmpl: *const PtTemplat
         .map(|(k, v)| format!("\"{k}\": {}", value_to_json(v)))
         .collect();
     let json = format!("{{{}}}", pairs.join(", "));
-    CString::new(json).unwrap().into_raw()
+    CString::new(json)
+        .unwrap_or_else(|_| CString::new("<NUL byte in output>").unwrap())
+        .into_raw()
 }
 
 // ---------------------------------------------------------------------------

@@ -54,6 +54,7 @@
 export {
   type ITemplate,
   type CachedInclude,
+  type CompileOptions,
   Template,
   TypedTemplate,
   TemplateCache,

@@ -6147,60 +6147,69 @@ params:
 });
 
 // ---------------------------------------------------------------------------
-// Statement-level whitespace control: {%- for -%}, {%- if -%}, etc.
+// Statement-level whitespace control on standalone blockquote tags.
+// Trim modifiers ({%-, -%}) are REDUNDANT on standalone blockquote tags —
+// blockquote preprocessing already manages all surrounding whitespace.
+// These tests verify that trim-modified versions produce identical output
+// to non-trim versions, matching Rust's behaviour.
 // ---------------------------------------------------------------------------
-describe("Statement whitespace trimming", () => {
-  it("{%- for %} trims whitespace before opening for tag", () => {
-    const src = [
+describe("Statement whitespace trimming (standalone blockquote — redundant)", () => {
+  it("{%- for %} is redundant — same output as {% for %}", () => {
+    const baseSrc = [
       `---`,
       "params:",
       "  - items = list(name = str)",
       `---`,
       "start   ",
       "",
-      "> {%- for item in items %}",
+      "> {% for item in items %}",
       "",
       "{{ item.name }}",
-
       "",
       "> {% /for %}",
     ].join("\n");
-    const result = Template.fromSource(src).render({
+    const trimSrc = baseSrc.replace("> {% for", "> {%- for");
+    const baseResult = Template.fromSource(baseSrc).render({
       items: [{ name: "a" }],
     });
-    assert.ok(
-      !result.includes("start   "),
-      `trailing whitespace before {%- should be trimmed, got: ${JSON.stringify(result)}`,
+    const trimResult = Template.fromSource(trimSrc).render({
+      items: [{ name: "a" }],
+    });
+    assert.strictEqual(
+      trimResult,
+      baseResult,
+      `{%- on standalone blockquote should be redundant`,
     );
   });
 
-  it("{% for -%} trims whitespace after opening for tag", () => {
-    const src = [
+  it("{% for -%} is redundant — same output as {% for %}", () => {
+    const baseSrc = [
       `---`,
       "params:",
       "  - items = list(name = str)",
       `---`,
-      "> {% for item in items -%}",
+      "> {% for item in items %}",
       "",
       "   {{ item.name }}",
       "",
       "> {% /for %}",
     ].join("\n");
-    const result = Template.fromSource(src).renderUnchecked({
+    const trimSrc = baseSrc.replace("items %}", "items -%}");
+    const baseResult = Template.fromSource(baseSrc).renderUnchecked({
       items: [{ name: "hello" }],
     });
-    assert.ok(
-      result.includes("hello"),
-      `expected hello in output, got: ${JSON.stringify(result)}`,
-    );
-    assert.ok(
-      !result.includes("   hello"),
-      `leading whitespace after -%} should be trimmed, got: ${JSON.stringify(result)}`,
+    const trimResult = Template.fromSource(trimSrc).renderUnchecked({
+      items: [{ name: "hello" }],
+    });
+    assert.strictEqual(
+      trimResult,
+      baseResult,
+      `-%} on standalone blockquote should be redundant`,
     );
   });
 
-  it("{%- /for %} trims whitespace before closing for tag", () => {
-    const src = [
+  it("{%- /for %} is redundant — same output as {% /for %}", () => {
+    const baseSrc = [
       `---`,
       "params:",
       "  - items = list(name = str)",
@@ -6209,41 +6218,48 @@ describe("Statement whitespace trimming", () => {
       "",
       "{{ item.name }}   ",
       "",
-      "> {%- /for %}",
+      "> {% /for %}",
     ].join("\n");
-    const result = Template.fromSource(src).render({
+    const trimSrc = baseSrc.replace("> {% /for", "> {%- /for");
+    const baseResult = Template.fromSource(baseSrc).render({
       items: [{ name: "x" }],
     });
-    assert.ok(
-      !result.includes("x   "),
-      `trailing whitespace before {%- /for %} should be trimmed, got: ${JSON.stringify(result)}`,
+    const trimResult = Template.fromSource(trimSrc).render({
+      items: [{ name: "x" }],
+    });
+    assert.strictEqual(
+      trimResult,
+      baseResult,
+      `{%- on standalone closing tag should be redundant`,
     );
   });
 
-  it("{%- if %} trims whitespace before if tag", () => {
-    const src = [
+  it("{%- if %} is redundant — same output as {% if %}", () => {
+    const baseSrc = [
       `---`,
       "params:",
       "  - flag = bool",
       `---`,
       "before   ",
       "",
-      "> {%- if flag %}",
+      "> {% if flag %}",
       "",
       "yes",
-
       "",
       "> {% /if %}",
     ].join("\n");
-    const result = Template.fromSource(src).render({ flag: true });
-    assert.ok(
-      !result.includes("before   "),
-      `trailing whitespace before {%- if should be trimmed, got: ${JSON.stringify(result)}`,
+    const trimSrc = baseSrc.replace("> {% if", "> {%- if");
+    const baseResult = Template.fromSource(baseSrc).render({ flag: true });
+    const trimResult = Template.fromSource(trimSrc).render({ flag: true });
+    assert.strictEqual(
+      trimResult,
+      baseResult,
+      `{%- on standalone blockquote if should be redundant`,
     );
   });
 
-  it("{% /if -%} trims whitespace after closing if tag", () => {
-    const src = [
+  it("{% /if -%} is redundant — same output as {% /if %}", () => {
+    const baseSrc = [
       `---`,
       "params:",
       "  - flag = bool",
@@ -6252,14 +6268,17 @@ describe("Statement whitespace trimming", () => {
       "",
       "yes",
       "",
-      "> {% /if -%}",
+      "> {% /if %}",
       "",
       "   after",
     ].join("\n");
-    const result = Template.fromSource(src).render({ flag: true });
-    assert.ok(
-      result.includes("after"),
-      `expected after in output, got: ${JSON.stringify(result)}`,
+    const trimSrc = baseSrc.replace("/if %}", "/if -%}");
+    const baseResult = Template.fromSource(baseSrc).render({ flag: true });
+    const trimResult = Template.fromSource(trimSrc).render({ flag: true });
+    assert.strictEqual(
+      trimResult,
+      baseResult,
+      `-%} on standalone closing tag should be redundant`,
     );
   });
 });
@@ -8975,13 +8994,16 @@ params:
     assert.strictEqual(tmpl.render({ items: [] }).trim(), "0");
   });
 
-  it("len() on struct", () => {
+  it("len() on struct is rejected — only list and string are valid", () => {
     const tmpl = Template.fromSource(`---
 params:
   - obj = struct(a = str, b = int)
 ---
 {{ len(obj) }}`);
-    assert.strictEqual(tmpl.render({ obj: { a: "x", b: 1 } }).trim(), "2");
+    assert.throws(
+      () => tmpl.render({ obj: { a: "x", b: 1 } }),
+      (err: Error) => err.message.includes("len()"),
+    );
   });
 
   it("kind() on unit enum variant", () => {
@@ -10786,5 +10808,332 @@ SAFE`);
           err instanceof Error && err.message.includes("Security violation"),
       );
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Duck typing / structural typing — extra fields in struct values
+// ---------------------------------------------------------------------------
+
+describe("Duck typing / structural typing", () => {
+  it("struct param with extra fields renders correctly", () => {
+    const tmpl = Template.fromSource(
+      `---
+params:
+  - config = struct(host = str, port = int)
+---
+{{ config.host }}:{{ config.port }}`,
+    );
+    // Extra field "protocol" should be silently ignored
+    const output = tmpl.render({
+      config: { host: "localhost", port: 8080, protocol: "https" },
+    });
+    assert.strictEqual(output, "localhost:8080");
+  });
+
+  it("struct with many extra fields still renders declared fields", () => {
+    const tmpl = Template.fromSource(
+      `---
+params:
+  - user = struct(name = str, active = bool)
+---
+{{ user.name }} is {{ user.active }}`,
+    );
+    const output = tmpl.render({
+      user: {
+        name: "Alice",
+        active: true,
+        email: "alice@example.com",
+        age: 30,
+        role: "admin",
+      },
+    });
+    assert.strictEqual(output, "Alice is true");
+  });
+
+  it("list items with extra fields render correctly", () => {
+    const tmpl = Template.fromSource(
+      `---
+params:
+  - tasks = list(title = str, priority = str)
+---
+> {% for task in tasks %}
+
+- {{ task.title }} ({{ task.priority }})
+
+> {% /for %}`,
+    );
+    const output = tmpl.render({
+      tasks: [
+        { title: "Write docs", priority: "High", assignee: "Alice", id: 1 },
+        {
+          title: "Add tests",
+          priority: "Medium",
+          status: "open",
+          tags: ["test"],
+        },
+      ],
+    });
+    assert.ok(output.includes("Write docs"));
+    assert.ok(output.includes("High"));
+    assert.ok(output.includes("Add tests"));
+    assert.ok(output.includes("Medium"));
+    // Extra fields should not appear in output
+    assert.ok(!output.includes("Alice"));
+    assert.ok(!output.includes("assignee"));
+  });
+
+  it("type alias (types: block) with duck typing", () => {
+    const tmpl = Template.fromSource(`---
+types:
+  - Config = struct(host = str, port = int)
+
+params:
+  - server = Config
+---
+{{ server.host }}:{{ server.port }}`);
+    // Extra "timeout" field should be silently ignored
+    const output = tmpl.render({
+      server: { host: "example.com", port: 443, timeout: 30 },
+    });
+    assert.strictEqual(output, "example.com:443");
+  });
+
+  it("type alias list with extra fields in items", () => {
+    const tmpl = Template.fromSource(`---
+types:
+  - Entry = struct(label = str, value = int)
+
+params:
+  - entries = list(Entry)
+---
+> {% for e in entries %}{{ e.label }}={{ e.value }} {% /for %}`);
+    const output = tmpl.render({
+      entries: [
+        { label: "x", value: 10, color: "red" },
+        { label: "y", value: 20, extra: true },
+      ],
+    });
+    assert.ok(output.includes("x=10"));
+    assert.ok(output.includes("y=20"));
+  });
+
+  it("nested struct with extra fields at every depth", () => {
+    const tmpl = Template.fromSource(
+      `---
+params:
+  - outer = struct(inner = struct(value = str))
+---
+{{ outer.inner.value }}`,
+    );
+    const output = tmpl.render({
+      outer: {
+        inner: { value: "deep", extra_inner: 999, debug: true },
+        extra_outer: "ignored",
+        metadata: { foo: "bar" },
+      },
+    });
+    assert.strictEqual(output, "deep");
+  });
+
+  it("deeply nested struct (3 levels) with extra fields", () => {
+    const tmpl = Template.fromSource(
+      `---
+params:
+  - a = struct(b = struct(c = struct(name = str)))
+---
+{{ a.b.c.name }}`,
+    );
+    const output = tmpl.render({
+      a: {
+        b: {
+          c: { name: "leaf", z: 42 },
+          extra_b: "bval",
+        },
+        extra_a: "aval",
+      },
+    });
+    assert.strictEqual(output, "leaf");
+  });
+
+  it("struct in conditional with extra fields", () => {
+    const tmpl = Template.fromSource(
+      `---
+params:
+  - config = struct(enabled = bool, label = str)
+---
+> {% if config.enabled %}
+
+{{ config.label }}
+
+> {% /if %}`,
+    );
+    const output = tmpl.render({
+      config: { enabled: true, label: "ON", priority: 1, debug: false },
+    });
+    assert.ok(output.includes("ON"));
+  });
+
+  it("struct with extra fields still rejects missing declared fields", () => {
+    const tmpl = Template.fromSource(
+      `---
+params:
+  - config = struct(host = str, port = int)
+---
+{{ config.host }}:{{ config.port }}`,
+    );
+    // Has extra "protocol" but is missing required "port"
+    assert.throws(
+      () => tmpl.render({ config: { host: "localhost", protocol: "https" } }),
+      (err: Error) => err.message.includes("missing"),
+    );
+  });
+
+  it("list with nested struct items containing extra fields", () => {
+    const tmpl = Template.fromSource(
+      `---
+params:
+  - items = list(meta = struct(key = str))
+---
+> {% for item in items %}{{ item.meta.key }} {% /for %}`,
+    );
+    const output = tmpl.render({
+      items: [
+        { meta: { key: "a", extra: true }, other: 1 },
+        { meta: { key: "b", debug: "yes" }, tag: "x" },
+      ],
+    });
+    assert.ok(output.includes("a"));
+    assert.ok(output.includes("b"));
+  });
+
+  it("enum variant struct with extra fields", () => {
+    const tmpl = Template.fromSource(
+      `---
+params:
+  - result = enum(Ok(value = str), Err)
+---
+> {% match result %}
+> {% case Ok %}
+
+{{ result.value }}
+
+> {% case Err %}
+
+error
+
+> {% /match %}`,
+    );
+    // Extra "code" field on the Ok variant should be silently ignored
+    const output = tmpl.render({
+      result: { __kind__: "Ok", value: "success", code: 200 },
+    });
+    assert.ok(output.trim().includes("success"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Duck typing — include with partial struct (child uses subset of fields)
+// ---------------------------------------------------------------------------
+
+describe("Duck typing — include with partial struct", () => {
+  it("include child that declares subset of parent struct fields", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pt-duck-inc-"));
+    try {
+      // Child only declares "name" but parent passes a struct with name + age
+      fs.writeFileSync(
+        path.join(dir, "child.tmpl.md"),
+        `---
+params:
+  - user = struct(name = str)
+---
+Hello {{ user.name }}`,
+      );
+      const src = [
+        `---`,
+        "params:",
+        "  - user = struct(name = str, age = int)",
+        `---`,
+        "> {% include [child](./child.tmpl.md) with user=user %}",
+      ].join("\n");
+      const tmpl = Template.fromSourceWithBaseDir(src, dir);
+      const result = tmpl.render({
+        user: { name: "Alice", age: 30 },
+      });
+      assert.ok(
+        result.includes("Hello Alice"),
+        `expected 'Hello Alice' but got: ${result}`,
+      );
+    } finally {
+      fs.rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("for-each include where child uses subset of list item fields", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pt-duck-for-"));
+    try {
+      // Child only declares name (subset of name + score)
+      fs.writeFileSync(
+        path.join(dir, "row.tmpl.md"),
+        `---
+params:
+  - item = struct(name = str)
+---
+- {{ item.name }}`,
+      );
+      const mainSrc = [
+        `---`,
+        "params:",
+        "  - items = list(name = str, score = int)",
+        `---`,
+        "> {% include [row](./row.tmpl.md) for item in items %}",
+      ].join("\n");
+      const tmpl = Template.fromSourceWithBaseDir(mainSrc, dir);
+      const result = tmpl.render({
+        items: [
+          { name: "Alpha", score: 100, extra: "ignored" },
+          { name: "Beta", score: 200, debug: true },
+        ],
+      });
+      assert.ok(result.includes("Alpha"), `missing Alpha in: ${result}`);
+      assert.ok(result.includes("Beta"), `missing Beta in: ${result}`);
+    } finally {
+      fs.rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("include child with extra fields on value passed to subset struct", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pt-duck-extra-"));
+    try {
+      // Child declares struct with 1 field
+      fs.writeFileSync(
+        path.join(dir, "detail.tmpl.md"),
+        `---
+params:
+  - info = struct(title = str)
+---
+Title: {{ info.title }}`,
+      );
+      const src = [
+        `---`,
+        "params:",
+        "  - info = struct(title = str, author = str, year = int)",
+        `---`,
+        "> {% include [detail](./detail.tmpl.md) with info=info %}",
+        "",
+        "By: {{ info.author }} ({{ info.year }})",
+      ].join("\n");
+      const tmpl = Template.fromSourceWithBaseDir(src, dir);
+      const result = tmpl.render({
+        info: { title: "The Book", author: "Jane", year: 2025, isbn: "123" },
+      });
+      assert.ok(
+        result.includes("Title: The Book"),
+        `expected title in: ${result}`,
+      );
+      assert.ok(result.includes("By: Jane"), `expected author in: ${result}`);
+    } finally {
+      fs.rmSync(dir, { recursive: true });
+    }
   });
 });

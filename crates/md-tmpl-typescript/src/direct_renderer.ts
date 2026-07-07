@@ -20,6 +20,7 @@ import {
   TemplateSyntaxError,
   TemplatePanicError,
   TemplateError,
+  UnknownFilterError,
 } from "./errors.js";
 import { valueToJs } from "./value.js";
 import {
@@ -247,10 +248,8 @@ function resolveDirectFunction(expr: string, scope: DirectScope): unknown {
       const arg = resolveDirectExpr(argStr, scope);
       if (typeof arg === "string") return arg.length;
       if (Array.isArray(arg)) return arg.length;
-      if (arg !== null && arg !== undefined && typeof arg === "object")
-        return Object.keys(arg as object).length;
       throw new TemplateSyntaxError(
-        `len() requires a list, string, or struct, got ${typeof arg}`,
+        `len() requires a list or string, got ${typeof arg}`,
       );
     }
     case "idx": {
@@ -290,7 +289,7 @@ function resolveDirectFunction(expr: string, scope: DirectScope): unknown {
       return true;
     }
     default:
-      return undefined;
+      throw new TemplateSyntaxError(`unknown function '${funcName}'`);
   }
 }
 
@@ -346,7 +345,7 @@ function applyDirectFilter(
       return (typeof value === "number" ? value : numVal) - n;
     }
     default:
-      return value;
+      throw new UnknownFilterError(filterName);
   }
 }
 
@@ -892,15 +891,21 @@ function evaluateDirectComparison(
     case DirectTokKind.Ne:
       return left !== right;
     case DirectTokKind.Lt:
-      return (left as number) < (right as number);
     case DirectTokKind.Gt:
-      return (left as number) > (right as number);
     case DirectTokKind.Le:
-      return (left as number) <= (right as number);
-    case DirectTokKind.Ge:
-      return (left as number) >= (right as number);
+    case DirectTokKind.Ge: {
+      if (typeof left !== "number" || typeof right !== "number") {
+        throw new TemplateSyntaxError(
+          `numeric comparison requires number operands, got ${typeof left} and ${typeof right}`,
+        );
+      }
+      if (op === DirectTokKind.Lt) return left < right;
+      if (op === DirectTokKind.Gt) return left > right;
+      if (op === DirectTokKind.Le) return left <= right;
+      return left >= right;
+    }
     default:
-      return false;
+      throw new TemplateSyntaxError(`unknown comparison operator '${op}'`);
   }
 }
 

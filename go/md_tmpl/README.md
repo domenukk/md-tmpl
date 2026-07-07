@@ -311,6 +311,34 @@ params: []
 Max retries: {{ MAX_RETRIES }}
 ```
 
+### Environment Variables
+
+Inject values at compile time from the build environment using `env:`
+declarations. Env vars are resolved once when the template is compiled and
+behave like constants at render time.
+
+```go
+source := `---
+params:
+  - name = str
+env:
+  - MODEL = str
+  - MAX_TOKENS = int := 4096
+---
+Hello {{ name }}! Using {{ MODEL }} (max {{ MAX_TOKENS }} tokens).`
+
+tmpl, err := pt.FromSourceWithEnv(source, map[string]string{
+    "MODEL": "gemini-2.0-flash",
+})
+if err != nil {
+    log.Fatal(err)
+}
+defer tmpl.Close()
+
+result, err := tmpl.RenderMap(map[string]any{"name": "Alice"})
+// → "Hello Alice! Using gemini-2.0-flash (max 4096 tokens)."
+```
+
 ### Caching
 
 ```go
@@ -332,6 +360,7 @@ cache.Clear()
 pt.FromSource(source string) (*Template, error)
 pt.FromSourceAllowingUnused(source string) (*Template, error)
 pt.FromSourceWithBaseDir(source, baseDir string) (*Template, error)
+pt.FromSourceWithEnv(source string, env map[string]string) (*Template, error)
 pt.FromSourceWithFrontmatter(source string) (*Template, *Frontmatter, error)
 pt.FromFile(path string) (*Template, error)
 
@@ -386,17 +415,17 @@ vs Go's `text/template`, median of 3 runs
 
 | Scenario   |          md-tmpl | Go `text/template` | speedup |
 | ---------- | ---------------: | -----------------: | ------: |
-| **small**  |         1,612 ns |           1,383 ns |   ~1.0× |
-| **medium** |  **2,915 ns** 🏆 |          11,897 ns |    4.1× |
-| **large**  | **63,329 ns** 🏆 |         210,691 ns |    3.3× |
+| **small**  |         1,635 ns |           1,099 ns |   ~1.0× |
+| **medium** |         7,246 ns |           6,519 ns |   ~1.0× |
+| **large**  | **95,806 ns** 🏆 |         259,066 ns |    2.7× |
 
 **Round-trip** (parse + render):
 
 | Scenario   |          md-tmpl | Go `text/template` | speedup |
 | ---------- | ---------------: | -----------------: | ------: |
-| **small**  | **12,530 ns** 🏆 |          14,254 ns |   1.14× |
-| **medium** | **34,097 ns** 🏆 |          64,677 ns |   1.90× |
-| **large**  | **85,915 ns** 🏆 |         469,556 ns |    5.5× |
+| **small**  | **12,449 ns** 🏆 |          19,663 ns |   1.58× |
+| **medium** |        45,079 ns |          22,306 ns |   ~1.0× |
+| **large**  | **78,357 ns** 🏆 |         198,461 ns |    2.5× |
 
 **Filters:**
 

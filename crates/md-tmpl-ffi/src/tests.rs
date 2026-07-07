@@ -1272,3 +1272,179 @@ params:
         pt_template_free(tmpl);
     }
 }
+
+// ─── env: support tests ──────────────────────────────────────────────────────
+
+#[test]
+fn test_from_source_with_env_basic() {
+    let source = CString::new(
+        "\
+---
+env:
+  - API_KEY = str
+
+params: [name = str]
+---
+key={{ API_KEY }} name={{ name }}",
+    )
+    .unwrap();
+    let env_json = CString::new(r#"{"API_KEY":"secret123"}"#).unwrap();
+    let mut tmpl: *mut PtTemplate = ptr::null_mut();
+    let err = unsafe {
+        pt_template_from_source_with_env(source.as_ptr(), env_json.as_ptr(), &raw mut tmpl)
+    };
+    assert!(err.is_null(), "expected no error, got: {:?}", unsafe {
+        err.as_ref().map(|p| CStr::from_ptr(p))
+    });
+    assert!(!tmpl.is_null());
+
+    let ctx = pt_context_new();
+    let key = CString::new("name").unwrap();
+    let val = CString::new("Alice").unwrap();
+    let err = unsafe { pt_context_set_str(ctx, key.as_ptr(), val.as_ptr()) };
+    assert!(err.is_null());
+
+    let mut render_err: *mut c_char = ptr::null_mut();
+    let result = unsafe { pt_template_render(tmpl, ctx, &raw mut render_err) };
+    assert!(render_err.is_null(), "render error");
+    let result_str = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
+    assert_eq!(result_str, "key=secret123 name=Alice");
+
+    unsafe {
+        pt_free_string(result);
+        pt_context_free(ctx);
+        pt_template_free(tmpl);
+    }
+}
+
+#[test]
+fn test_from_source_with_env_int() {
+    let source = CString::new(
+        "\
+---
+env:
+  - MAX_RETRIES = int
+
+params: []
+---
+max={{ MAX_RETRIES }}",
+    )
+    .unwrap();
+    let env_json = CString::new(r#"{"MAX_RETRIES":5}"#).unwrap();
+    let mut tmpl: *mut PtTemplate = ptr::null_mut();
+    let err = unsafe {
+        pt_template_from_source_with_env(source.as_ptr(), env_json.as_ptr(), &raw mut tmpl)
+    };
+    assert!(err.is_null());
+
+    let ctx = pt_context_new();
+    let mut render_err: *mut c_char = ptr::null_mut();
+    let result = unsafe { pt_template_render(tmpl, ctx, &raw mut render_err) };
+    assert!(render_err.is_null());
+    let result_str = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
+    assert_eq!(result_str, "max=5");
+
+    unsafe {
+        pt_free_string(result);
+        pt_context_free(ctx);
+        pt_template_free(tmpl);
+    }
+}
+
+#[test]
+fn test_from_source_with_env_default_override() {
+    let source = CString::new(
+        "\
+---
+env:
+  - REGION = str := \"us-east-1\"
+
+params: []
+---
+region={{ REGION }}",
+    )
+    .unwrap();
+    let env_json = CString::new(r#"{"REGION":"eu-west-1"}"#).unwrap();
+    let mut tmpl: *mut PtTemplate = ptr::null_mut();
+    let err = unsafe {
+        pt_template_from_source_with_env(source.as_ptr(), env_json.as_ptr(), &raw mut tmpl)
+    };
+    assert!(err.is_null());
+
+    let ctx = pt_context_new();
+    let mut render_err: *mut c_char = ptr::null_mut();
+    let result = unsafe { pt_template_render(tmpl, ctx, &raw mut render_err) };
+    assert!(render_err.is_null());
+    let result_str = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
+    assert_eq!(result_str, "region=eu-west-1");
+
+    unsafe {
+        pt_free_string(result);
+        pt_context_free(ctx);
+        pt_template_free(tmpl);
+    }
+}
+
+#[test]
+fn test_from_source_with_env_default_fallback() {
+    let source = CString::new(
+        "\
+---
+env:
+  - REGION = str := \"us-east-1\"
+
+params: []
+---
+region={{ REGION }}",
+    )
+    .unwrap();
+    // Empty env — should use default.
+    let env_json = CString::new(r"{}").unwrap();
+    let mut tmpl: *mut PtTemplate = ptr::null_mut();
+    let err = unsafe {
+        pt_template_from_source_with_env(source.as_ptr(), env_json.as_ptr(), &raw mut tmpl)
+    };
+    assert!(err.is_null());
+
+    let ctx = pt_context_new();
+    let mut render_err: *mut c_char = ptr::null_mut();
+    let result = unsafe { pt_template_render(tmpl, ctx, &raw mut render_err) };
+    assert!(render_err.is_null());
+    let result_str = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
+    assert_eq!(result_str, "region=us-east-1");
+
+    unsafe {
+        pt_free_string(result);
+        pt_context_free(ctx);
+        pt_template_free(tmpl);
+    }
+}
+
+#[test]
+fn test_from_source_with_env_missing_required() {
+    let source = CString::new(
+        "\
+---
+env:
+  - REQUIRED_KEY = str
+
+params: []
+---
+{{ REQUIRED_KEY }}",
+    )
+    .unwrap();
+    // Missing required env var — should error at compile time.
+    let env_json = CString::new(r"{}").unwrap();
+    let mut tmpl: *mut PtTemplate = ptr::null_mut();
+    let err = unsafe {
+        pt_template_from_source_with_env(source.as_ptr(), env_json.as_ptr(), &raw mut tmpl)
+    };
+    assert!(!err.is_null(), "expected compile error for missing env");
+    assert!(tmpl.is_null());
+    let err_str = unsafe { CStr::from_ptr(err) }.to_str().unwrap();
+    assert!(
+        err_str.contains("REQUIRED_KEY"),
+        "error should mention missing key: {err_str}"
+    );
+    unsafe { pt_free_string(err) };
+}

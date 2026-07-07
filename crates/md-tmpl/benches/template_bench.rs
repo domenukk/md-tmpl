@@ -568,6 +568,63 @@ fn bench_flexbuffers(c: &mut Criterion) {
     group.finish();
 }
 
+const ENV_TEMPLATE: &str = "\
+---
+env:
+  - SYSTEM_PROMPT = str
+  - MAX_RETRIES = int := 3
+  - DEBUG = bool := false
+
+params:
+  - name = str
+---
+System: {{ SYSTEM_PROMPT }}
+Hello {{ name }}! Retries: {{ MAX_RETRIES }}";
+
+fn bench_env_compile(c: &mut Criterion) {
+    use md_tmpl::{CompileOptions, Value};
+
+    let mut group = c.benchmark_group("env_compile");
+
+    // Compile with typed env values.
+    group.bench_function("with_env", |b| {
+        let env = [
+            (
+                "SYSTEM_PROMPT",
+                Value::Str("You are a helpful assistant.".into()),
+            ),
+            ("MAX_RETRIES", Value::Int(5)),
+            ("DEBUG", Value::Bool(true)),
+        ];
+        b.iter(|| {
+            Template::compile(
+                black_box(ENV_TEMPLATE),
+                CompileOptions::default().env(black_box(&env)),
+            )
+            .unwrap()
+        });
+    });
+
+    // Compile without env (defaults used).
+    group.bench_function("defaults_only", |b| {
+        let env: [(&str, Value); 1] = [("SYSTEM_PROMPT", Value::Str("default".into()))];
+        b.iter(|| {
+            Template::compile(
+                black_box(ENV_TEMPLATE),
+                CompileOptions::default().env(black_box(&env)),
+            )
+            .unwrap()
+        });
+    });
+
+    // Baseline: compile without env at all (for comparison).
+    group.bench_function("no_env_baseline", |b| {
+        b.iter(|| Template::from_source(black_box(SMALL_TEMPLATE)).unwrap());
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_compile,
@@ -577,5 +634,6 @@ criterion_group!(
     bench_filters,
     bench_conditions,
     bench_flexbuffers,
+    bench_env_compile,
 );
 criterion_main!(benches);

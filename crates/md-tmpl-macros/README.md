@@ -18,8 +18,11 @@ Available on crates.io: <https://crates.io/crates/md-tmpl-macros> (and <https://
 
 ```bash
 cargo add md-tmpl
-cargo add md-tmpl-macros
 ```
+
+> **Tip:** `md-tmpl` re-exports `include_template!` and `template!` from this
+> crate, so most users only need `md-tmpl`. Add `md-tmpl-macros` directly only
+> if you need the proc macros without the runtime engine.
 
 ## Macros
 

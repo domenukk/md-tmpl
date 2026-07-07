@@ -1,0 +1,44 @@
+[package]
+name = "md-tmpl-core"
+version = "0.5.2"
+edition = "2024"
+rust-version = "1.85"
+description = "Core template engine for md-tmpl — parsing, compilation, and rendering"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/domenukk/md-tmpl"
+keywords = ["template", "prompt", "markdown", "llm", "agent"]
+categories = ["template-engine", "text-processing"]
+
+[features]
+default = ["std", "serde", "typed-builder"]
+std = ["hashbrown/default", "thiserror/std", "ciborium/std", "dep:flexbuffers"]
+serde = ["dep:serde", "dep:ciborium", "hashbrown/serde"]
+typed-builder = ["dep:typed-builder"]
+
+[dependencies]
+thiserror = { version = "2", default-features = false }
+const-str = "1.1"
+hashbrown = { version = "0.17", default-features = false, features = [
+  "allocator-api2",
+  "default-hasher",
+] }
+itoa = { version = "1", default-features = false }
+serde = { version = "1", default-features = false, features = [
+  "derive",
+  "alloc",
+], optional = true }
+flexbuffers = { version = "25.12", optional = true }
+typed-builder = { workspace = true, optional = true }
+spin = { version = "0.12", default-features = false, features = ["lazy"] }
+ciborium = { version = "0.2.2", default-features = false, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+toml = "0.8"
+typed-builder = { workspace = true }
+flexbuffers = "25.12"
+
+[lints]
+workspace = true

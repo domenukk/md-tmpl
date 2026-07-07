@@ -548,6 +548,91 @@ impl PyTemplate {
         })
     }
 
+    /// Parse a template with compile-time environment variables.
+    ///
+    /// Env vars are resolved at compile time against ``env:`` declarations
+    /// in the frontmatter. Values can be any type matching the declared type
+    /// (``int``, ``bool``, ``float``, ``str``, ``list``, ``struct``, etc.).
+    /// String values for scalar types are auto-parsed.
+    ///
+    /// Args:
+    ///     source: Template source with YAML frontmatter.
+    ///     env: Dictionary mapping env variable names to typed values.
+    ///
+    /// Returns:
+    ///     Template: A parsed and validated template.
+    ///
+    /// Raises:
+    ///     ``ValueError``: If required env vars are missing or type mismatches occur.
+    ///
+    /// Examples:
+    ///
+    /// ```python
+    /// tmpl = Template.from_source_with_env(
+    ///     "---\\nenv: [PATH = str]\\nparams: []\\n---\\n{{ PATH }}",
+    ///     {"PATH": "/usr/local/prompts"},
+    /// )
+    /// tmpl.render_empty()  # => '/usr/local/prompts'
+    /// ```
+    #[staticmethod]
+    fn from_source_with_env(source: &str, env: &Bound<'_, PyDict>) -> PyResult<Self> {
+        let env_pairs = py_dict_to_env_values(env)?;
+        let env_refs: Vec<(&str, md_tmpl::Value)> = env_pairs
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.clone()))
+            .collect();
+        let (tmpl, fm) = Template::compile(source, CompileOptions::default().env(&env_refs))
+            .map_err(|e| crate::errors::template_error_to_py(&e))?;
+        Ok(Self {
+            inner: tmpl,
+            frontmatter: fm,
+        })
+    }
+
+    /// Parse a template with full compile options.
+    ///
+    /// Combines ``base_dir``, ``env``, and ``allow_unused`` into a single call.
+    ///
+    /// Args:
+    ///     source: Template source with YAML frontmatter.
+    ///     `base_dir`: Optional directory path for resolving includes.
+    ///     env: Optional dictionary mapping env variable names to typed values.
+    ///     `allow_unused`: If True, unused declared parameters are allowed.
+    ///
+    /// Returns:
+    ///     Template: A parsed and validated template.
+    #[staticmethod]
+    #[pyo3(signature = (source, *, base_dir=None, env=None, allow_unused=false))]
+    #[allow(clippy::needless_pass_by_value)] // PyO3 requires owned PathBuf
+    fn from_source_with_options(
+        source: &str,
+        base_dir: Option<std::path::PathBuf>,
+        env: Option<&Bound<'_, PyDict>>,
+        allow_unused: bool,
+    ) -> PyResult<Self> {
+        let env_pairs = if let Some(env_dict) = env {
+            py_dict_to_env_values(env_dict)?
+        } else {
+            Vec::new()
+        };
+        let env_refs: Vec<(&str, md_tmpl::Value)> = env_pairs
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.clone()))
+            .collect();
+        let mut opts = CompileOptions::default()
+            .env(&env_refs)
+            .allow_unused(allow_unused);
+        if let Some(ref dir) = base_dir {
+            opts = opts.base_dir(dir);
+        }
+        let (tmpl, fm) =
+            Template::compile(source, opts).map_err(|e| crate::errors::template_error_to_py(&e))?;
+        Ok(Self {
+            inner: tmpl,
+            frontmatter: fm,
+        })
+    }
+
     /// Return the raw template body after frontmatter stripping.
     ///
     /// Returns:
@@ -744,4 +829,21 @@ fn json_str_to_context(json_str: &str) -> PyResult<Context> {
 /// Create a `PyTemplate` from a file path (used by typegen).
 pub(crate) fn load_template(path: &str) -> PyResult<PyTemplate> {
     PyTemplate::from_file(std::path::PathBuf::from(path))
+}
+
+/// Extract `(key, value)` typed pairs from a Python dict for env vars.
+fn py_dict_to_env_values(dict: &Bound<'_, PyDict>) -> PyResult<Vec<(String, md_tmpl::Value)>> {
+    let mut pairs = Vec::with_capacity(dict.len());
+    for (key, value) in dict.iter() {
+        let key_str: String = key
+            .extract()
+            .map_err(|_| pyo3::exceptions::PyTypeError::new_err("env keys must be strings"))?;
+        let val = py_to_value(&value).map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err(format!(
+                "env value for '{key_str}' could not be converted to a template value"
+            ))
+        })?;
+        pairs.push((key_str, val));
+    }
+    Ok(pairs)
 }

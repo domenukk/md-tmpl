@@ -48,13 +48,15 @@ fn with_crate_path<F: FnOnce() -> R, R>(path: proc_macro2::TokenStream, f: F) ->
 /// Parsed input for `include_template!("path")`,
 /// `include_template!("path" => custom_mod_name)`,
 /// `include_template!("path" as StructName)`,
-/// `include_template!("path" as StructName => custom_mod_name)`, or
-/// `include_template!("path", crate = ::my_crate::reexport)`.
+/// `include_template!("path" as StructName => custom_mod_name)`,
+/// `include_template!("path", crate = ::my_crate::reexport)`, or
+/// `include_template!("path", env = { KEY: "value", KEY2: env!("VAR") })`.
 struct IncludeTemplateInput {
     path: LitStr,
     struct_name: Option<Ident>,
     custom_name: Option<Ident>,
     crate_path: Option<syn::Path>,
+    env: Vec<(String, syn::Expr)>,
 }
 
 impl Parse for IncludeTemplateInput {
@@ -77,21 +79,38 @@ impl Parse for IncludeTemplateInput {
             None
         };
 
-        // Optional: `, crate = ::path`
-        let crate_path = if input.peek(Token![,]) {
+        // Optional trailing arguments: `, crate = ...` or `, env = { ... }`
+        let mut crate_path = None;
+        let mut env = Vec::new();
+        while input.peek(Token![,]) {
             let _comma: Token![,] = input.parse()?;
-            let _kw: Token![crate] = input.parse()?;
-            let _eq: Token![=] = input.parse()?;
-            Some(input.parse()?)
-        } else {
-            None
-        };
+            if input.is_empty() {
+                break;
+            }
+            if input.peek(Token![crate]) {
+                let _kw: Token![crate] = input.parse()?;
+                let _eq: Token![=] = input.parse()?;
+                crate_path = Some(input.parse()?);
+            } else {
+                let kw: Ident = input.parse()?;
+                if kw == "env" {
+                    let _eq: Token![=] = input.parse()?;
+                    env = parse_env_block(input)?;
+                } else {
+                    return Err(syn::Error::new(
+                        kw.span(),
+                        format!("unknown option '{kw}', expected 'crate' or 'env'"),
+                    ));
+                }
+            }
+        }
 
         Ok(Self {
             path,
             struct_name,
             custom_name,
             crate_path,
+            env,
         })
     }
 }
@@ -105,6 +124,7 @@ struct InlineTemplateInput {
     struct_name: Option<Ident>,
     name: Ident,
     crate_path: Option<syn::Path>,
+    env: Vec<(String, syn::Expr)>,
 }
 
 impl Parse for InlineTemplateInput {
@@ -118,19 +138,36 @@ impl Parse for InlineTemplateInput {
         };
         let _: Token![=>] = input.parse()?;
         let name: Ident = input.parse()?;
-        let crate_path = if input.peek(Token![,]) {
+        let mut crate_path = None;
+        let mut env = Vec::new();
+        while input.peek(Token![,]) {
             let _comma: Token![,] = input.parse()?;
-            let _kw: Token![crate] = input.parse()?;
-            let _eq: Token![=] = input.parse()?;
-            Some(input.parse()?)
-        } else {
-            None
-        };
+            if input.is_empty() {
+                break;
+            }
+            if input.peek(Token![crate]) {
+                let _kw: Token![crate] = input.parse()?;
+                let _eq: Token![=] = input.parse()?;
+                crate_path = Some(input.parse()?);
+            } else {
+                let kw: Ident = input.parse()?;
+                if kw == "env" {
+                    let _eq: Token![=] = input.parse()?;
+                    env = parse_env_block(input)?;
+                } else {
+                    return Err(syn::Error::new(
+                        kw.span(),
+                        format!("unknown option '{kw}', expected 'crate' or 'env'"),
+                    ));
+                }
+            }
+        }
         Ok(Self {
             source,
             struct_name,
             name,
             crate_path,
+            env,
         })
     }
 }
@@ -155,6 +192,94 @@ fn make_module_ident(stem: &str) -> Ident {
         format_ident!("r#{}", stem)
     } else {
         Ident::new(stem, proc_macro2::Span::call_site())
+    }
+}
+
+/// Parse an env block: `{ KEY: expr, KEY2: expr, ... }`.
+///
+/// Each key is an identifier and each value is an arbitrary Rust expression
+/// (typically a string literal or `env!("VAR_NAME")`).
+fn parse_env_block(input: ParseStream) -> syn::Result<Vec<(String, syn::Expr)>> {
+    let content;
+    syn::braced!(content in input);
+    let mut entries = Vec::new();
+    while !content.is_empty() {
+        let key: Ident = content.parse()?;
+        let _colon: Token![:] = content.parse()?;
+        let expr: syn::Expr = content.parse()?;
+        entries.push((key.to_string(), expr));
+        if content.peek(Token![,]) {
+            let _comma: Token![,] = content.parse()?;
+        }
+    }
+    Ok(entries)
+}
+
+/// Evaluate an env expression at proc-macro expansion time.
+///
+/// Supports:
+/// - String literals: `"value"` → `Value::Str("value")`
+/// - Integer literals: `42` → `Value::Int(42)`
+/// - Float literals: `3.14` → `Value::Float(3.14)`
+/// - Bool literals: `true`/`false` → `Value::Bool(true/false)`
+/// - `env!("VAR")` → reads `std::env::var("VAR")` at compile time → `Value::Str(...)`
+fn eval_env_expr(expr: &syn::Expr) -> Result<md_tmpl_core::Value, String> {
+    match expr {
+        syn::Expr::Lit(lit) => match &lit.lit {
+            syn::Lit::Str(s) => Ok(md_tmpl_core::Value::Str(s.value())),
+            syn::Lit::Int(i) => {
+                let n: i64 = i
+                    .base10_parse()
+                    .map_err(|e| format!("invalid integer: {e}"))?;
+                Ok(md_tmpl_core::Value::Int(n))
+            }
+            syn::Lit::Float(f) => {
+                let n: f64 = f
+                    .base10_parse()
+                    .map_err(|e| format!("invalid float: {e}"))?;
+                Ok(md_tmpl_core::Value::Float(n))
+            }
+            syn::Lit::Bool(b) => Ok(md_tmpl_core::Value::Bool(b.value)),
+            _ => Err(
+                "env value must be a string, int, float, bool literal, or env!(\"VAR\")"
+                    .to_string(),
+            ),
+        },
+        syn::Expr::Macro(m) => {
+            // Support env!("VAR_NAME")
+            let path = &m.mac.path;
+            let is_env = path.is_ident("env");
+            if !is_env {
+                return Err(format!(
+                    "only literals and env!() are supported in macro env values, got: {}",
+                    quote! { #expr }
+                ));
+            }
+            let tokens = &m.mac.tokens;
+            let var_name: LitStr = syn::parse2(tokens.clone())
+                .map_err(|e| format!("env!() argument must be a string literal: {e}"))?;
+            let val = std::env::var(var_name.value())
+                .map_err(|e| format!("env!(\"{}\") at compile time: {e}", var_name.value()))?;
+            Ok(md_tmpl_core::Value::Str(val))
+        }
+        // Handle `true` and `false` as path expressions (syn parses
+        // bare `true`/`false` as Expr::Path, not Expr::Lit, in some contexts).
+        syn::Expr::Path(p) => {
+            if p.path.is_ident("true") {
+                Ok(md_tmpl_core::Value::Bool(true))
+            } else if p.path.is_ident("false") {
+                Ok(md_tmpl_core::Value::Bool(false))
+            } else {
+                Err(format!(
+                    "env value must be a literal or env!(\"VAR\"), got path: {}",
+                    quote! { #expr }
+                ))
+            }
+        }
+        _ => Err(format!(
+            "env value must be a literal or env!(\"VAR\"), got: {}",
+            quote! { #expr }
+        )),
     }
 }
 
@@ -203,12 +328,31 @@ fn err_tokens(span: proc_macro2::Span, rel_path: &str, e: &str) -> TokenStream {
 /// .unwrap();
 /// assert_eq!(output, "\nHello World!\n");
 /// ```
+///
+/// # Panics
+///
+/// Panics if an `env` expression cannot be evaluated at macro expansion time
+/// (e.g. a referenced environment variable is not set).
 #[proc_macro]
 pub fn include_template(input: TokenStream) -> TokenStream {
     let parsed = parse_macro_input!(input as IncludeTemplateInput);
     let rel_path = parsed.path.value();
 
-    let (full_path, ast) = match load_and_compile(&rel_path) {
+    // Evaluate env expressions at macro expansion time.
+    let env_values: Vec<(String, md_tmpl_core::Value)> = parsed
+        .env
+        .iter()
+        .map(|(k, expr)| {
+            let val = eval_env_expr(expr).unwrap_or_else(|e| panic!("env '{k}': {e}"));
+            (k.clone(), val)
+        })
+        .collect();
+    let env_refs: Vec<(&str, md_tmpl_core::Value)> = env_values
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.clone()))
+        .collect();
+
+    let (full_path, ast) = match load_and_compile(&rel_path, &env_refs) {
         Ok(v) => v,
         Err(e) => return err_tokens(parsed.path.span(), &rel_path, &e),
     };
@@ -239,7 +383,7 @@ pub fn include_template(input: TokenStream) -> TokenStream {
             let v_tokens = codegen_compiled_inline_template(v);
             quote! { (#k, #v_tokens) }
         });
-        let consts_tokens = fm.consts.iter().filter_map(|d| {
+        let consts_tokens = fm.consts.iter().chain(fm.env.iter()).filter_map(|d| {
             d.default_value.as_ref().map(|v| {
                 let name = &d.name;
                 let val_tokens = codegen_value(v);
@@ -334,6 +478,11 @@ pub fn include_template(input: TokenStream) -> TokenStream {
 ///     .unwrap();
 /// assert_eq!(output, "Hello World!\n");
 /// ```
+///
+/// # Panics
+///
+/// Panics if an `env` expression cannot be evaluated at macro expansion time
+/// (e.g. a referenced environment variable is not set).
 #[proc_macro]
 pub fn template(input: TokenStream) -> TokenStream {
     let parsed = parse_macro_input!(input as InlineTemplateInput);
@@ -343,7 +492,21 @@ pub fn template(input: TokenStream) -> TokenStream {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
     let base_dir = std::path::Path::new(&manifest_dir);
 
-    let ast = match compile::compile_template_to_ast(&source, base_dir) {
+    // Evaluate env expressions at macro expansion time.
+    let env_values: Vec<(String, md_tmpl_core::Value)> = parsed
+        .env
+        .iter()
+        .map(|(k, expr)| {
+            let val = eval_env_expr(expr).unwrap_or_else(|e| panic!("env '{k}': {e}"));
+            (k.clone(), val)
+        })
+        .collect();
+    let env_refs: Vec<(&str, md_tmpl_core::Value)> = env_values
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.clone()))
+        .collect();
+
+    let ast = match compile::compile_template_to_ast(&source, base_dir, &env_refs) {
         Ok(v) => v,
         Err(e) => {
             let msg = format!("inline template: {e}");
@@ -372,7 +535,7 @@ pub fn template(input: TokenStream) -> TokenStream {
             let v_tokens = codegen_compiled_inline_template(v);
             quote! { (#k, #v_tokens) }
         });
-        let consts_tokens = fm.consts.iter().filter_map(|d| {
+        let consts_tokens = fm.consts.iter().chain(fm.env.iter()).filter_map(|d| {
             d.default_value.as_ref().map(|v| {
                 let name = &d.name;
                 let val_tokens = codegen_value(v);

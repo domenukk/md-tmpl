@@ -43,6 +43,7 @@ extern void pt_free_string(char *ptr);
 extern char *pt_template_from_source(const char *source, void **out);
 extern char *pt_template_from_source_allowing_unused(const char *source, void **out);
 extern char *pt_template_from_source_with_base_dir(const char *source, const char *base_dir, void **out);
+extern char *pt_template_from_source_with_env(const char *source, const char *env_json, void **out);
 extern char *pt_template_from_file(const char *path, void **out);
 extern void pt_template_free(void *tmpl);
 
@@ -297,6 +298,39 @@ func FromSourceWithBaseDir(source, baseDir string) (*Template, error) {
 
 	var ptr unsafe.Pointer
 	errPtr := C.pt_template_from_source_with_base_dir(cSource, cDir, &ptr)
+	if err := freeError(errPtr); err != nil {
+		return nil, err
+	}
+
+	t := &Template{ptr: ptr}
+	runtime.SetFinalizer(t, func(t *Template) { t.Close() })
+	return t, nil
+}
+
+// FromSourceWithEnv parses a template with compile-time environment variables.
+//
+// Env vars are resolved at compile time against `env:` declarations in the
+// frontmatter. Values are typed and serialized as JSON to the engine.
+//
+// Example:
+//
+//	tmpl, err := md_tmpl.FromSourceWithEnv(source, map[string]any{
+//	    "PROMPTS_DIR": "/path/to/prompts",
+//	    "MAX_RETRIES": 5,
+//	})
+func FromSourceWithEnv(source string, env map[string]any) (*Template, error) {
+	cSource := C.CString(source)
+	defer C.free(unsafe.Pointer(cSource))
+
+	envJSON, err := json.Marshal(env)
+	if err != nil {
+		return nil, fmt.Errorf("cannot marshal env: %w", err)
+	}
+	cEnv := C.CString(string(envJSON))
+	defer C.free(unsafe.Pointer(cEnv))
+
+	var ptr unsafe.Pointer
+	errPtr := C.pt_template_from_source_with_env(cSource, cEnv, &ptr)
 	if err := freeError(errPtr); err != nil {
 		return nil, err
 	}

@@ -605,3 +605,118 @@ fn filter_codegen_matches_runtime() {
         "compile-time and runtime filter outputs must match"
     );
 }
+
+// ── include_template! with typed env ─────────────────────────────────
+
+md_tmpl_macros::include_template!(
+    "prompts/env_typed.tmpl.md",
+    env = { MAX_RETRIES: 5, DEBUG: true }
+);
+
+#[test]
+fn include_template_typed_env_resolves_at_compile_time() {
+    let output = env_typed::Params {
+        name: "World".into(),
+    }
+    .render()
+    .unwrap();
+    assert!(output.contains("Retries: 5"), "output: {output}");
+    assert!(
+        output.contains("Debug mode enabled."),
+        "DEBUG=true should enable debug block, output: {output}"
+    );
+}
+
+#[test]
+fn include_template_typed_env_consts_baked_in() {
+    // Verify the env values are baked in as consts — the template
+    // should not accept MAX_RETRIES or DEBUG as params.
+    let tmpl = env_typed::template();
+    let decls = tmpl.declarations();
+    // Only `name` should be a param; MAX_RETRIES and DEBUG are env consts.
+    assert_eq!(decls.len(), 1, "only name should be a param: {decls:?}");
+    assert_eq!(decls[0].name, "name");
+}
+
+// ── template! (inline) with typed env ────────────────────────────────
+
+md_tmpl_macros::template!(
+    r#"
+---
+env:
+  - RETRIES = int
+  - VERBOSE = bool := false
+
+params:
+  - msg = str
+---
+{{ msg }} (retries={{ RETRIES }})
+
+> {% if VERBOSE %}
+
+[verbose]
+
+> {% /if %}
+"# => env_inline,
+    env = { RETRIES: 3, VERBOSE: false }
+);
+
+#[test]
+fn template_inline_typed_env_renders() {
+    let output = env_inline::Params {
+        msg: "hello".into(),
+    }
+    .render()
+    .unwrap();
+    assert_eq!(output, "hello (retries=3)\n");
+}
+
+md_tmpl_macros::template!(
+    r#"
+---
+env:
+  - RETRIES = int
+  - VERBOSE = bool := false
+
+params:
+  - msg = str
+---
+{{ msg }} (retries={{ RETRIES }})
+
+> {% if VERBOSE %}
+
+[verbose]
+
+> {% /if %}
+"# => env_inline_verbose,
+    env = { RETRIES: 10, VERBOSE: true }
+);
+
+#[test]
+fn template_inline_typed_env_verbose_true() {
+    let output = env_inline_verbose::Params { msg: "test".into() }
+        .render()
+        .unwrap();
+    assert!(output.contains("retries=10"), "output: {output}");
+    assert!(output.contains("[verbose]"), "output: {output}");
+}
+
+// ── template! with string env (backward compat) ────────────────────
+
+md_tmpl_macros::template!(
+    r#"
+---
+env: [LABEL = str]
+
+params: [count = int]
+---
+{{ LABEL }}: {{ count }}
+"# => env_str_compat,
+    env = { LABEL: "Total" }
+);
+
+#[test]
+fn template_inline_string_env_still_works() {
+    let output = env_str_compat::Params { count: 42 }.render().unwrap();
+    assert_eq!(output, "Total: 42\n");
+}

@@ -649,7 +649,10 @@ fn source_gen_params_class(out: &mut String, name: &str, decls: &[VarDecl], temp
 
     for d in &optional {
         let ann = vartype_to_python_source_annotation(&d.var_type, name, &d.name);
-        let default_repr = default_to_python_repr(d.default_value.as_ref().expect("has default"));
+        let Some(default_val) = d.default_value.as_ref() else {
+            continue;
+        };
+        let default_repr = default_to_python_repr(default_val);
         writeln!(
             out,
             "    {}: {} = field(default={})",

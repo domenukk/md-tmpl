@@ -63,6 +63,7 @@ import {
   FM_TYPES_PREFIX,
   FM_IMPORTS_PREFIX,
   FM_CONSTS_PREFIX,
+  FM_ENV_PREFIX,
   FM_ALLOW_UNUSED_PREFIX,
   FM_DELIMITER,
   ERR_COMPOUND_BRACKETS_PROHIBITED,
@@ -135,6 +136,8 @@ export interface Frontmatter {
   readonly allowUnused: boolean;
   readonly typeAliases: ReadonlyMap<string, VarType>;
   readonly consts: readonly VarDecl[];
+  /** Compile-time environment variable declarations. */
+  readonly env: readonly VarDecl[];
   readonly imports: readonly ImportDecl[];
   /** Resolved constants from imports, keyed by `stem.NAME`. */
   readonly importedConsts: Readonly<Record<string, unknown>>;
@@ -286,6 +289,7 @@ function parseFrontmatterYaml(lines: string[], startLineNo = 2): Frontmatter {
       trimmed.startsWith(FM_IMPORTS_PREFIX) ||
       trimmed.startsWith(FM_PARAMS_PREFIX) ||
       trimmed.startsWith(FM_CONSTS_PREFIX) ||
+      trimmed.startsWith(FM_ENV_PREFIX) ||
       trimmed.startsWith(FM_ALLOW_UNUSED_PREFIX);
 
     if (startsWithSection) {
@@ -319,9 +323,11 @@ function parseFrontmatterYaml(lines: string[], startLineNo = 2): Frontmatter {
   }
   const rawParams: RawItem[] = [];
   const rawConsts: RawItem[] = [];
+  const rawEnv: RawItem[] = [];
   let inlineParamsRaw: RawItem[] | undefined;
 
-  let currentBlock: "none" | "params" | "types" | "consts" | "imports" = "none";
+  let currentBlock: "none" | "params" | "types" | "consts" | "env" | "imports" =
+    "none";
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]!;
@@ -396,6 +402,18 @@ function parseFrontmatterYaml(lines: string[], startLineNo = 2): Frontmatter {
         }
         continue;
       }
+      if (trimmed.startsWith(FM_ENV_PREFIX)) {
+        currentBlock = "env";
+        const rest = trimmed.slice(FM_ENV_PREFIX.length).trim();
+        if (rest.startsWith("[")) {
+          const items = parseInlineList(rest);
+          for (const item of items) {
+            rawEnv.push({ raw: item, loc });
+          }
+          currentBlock = "none";
+        }
+        continue;
+      }
       if (trimmed.startsWith(FM_IMPORTS_PREFIX)) {
         currentBlock = "imports";
         const rest = trimmed.slice(FM_IMPORTS_PREFIX.length).trim();
@@ -429,6 +447,9 @@ function parseFrontmatterYaml(lines: string[], startLineNo = 2): Frontmatter {
           case "consts":
             rawConsts.push({ raw: item, loc });
             break;
+          case "env":
+            rawEnv.push({ raw: item, loc });
+            break;
           case "imports":
             imports.push({ ...parseImportDecl(item), loc });
             break;
@@ -459,6 +480,25 @@ function parseFrontmatterYaml(lines: string[], startLineNo = 2): Frontmatter {
       if (decl.defaultValue !== undefined) {
         constValues.set(decl.name, decl.defaultValue);
       }
+    } catch (err) {
+      if (err instanceof TemplateSyntaxError && err.line === undefined) {
+        throw new TemplateSyntaxError(
+          err.message,
+          item.loc.line,
+          item.loc.column,
+          item.loc.snippet,
+        );
+      }
+      throw err;
+    }
+  }
+
+  // Phase 1b: Parse env declarations (same syntax as consts)
+  const env: VarDecl[] = [];
+  for (const item of rawEnv) {
+    try {
+      const decl = parseConstDecl(item.raw, constValues);
+      env.push({ ...decl, loc: item.loc });
     } catch (err) {
       if (err instanceof TemplateSyntaxError && err.line === undefined) {
         throw new TemplateSyntaxError(
@@ -510,6 +550,7 @@ function parseFrontmatterYaml(lines: string[], startLineNo = 2): Frontmatter {
     allowUnused,
     typeAliases,
     consts,
+    env,
     imports,
     importedConsts: {},
     unresolvedDefaults,
@@ -611,16 +652,26 @@ export function interpolateImports(
       ).loc;
       try {
         const interpolated = interpolatePathStr(imp.path, availableConsts);
-        if (
-          !isValidResolvedPath(interpolated) ||
-          interpolated.includes(EXPR_START)
-        ) {
+        if (interpolated.includes(EXPR_START)) {
+          // Path still has unresolved {{ }} — skip for now, will be
+          // resolved later during resolveImportedConsts (chained resolution).
+          continue;
+        }
+        if (!isValidResolvedPath(interpolated)) {
           throw new TemplateSyntaxError(
             `import path '${interpolated}' must start with './', '../', or '/'`,
           );
         }
         imports[i] = { ...imp, path: interpolated };
       } catch (err) {
+        if (
+          err instanceof TemplateSyntaxError &&
+          err.message.includes("unresolvable")
+        ) {
+          // Unresolvable vars — skip for now, will be resolved later
+          // during resolveImportedConsts (chained import resolution).
+          continue;
+        }
         if (
           err instanceof TemplateSyntaxError &&
           err.line === undefined &&
@@ -718,7 +769,10 @@ function parseParamDeclDeferred(
         constValues,
       );
       return [{ name, varType, defaultValue }, undefined];
-    } catch {
+    } catch (err: unknown) {
+      if (!(err instanceof TemplateSyntaxError)) {
+        throw err;
+      }
       // Defer to imported const resolution
       return [
         { name, varType },

@@ -34,6 +34,31 @@ console.log(tmpl.render({ name: "Alice", role: "an AI assistant" }));
 // → "You are an AI assistant. Hello Alice!"
 ```
 
+## Environment Variables
+
+Inject values at compile time from the build environment using `env:`
+declarations. Env vars are resolved once when the template is compiled and
+behave like constants at render time.
+
+```ts
+import { Template } from "./pkg/md_tmpl_wasm";
+
+const tmpl = Template.fromSourceWithEnv(
+  `---
+params:
+  - name = str
+env:
+  - MODEL = str
+  - MAX_TOKENS = int := 4096
+---
+Hello {{ name }}! Using {{ MODEL }} (max {{ MAX_TOKENS }} tokens).`,
+  { MODEL: "gemini-2.0-flash" },
+);
+
+console.log(tmpl.render({ name: "Alice" }));
+// → "Hello Alice! Using gemini-2.0-flash (max 4096 tokens)."
+```
+
 ## API
 
 ### Constructors
@@ -42,6 +67,7 @@ console.log(tmpl.render({ name: "Alice", role: "an AI assistant" }));
 Template.fromSource(source: string): Template
 Template.fromSourceAllowingUnused(source: string): Template
 Template.fromSourceWithBaseDir(source: string, baseDir: string): Template
+Template.fromSourceWithEnv(source: string, env: Record<string, string>): Template
 ```
 
 ### Rendering
@@ -101,12 +127,12 @@ renderGreeting(TsTemplate.fromSource(src), "Alice");
 
 | Scenario                                |    WASM (Rust) |      TypeScript | speedup |
 | --------------------------------------- | -------------: | --------------: | ------: |
-| parse simple                            |        6.05 µs |  **4.41 µs** 🏆 | 1.4× TS |
-| render simple (1 param)                 |        2.30 µs |   **602 ns** 🏆 | 3.8× TS |
-| render list/for (20 items)              |       40.80 µs | **28.54 µs** 🏆 | 1.4× TS |
-| render complex (nested+list+filter)     |       11.76 µs |  **8.60 µs** 🏆 | 1.4× TS |
-| declarations()                          |   **50 ns** 🏆 |         1.03 µs |   20.4× |
-| renderJson complex (nested+list+filter) | **6.78 µs** 🏆 |         9.40 µs |    1.4× |
+| parse simple                            |        8.83 µs |         8.47 µs |   ~1.0× |
+| render simple (1 param)                 |        3.99 µs |  **1.19 µs** 🏆 | 3.4× TS |
+| render list/for (20 items)              |       65.09 µs | **29.85 µs** 🏆 | 2.2× TS |
+| render complex (nested+list+filter)     |       19.03 µs | **11.16 µs** 🏆 | 1.7× TS |
+| declarations()                          |   **50 ns** 🏆 |          914 ns |   18.2× |
+| renderJson complex (nested+list+filter) | **9.38 µs** 🏆 |        13.89 µs |    1.5× |
 
 Pure-TS is faster for rendering due to JS↔WASM serialization overhead.
 WASM wins on metadata access. Use WASM when you need exact Rust-engine

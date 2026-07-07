@@ -421,11 +421,8 @@ fn eval_compiled_expr_val<'a>(
             let count = match val {
                 Value::List(l) => i64::try_from(l.len()).expect("collection length fits i64"),
                 Value::Str(s) => i64::try_from(s.len()).expect("string length fits i64"),
-                Value::Struct(d) => i64::try_from(d.len()).expect("struct length fits i64"),
                 _ => {
-                    return Err(TemplateError::syntax(
-                        "len() requires a list, string, or struct",
-                    ));
+                    return Err(TemplateError::syntax("len() requires a list or string"));
                 }
             };
             Ok(Cow::Owned(Value::Int(count)))

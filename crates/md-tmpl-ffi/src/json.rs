@@ -97,7 +97,7 @@ pub(crate) fn parse_json_object(s: &str) -> Result<(Value, &str), String> {
         }
         let (key_val, rest) = parse_json_string(s)?;
         let Value::Str(key) = key_val else {
-            unreachable!()
+            return Err("expected string key from parse_json_string".to_string());
         };
         s = rest.trim_start();
 
@@ -220,6 +220,27 @@ pub(crate) fn parse_json_string_pairs(json: &str) -> Result<Vec<Vec<String>>, St
             strings.push(s.clone());
         }
         result.push(strings);
+    }
+    Ok(result)
+}
+
+/// Parse a JSON object of `{"name": value, ...}` into typed pairs.
+///
+/// Used by [`pt_template_from_source_with_env`].
+pub(crate) fn parse_json_env_object(json: &str) -> Result<Vec<(String, Value)>, String> {
+    let trimmed = json.trim();
+    if !trimmed.starts_with('{') {
+        return Err("expected JSON object for env".to_string());
+    }
+
+    let (val, _) = parse_json_object(trimmed)?;
+    let Value::Struct(map) = val else {
+        return Err("expected JSON object for env".to_string());
+    };
+
+    let mut result = Vec::with_capacity(map.len());
+    for (key, value) in map.iter() {
+        result.push((key.clone(), value.clone()));
     }
     Ok(result)
 }

@@ -2,8 +2,8 @@ use quote::{format_ident, quote};
 
 use crate::{crate_path, type_gen::string_to_variant_ident};
 
-pub(crate) fn codegen_segment(seg: &md_tmpl::compiled::Segment) -> proc_macro2::TokenStream {
-    use md_tmpl::compiled::Segment;
+pub(crate) fn codegen_segment(seg: &md_tmpl_core::compiled::Segment) -> proc_macro2::TokenStream {
+    use md_tmpl_core::compiled::Segment;
     let cp = crate_path();
     match seg {
         Segment::Static(s) => quote! {
@@ -79,7 +79,9 @@ pub(crate) fn codegen_segment(seg: &md_tmpl::compiled::Segment) -> proc_macro2::
     }
 }
 
-fn codegen_segment_include(inc: &md_tmpl::compiled::CompiledInclude) -> proc_macro2::TokenStream {
+fn codegen_segment_include(
+    inc: &md_tmpl_core::compiled::CompiledInclude,
+) -> proc_macro2::TokenStream {
     let cp = crate_path();
     let path = &inc.path;
     let with_vars = inc.with_vars.iter().map(|(k, v)| {
@@ -109,8 +111,8 @@ fn codegen_segment_include(inc: &md_tmpl::compiled::CompiledInclude) -> proc_mac
 }
 
 fn codegen_segment_match(
-    expr: &md_tmpl::compiled::CompiledPath,
-    arms: &[md_tmpl::compiled::MatchArm],
+    expr: &md_tmpl_core::compiled::CompiledPath,
+    arms: &[md_tmpl_core::compiled::MatchArm],
     is_option: bool,
 ) -> proc_macro2::TokenStream {
     let cp = crate_path();
@@ -145,7 +147,7 @@ fn codegen_segment_match(
 }
 
 pub(crate) fn codegen_parsed_filter(
-    f: &md_tmpl::compiled::ParsedFilter,
+    f: &md_tmpl_core::compiled::ParsedFilter,
 ) -> proc_macro2::TokenStream {
     let cp = crate_path();
     let kind = codegen_filter_kind(f.kind);
@@ -166,8 +168,10 @@ pub(crate) fn codegen_parsed_filter(
     }
 }
 
-pub(crate) fn codegen_filter_kind(k: md_tmpl::compiled::FilterKind) -> proc_macro2::TokenStream {
-    use md_tmpl::compiled::FilterKind;
+pub(crate) fn codegen_filter_kind(
+    k: md_tmpl_core::compiled::FilterKind,
+) -> proc_macro2::TokenStream {
+    use md_tmpl_core::compiled::FilterKind;
     let cp = crate_path();
     match k {
         FilterKind::Upper => quote! { #cp::compiled::FilterKind::Upper },
@@ -181,8 +185,8 @@ pub(crate) fn codegen_filter_kind(k: md_tmpl::compiled::FilterKind) -> proc_macr
     }
 }
 
-pub(crate) fn codegen_condition(c: &md_tmpl::compiled::Condition) -> proc_macro2::TokenStream {
-    use md_tmpl::compiled::Condition;
+pub(crate) fn codegen_condition(c: &md_tmpl_core::compiled::Condition) -> proc_macro2::TokenStream {
+    use md_tmpl_core::compiled::Condition;
     let cp = crate_path();
     match c {
         Condition::Truthy(v) => {
@@ -249,15 +253,15 @@ pub(crate) fn codegen_condition(c: &md_tmpl::compiled::Condition) -> proc_macro2
     }
 }
 
-fn codegen_compiled_path(path: &md_tmpl::compiled::CompiledPath) -> proc_macro2::TokenStream {
+fn codegen_compiled_path(path: &md_tmpl_core::compiled::CompiledPath) -> proc_macro2::TokenStream {
     let cp = crate_path();
     let raw = path.as_str();
     let parts: Vec<&str> = path.parts().iter().map(String::as_str).collect();
     quote! { #cp::compiled::CompiledPath::from_static(#raw, &[#(#parts),*]) }
 }
 
-fn codegen_compiled_expr(expr: &md_tmpl::compiled::CompiledExpr) -> proc_macro2::TokenStream {
-    use md_tmpl::compiled::CompiledExpr;
+fn codegen_compiled_expr(expr: &md_tmpl_core::compiled::CompiledExpr) -> proc_macro2::TokenStream {
+    use md_tmpl_core::compiled::CompiledExpr;
     let cp = crate_path();
     match expr {
         CompiledExpr::Path(path) => {
@@ -287,8 +291,10 @@ fn codegen_compiled_expr(expr: &md_tmpl::compiled::CompiledExpr) -> proc_macro2:
     }
 }
 
-fn codegen_condition_operand(op: &md_tmpl::compiled::ConditionOperand) -> proc_macro2::TokenStream {
-    use md_tmpl::compiled::ConditionOperand;
+fn codegen_condition_operand(
+    op: &md_tmpl_core::compiled::ConditionOperand,
+) -> proc_macro2::TokenStream {
+    use md_tmpl_core::compiled::ConditionOperand;
     let cp = crate_path();
     match op {
         ConditionOperand::Literal(val) => {
@@ -333,9 +339,9 @@ fn codegen_condition_operand(op: &md_tmpl::compiled::ConditionOperand) -> proc_m
 }
 
 pub(crate) fn codegen_comparison_op(
-    op: md_tmpl::compiled::ComparisonOp,
+    op: md_tmpl_core::compiled::ComparisonOp,
 ) -> proc_macro2::TokenStream {
-    use md_tmpl::compiled::ComparisonOp;
+    use md_tmpl_core::compiled::ComparisonOp;
     let cp = crate_path();
     match op {
         ComparisonOp::Eq => quote! { #cp::compiled::ComparisonOp::Eq },
@@ -349,7 +355,7 @@ pub(crate) fn codegen_comparison_op(
 }
 
 pub(crate) fn codegen_compiled_inline_template(
-    t: &md_tmpl::compiled::CompiledInlineTemplate,
+    t: &md_tmpl_core::compiled::CompiledInlineTemplate,
 ) -> proc_macro2::TokenStream {
     let cp = crate_path();
     let segments_tokens = t.segments.iter().map(codegen_segment);
@@ -372,7 +378,7 @@ pub(crate) fn codegen_compiled_inline_template(
     }
 }
 
-pub(crate) fn codegen_var_decl(d: &md_tmpl::VarDecl) -> proc_macro2::TokenStream {
+pub(crate) fn codegen_var_decl(d: &md_tmpl_core::VarDecl) -> proc_macro2::TokenStream {
     let cp = crate_path();
     let name = &d.name;
     let type_tokens = codegen_var_type(&d.var_type);
@@ -391,8 +397,8 @@ pub(crate) fn codegen_var_decl(d: &md_tmpl::VarDecl) -> proc_macro2::TokenStream
     }
 }
 
-pub(crate) fn codegen_value(v: &md_tmpl::Value) -> proc_macro2::TokenStream {
-    use md_tmpl::Value;
+pub(crate) fn codegen_value(v: &md_tmpl_core::Value) -> proc_macro2::TokenStream {
+    use md_tmpl_core::Value;
     let cp = crate_path();
     match v {
         Value::Str(s) => {
@@ -425,8 +431,8 @@ pub(crate) fn codegen_value(v: &md_tmpl::Value) -> proc_macro2::TokenStream {
     }
 }
 
-pub(crate) fn codegen_var_type(t: &md_tmpl::VarType) -> proc_macro2::TokenStream {
-    use md_tmpl::VarType;
+pub(crate) fn codegen_var_type(t: &md_tmpl_core::VarType) -> proc_macro2::TokenStream {
+    use md_tmpl_core::VarType;
     let cp = crate_path();
     match t {
         VarType::Str => quote! { #cp::VarType::Str },
@@ -456,7 +462,7 @@ pub(crate) fn codegen_var_type(t: &md_tmpl::VarType) -> proc_macro2::TokenStream
     }
 }
 
-pub(crate) fn codegen_variant_decl(v: &md_tmpl::VariantDecl) -> proc_macro2::TokenStream {
+pub(crate) fn codegen_variant_decl(v: &md_tmpl_core::VariantDecl) -> proc_macro2::TokenStream {
     let cp = crate_path();
     let name = &v.name;
     let fields_tokens = v.fields.iter().map(codegen_var_decl);
@@ -468,8 +474,8 @@ pub(crate) fn codegen_variant_decl(v: &md_tmpl::VariantDecl) -> proc_macro2::Tok
     }
 }
 
-pub(crate) fn is_scalar(t: &md_tmpl::VarType) -> bool {
-    use md_tmpl::VarType;
+pub(crate) fn is_scalar(t: &md_tmpl_core::VarType) -> bool {
+    use md_tmpl_core::VarType;
     matches!(
         t,
         VarType::Str | VarType::Int | VarType::Float | VarType::Bool
@@ -480,12 +486,12 @@ pub(crate) fn is_scalar(t: &md_tmpl::VarType) -> bool {
 ///
 /// Handles both single-anonymous-field lists and named-field struct lists.
 pub(crate) fn codegen_list_literal(
-    items: &[md_tmpl::Value],
-    fields: &[md_tmpl::VarDecl],
+    items: &[md_tmpl_core::Value],
+    fields: &[md_tmpl_core::VarDecl],
     parent_struct: &str,
     field_name: &str,
 ) -> proc_macro2::TokenStream {
-    use md_tmpl::Value;
+    use md_tmpl_core::Value;
     let cp = crate_path();
 
     if fields.len() == 1 && fields[0].name.is_empty() {
@@ -494,7 +500,7 @@ pub(crate) fn codegen_list_literal(
         });
         quote! { #cp::__private::vec![#(#item_tokens),*] }
     } else {
-        let capitalized = md_tmpl::to_pascal_case(field_name);
+        let capitalized = md_tmpl_core::to_pascal_case(field_name);
         let item_struct_name = format_ident!("{parent_struct}{capitalized}Item");
         let item_tokens = items.iter().map(|item| {
             if let Value::Struct(d) = item {
@@ -527,12 +533,12 @@ pub(crate) fn codegen_list_literal(
 }
 
 pub(crate) fn codegen_value_as_rust_literal(
-    v: &md_tmpl::Value,
-    t: &md_tmpl::VarType,
+    v: &md_tmpl_core::Value,
+    t: &md_tmpl_core::VarType,
     parent_struct: &str,
     field_name: &str,
 ) -> proc_macro2::TokenStream {
-    use md_tmpl::{Value, VarType};
+    use md_tmpl_core::{Value, VarType};
     let cp = crate_path();
 
     match (v, t) {
@@ -571,7 +577,7 @@ pub(crate) fn codegen_value_as_rust_literal(
                 let msg = format!("unknown or non-unit enum variant `{s}` in constant");
                 return quote! { compile_error!(#msg) };
             };
-            let capitalized = md_tmpl::to_pascal_case(field_name);
+            let capitalized = md_tmpl_core::to_pascal_case(field_name);
             let (var_ident, _) = string_to_variant_ident(&variant.name);
             let enum_name = format_ident!("{parent_struct}{capitalized}");
             quote! { #enum_name::#var_ident }
@@ -589,12 +595,12 @@ pub(crate) fn codegen_value_as_rust_literal(
 
 /// Generate a Rust struct literal from a constant `Value::Struct`.
 fn codegen_struct_literal(
-    d: &std::sync::Arc<hashbrown::HashMap<String, md_tmpl::Value>>,
-    fields: &[md_tmpl::VarDecl],
+    d: &std::sync::Arc<hashbrown::HashMap<String, md_tmpl_core::Value>>,
+    fields: &[md_tmpl_core::VarDecl],
     parent_struct: &str,
     field_name: &str,
 ) -> proc_macro2::TokenStream {
-    let capitalized = md_tmpl::to_pascal_case(field_name);
+    let capitalized = md_tmpl_core::to_pascal_case(field_name);
     let struct_name = format_ident!("{parent_struct}{capitalized}");
     let field_tokens = fields.iter().map(|f_decl| {
         let f_name = format_ident!("{}", f_decl.name);
@@ -616,12 +622,12 @@ fn codegen_struct_literal(
 
 /// Generate a Rust data-enum literal from a constant `Value::Struct` with `__kind__`.
 fn codegen_data_enum_literal(
-    d: &std::sync::Arc<hashbrown::HashMap<String, md_tmpl::Value>>,
-    variants: &[md_tmpl::VariantDecl],
+    d: &std::sync::Arc<hashbrown::HashMap<String, md_tmpl_core::Value>>,
+    variants: &[md_tmpl_core::VariantDecl],
     parent_struct: &str,
     field_name: &str,
 ) -> proc_macro2::TokenStream {
-    use md_tmpl::Value;
+    use md_tmpl_core::Value;
 
     let Some(kind) = d
         .get("__kind__")
@@ -636,7 +642,7 @@ fn codegen_data_enum_literal(
         let msg = format!("unknown enum variant `{kind}` in constant for field `{field_name}`");
         return quote! { compile_error!(#msg) };
     };
-    let capitalized = md_tmpl::to_pascal_case(field_name);
+    let capitalized = md_tmpl_core::to_pascal_case(field_name);
     let (var_ident, _) = string_to_variant_ident(&variant.name);
     let enum_name = format_ident!("{parent_struct}{capitalized}");
 

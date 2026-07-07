@@ -167,25 +167,46 @@ pub(super) fn strip_blockquote_tags(input: &str) -> alloc::borrow::Cow<'_, str> 
 
     let lines: Vec<&str> = input.split('\n').collect();
     let mut result = String::with_capacity(input.len());
-    let mut skip_next_newline = false;
+    let mut after_standalone = false;
+    let mut pending_blanks: usize = 0;
     for (i, &line) in lines.iter().enumerate() {
         let stripped = strip_blockquote_line(line);
         let was_stripped = !core::ptr::eq(stripped, line);
-        if skip_next_newline && stripped.trim().is_empty() {
+        let is_blank = stripped.trim().is_empty();
+        let is_standalone = was_stripped && is_standalone_tag(stripped);
+
+        // Accumulate blank lines after a standalone tag.
+        if after_standalone && is_blank {
+            pending_blanks += 1;
             continue;
         }
-        if i > 0 && !skip_next_newline {
+
+        if after_standalone && is_standalone {
+            // Tag-to-tag: consume all pending blanks (structural whitespace).
+            pending_blanks = 0;
+        } else if after_standalone {
+            // Tag-to-content: consume 1 mandatory blank, preserve the rest.
+            // Each extra blank becomes a \n in the output.
+            pending_blanks = pending_blanks.saturating_sub(1); // consume mandatory blank
+            for _ in 0..pending_blanks {
+                result.push('\n');
+            }
+            pending_blanks = 0;
+        }
+
+        // Normal line separator — suppress only after standalone tags (they handle
+        // their own whitespace via the pending_blanks mechanism above).
+        if i > 0 && !after_standalone {
             result.push('\n');
         }
-        skip_next_newline = false;
-        // When a blockquote-stripped line is a standalone tag (only `{% … %}`),
-        // consume the trailing newline so it doesn't leak into the block body.
-        // Also pop the preceding blank line if present, matching TypeScript parity.
-        if was_stripped && is_standalone_tag(stripped) {
+        after_standalone = false;
+
+        // Standalone tag: pop preceding blank + set up post-tag state.
+        if is_standalone {
             if result.ends_with("\n\n") || result == "\n" {
                 result.pop();
             }
-            skip_next_newline = true;
+            after_standalone = true;
         }
         result.push_str(stripped);
     }
@@ -255,9 +276,13 @@ mod tests {
 
     #[test]
     fn strip_preserve_literal_blockquote_between_tags() {
-        let input = "> {% if condition %}\n\n> This is a literal blockquote inside the block.\n\n> {% /if %}";
-        let expected =
-            "{% if condition %}> This is a literal blockquote inside the block.\n{% /if %}";
+        let input = r"> {% if condition %}
+
+> This is a literal blockquote inside the block.
+
+> {% /if %}";
+        let expected = r"{% if condition %}> This is a literal blockquote inside the block.
+{% /if %}";
         assert_eq!(strip_blockquote_tags(input).as_ref(), expected);
     }
 
@@ -274,7 +299,9 @@ mod tests {
     #[test]
     fn validate_rejects_content_with_blockquote_prefix() {
         // Content line starting with `>` but no `{% %}` — NOT a valid tag neighbor
-        let input = "> {% if empty %}\n> _No items._\n> {% /if %}";
+        let input = r"> {% if empty %}
+> _No items._
+> {% /if %}";
         let err = validate_blockquote_prefix(input).unwrap_err();
         assert!(
             err.to_string().contains("must be followed by a blank line"),
@@ -284,19 +311,38 @@ mod tests {
 
     #[test]
     fn validate_accepts_blank_lines_around_tags() {
-        let input = "\n> {% if show %}\n\nContent here.\n\n> {% /if %}\n";
+        let input = r"
+> {% if show %}
+
+Content here.
+
+> {% /if %}
+";
         assert!(validate_blockquote_prefix(input).is_ok());
     }
 
     #[test]
     fn validate_accepts_consecutive_tags() {
-        let input = "\n> {% if x %}\n> {% for item in items %}\n\n{{ item }}\n\n> {% /for %}\n> {% /if %}\n";
+        let input = r"
+> {% if x %}
+> {% for item in items %}
+
+{{ item }}
+
+> {% /for %}
+> {% /if %}
+";
         assert!(validate_blockquote_prefix(input).is_ok());
     }
 
     #[test]
     fn validate_rejects_content_directly_after_tag() {
-        let input = "\n> {% if show %}\nContent without blank line.\n\n> {% /if %}\n";
+        let input = r"
+> {% if show %}
+Content without blank line.
+
+> {% /if %}
+";
         let err = validate_blockquote_prefix(input).unwrap_err();
         assert!(
             err.to_string().contains("must be followed by a blank line"),
@@ -306,7 +352,12 @@ mod tests {
 
     #[test]
     fn validate_rejects_content_directly_before_tag() {
-        let input = "\n> {% if show %}\n\nContent without blank line.\n> {% /if %}\n";
+        let input = r"
+> {% if show %}
+
+Content without blank line.
+> {% /if %}
+";
         let err = validate_blockquote_prefix(input).unwrap_err();
         assert!(
             err.to_string().contains("must be preceded by a blank line"),

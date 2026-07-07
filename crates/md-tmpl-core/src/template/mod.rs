@@ -35,7 +35,7 @@ use self::analysis::{
 /// # Examples
 ///
 /// ```
-/// use md_tmpl::CompileOptions;
+/// use md_tmpl_core::CompileOptions;
 ///
 /// // Default options (strict mode):
 /// let opts = CompileOptions::default();
@@ -56,6 +56,10 @@ pub struct CompileOptions<'a> {
     /// When `None`, includes are not resolved (suitable for in-memory templates).
     #[cfg(feature = "std")]
     pub base_dir: Option<&'a std::path::Path>,
+    /// Compile-time environment variables (name-value pairs).
+    /// Values are typed — they must match the type declared in `env:` frontmatter.
+    /// String values for scalar types (int, bool, float) are auto-parsed.
+    pub env: &'a [(&'a str, crate::Value)],
     // Lifetime anchor for no_std where base_dir doesn't exist.
     #[cfg(not(feature = "std"))]
     _phantom: core::marker::PhantomData<&'a ()>,
@@ -71,11 +75,18 @@ impl<'a> CompileOptions<'a> {
     }
 }
 
-impl CompileOptions<'_> {
+impl<'a> CompileOptions<'a> {
     /// Allow unused declared parameters.
     #[must_use]
     pub fn allow_unused(mut self, allow: bool) -> Self {
         self.allow_unused = allow;
+        self
+    }
+
+    /// Set compile-time environment variables.
+    #[must_use]
+    pub fn env(mut self, pairs: &'a [(&'a str, crate::Value)]) -> Self {
+        self.env = pairs;
         self
     }
 }
@@ -238,69 +249,6 @@ impl Template {
         Ok(tmpl)
     }
 
-    /// Parse a template from source, allowing declared parameters that are
-    /// not referenced in the template body.
-    ///
-    /// Equivalent to setting `allow_unused: true` in the frontmatter.
-    /// Useful for dynamically-loaded templates where parameters may be
-    /// conditionally used or forwarded to includes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TemplateError::Syntax`] if the body contains a syntax error.
-    #[deprecated(
-        since = "0.2.0",
-        note = "Use `Template::compile(source, CompileOptions::default().allow_unused(true))` instead"
-    )]
-    pub fn from_source_allowing_unused(source: &str) -> Result<Self, TemplateError> {
-        let (tmpl, _fm) = Self::compile(source, CompileOptions::default().allow_unused(true))?;
-        Ok(tmpl)
-    }
-
-    /// Parse from source with a base directory for includes.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TemplateError::Syntax`] if the body contains a syntax error.
-    #[cfg(feature = "std")]
-    #[deprecated(
-        since = "0.2.0",
-        note = "Use `Template::compile(source, CompileOptions::default().base_dir(dir))` instead"
-    )]
-    pub fn from_source_with_base_dir(source: &str, base_dir: &Path) -> Result<Self, TemplateError> {
-        let (tmpl, _fm) = Self::compile(source, CompileOptions::default().base_dir(base_dir))?;
-        Ok(tmpl)
-    }
-
-    /// Parse and return frontmatter too.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TemplateError::Syntax`] if the body contains a syntax error.
-    #[deprecated(
-        since = "0.2.0",
-        note = "Use `Template::compile(source, CompileOptions::default())` which always returns Frontmatter"
-    )]
-    pub fn from_source_with_frontmatter(
-        source: &str,
-    ) -> Result<(Self, Frontmatter), TemplateError> {
-        Self::compile(source, CompileOptions::default())
-    }
-
-    /// Load and return frontmatter too.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TemplateError::Io`] if the file cannot be read.
-    #[cfg(feature = "std")]
-    #[deprecated(
-        since = "0.2.0",
-        note = "Use `Template::compile_file(path, CompileOptions::default())` which always returns Frontmatter"
-    )]
-    pub fn from_file_with_frontmatter(path: &Path) -> Result<(Self, Frontmatter), TemplateError> {
-        Self::compile_file(path, CompileOptions::default())
-    }
-
     /// Parse a template from source with compile options, returning both the
     /// template and its frontmatter.
     ///
@@ -310,7 +258,7 @@ impl Template {
     /// # Examples
     ///
     /// ```
-    /// use md_tmpl::{CompileOptions, Template};
+    /// use md_tmpl_core::{CompileOptions, Template};
     ///
     /// let (tmpl, fm) = Template::compile(
     ///     r#"---
@@ -330,9 +278,9 @@ impl Template {
         options: CompileOptions<'_>,
     ) -> Result<(Self, Frontmatter), TemplateError> {
         #[cfg(feature = "std")]
-        return Self::compile_inner(source, options.base_dir, options.allow_unused);
+        return Self::compile_inner(source, options.base_dir, options.allow_unused, options.env);
         #[cfg(not(feature = "std"))]
-        return Self::compile_inner_no_std(source, options.allow_unused);
+        return Self::compile_inner_no_std(source, options.allow_unused, options.env);
     }
 
     /// Load a template from a file with compile options, returning both the
@@ -346,7 +294,7 @@ impl Template {
     /// ```no_run
     /// use std::path::Path;
     ///
-    /// use md_tmpl::{CompileOptions, Template};
+    /// use md_tmpl_core::{CompileOptions, Template};
     ///
     /// let (tmpl, fm) =
     ///     Template::compile_file(Path::new("template.tmpl.md"), CompileOptions::default()).unwrap();
@@ -362,7 +310,7 @@ impl Template {
     ) -> Result<(Self, Frontmatter), TemplateError> {
         let source = std::fs::read_to_string(path)?;
         let base_dir = options.base_dir.or_else(|| path.parent());
-        Self::compile_inner(&source, base_dir, options.allow_unused)
+        Self::compile_inner(&source, base_dir, options.allow_unused, options.env)
     }
 
     /// Shared compilation entry point — honours `allow_unused` from frontmatter.
@@ -371,7 +319,7 @@ impl Template {
         source: &str,
         base_dir: Option<&Path>,
     ) -> Result<(Self, Frontmatter), TemplateError> {
-        Self::compile_inner(source, base_dir, false)
+        Self::compile_inner(source, base_dir, false, &[])
     }
 
     /// Core compilation: parse frontmatter → compile body → static analysis → build `Template`.
@@ -383,12 +331,13 @@ impl Template {
         source: &str,
         base_dir: Option<&Path>,
         force_allow_unused: bool,
+        env_values: &[(&str, Value)],
     ) -> Result<(Self, Frontmatter), TemplateError> {
         let source_hash = crate::cache::hash_source(source);
         let (fm, body) = if let Some(dir) = base_dir {
-            frontmatter::parse_frontmatter_with_base_dir(source, dir)?
+            frontmatter::parse_frontmatter_with_base_dir(source, dir, env_values)?
         } else {
-            frontmatter::parse_frontmatter(source)?
+            frontmatter::parse_frontmatter_with_env(source, env_values)?
         };
         let body = body.to_string();
         let (segments, inline_templates) = compiled::compile(&body, &fm.type_aliases)?;
@@ -413,6 +362,12 @@ impl Template {
             .iter()
             .filter_map(|d| d.default_value.clone().map(|v| (d.name.clone(), v)))
             .collect();
+        // Inject resolved env values as constants.
+        for d in &fm.env {
+            if let Some(ref v) = d.default_value {
+                consts.entry(d.name.clone()).or_insert_with(|| v.clone());
+            }
+        }
         // Inject enum type aliases as namespace constants (e.g. Stage.Design).
         inject_enum_type_constants(&fm.type_aliases, &mut consts);
         let segments: Arc<[Segment]> = Arc::from(segments);
@@ -439,7 +394,7 @@ impl Template {
     /// `no_std` compilation entry point (no base directory, no imports).
     #[cfg(not(feature = "std"))]
     fn compile_from_source_no_std(source: &str) -> Result<(Self, Frontmatter), TemplateError> {
-        Self::compile_inner_no_std(source, false)
+        Self::compile_inner_no_std(source, false, &[])
     }
 
     /// `no_std` core compilation.
@@ -447,9 +402,10 @@ impl Template {
     fn compile_inner_no_std(
         source: &str,
         force_allow_unused: bool,
+        env_values: &[(&str, Value)],
     ) -> Result<(Self, Frontmatter), TemplateError> {
         let source_hash = hash_source_no_std(source);
-        let (fm, body) = frontmatter::parse_frontmatter(source)?;
+        let (fm, body) = frontmatter::parse_frontmatter_with_env(source, env_values)?;
         let body = body.to_string();
         let (segments, inline_templates) = compiled::compile(&body, &fm.type_aliases)?;
 
@@ -472,6 +428,12 @@ impl Template {
             .iter()
             .filter_map(|d| d.default_value.clone().map(|v| (d.name.clone(), v)))
             .collect();
+        // Inject resolved env values as constants.
+        for d in &fm.env {
+            if let Some(ref v) = d.default_value {
+                consts.entry(d.name.clone()).or_insert_with(|| v.clone());
+            }
+        }
         // Inject enum type aliases as namespace constants (e.g. Stage.Design).
         inject_enum_type_constants(&fm.type_aliases, &mut consts);
         let segments: Arc<[Segment]> = Arc::from(segments);
@@ -669,7 +631,7 @@ impl Template {
     ///
     /// Use this as a starting point, then override only the params you need:
     /// ```
-    /// # use md_tmpl::{Template, Context};
+    /// # use md_tmpl_core::{Template, Context};
     /// let tmpl = Template::from_source(
     ///     r#"---
     /// params:
@@ -753,7 +715,7 @@ impl Template {
     /// # Examples
     ///
     /// ```
-    /// use md_tmpl::Template;
+    /// use md_tmpl_core::Template;
     ///
     /// let tmpl = Template::from_source(
     ///     r#"---

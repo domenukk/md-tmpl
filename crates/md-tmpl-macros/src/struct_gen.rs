@@ -62,7 +62,7 @@ fn render_method_tokens() -> proc_macro2::TokenStream {
 
 /// Generate the struct definition and impl block from frontmatter declarations.
 pub(crate) fn generate_struct_tokens(
-    frontmatter: &md_tmpl::Frontmatter,
+    frontmatter: &md_tmpl_core::Frontmatter,
     struct_name: &syn::Ident,
     source: &StructGenSource<'_>,
 ) -> proc_macro2::TokenStream {
@@ -101,7 +101,7 @@ pub(crate) fn generate_struct_tokens(
     let has_tmpl_fields = frontmatter
         .declarations
         .iter()
-        .any(|d| matches!(d.var_type, md_tmpl::VarType::Tmpl(_)));
+        .any(|d| matches!(d.var_type, md_tmpl_core::VarType::Tmpl(_)));
     let derive_attrs = struct_derive_attrs(has_tmpl_fields);
 
     let render_methods = render_method_tokens();
@@ -181,7 +181,7 @@ pub(crate) fn generate_struct_tokens(
 
 /// Generate `const` / `static` declarations for frontmatter `consts:` entries.
 pub(crate) fn generate_const_decl_tokens(
-    consts: &[md_tmpl::VarDecl],
+    consts: &[md_tmpl_core::VarDecl],
     struct_name_str: &str,
     sub_structs: &mut Vec<proc_macro2::TokenStream>,
 ) -> Vec<proc_macro2::TokenStream> {
@@ -196,7 +196,9 @@ pub(crate) fn generate_const_decl_tokens(
         if let Some(v) = &decl.default_value {
             if is_scalar(&decl.var_type) {
                 let (final_type, val_tokens) =
-                    if let (md_tmpl::Value::Str(s), md_tmpl::VarType::Str) = (v, &decl.var_type) {
+                    if let (md_tmpl_core::Value::Str(s), md_tmpl_core::VarType::Str) =
+                        (v, &decl.var_type)
+                    {
                         (quote! { &'static str }, quote! { #s })
                     } else {
                         let vt = codegen_value_as_rust_literal(
@@ -224,7 +226,7 @@ pub(crate) fn generate_const_decl_tokens(
 
 /// Build doc-comment attributes from frontmatter metadata.
 pub(crate) fn build_struct_docs(
-    frontmatter: &md_tmpl::Frontmatter,
+    frontmatter: &md_tmpl_core::Frontmatter,
     path_raw: &str,
 ) -> Vec<proc_macro2::TokenStream> {
     let tmpl_name = match frontmatter.name.as_deref() {
@@ -302,8 +304,8 @@ pub(crate) fn struct_derive_attrs(has_tmpl_fields: bool) -> proc_macro2::TokenSt
 /// - `String` fields get `#[builder(setter(into))]` for ergonomic `"str".into()`.
 /// - `Vec<…>` fields get `#[builder(default)]` so they default to empty.
 /// - All other fields have no special builder attributes.
-pub(crate) fn builder_field_attrs(var_type: &md_tmpl::VarType) -> proc_macro2::TokenStream {
-    use md_tmpl::VarType;
+pub(crate) fn builder_field_attrs(var_type: &md_tmpl_core::VarType) -> proc_macro2::TokenStream {
+    use md_tmpl_core::VarType;
     if !cfg!(feature = "typed-builder") {
         return quote! {};
     }
@@ -317,12 +319,12 @@ pub(crate) fn builder_field_attrs(var_type: &md_tmpl::VarType) -> proc_macro2::T
 
 /// Map a `VarType` to a Rust type token and a setter closure.
 pub(crate) fn var_type_to_rust(
-    var_type: &md_tmpl::VarType,
+    var_type: &md_tmpl_core::VarType,
     parent_struct: &str,
     field_name: &str,
     sub_structs: &mut Vec<proc_macro2::TokenStream>,
 ) -> (proc_macro2::TokenStream, SetterFn) {
-    use md_tmpl::VarType;
+    use md_tmpl_core::VarType;
     let cp = crate_path();
 
     match var_type {

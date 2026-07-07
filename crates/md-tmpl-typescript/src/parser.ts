@@ -143,8 +143,25 @@ export function parseNodes(
             "Comments must have spaces around the content (e.g. `{# comment #}` or `{#- comment -#}`)",
           );
         }
+        // Apply {#- trim: strip trailing whitespace from previous text node
+        if (trimBefore && nodes.length > 0) {
+          const last = nodes[nodes.length - 1]!;
+          if (last.kind === "text") {
+            nodes[nodes.length - 1] = {
+              ...last,
+              kind: "text",
+              text: last.text.replace(/\s+$/, ""),
+            };
+          }
+        }
         nodes.push({ kind: NODE_COMMENT, loc: getLoc(earliest, lineMap) });
         pos = endIdx + 2;
+        // Apply -#} trim: strip leading whitespace from following text
+        if (trimAfter) {
+          while (pos < input.length && /\s/.test(input[pos]!)) {
+            pos++;
+          }
+        }
       } else if (earliest === exprStart) {
         // Expression: {{ ... }}
         const [expr, endPos, trimBefore, trimAfter] = parseExpression(

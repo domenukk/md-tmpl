@@ -21,14 +21,14 @@ pub(crate) fn stem_from_path(path: &str) -> String {
 }
 
 pub(crate) fn hash_source(source: &str) -> u64 {
-    md_tmpl::__private::fnv1a_hash(source.as_bytes())
+    md_tmpl_core::__private::fnv1a_hash(source.as_bytes())
 }
 
 /// Result of compiling a template at macro expansion time.
 pub(crate) struct CompiledTemplateAst {
-    pub(crate) frontmatter: md_tmpl::Frontmatter,
-    pub(crate) segments: Vec<md_tmpl::compiled::Segment>,
-    pub(crate) inline_templates: HashMap<String, md_tmpl::compiled::CompiledInlineTemplate>,
+    pub(crate) frontmatter: md_tmpl_core::Frontmatter,
+    pub(crate) segments: Vec<md_tmpl_core::compiled::Segment>,
+    pub(crate) inline_templates: HashMap<String, md_tmpl_core::compiled::CompiledInlineTemplate>,
     pub(crate) source_hash: u64,
 }
 
@@ -36,32 +36,37 @@ pub(crate) struct CompiledTemplateAst {
 /// and return both the resolved full path and the compiled AST.
 pub(crate) fn load_and_compile(
     rel_path: &str,
+    env_values: &[(&str, md_tmpl_core::Value)],
 ) -> Result<(std::path::PathBuf, CompiledTemplateAst), String> {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
     let full_path = std::path::Path::new(&manifest_dir).join(rel_path);
     let source = std::fs::read_to_string(&full_path)
         .map_err(|e| format!("failed to read template '{}': {e}", full_path.display()))?;
     let base_dir = full_path.parent().unwrap_or(std::path::Path::new("."));
-    let ast = compile_template_to_ast(&source, base_dir)?;
+    let ast = compile_template_to_ast(&source, base_dir, env_values)?;
     Ok((full_path, ast))
 }
 
 pub(crate) fn compile_template_to_ast(
     source: &str,
     base_dir: &std::path::Path,
+    env_values: &[(&str, md_tmpl_core::Value)],
 ) -> Result<CompiledTemplateAst, String> {
     let source_hash = hash_source(source);
-    let (fm, body) =
-        md_tmpl::parse_frontmatter_with_base_dir(source, base_dir).map_err(|e| e.to_string())?;
+    let (fm, body) = md_tmpl_core::parse_frontmatter_with_base_dir(source, base_dir, env_values)
+        .map_err(|e| e.to_string())?;
 
     let (mut segments, inline_templates) =
-        md_tmpl::compiled::compile(body, &fm.type_aliases).map_err(|e| e.to_string())?;
+        md_tmpl_core::compiled::compile(body, &fm.type_aliases).map_err(|e| e.to_string())?;
 
     // Static analysis: Enforce that all parameters referenced in the body are declared.
-    let referenced = md_tmpl::compiled::collect_referenced_params(&segments);
+    let referenced = md_tmpl_core::compiled::collect_referenced_params(&segments);
     let mut declared: HashSet<String> = fm.params.iter().cloned().collect();
     for c in &fm.consts {
         declared.insert(c.name.clone());
+    }
+    for e in &fm.env {
+        declared.insert(e.name.clone());
     }
     for import in &fm.imports {
         declared.insert(import.stem.clone());
@@ -90,7 +95,7 @@ pub(crate) fn compile_template_to_ast(
     let tmpl_params: HashSet<String> = fm
         .declarations
         .iter()
-        .filter(|d| matches!(d.var_type, md_tmpl::VarType::Tmpl(_)))
+        .filter(|d| matches!(d.var_type, md_tmpl_core::VarType::Tmpl(_)))
         .map(|d| d.name.clone())
         .collect();
     let mut visited_paths = HashSet::new();
@@ -115,7 +120,11 @@ pub(crate) fn compile_template_to_ast(
     for c in &fm.consts {
         opaque_roots.insert(c.name.clone());
     }
-    let type_errors = md_tmpl::compiled::validate_field_accesses_with_opaque(
+    for e in &fm.env {
+        opaque_roots.insert(e.name.clone());
+    }
+
+    let type_errors = md_tmpl_core::compiled::validate_field_accesses_with_opaque(
         &segments,
         &fm.declarations,
         &opaque_roots,
@@ -145,10 +154,10 @@ pub(crate) fn max_compile_include_depth() -> usize {
 }
 
 pub(crate) fn resolve_includes_recursive(
-    segments: &mut [md_tmpl::compiled::Segment],
+    segments: &mut [md_tmpl_core::compiled::Segment],
     base_dir: &std::path::Path,
     visited_paths: &mut HashSet<PathBuf>,
-    inline_templates: &HashMap<String, md_tmpl::compiled::CompiledInlineTemplate>,
+    inline_templates: &HashMap<String, md_tmpl_core::compiled::CompiledInlineTemplate>,
     tmpl_params: &HashSet<String>,
     depth: usize,
 ) -> Result<(), String> {
@@ -162,7 +171,7 @@ pub(crate) fn resolve_includes_recursive(
 
     for seg in segments {
         match seg {
-            md_tmpl::compiled::Segment::Include(inc) => {
+            md_tmpl_core::compiled::Segment::Include(inc) => {
                 // Dynamic tmpl() parameter — resolved at runtime, not compile time.
                 if tmpl_params.contains(inc.path.as_ref()) {
                     continue;
@@ -189,7 +198,7 @@ pub(crate) fn resolve_includes_recursive(
                 resolve_single_include(inc, base_dir, visited_paths, depth + 1)?;
                 visited_paths.remove(&canonical);
             }
-            md_tmpl::compiled::Segment::ForLoop { body, .. } => {
+            md_tmpl_core::compiled::Segment::ForLoop { body, .. } => {
                 resolve_includes_recursive(
                     body,
                     base_dir,
@@ -199,7 +208,7 @@ pub(crate) fn resolve_includes_recursive(
                     depth,
                 )?;
             }
-            md_tmpl::compiled::Segment::If {
+            md_tmpl_core::compiled::Segment::If {
                 branches,
                 else_body,
             } => {
@@ -222,7 +231,7 @@ pub(crate) fn resolve_includes_recursive(
                     depth,
                 )?;
             }
-            md_tmpl::compiled::Segment::Match { arms, .. } => {
+            md_tmpl_core::compiled::Segment::Match { arms, .. } => {
                 for arm in arms {
                     resolve_includes_recursive(
                         &mut arm.body,
@@ -234,11 +243,11 @@ pub(crate) fn resolve_includes_recursive(
                     )?;
                 }
             }
-            md_tmpl::compiled::Segment::Static(_)
-            | md_tmpl::compiled::Segment::Expr { .. }
-            | md_tmpl::compiled::Segment::Raw(_)
-            | md_tmpl::compiled::Segment::Comment(_)
-            | md_tmpl::compiled::Segment::Panic(_) => {}
+            md_tmpl_core::compiled::Segment::Static(_)
+            | md_tmpl_core::compiled::Segment::Expr { .. }
+            | md_tmpl_core::compiled::Segment::Raw(_)
+            | md_tmpl_core::compiled::Segment::Comment(_)
+            | md_tmpl_core::compiled::Segment::Panic(_) => {}
         }
     }
     Ok(())
@@ -249,7 +258,7 @@ pub(crate) fn resolve_includes_recursive(
 /// Used for the cycle case: we need the declarations for boundary type checking
 /// but don't recurse into the body's own includes.
 pub(crate) fn load_include_declarations(
-    inc: &mut md_tmpl::compiled::CompiledInclude,
+    inc: &mut md_tmpl_core::compiled::CompiledInclude,
     include_path: &std::path::Path,
 ) -> Result<(), String> {
     if inc.inline_compiled.is_some() {
@@ -259,10 +268,10 @@ pub(crate) fn load_include_declarations(
         .map_err(|e| format!("cannot read include {}: {e}", include_path.display()))?;
     let included_base_dir = include_path.parent().unwrap_or(std::path::Path::new("."));
     let (included_fm, included_body) =
-        md_tmpl::parse_frontmatter_with_base_dir(&included_source, included_base_dir)
+        md_tmpl_core::parse_frontmatter_with_base_dir(&included_source, included_base_dir, &[])
             .map_err(|e| format!("syntax error in include {}: {e}", include_path.display()))?;
     let (included_segments, _) =
-        md_tmpl::compiled::compile(included_body, &included_fm.type_aliases).map_err(|e| {
+        md_tmpl_core::compiled::compile(included_body, &included_fm.type_aliases).map_err(|e| {
             format!(
                 "compilation error in include {}: {e}",
                 include_path.display()
@@ -275,7 +284,7 @@ pub(crate) fn load_include_declarations(
             included_consts.insert(d.name.clone(), v.clone());
         }
     }
-    inc.inline_compiled = Some(md_tmpl::compiled::CompiledInlineTemplate {
+    inc.inline_compiled = Some(md_tmpl_core::compiled::CompiledInlineTemplate {
         segments: std::sync::Arc::from(included_segments),
         declarations: std::sync::Arc::from(included_fm.declarations),
         consts: std::sync::Arc::new(included_consts),
@@ -290,7 +299,7 @@ pub(crate) fn load_include_declarations(
 /// Contract and type checking is now handled by `validate_field_accesses`
 /// after all includes are resolved.
 pub(crate) fn resolve_single_include(
-    inc: &mut md_tmpl::compiled::CompiledInclude,
+    inc: &mut md_tmpl_core::compiled::CompiledInclude,
     base_dir: &std::path::Path,
     visited_paths: &mut HashSet<PathBuf>,
     depth: usize,
@@ -301,14 +310,14 @@ pub(crate) fn resolve_single_include(
 
     let included_base_dir = include_path.parent().unwrap_or(base_dir);
     let (included_fm, included_body) =
-        md_tmpl::parse_frontmatter_with_base_dir(&included_source, included_base_dir)
+        md_tmpl_core::parse_frontmatter_with_base_dir(&included_source, included_base_dir, &[])
             .map_err(|e| format!("syntax error in include {}: {e}", include_path.display()))?;
 
     // Compile the included file and extract ITS OWN inline templates.
     // Each file has its own {% tmpl %} namespace — parent templates do NOT
     // leak into includes, and included file templates don't leak to parents.
     let (mut included_segments, included_inline_templates) =
-        md_tmpl::compiled::compile(included_body, &included_fm.type_aliases).map_err(|e| {
+        md_tmpl_core::compiled::compile(included_body, &included_fm.type_aliases).map_err(|e| {
             format!(
                 "compilation error in include {}: {e}",
                 include_path.display()
@@ -323,7 +332,7 @@ pub(crate) fn resolve_single_include(
         let child_tmpl_params: HashSet<String> = included_fm
             .declarations
             .iter()
-            .filter(|d| matches!(d.var_type, md_tmpl::VarType::Tmpl(_)))
+            .filter(|d| matches!(d.var_type, md_tmpl_core::VarType::Tmpl(_)))
             .map(|d| d.name.clone())
             .collect();
         resolve_includes_recursive(
@@ -343,7 +352,7 @@ pub(crate) fn resolve_single_include(
             included_consts.insert(d.name.clone(), v.clone());
         }
     }
-    inc.inline_compiled = Some(md_tmpl::compiled::CompiledInlineTemplate {
+    inc.inline_compiled = Some(md_tmpl_core::compiled::CompiledInlineTemplate {
         segments: std::sync::Arc::from(included_segments),
         declarations: std::sync::Arc::from(included_fm.declarations),
         consts: std::sync::Arc::new(included_consts),

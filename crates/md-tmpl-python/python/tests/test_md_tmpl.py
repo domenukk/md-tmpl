@@ -4138,3 +4138,342 @@ allow_unused: true
 > {% panic("重大なエラー 🚨") %}""")
         with pytest.raises(TemplatePanicError, match="重大なエラー 🚨"):
             tmpl.render_empty()
+
+
+# ---------------------------------------------------------------------------
+# Env: compile-time environment variables
+# ---------------------------------------------------------------------------
+
+
+class TestEnv:
+    """Tests for compile-time env: declarations via from_source_with_env / from_source_with_options."""
+
+    def test_basic_env_str_substitution(self) -> None:
+        """Env var of type str is rendered in the template body."""
+        source = textwrap.dedent("""\
+            ---
+            env: [MODEL = str]
+
+            params: []
+            ---
+            Model: {{ MODEL }}""")
+        tmpl = Template.from_source_with_env(source, {"MODEL": "gpt-4"})
+        assert tmpl.render_empty() == "Model: gpt-4"
+
+    def test_env_default_used(self) -> None:
+        """Env var with default uses default when not provided."""
+        source = textwrap.dedent("""\
+            ---
+            env:
+              - MODEL = str := "gpt-3.5"
+
+            params: []
+            ---
+            Model: {{ MODEL }}""")
+        tmpl = Template.from_source_with_env(source, {})
+        assert tmpl.render_empty() == "Model: gpt-3.5"
+
+    def test_env_default_overridden(self) -> None:
+        """Env var with default is overridden when provided."""
+        source = textwrap.dedent("""\
+            ---
+            env:
+              - MODEL = str := "gpt-3.5"
+
+            params: []
+            ---
+            Model: {{ MODEL }}""")
+        tmpl = Template.from_source_with_env(source, {"MODEL": "gpt-4o"})
+        assert tmpl.render_empty() == "Model: gpt-4o"
+
+    def test_missing_required_env_raises(self) -> None:
+        """Missing required env var (no default) raises ValueError at compile time."""
+        source = textwrap.dedent("""\
+            ---
+            env: [REQUIRED_VAR = str]
+
+            params: []
+            ---
+            {{ REQUIRED_VAR }}""")
+        with pytest.raises(ValueError, match="no value provided and no default"):
+            Template.from_source_with_env(source, {})
+
+    def test_env_coexists_with_params(self) -> None:
+        """Env vars and params coexist; both are accessible in the template body."""
+        source = textwrap.dedent("""\
+            ---
+            env: [PREFIX = str]
+
+            params: [name = str]
+            ---
+            {{ PREFIX }}/{{ name }}""")
+        tmpl = Template.from_source_with_env(source, {"PREFIX": "/opt/prompts"})
+        assert tmpl.render(name="agent_x") == "/opt/prompts/agent_x"
+
+    def test_env_int_type(self) -> None:
+        """Env var of type int is parsed and rendered correctly."""
+        source = textwrap.dedent("""\
+            ---
+            env: [MAX_RETRIES = int]
+
+            params: []
+            ---
+            Retries: {{ MAX_RETRIES }}""")
+        tmpl = Template.from_source_with_env(source, {"MAX_RETRIES": "5"})
+        assert tmpl.render_empty() == "Retries: 5"
+
+    def test_env_via_from_source_with_options(self) -> None:
+        """from_source_with_options(env=...) works the same as from_source_with_env."""
+        source = textwrap.dedent("""\
+            ---
+            env: [GREETING = str]
+
+            params: []
+            ---
+            {{ GREETING }}""")
+        tmpl = Template.from_source_with_options(source, env={"GREETING": "Hi"})
+        assert tmpl.render_empty() == "Hi"
+
+
+# ---------------------------------------------------------------------------
+# Duck typing / structural typing — extra fields are silently ignored
+# ---------------------------------------------------------------------------
+
+
+class TestDuckTypingExtraFields:
+    """Tests that md-tmpl uses structural (duck) typing for struct and list values.
+
+    Extra fields in struct dicts are silently ignored — only declared fields
+    are checked for presence and type.  This applies recursively through nested
+    structs, list items, and type aliases.
+    """
+
+    # -- struct param with extra fields ------------------------------------
+
+    def test_struct_extra_fields_ignored(self) -> None:
+        """Extra dict keys in a struct param are silently dropped."""
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            params:
+              - user = struct(name = str, age = int)
+            ---
+            {{ user.name }} is {{ user.age }}"""))
+        output = tmpl.render(
+            user={
+                "name": "Alice",
+                "age": 30,
+                "email": "alice@example.com",  # extra
+                "is_admin": True,  # extra
+            }
+        )
+        assert output == "Alice is 30"
+
+    def test_struct_extra_fields_via_render_dict(self) -> None:
+        """render_dict also ignores extra struct fields."""
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            params:
+              - cfg = struct(host = str, port = int)
+            ---
+            {{ cfg.host }}:{{ cfg.port }}"""))
+        output = tmpl.render_dict(
+            {
+                "cfg": {
+                    "host": "localhost",
+                    "port": 8080,
+                    "timeout_ms": 5000,  # extra
+                }
+            }
+        )
+        assert output == "localhost:8080"
+
+    def test_struct_extra_fields_via_render_json(self) -> None:
+        """render_json also ignores extra struct fields."""
+        import json
+
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            params:
+              - item = struct(id = int, label = str)
+            ---
+            {{ item.id }}: {{ item.label }}"""))
+        payload = json.dumps(
+            {
+                "item": {
+                    "id": 1,
+                    "label": "widget",
+                    "color": "red",  # extra
+                    "weight": 3.5,  # extra
+                }
+            }
+        )
+        output = tmpl.render_json(payload)
+        assert output == "1: widget"
+
+    # -- list items with extra fields --------------------------------------
+
+    def test_list_items_extra_fields_ignored(self) -> None:
+        """Extra fields on list-item structs are silently ignored."""
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            params:
+              - tasks = list(title = str, done = bool)
+            ---
+            > {% for t in tasks %}
+
+            - {{ t.title }} ({{ t.done }})
+
+            > {% /for %}"""))
+        output = tmpl.render(
+            tasks=[
+                {
+                    "title": "Write docs",
+                    "done": False,
+                    "assignee": "Bob",
+                    "priority": 1,
+                },
+                {"title": "Ship it", "done": True, "eta": "tomorrow"},
+            ]
+        )
+        assert output == "- Write docs (false)\n- Ship it (true)\n"
+
+    def test_list_items_extra_fields_via_render_dict(self) -> None:
+        """render_dict also ignores extra fields on list items."""
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            params:
+              - items = list(name = str)
+            ---
+            > {% for i in items %}
+
+            {{ i.name }}
+
+            > {% /for %}"""))
+        output = tmpl.render_dict(
+            {
+                "items": [
+                    {"name": "alpha", "extra_key": 999},
+                    {"name": "beta", "another": "value"},
+                ]
+            }
+        )
+        assert output == "alpha\nbeta\n"
+
+    # -- type alias with duck typing ---------------------------------------
+
+    def test_type_alias_struct_extra_fields(self) -> None:
+        """A type-alias struct still ignores extra fields."""
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            types:
+              - Address = struct(city = str, zip = str)
+
+            params:
+              - addr = Address
+            ---
+            {{ addr.city }} {{ addr.zip }}"""))
+        output = tmpl.render(
+            addr={
+                "city": "Berlin",
+                "zip": "10115",
+                "country": "DE",  # extra
+                "lat": 52.52,  # extra
+            }
+        )
+        assert output == "Berlin 10115"
+
+    def test_type_alias_list_and_struct_extra_fields_combined(self) -> None:
+        """Type-alias struct + inline list param both ignore extra fields."""
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            types:
+              - Entry = struct(key = str, value = str)
+
+            params:
+              - primary = Entry
+              - tags = list(name = str)
+            ---
+            {{ primary.key }}={{ primary.value }}
+
+            > {% for t in tags %}
+
+            #{{ t.name }}
+
+            > {% /for %}"""))
+        output = tmpl.render(
+            primary={"key": "a", "value": "1", "comment": "first"},
+            tags=[
+                {"name": "foo", "extra_meta": True},
+                {"name": "bar", "color": "red"},
+            ],
+        )
+        assert output == "a=1\n#foo\n#bar\n"
+
+    # -- nested struct with extra fields at every depth --------------------
+
+    def test_nested_struct_extra_fields_at_every_depth(self) -> None:
+        """Extra fields are ignored at each nesting level of structs."""
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            params:
+              - outer = struct(label = str, inner = struct(x = int, y = int))
+            ---
+            {{ outer.label }}: ({{ outer.inner.x }}, {{ outer.inner.y }})"""))
+        output = tmpl.render(
+            outer={
+                "label": "point",
+                "color": "blue",  # extra on outer
+                "inner": {
+                    "x": 10,
+                    "y": 20,
+                    "z": 30,  # extra on inner
+                    "comment": "nope",  # extra on inner
+                },
+                "metadata": {},  # extra on outer
+            }
+        )
+        assert output == "point: (10, 20)"
+
+    def test_triple_nested_struct_extra_fields(self) -> None:
+        """Three levels of nesting — extras ignored at every level."""
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            params:
+              - a = struct(name = str, b = struct(value = int, c = struct(flag = bool)))
+            ---
+            {{ a.name }}/{{ a.b.value }}/{{ a.b.c.flag }}"""))
+        output = tmpl.render(
+            a={
+                "name": "root",
+                "extra_a": "ignored",
+                "b": {
+                    "value": 42,
+                    "extra_b": [1, 2, 3],
+                    "c": {
+                        "flag": True,
+                        "extra_c": None,
+                    },
+                },
+            }
+        )
+        assert output == "root/42/true"
+
+    def test_list_of_nested_structs_extra_fields(self) -> None:
+        """List items containing nested structs also ignore extras at all levels."""
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            params:
+              - rows = list(id = int, detail = struct(text = str))
+            ---
+            > {% for r in rows %}
+
+            {{ r.id }}: {{ r.detail.text }}
+
+            > {% /for %}"""))
+        output = tmpl.render(
+            rows=[
+                {"id": 1, "detail": {"text": "hello", "extra": 99}, "bonus": "x"},
+                {"id": 2, "detail": {"text": "world", "color": "green"}, "tag": "y"},
+            ]
+        )
+        assert output == "1: hello\n2: world\n"

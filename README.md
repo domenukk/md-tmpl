@@ -53,7 +53,7 @@ Severity: {{ kind(severity) }} · Findings: {{ len(findings) }}/{{ MAX_FINDINGS 
 Types and fields are validated at build time — rendering happens at runtime:
 
 ```rust
-use md_tmpl_macros::include_template;
+use md_tmpl::include_template;
 
 include_template!("prompts/code_review.tmpl.md");
 
@@ -98,6 +98,7 @@ Templates can also be loaded and validated at runtime for dynamic or hot-reload 
 | **Includes as links**      | `{% include [name](path.tmpl.md) with … %}` — clickable, type-checked                               |
 | **Inline templates**       | `{% tmpl name %}` — reusable fragments without separate files                                       |
 | **Constants**              | `consts:` for file-scoped immutable values                                                          |
+| **Environment variables**  | `env:` for compile-time injection from the build environment                                        |
 | **String interpolation**   | `{{ expr }}` inside all quoted strings — conditions, includes, panic messages                       |
 | **Built-in functions**     | `idx(b)`, `len(x)`, `kind(x)`, `kinds(t)`, `has(x)` + filters (`upper`, `lower`, `trim`, `join`, …) |
 | **Readable as markdown**   | `> {% %}` blockquote prefix keeps control flow visually separated from prose                        |
@@ -111,7 +112,7 @@ Templates can also be loaded and validated at runtime for dynamic or hot-reload 
 ## Quick Start
 
 ```rust
-use md_tmpl_macros::include_template;
+use md_tmpl::include_template;
 
 // Parsed + validated at build time — generates typed structs from frontmatter
 include_template!("prompts/task_report.tmpl.md");
@@ -138,13 +139,13 @@ Built for speed — zero-allocation rendering in Rust, native FFI in all binding
 
 ### Rust (render-only, pre-parsed)
 
-| Scenario        |        md-tmpl |     Tera | `MiniJinja` | Handlebars |
-| --------------- | -------------: | -------: | ----------: | ---------: |
-| **simple**      |  **150 ns** 🏆 |   216 ns |      554 ns |     673 ns |
-| **loop**        |  **467 ns** 🏆 |   598 ns |     2.00 µs |    3.13 µs |
-| **conditional** |  **211 ns** 🏆 |   343 ns |      623 ns |    1.38 µs |
-| **hero**        | **2.08 µs** 🏆 |  2.20 µs |     7.51 µs |   25.42 µs |
-| **mega**        | **8.64 µs** 🏆 | 10.89 µs |    28.49 µs |   88.99 µs |
+| Scenario        |         md-tmpl |           Tera | `MiniJinja` | Handlebars |
+| --------------- | --------------: | -------------: | ----------: | ---------: |
+| **simple**      |          390 ns |  **335 ns** 🏆 |      725 ns |    1.47 µs |
+| **loop**        |   **659 ns** 🏆 |        1.57 µs |     4.05 µs |    8.98 µs |
+| **conditional** |          912 ns |  **890 ns** 🏆 |     2.27 µs |    2.39 µs |
+| **hero**        |         4.50 µs | **3.39 µs** 🏆 |     7.92 µs |   38.39 µs |
+| **mega**        | **12.44 µs** 🏆 |       20.25 µs |    63.17 µs |  164.24 µs |
 
 See the language-specific READMEs or the [benchmarks suite](benchmarks/README.md) for full details and methodology.
 

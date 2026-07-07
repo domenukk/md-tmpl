@@ -216,6 +216,11 @@ export function validateFrontmatter(fm: Frontmatter): void {
       throwErr(`reserved keyword used as name: '${decl.name}'`, decl.loc);
     }
   }
+  for (const decl of fm.env) {
+    if (RESERVED_NAMES.has(decl.name)) {
+      throwErr(`reserved keyword used as name: '${decl.name}'`, decl.loc);
+    }
+  }
   for (const aliasName of fm.typeAliases.keys()) {
     if (RESERVED_NAMES.has(aliasName)) {
       throw new TemplateSyntaxError(
@@ -243,6 +248,15 @@ export function validateFrontmatter(fm: Frontmatter): void {
       seenConsts.add(decl.name);
     }
   }
+  {
+    const seenEnv = new Set<string>();
+    for (const decl of fm.env) {
+      if (seenEnv.has(decl.name)) {
+        throwErr(`duplicate env variable name: '${decl.name}'`, decl.loc);
+      }
+      seenEnv.add(decl.name);
+    }
+  }
   // Note: duplicate type aliases are caught during parsing in frontmatter.ts
   // since Map.set overwrites. We check here for consistency.
   // (The Rust crate checks during parsing too, but we can't easily detect
@@ -267,10 +281,28 @@ export function validateFrontmatter(fm: Frontmatter): void {
         );
       }
     }
+    for (const env of fm.env) {
+      if (param.name === env.name) {
+        throwErr(
+          `parameter name conflicts with env variable name: '${param.name}' is declared as both a param and an env variable`,
+          param.loc,
+        );
+      }
+    }
+  }
+  for (const cst of fm.consts) {
+    for (const env of fm.env) {
+      if (cst.name === env.name) {
+        throwErr(
+          `constant name conflicts with env variable name: '${cst.name}' is declared as both a constant and an env variable`,
+          cst.loc,
+        );
+      }
+    }
   }
 
   // ── R1: PascalCase param/const vs type alias collision ──────────────
-  const allDecls: readonly VarDecl[] = [...fm.params, ...fm.consts];
+  const allDecls: readonly VarDecl[] = [...fm.params, ...fm.consts, ...fm.env];
   for (const decl of allDecls) {
     const declPascal = toPascalCase(decl.name);
     for (const [aliasName, aliasType] of fm.typeAliases) {
@@ -391,11 +423,20 @@ export function validateBodyCollisions(
       );
     }
   }
+  for (const decl of fm.env) {
+    if (inlineTemplateNames.has(decl.name)) {
+      throwErr(
+        `inline template name conflicts with env variable name: '${decl.name}'`,
+        decl.loc,
+      );
+    }
+  }
 
   // ── Rule 11: For-loop binding shadowing ───────────────────────────
   const declaredNames = new Set<string>([
     ...fm.params.map((d) => d.name),
     ...fm.consts.map((d) => d.name),
+    ...fm.env.map((d) => d.name),
     ...fm.imports.map((i) => i.stem),
   ]);
   for (const binding of forBindings) {

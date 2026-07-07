@@ -69,14 +69,6 @@ export function handleStatement(
     while (bodyStart < input.length && /\s/.test(input[bodyStart]!)) {
       bodyStart++;
     }
-  } else {
-    // Default: consume trailing newline after the opening statement tag —
-    // matches Rust's parser which strips '\n' after standalone tags.
-    if (input[bodyStart] === "\n") {
-      bodyStart++;
-    } else if (input[bodyStart] === "\r" && input[bodyStart + 1] === "\n") {
-      bodyStart += 2;
-    }
   }
 
   // For loop

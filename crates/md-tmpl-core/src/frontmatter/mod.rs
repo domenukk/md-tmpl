@@ -39,7 +39,8 @@ use crate::{
     compat::HashMap,
     consts::{
         FM_ALLOW_UNUSED_PREFIX, FM_CONSTS_PREFIX, FM_DELIMITER, FM_DELIMITER_NEWLINE,
-        FM_DESC_PREFIX, FM_IMPORTS_PREFIX, FM_NAME_PREFIX, FM_PARAMS_PREFIX, FM_TYPES_PREFIX,
+        FM_DESC_PREFIX, FM_ENV_PREFIX, FM_IMPORTS_PREFIX, FM_NAME_PREFIX, FM_PARAMS_PREFIX,
+        FM_TYPES_PREFIX,
     },
     error::TemplateError,
     frontmatter::params::parse_declarations,
@@ -96,6 +97,9 @@ pub struct Frontmatter {
     pub imports: Vec<Import>,
     /// Constants defined via `consts:` in frontmatter.
     pub consts: Vec<VarDecl>,
+    /// Compile-time environment variable declarations.
+    /// Provided via `CompileOptions::env()` at compile time.
+    pub env: Vec<VarDecl>,
     /// Resolved constants from imports, keyed by `stem.NAME`.
     pub imported_consts: HashMap<String, crate::value::Value>,
     /// Keys in `imported_consts` that are enum type namespace dicts
@@ -129,6 +133,31 @@ pub fn parse_frontmatter(source: &str) -> Result<(Frontmatter, &str), TemplateEr
         None,
         None,
         false,
+        &[],
+    )
+}
+
+/// Parse YAML frontmatter with compile-time environment values.
+///
+/// Like [`parse_frontmatter`], but resolves `env:` declarations against
+/// the provided name-value pairs.
+///
+/// # Errors
+///
+/// Returns [`TemplateError::Syntax`] if the frontmatter block is
+/// missing, unclosed, or contains invalid declarations, or if an
+/// `env:` variable has no value and no default.
+pub fn parse_frontmatter_with_env<'a>(
+    source: &'a str,
+    env_values: &[(&str, crate::value::Value)],
+) -> Result<(Frontmatter, &'a str), TemplateError> {
+    parse_frontmatter_impl(
+        source,
+        #[cfg(feature = "std")]
+        None,
+        None,
+        false,
+        env_values,
     )
 }
 
@@ -146,8 +175,9 @@ pub fn parse_frontmatter(source: &str) -> Result<(Frontmatter, &str), TemplateEr
 pub fn parse_frontmatter_with_base_dir<'a>(
     source: &'a str,
     base_dir: &std::path::Path,
+    env_values: &[(&str, crate::value::Value)],
 ) -> Result<(Frontmatter, &'a str), TemplateError> {
-    parse_frontmatter_impl(source, Some(base_dir), None, false)
+    parse_frontmatter_impl(source, Some(base_dir), None, false, env_values)
 }
 
 /// Parse YAML frontmatter with access to a parent template's type aliases.
@@ -164,6 +194,7 @@ pub fn parse_frontmatter_with_parent_scope<'a>(
         None,
         Some(parent_type_aliases),
         true,
+        &[],
     )
 }
 
@@ -213,6 +244,7 @@ fn extract_yaml_logical_lines(
             || line.starts_with(FM_IMPORTS_PREFIX)
             || line.starts_with(FM_PARAMS_PREFIX)
             || line.starts_with(FM_CONSTS_PREFIX)
+            || line.starts_with(FM_ENV_PREFIX)
             || line.starts_with(FM_ALLOW_UNUSED_PREFIX);
 
         if starts_with_section {
@@ -240,9 +272,45 @@ type FmResolutionResult = Result<
     TemplateError,
 >;
 
+/// Validate and coerce a provided [`Value`](crate::value::Value) to match the declared type.
+///
+/// If the value is already the correct type, it is returned as-is.
+/// If the value is `Value::Str` but the declared type is a scalar
+/// (int, bool, float), the string is auto-parsed — this supports the
+/// common case where env values come from OS environment variables.
+fn validate_env_value(
+    name: &str,
+    value: &crate::value::Value,
+    var_type: &VarType,
+) -> Result<crate::value::Value, TemplateError> {
+    use crate::value::Value;
+    match (value, var_type) {
+        // String auto-parse for scalar types (backward compat with string-based env).
+        (Value::Str(raw), VarType::Int) => raw
+            .parse::<i64>()
+            .map(Value::Int)
+            .map_err(|_| TemplateError::syntax(format!("env '{name}': expected int, got '{raw}'"))),
+        (Value::Str(raw), VarType::Bool) => match raw.as_str() {
+            "true" => Ok(Value::Bool(true)),
+            "false" => Ok(Value::Bool(false)),
+            _ => Err(TemplateError::syntax(format!(
+                "env '{name}': expected bool, got '{raw}'"
+            ))),
+        },
+        (Value::Str(raw), VarType::Float) => raw.parse::<f64>().map(Value::Float).map_err(|_| {
+            TemplateError::syntax(format!("env '{name}': expected float, got '{raw}'"))
+        }),
+        // Direct type matches and unknown combos: accept as-is.
+        // The template engine validates at render time via type declarations.
+        _ => Ok(value.clone()),
+    }
+}
+
 fn resolve_fm_consts_and_imports(
     fm: &mut Frontmatter,
     consts_raw: Option<&str>,
+    env_raw: Option<&str>,
+    env_values: &[(&str, crate::value::Value)],
     parent_type_aliases: Option<&HashMap<String, VarType>>,
     #[cfg(feature = "std")] base_dir: Option<&std::path::Path>,
 ) -> FmResolutionResult {
@@ -258,11 +326,37 @@ fn resolve_fm_consts_and_imports(
     let mut prelim_consts = HashMap::new();
     let empty_imports = HashMap::new();
     let empty_consts = HashMap::new();
+
+    // Resolve env declarations first so they're available for import path interpolation.
+    if let Some(raw) = env_raw {
+        let mut env_decls =
+            parse_declarations(raw, &merged_aliases, &empty_imports, false, &empty_consts)?;
+        for decl in &mut env_decls {
+            // Look up in provided env_values.
+            if let Some((_, provided_val)) = env_values.iter().find(|(k, _)| *k == decl.name) {
+                let val = validate_env_value(&decl.name, provided_val, &decl.var_type)?;
+                prelim_consts.insert(decl.name.clone(), val.clone());
+                decl.default_value = Some(val);
+            } else if let Some(ref default) = decl.default_value {
+                prelim_consts.insert(decl.name.clone(), default.clone());
+            } else {
+                return Err(TemplateError::syntax(format!(
+                    "env '{}': no value provided and no default",
+                    decl.name
+                )));
+            }
+        }
+        fm.env = env_decls;
+    }
+
     if let Some(raw) = consts_raw {
         if let Ok(decls) =
-            parse_declarations(raw, &merged_aliases, &empty_imports, true, &empty_consts)
+            parse_declarations(raw, &merged_aliases, &empty_imports, true, &prelim_consts)
         {
-            prelim_consts = build_available_consts(&decls, &HashMap::new());
+            let const_map = build_available_consts(&decls, &HashMap::new());
+            for (k, v) in const_map {
+                prelim_consts.insert(k, v);
+            }
         }
     }
 
@@ -293,11 +387,24 @@ fn resolve_fm_consts_and_imports(
     inject_imported_consts(fm, &resolved_imports);
 
     if let Some(raw) = consts_raw {
-        fm.consts =
-            parse_declarations(raw, &merged_aliases, &resolved_imports, true, &empty_consts)?;
+        fm.consts = parse_declarations(
+            raw,
+            &merged_aliases,
+            &resolved_imports,
+            true,
+            &prelim_consts,
+        )?;
     }
 
-    let available_consts = build_available_consts(&fm.consts, &fm.imported_consts);
+    let mut available_consts = build_available_consts(&fm.consts, &fm.imported_consts);
+    // Merge env values into available_consts so params can reference them.
+    for decl in &fm.env {
+        if let Some(val) = prelim_consts.get(&decl.name) {
+            available_consts
+                .entry(decl.name.clone())
+                .or_insert_with(|| val.clone());
+        }
+    }
     Ok((merged_aliases, resolved_imports, available_consts))
 }
 
@@ -306,6 +413,7 @@ fn parse_frontmatter_impl<'a>(
     #[cfg(feature = "std")] base_dir: Option<&std::path::Path>,
     parent_type_aliases: Option<&HashMap<String, VarType>>,
     allow_missing_fm: bool,
+    env_values: &[(&str, crate::value::Value)],
 ) -> Result<(Frontmatter, &'a str), TemplateError> {
     let (logical_lines, body) = extract_yaml_logical_lines(source, allow_missing_fm)?;
     if logical_lines.is_empty()
@@ -318,6 +426,7 @@ fn parse_frontmatter_impl<'a>(
     let mut fm = Frontmatter::default();
     let mut params_raw: Option<String> = None;
     let mut consts_raw: Option<String> = None;
+    let mut env_raw: Option<String> = None;
 
     for line in &logical_lines {
         let line = line.trim();
@@ -333,6 +442,8 @@ fn parse_frontmatter_impl<'a>(
             params_raw = Some(rest.to_string());
         } else if let Some(rest) = line.strip_prefix(FM_CONSTS_PREFIX) {
             consts_raw = Some(rest.to_string());
+        } else if let Some(rest) = line.strip_prefix(FM_ENV_PREFIX) {
+            env_raw = Some(rest.to_string());
         } else if let Some(rest) = line.strip_prefix(FM_ALLOW_UNUSED_PREFIX) {
             fm.allow_unused = rest.trim() == crate::consts::LIT_TRUE;
         }
@@ -341,6 +452,8 @@ fn parse_frontmatter_impl<'a>(
     let (merged_aliases, resolved_imports, available_consts) = resolve_fm_consts_and_imports(
         &mut fm,
         consts_raw.as_deref(),
+        env_raw.as_deref(),
+        env_values,
         parent_type_aliases,
         #[cfg(feature = "std")]
         base_dir,

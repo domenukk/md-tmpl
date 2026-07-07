@@ -321,7 +321,11 @@ fn trim_after_strips_following_whitespace() {
         &ctx,
     )
     .unwrap();
-    assert_eq!(result, "content\n");
+    assert_eq!(
+        result,
+        "content
+"
+    );
 }
 
 #[test]
@@ -635,7 +639,11 @@ plain content
         &ctx,
     )
     .unwrap();
-    assert_eq!(result, "plain content\n");
+    assert_eq!(
+        result,
+        "plain content
+"
+    );
 }
 
 #[test]
@@ -766,7 +774,11 @@ yes
         &ctx,
     )
     .unwrap();
-    assert_eq!(result, "yes\n");
+    assert_eq!(
+        result,
+        "yes
+"
+    );
 }
 
 #[test]
@@ -782,7 +794,11 @@ yes
         &ctx,
     )
     .unwrap();
-    assert_eq!(result, "yes\n");
+    assert_eq!(
+        result,
+        "yes
+"
+    );
 }
 
 #[test]
@@ -802,7 +818,11 @@ no
         &ctx,
     )
     .unwrap();
-    assert_eq!(result, "no\n");
+    assert_eq!(
+        result,
+        "no
+"
+    );
 }
 
 #[test]
@@ -861,7 +881,11 @@ stopped
         &ctx,
     )
     .unwrap();
-    assert_eq!(result, "paused\n");
+    assert_eq!(
+        result,
+        "paused
+"
+    );
 }
 
 // -- additional blockquote stripping tests --------------------------------
@@ -914,7 +938,11 @@ fn blockquote_nested_if_in_for() {
     // Only "alpha" is shown (beta has show=false). The for-loop
     // body for beta emits nothing (if-false), so we get one item
     // plus a trailing newline from the body text.
-    assert_eq!(result, "alpha\n");
+    assert_eq!(
+        result,
+        "alpha
+"
+    );
 }
 
 #[test]
@@ -934,7 +962,11 @@ yes
     let result_bq = compiled_render(blockquoted, &ctx).unwrap();
     let result_plain = compiled_render(stripped, &ctx).unwrap();
     assert_eq!(result_bq, result_plain);
-    assert_eq!(result_bq, "yes\n");
+    assert_eq!(
+        result_bq,
+        "yes
+"
+    );
 }
 
 #[test]
@@ -978,7 +1010,11 @@ content
         &ctx,
     )
     .unwrap();
-    assert_eq!(result, "content\n");
+    assert_eq!(
+        result,
+        "content
+"
+    );
 }
 
 #[test]
@@ -997,7 +1033,11 @@ fn blockquote_for_single_item() {
         &ctx,
     )
     .unwrap();
-    assert_eq!(result, "only\n");
+    assert_eq!(
+        result,
+        "only
+"
+    );
 }
 
 #[test]

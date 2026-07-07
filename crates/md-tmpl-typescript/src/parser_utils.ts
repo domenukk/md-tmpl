@@ -80,7 +80,8 @@ export function preprocessBlockquotes(
   const lines = body.split("\n");
   let result = "";
   const lineMap: LineMapEntry[] = [];
-  let skipNextNewline = false;
+  let afterStandalone = false;
+  let pendingBlanks = 0;
   let inRaw = false;
 
   for (let i = 0; i < lines.length; i++) {
@@ -94,10 +95,26 @@ export function preprocessBlockquotes(
       ) {
         inRaw = false;
       } else {
-        if (i > 0 && !skipNextNewline) {
+        // Inside raw: blank lines after a standalone tag still need
+        // the pendingBlanks mechanism to match Rust's behaviour.
+        if (afterStandalone && line.trim() === "") {
+          pendingBlanks++;
+          continue;
+        }
+        if (afterStandalone) {
+          // tag-to-raw-content: consume 1 mandatory blank, preserve extras.
+          if (pendingBlanks > 0) {
+            pendingBlanks--;
+          }
+          for (let b = 0; b < pendingBlanks; b++) {
+            result += "\n";
+          }
+          pendingBlanks = 0;
+        }
+        if (i > 0 && !afterStandalone) {
           result += "\n";
         }
-        skipNextNewline = false;
+        afterStandalone = false;
         lineMap.push({
           offset: result.length,
           lineNo: startLineNo + i,
@@ -201,17 +218,33 @@ export function preprocessBlockquotes(
     }
 
     // Skip blank line immediately after a standalone tag.
-    if (skipNextNewline && tagLine.trim() === "") {
+    // Track pending blanks: between tags, consume all; before content,
+    // consume 1 (mandatory) and preserve extras as output newlines.
+    if (afterStandalone && tagLine.trim() === "") {
+      pendingBlanks++;
       continue;
     }
 
+    if (afterStandalone && isStandaloneTag) {
+      // Tag-to-tag: consume all pending blanks (structural whitespace).
+      pendingBlanks = 0;
+    } else if (afterStandalone) {
+      // Tag-to-content: consume 1 mandatory blank, preserve the rest.
+      if (pendingBlanks > 0) {
+        pendingBlanks--;
+      }
+      for (let b = 0; b < pendingBlanks; b++) {
+        result += "\n";
+      }
+      pendingBlanks = 0;
+    }
+
     // Add newline separator before this line (except for the first line
-    // and when the previous line was a standalone tag that consumed its
-    // trailing newline).
-    if (i > 0 && !skipNextNewline) {
+    // and when the previous line was a standalone tag).
+    if (i > 0 && !afterStandalone) {
       result += "\n";
     }
-    skipNextNewline = false;
+    afterStandalone = false;
 
     if (isStandaloneTag) {
       const isRawTag = tagLine.includes("raw");
@@ -245,7 +278,7 @@ export function preprocessBlockquotes(
         result = result.slice(0, -1);
       }
 
-      skipNextNewline = true;
+      afterStandalone = true;
     }
 
     lineMap.push({
@@ -254,7 +287,20 @@ export function preprocessBlockquotes(
       snippet: line,
       colOffset: line.length - tagLine.length,
     });
-    result += tagLine;
+    // Strip trim markers from standalone blockquote tags — they are
+    // redundant because blockquote preprocessing already manages all
+    // surrounding whitespace.  This matches Rust's behaviour where
+    // find_closing_block ignores trim markers.
+    if (isStandaloneTag) {
+      let cleaned = tagLine;
+      // {%- → {% and -%} → %}
+      cleaned = cleaned.replace(/^\{%-/, "{%").replace(/-%\}$/, "%}");
+      // {#- → {# and -#} → #}
+      cleaned = cleaned.replace(/^\{#-/, "{#").replace(/-#\}$/, "#}");
+      result += cleaned;
+    } else {
+      result += tagLine;
+    }
   }
 
   return [result, lineMap];

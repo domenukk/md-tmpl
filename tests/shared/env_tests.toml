@@ -1,0 +1,364 @@
+# Shared env: E2E Tests
+# Covers: Compile-time environment variables (env:) frontmatter section
+#
+# Tests verify:
+# - Basic env var resolution in template body
+# - Env var defaults (used and overridden)
+# - Env var type checking (str, int, bool, float)
+# - Missing required env var produces compile error
+# - Env var collision with param/const name produces error
+# - Env var in import paths (when file-based tests support it)
+
+# ============================================================================
+# Tier 1: Basic Functionality — env: in template body
+# ============================================================================
+
+[[tests]]
+name = "env_t1_str_in_body"
+description = "Env var of type str is rendered in template body"
+template = '''
+---
+env: [PATH = str]
+
+params: []
+---
+Path: {{ PATH }}'''
+expected_output = "Path: /usr/local/prompts"
+[tests.env]
+PATH = "/usr/local/prompts"
+
+[[tests]]
+name = "env_t1_int_in_body"
+description = "Env var of type int is rendered in template body"
+template = '''
+---
+env: [MAX_RETRIES = int]
+
+params: []
+---
+Retries: {{ MAX_RETRIES }}'''
+expected_output = "Retries: 5"
+[tests.env]
+MAX_RETRIES = "5"
+
+[[tests]]
+name = "env_t1_bool_in_body"
+description = "Env var of type bool is rendered in template body"
+template = '''
+---
+env: [DEBUG = bool]
+
+params: []
+---
+> {% if DEBUG %}debug_on{% else %}debug_off{% /if %}'''
+expected_output = "debug_on"
+[tests.env]
+DEBUG = "true"
+
+[[tests]]
+name = "env_t1_float_in_body"
+description = "Env var of type float is rendered in template body"
+template = '''
+---
+env: [THRESHOLD = float]
+
+params: []
+---
+Threshold: {{ THRESHOLD | fixed(2) }}'''
+expected_output = "Threshold: 0.95"
+[tests.env]
+THRESHOLD = "0.95"
+
+[[tests]]
+name = "env_t1_mixed_with_params"
+description = "Env vars and params coexist in the same template"
+template = '''
+---
+env: [PREFIX = str]
+
+params: [name = str]
+---
+{{ PREFIX }}/{{ name }}'''
+expected_output = "/opt/prompts/agent_x"
+[tests.env]
+PREFIX = "/opt/prompts"
+[tests.params]
+name = "agent_x"
+
+# ============================================================================
+# Tier 1: Default values
+# ============================================================================
+
+[[tests]]
+name = "env_t1_default_used"
+description = "Env var with default uses default when not provided"
+template = '''
+---
+env: [MAX_RETRIES = int := 3]
+
+params: []
+---
+Retries: {{ MAX_RETRIES }}'''
+expected_output = "Retries: 3"
+
+[[tests]]
+name = "env_t1_default_overridden"
+description = "Env var with default is overridden when provided"
+template = '''
+---
+env: [MAX_RETRIES = int := 3]
+
+params: []
+---
+Retries: {{ MAX_RETRIES }}'''
+expected_output = "Retries: 10"
+[tests.env]
+MAX_RETRIES = "10"
+
+[[tests]]
+name = "env_t1_str_default_used"
+description = "Env var with string default uses default when not provided"
+template = '''
+---
+env:
+  - GREETING = str := "Hello"
+
+params: []
+---
+{{ GREETING }}'''
+expected_output = "Hello"
+
+[[tests]]
+name = "env_t1_str_default_overridden"
+description = "Env var with string default is overridden when provided"
+template = '''
+---
+env:
+  - GREETING = str := "Hello"
+
+params: []
+---
+{{ GREETING }}'''
+expected_output = "Goodbye"
+[tests.env]
+GREETING = "Goodbye"
+
+[[tests]]
+name = "env_t1_bool_default_used"
+description = "Env var with bool default uses default when not provided"
+template = '''
+---
+env: [VERBOSE = bool := false]
+
+params: []
+---
+> {% if VERBOSE %}verbose{% else %}quiet{% /if %}'''
+expected_output = "quiet"
+
+[[tests]]
+name = "env_t1_multiple_defaults_partial_override"
+description = "Multiple env vars with defaults, only some overridden"
+template = '''
+---
+env:
+  - A = str := "alpha"
+  - B = int := 42
+  - C = bool := true
+
+params: []
+---
+{{ A }}-{{ B }}-{% if C %}yes{% else %}no{% /if %}'''
+expected_output = "beta-42-yes"
+[tests.env]
+A = "beta"
+
+# ============================================================================
+# Tier 2: Error cases
+# ============================================================================
+
+[[tests]]
+name = "env_t2_missing_required_env"
+description = "Missing required env var produces compile error"
+template = '''
+---
+env: [REQUIRED_PATH = str]
+
+params: []
+---
+{{ REQUIRED_PATH }}'''
+expected_error = "no value provided and no default"
+
+[[tests]]
+name = "env_t2_int_type_mismatch"
+description = "Env var with wrong type produces compile error"
+template = '''
+---
+env: [COUNT = int]
+
+params: []
+---
+{{ COUNT }}'''
+expected_error = "env"
+[tests.env]
+COUNT = "not_a_number"
+
+[[tests]]
+name = "env_t2_bool_type_mismatch"
+description = "Env var with wrong bool type produces compile error"
+template = '''
+---
+env: [FLAG = bool]
+
+params: []
+---
+> {% if FLAG %}yes{% /if %}'''
+expected_error = "env"
+[tests.env]
+FLAG = "maybe"
+
+# ============================================================================
+# Tier 2: Env with consts coexistence
+# ============================================================================
+
+[[tests]]
+name = "env_t2_coexists_with_consts"
+description = "Env vars and consts coexist, each accessible in body"
+template = '''
+---
+env: [BASE = str]
+
+consts:
+  - SUFFIX = str := "/index.html"
+
+params: []
+---
+{{ BASE }}{{ SUFFIX }}'''
+expected_output = "/var/www/index.html"
+[tests.env]
+BASE = "/var/www"
+
+[[tests]]
+name = "env_t2_env_used_in_condition"
+description = "Env var used in conditional logic"
+template = '''
+---
+env: [MODE = str]
+
+params: []
+---
+> {% if MODE == "prod" %}production{% elif MODE == "dev" %}development{% else %}unknown{% /if %}'''
+expected_output = "production"
+[tests.env]
+MODE = "prod"
+
+# ============================================================================
+# Tier 3: Real-world scenarios
+# ============================================================================
+
+[[tests]]
+name = "env_t3_path_construction"
+description = "Real-world: env var used to construct paths for rendering"
+template = '''
+---
+env:
+  - PROMPTS_DIR = str
+  - AGENT_VERSION = int := 1
+
+params:
+  - agent_name = str
+---
+Template path: {{ PROMPTS_DIR }}/{{ agent_name }}.tmpl.md
+Version: v{{ AGENT_VERSION }}'''
+expected_output = '''
+Template path: /home/user/prompts/architect.tmpl.md
+Version: v2'''
+[tests.env]
+PROMPTS_DIR = "/home/user/prompts"
+AGENT_VERSION = "2"
+[tests.params]
+agent_name = "architect"
+
+[[tests]]
+name = "env_t3_all_defaults_no_env_provided"
+description = "Template with all-defaulted env vars works without any env provided"
+template = '''
+---
+env:
+  - TIMEOUT = int := 30
+  - RETRIES = int := 3
+  - VERBOSE = bool := false
+
+params: []
+---
+timeout={{ TIMEOUT }} retries={{ RETRIES }} verbose={% if VERBOSE %}true{% else %}false{% /if %}'''
+expected_output = "timeout=30 retries=3 verbose=false"
+
+# ============================================================================
+# Tier 3: Complex typed env vars
+# ============================================================================
+
+[[tests]]
+name = "env_t3_struct_typed"
+description = "Env var with struct type using typed TOML values"
+template = '''
+---
+env:
+  - config = struct(host = str, port = int)
+
+params: []
+---
+Host: {{ config.host }}, Port: {{ config.port }}'''
+expected_output = "Host: localhost, Port: 8080"
+[tests.env]
+[tests.env.config]
+host = "localhost"
+port = 8080
+
+[[tests]]
+name = "env_t3_list_typed"
+description = "Env var with list type using typed TOML values"
+template = '''
+---
+env:
+  - tags = list(str)
+
+params: []
+---
+> {% for tag in tags %}
+
+Tag: {{ tag }}
+
+> {% /for %}'''
+expected_output = """Tag: rust
+Tag: go
+"""
+[tests.env]
+tags = ["rust", "go"]
+
+[[tests]]
+name = "env_t3_int_typed"
+description = "Env var with typed int (not string) value"
+template = '''
+---
+env: [COUNT = int]
+
+params: []
+---
+Count: {{ COUNT }}'''
+expected_output = "Count: 42"
+[tests.env]
+COUNT = 42
+
+[[tests]]
+name = "env_t3_bool_typed"
+description = "Env var with typed bool (not string) value"
+template = '''
+---
+env: [ACTIVE = bool]
+
+params: []
+---
+> {% if ACTIVE %}yes{% else %}no{% /if %}'''
+expected_output = "yes"
+[tests.env]
+ACTIVE = true

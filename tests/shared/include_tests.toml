@@ -365,3 +365,597 @@ imports:
 Hello'''
 expected_error = "must start with"
 files = {}
+
+# --------------------------------------------------------------------------
+# Chained (sequential) import path interpolation
+# --------------------------------------------------------------------------
+
+[[tests]]
+name = "chained_import_basic_pass"
+description = "Import env first, then use env.CONST in second import path"
+parent_template = '''
+---
+imports:
+  - "[env](./env.tmpl.md)"
+  - "[greet]({{ env.DIR }}/greet.tmpl.md)"
+
+params: [name = str]
+---
+> {% include [greet]({{ env.DIR }}/greet.tmpl.md) with name=name %}'''
+expected_output = "Hello World!"
+
+[tests.params]
+name = "World"
+
+[tests.files]
+"env.tmpl.md" = '''
+---
+name: env
+consts: [DIR = str := "."]
+---
+'''
+"greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+Hello {{ name }}!'''
+
+[[tests]]
+name = "chained_import_multiple_consumers_pass"
+description = "Multiple imports using the same chained constant, includes with params"
+parent_template = '''
+---
+imports:
+  - "[env](./env.tmpl.md)"
+  - "[greet]({{ env.DIR }}/greet.tmpl.md)"
+  - "[farewell]({{ env.DIR }}/farewell.tmpl.md)"
+
+params: [name = str]
+---
+> {% include [greet]({{ env.DIR }}/greet.tmpl.md) with name=name %}
+
+> {% include [farewell]({{ env.DIR }}/farewell.tmpl.md) with name=name %}'''
+expected_output = '''
+Hello World!
+Goodbye World!
+'''
+
+[tests.params]
+name = "World"
+
+[tests.files]
+"env.tmpl.md" = '''
+---
+name: env
+consts: [DIR = str := "."]
+---
+'''
+"greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+Hello {{ name }}!
+'''
+"farewell.tmpl.md" = '''
+---
+params: [name = str]
+---
+Goodbye {{ name }}!
+'''
+
+[[tests]]
+name = "chained_import_body_access_pass"
+description = "Access consts from chained import in the template body"
+parent_template = '''
+---
+imports:
+  - "[env](./env.tmpl.md)"
+
+params: []
+---
+Version: {{ env.VERSION }}'''
+expected_output = "Version: 2.0"
+params = {}
+
+[tests.files]
+"env.tmpl.md" = '''
+---
+name: env
+consts: [VERSION = str := "2.0"]
+---
+'''
+
+[[tests]]
+name = "chained_import_forward_reference_error"
+description = "Import cannot reference a const from an import declared below it"
+parent_template = '''
+---
+imports:
+  - "[greet]({{ env.DIR }}/greet.tmpl.md)"
+  - "[env](./env.tmpl.md)"
+
+params: [name = str]
+---
+> {% include [greet]({{ env.DIR }}/greet.tmpl.md) with name=name %}'''
+expected_error = "unresolvable"
+
+[tests.params]
+name = "World"
+
+[tests.files]
+"env.tmpl.md" = '''
+---
+name: env
+consts: [DIR = str := "."]
+---
+'''
+"greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+Hello {{ name }}!'''
+
+[[tests]]
+name = "chained_import_with_env_combined_pass"
+description = "env: frontmatter and chained import consts both available in import paths"
+parent_template = '''
+---
+env: [BASE = str]
+
+imports:
+  - "[cfg](./cfg.tmpl.md)"
+  - "[greet]({{ BASE }}/greet.tmpl.md)"
+
+params: [name = str]
+---
+> {% include [greet]({{ BASE }}/greet.tmpl.md) with name=name %}
+
+Mode: {{ cfg.MODE }}
+'''
+expected_output = '''
+Hello World!
+Mode: production
+'''
+
+[tests.params]
+name = "World"
+
+[tests.env]
+BASE = "."
+
+[tests.files]
+"cfg.tmpl.md" = '''
+---
+name: cfg
+consts: [MODE = str := "production"]
+---
+'''
+"greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+Hello {{ name }}!
+'''
+
+[[tests]]
+name = "chained_import_three_deep_pass"
+description = "Three-level chained imports: env exports DIR, config uses env.DIR, main uses both"
+parent_template = '''
+---
+imports:
+  - "[env](./env.tmpl.md)"
+  - "[config]({{ env.DIR }}/config.tmpl.md)"
+
+params: []
+---
+Dir: {{ env.DIR }}, App: {{ config.APP_NAME }}'''
+expected_output = "Dir: ., App: TestApp"
+params = {}
+
+[tests.files]
+"env.tmpl.md" = '''
+---
+name: env
+consts: [DIR = str := "."]
+---
+'''
+"config.tmpl.md" = '''
+---
+name: config
+consts: [APP_NAME = str := "TestApp"]
+---
+'''
+
+# ---------------------------------------------------------------------------
+# Include whitespace preservation tests
+# ---------------------------------------------------------------------------
+
+[[tests]]
+name = "include_ws_tag_tag_1_blank"
+description = "Two includes separated by 1 blank line — all blanks consumed between tags"
+parent_template = '''
+---
+params: [x = str]
+---
+> {% include [a](./a.tmpl.md) with x=x %}
+
+> {% include [a](./a.tmpl.md) with x=x %}'''
+expected_output = "A:1A:1"
+
+[tests.params]
+x = "1"
+
+[tests.files]
+"a.tmpl.md" = '''
+---
+params: [x = str]
+---
+A:{{ x }}'''
+
+[[tests]]
+name = "include_ws_tag_tag_3_blanks"
+description = "Two includes separated by 3 blank lines — all blanks consumed between tags"
+parent_template = '''
+---
+params: [x = str]
+---
+> {% include [a](./a.tmpl.md) with x=x %}
+
+
+
+> {% include [a](./a.tmpl.md) with x=x %}'''
+expected_output = "A:1A:1"
+
+[tests.params]
+x = "1"
+
+[tests.files]
+"a.tmpl.md" = '''
+---
+params: [x = str]
+---
+A:{{ x }}'''
+
+[[tests]]
+name = "include_ws_tag_content_1_blank"
+description = "Include followed by 1 blank and content — blank consumed"
+parent_template = '''
+---
+params: [x = str]
+---
+> {% include [a](./a.tmpl.md) with x=x %}
+
+More: {{ x }}'''
+expected_output = "A:1More: 1"
+
+[tests.params]
+x = "1"
+
+[tests.files]
+"a.tmpl.md" = '''
+---
+params: [x = str]
+---
+A:{{ x }}'''
+
+[[tests]]
+name = "include_ws_tag_content_2_blanks"
+description = "Include followed by 2 blanks and content — 1 consumed, 1 preserved"
+parent_template = '''
+---
+params: [x = str]
+---
+> {% include [a](./a.tmpl.md) with x=x %}
+
+
+More: {{ x }}'''
+expected_output = "A:1\nMore: 1"
+
+[tests.params]
+x = "1"
+
+[tests.files]
+"a.tmpl.md" = '''
+---
+params: [x = str]
+---
+A:{{ x }}'''
+
+[[tests]]
+name = "include_ws_tag_content_3_blanks"
+description = "Include followed by 3 blanks and content — 1 consumed, 2 preserved"
+parent_template = '''
+---
+params: [x = str]
+---
+> {% include [a](./a.tmpl.md) with x=x %}
+
+
+
+More: {{ x }}'''
+expected_output = "A:1\n\nMore: 1"
+
+[tests.params]
+x = "1"
+
+[tests.files]
+"a.tmpl.md" = '''
+---
+params: [x = str]
+---
+A:{{ x }}'''
+
+[[tests]]
+name = "include_ws_content_tag_1_blank"
+description = "Content followed by 1 blank line before include — blank consumed"
+parent_template = '''
+---
+params: [x = str]
+---
+Before: {{ x }}
+
+> {% include [a](./a.tmpl.md) with x=x %}'''
+expected_output = "Before: 1\nA:1"
+
+[tests.params]
+x = "1"
+
+[tests.files]
+"a.tmpl.md" = '''
+---
+params: [x = str]
+---
+A:{{ x }}'''
+
+[[tests]]
+name = "include_ws_content_tag_2_blanks"
+description = "Content followed by 2 blank lines before include — 1 consumed, 1 preserved"
+parent_template = '''
+---
+params: [x = str]
+---
+Before: {{ x }}
+
+
+> {% include [a](./a.tmpl.md) with x=x %}'''
+expected_output = "Before: 1\n\nA:1"
+
+[tests.params]
+x = "1"
+
+[tests.files]
+"a.tmpl.md" = '''
+---
+params: [x = str]
+---
+A:{{ x }}'''
+
+[[tests]]
+name = "include_ws_trim_redundant"
+description = "Trim modifiers on standalone include tags are redundant — same as non-trim"
+parent_template = '''
+---
+params: [x = str]
+---
+> {%- include [a](./a.tmpl.md) with x=x -%}
+
+More: {{ x }}'''
+expected_output = "A:1More: 1"
+
+[tests.params]
+x = "1"
+
+[tests.files]
+"a.tmpl.md" = '''
+---
+params: [x = str]
+---
+A:{{ x }}'''
+
+# ---------------------------------------------------------------------------
+# Import unused-variable tracking: root-level granularity
+# ---------------------------------------------------------------------------
+# Imports are tracked by their stem (root name) only. Using ANY sub-field
+# (e.g., {{ lib.Foo }}) marks the entire import as used. There is no need
+# to claim individual sub-fields in {# unused #} comments.
+
+[[tests]]
+name = "import_subfield_marks_root_used"
+description = "Using one sub-field of an import marks the entire import as used — no unused error"
+parent_template = '''
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+
+params: []
+---
+Value: {{ lib.CONST_X }}'''
+expected_output = "Value: x"
+params = {}
+
+[tests.files]
+"lib.tmpl.md" = '''
+---
+name: lib
+allow_unused: true
+
+types:
+  - TypeA = enum(TypeA, TypeB)
+  - TypeC = enum(TypeC, TypeD)
+
+consts:
+  - CONST_X = str := "x"
+  - CONST_Y = str := "y"
+---
+'''
+
+[[tests]]
+name = "import_unused_without_any_reference_allowed"
+description = "An import whose stem is never referenced in the body is silently allowed — imports are not subject to unused-param checks"
+parent_template = '''
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+
+params: [name = str]
+---
+Hello {{ name }}'''
+expected_output = "Hello World"
+
+[tests.params]
+name = "World"
+
+[tests.files]
+"lib.tmpl.md" = '''
+---
+name: lib
+allow_unused: true
+
+types:
+  - Sev = enum(High, Low)
+---
+'''
+
+[[tests]]
+name = "import_comment_reference_marks_used"
+description = "Referencing an import in a {# comment #} counts as a use — no unused error"
+parent_template = '''
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+
+params: [name = str]
+---
+
+> {# unused: {{ lib }} #}
+
+Hello {{ name }}'''
+expected_output = "Hello World"
+
+[tests.params]
+name = "World"
+
+[tests.files]
+"lib.tmpl.md" = '''
+---
+name: lib
+allow_unused: true
+
+types:
+  - Sev = enum(High, Low)
+---
+'''
+
+[[tests]]
+name = "import_subfield_no_claim_needed_for_siblings"
+description = "Using lib.TypeA does NOT require claiming lib.TypeC or lib.CONST_Y — they are not individually tracked"
+parent_template = '''
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+
+params: []
+---
+Value: {{ lib.CONST_X }}'''
+expected_output = "Value: x"
+params = {}
+
+[tests.files]
+"lib.tmpl.md" = '''
+---
+name: lib
+allow_unused: true
+
+types:
+  - TypeA = enum(TypeA, TypeB)
+  - TypeC = enum(TypeC, TypeD)
+
+consts:
+  - CONST_X = str := "x"
+  - CONST_Y = str := "y"
+---
+'''
+
+[[tests]]
+name = "import_multiple_subfields_all_count"
+description = "Using multiple sub-fields from the same import all satisfy the root-level used check"
+parent_template = '''
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+
+params: []
+---
+X={{ lib.CONST_X }} Y={{ lib.CONST_Y }}'''
+expected_output = "X=x Y=y"
+params = {}
+
+[tests.files]
+"lib.tmpl.md" = '''
+---
+name: lib
+allow_unused: true
+
+consts:
+  - CONST_X = str := "x"
+  - CONST_Y = str := "y"
+---
+'''
+
+[[tests]]
+name = "import_kinds_function_marks_root_used"
+description = "Using kinds(lib.EnumType) on an imported enum marks the import as used"
+parent_template = '''
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+
+params: []
+---
+Tags: {{ kinds(lib.Priority) | join(", ") }}'''
+expected_output = "Tags: High, Medium, Low"
+params = {}
+
+[tests.files]
+"lib.tmpl.md" = '''
+---
+name: lib
+allow_unused: true
+
+types:
+  - Priority = enum(High, Medium, Low)
+  - Status = enum(Open, Closed)
+
+consts:
+  - UNUSED_CONST = str := "nope"
+---
+'''
+
+[[tests]]
+name = "import_typed_param_marks_root_used"
+description = "Using an imported type in a param declaration marks the import as used"
+parent_template = '''
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+
+params:
+  - priority = lib.Priority
+---
+Priority: {{ priority }}'''
+expected_output = "Priority: High"
+
+[tests.params]
+priority = "High"
+
+[tests.files]
+"lib.tmpl.md" = '''
+---
+name: lib
+allow_unused: true
+
+types:
+  - Priority = enum(High, Medium, Low)
+  - Status = enum(Open, Closed)
+---
+'''

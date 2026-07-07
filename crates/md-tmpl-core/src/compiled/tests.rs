@@ -175,21 +175,13 @@ after";
 
 #[test]
 fn extract_inline_template_with_frontmatter() {
-    let input = concat!(
-        r#"{% tmpl row %}
-"#,
-        "\
+    let input = r"{% tmpl row %}
 ---
-",
-        r#"params: [label = str]
-"#,
-        "\
+params: [label = str]
 ---
-",
-        "- {{ label }}\n",
-        r#"{% /tmpl %}
-"#,
-    );
+- {{ label }}
+{% /tmpl %}
+";
     let (_, templates) = extract_inline_templates(input).unwrap();
     let tmpl = templates.get("row").unwrap();
     assert_eq!(tmpl.declarations.len(), 1);
@@ -253,23 +245,20 @@ not a template
 
 #[test]
 fn extract_multiple_inline_templates() {
-    let input = concat!(
-        r#"{% tmpl alpha %}
+    let input = r"{% tmpl alpha %}
 ---
 params: []
 ---
 A
 {% /tmpl %}
-"#,
-        "middle\n",
-        r#"{% tmpl beta %}
+middle
+{% tmpl beta %}
 ---
 params: []
 ---
 B
 {% /tmpl %}
-"#,
-    );
+";
     let (cleaned, templates) = extract_inline_templates(input).unwrap();
     assert_eq!(templates.len(), 2);
     assert!(templates.contains_key("alpha"));
@@ -676,15 +665,18 @@ fn len_function_on_string() {
 }
 
 #[test]
-fn len_function_on_struct() {
+fn len_function_on_struct_rejected() {
     let mut ctx = Context::new();
     let mut map = HashMap::new();
     map.insert("a".into(), Value::Int(1));
     map.insert("b".into(), Value::Int(2));
-    map.insert("c".into(), Value::Int(3));
     ctx.set("data", Value::Struct(Arc::new(map)));
-    let result = compiled_render("{{ len(data) }}", &ctx).unwrap();
-    assert_eq!(result, "3");
+    let err =
+        compiled_render("{{ len(data) }}", &ctx).expect_err("len() on struct should be rejected");
+    assert!(
+        err.to_string().contains("len() requires a list or string"),
+        "error should mention correct types: {err}"
+    );
 }
 
 #[test]
@@ -1067,7 +1059,11 @@ Stopped
     let mut ctx = Context::new();
     ctx.set("status", "Paused");
     let result = compiled_render(template, &ctx).unwrap();
-    assert_eq!(result, "Paused\n");
+    assert_eq!(
+        result,
+        "Paused
+"
+    );
 }
 
 #[test]
@@ -1092,7 +1088,11 @@ NOT CONFIRMED
         ]),
     );
     let result = compiled_render(template, &ctx).unwrap();
-    assert_eq!(result, "CONFIRMED: crash log\n");
+    assert_eq!(
+        result,
+        "CONFIRMED: crash log
+"
+    );
 }
 
 #[test]
@@ -1152,7 +1152,11 @@ Found test!
         ]),
     );
     let result = compiled_render(template, &ctx).unwrap();
-    assert_eq!(result, "  Found test!\n  ");
+    assert_eq!(
+        result,
+        "  Found test!
+  "
+    );
 }
 
 #[test]
@@ -1207,7 +1211,11 @@ No evidence.
     let mut ctx = Context::new();
     ctx.set("outcome", "Confirmed");
     let result = compiled_render(template, &ctx).unwrap();
-    assert_eq!(result, "Evidence found.\n");
+    assert_eq!(
+        result,
+        "Evidence found.
+"
+    );
 }
 
 #[test]
@@ -1226,7 +1234,11 @@ No evidence.
     let mut ctx = Context::new();
     ctx.set("outcome", "ConfirmedWithCaveats");
     let result = compiled_render(template, &ctx).unwrap();
-    assert_eq!(result, "Evidence found.\n");
+    assert_eq!(
+        result,
+        "Evidence found.
+"
+    );
 }
 
 #[test]
@@ -1372,60 +1384,44 @@ params: [name = str]
 #[test]
 fn inline_template_include_renders_test() {
     // Uses `> {% tmpl %}` blockquote prefix as required by the parser.
-    let src = concat!(
-        "\
----
+    let src = r#"---
 
 params: []
 ---
-",
-        r#"> {% tmpl greeting %}
-"#,
-        "\
+> {% tmpl greeting %}
 ---
-",
-        r#"params: [who = str]
-"#,
-        "\
+params: [who = str]
 ---
-",
-        "Hello {{ who }}!\n\n",
-        r#"> {% /tmpl %}
+Hello {{ who }}!
 
-"#,
-        "> {% include greeting with who=\"World\" %}",
-    );
+> {% /tmpl %}
+
+> {% include greeting with who="World" %}"#;
     let tmpl = crate::Template::from_source(src).unwrap();
     let result = tmpl.render_ctx(&Context::new()).unwrap();
-    assert_eq!(result, "Hello World!\n");
+    assert_eq!(
+        result,
+        "Hello World!
+"
+    );
 }
 
 #[test]
 fn inline_template_missing_params_errors() {
     // Inline template with required param not provided at include site.
-    let src = concat!(
-        "\
----
+    let src = r"---
 
 params: []
 ---
-",
-        r#"> {% tmpl greeting %}
-"#,
-        "\
+> {% tmpl greeting %}
 ---
-",
-        r#"params: [who = str]
-"#,
-        "\
+params: [who = str]
 ---
-",
-        "Hello {{ who }}!\n\n",
-        r#"> {% /tmpl %}
+Hello {{ who }}!
 
-"#,
-        "> {% include greeting %}",
-    );
+> {% /tmpl %}
+
+> {% include greeting %}";
     let tmpl = crate::Template::from_source(src).unwrap();
     let ctx = Context::new();
     let err = tmpl
@@ -1450,61 +1446,39 @@ fn same_named_tmpl_in_different_files_render_independently() {
     // included_file.tmpl.md: defines its own "helper" and uses it
     std::fs::write(
         dir.path().join("included_file.tmpl.md"),
-        concat!(
-            "\
----
+        r"---
 
 params: []
 ---
-",
-            r#"> {% tmpl helper %}
-"#,
-            "\
+> {% tmpl helper %}
 ---
-",
-            r#"params: []
-"#,
-            "\
+params: []
 ---
-",
-            "CHILD\n\n",
-            r#"> {% /tmpl %}
+CHILD
 
-"#,
-            "> {% include helper %}",
-        ),
+> {% /tmpl %}
+
+> {% include helper %}",
     )
     .unwrap();
 
     // Parent template: defines its own "helper" and includes the file
-    let parent_src = concat!(
-        "\
----
+    let parent_src = r"---
 
 params: []
 ---
-",
-        r#"> {% tmpl helper %}
-"#,
-        "\
+> {% tmpl helper %}
 ---
-",
-        r#"params: []
-"#,
-        "\
+params: []
 ---
-",
-        "PARENT\n\n",
-        r#"> {% /tmpl %}
+PARENT
 
-"#,
-        r#"> {% include helper %}
+> {% /tmpl %}
 
-"#,
-        "\
+> {% include helper %}
+
 ---
-",
-    );
+";
 
     let tmpl = crate::Template::from_source(parent_src).unwrap();
     let result = tmpl.render_ctx(&Context::new()).unwrap();
@@ -1569,7 +1543,11 @@ params:
     let mut ctx = Context::new();
     ctx.set("name", "Alice");
     let result = tmpl.render_ctx(&ctx).unwrap();
-    assert_eq!(result, "- Alice\n");
+    assert_eq!(
+        result,
+        "- Alice
+"
+    );
 }
 
 #[test]
@@ -1697,7 +1675,12 @@ params: []
 
     let tmpl = crate::Template::from_file(&dir.path().join("parent.tmpl.md")).unwrap();
     let result = tmpl.render_ctx(&Context::new()).unwrap();
-    assert_eq!(result, "PARENT_GREETING\nCHILD_GREETING\n");
+    assert_eq!(
+        result,
+        "PARENT_GREETING
+CHILD_GREETING
+"
+    );
 }
 
 #[test]
@@ -1777,7 +1760,12 @@ params: []
 
     let tmpl = crate::Template::from_file(&dir.path().join("parent.tmpl.md")).unwrap();
     let result = tmpl.render_ctx(&Context::new()).unwrap();
-    assert_eq!(result, "ALPHA_ROW\nBETA_ROW\n");
+    assert_eq!(
+        result,
+        "ALPHA_ROW
+BETA_ROW
+"
+    );
 }
 
 #[test]
@@ -1889,7 +1877,12 @@ params:
     let mut ctx = Context::new();
     ctx.set("msg", "hello");
     let result = tmpl.render_ctx(&ctx).unwrap();
-    assert_eq!(result, "[A:hello]\n[B:hello]\n[C:hello]");
+    assert_eq!(
+        result,
+        "[A:hello]
+[B:hello]
+[C:hello]"
+    );
 }
 
 #[test]
@@ -1964,7 +1957,12 @@ params:
     ctx.set("x", "from_b");
     ctx.set("y", "from_c");
     let result = tmpl.render_ctx(&ctx).unwrap();
-    assert_eq!(result, "[B]\n[D:from_b][C]\n[D:from_c]");
+    assert_eq!(
+        result,
+        "[B]
+[D:from_b][C]
+[D:from_c]"
+    );
 }
 
 // -- for...else tests --
@@ -2061,36 +2059,29 @@ fn for_without_else_still_works() {
 fn if_inside_match_case_arm_with_blockquotes() {
     // Regression: {% if %} inside a {% match %} case arm with blockquote
     // syntax should compile and render correctly.
-    let template = concat!(
-        r#"> {% match role %}
-"#,
-        r#"> {% case A %}
-"#,
-        "\n",
-        "Section A\n",
-        "\n",
-        "{{ msg }}\n",
-        "\n",
-        r#"> {% if mission %}
-"#,
-        "\n",
-        "## Mission\n",
-        "\n",
-        "{{ mission }}\n",
-        "\n",
-        r#"> {% /if %}
-"#,
-        "\n",
-        "More content\n",
-        "\n",
-        r#"> {% case B %}
-"#,
-        "\n",
-        "Section B\n",
-        "\n",
-        r#"> {% /match %}
-"#,
-    );
+    let template = r"> {% match role %}
+> {% case A %}
+
+Section A
+
+{{ msg }}
+
+> {% if mission %}
+
+## Mission
+
+{{ mission }}
+
+> {% /if %}
+
+More content
+
+> {% case B %}
+
+Section B
+
+> {% /match %}
+";
     let mut ctx = Context::new();
     ctx.set("role", "A");
     ctx.set("msg", "hello");
@@ -2116,37 +2107,29 @@ fn if_inside_match_case_arm_with_blockquotes() {
 fn if_else_inside_match_case_arm_with_blockquotes() {
     // Regression: {% if %}...{% else %}...{% /if %} inside a match case arm
     // must not confuse the {% else %} with a match-level {% else %} arm.
-    let template = concat!(
-        r#"> {% match role %}
-"#,
-        r#"> {% case A %}
-"#,
-        "\n",
-        "Section A\n",
-        "\n",
-        r#"> {% if flag %}
-"#,
-        "\n",
-        "flag is set\n",
-        "\n",
-        r#"> {% else %}
-"#,
-        "\n",
-        "flag is not set\n",
-        "\n",
-        r#"> {% /if %}
-"#,
-        "\n",
-        "After if\n",
-        "\n",
-        r#"> {% case B %}
-"#,
-        "\n",
-        "Section B\n",
-        "\n",
-        r#"> {% /match %}
-"#,
-    );
+    let template = r"> {% match role %}
+> {% case A %}
+
+Section A
+
+> {% if flag %}
+
+flag is set
+
+> {% else %}
+
+flag is not set
+
+> {% /if %}
+
+After if
+
+> {% case B %}
+
+Section B
+
+> {% /match %}
+";
     let mut ctx = Context::new();
     ctx.set("role", "A");
     ctx.set("flag", Value::Bool(false));

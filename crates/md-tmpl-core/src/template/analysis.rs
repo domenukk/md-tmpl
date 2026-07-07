@@ -221,6 +221,9 @@ pub(super) fn check_undeclared_variables(
     for c in &fm.consts {
         declared.insert(c.name.clone());
     }
+    for e in &fm.env {
+        declared.insert(e.name.clone());
+    }
     for import in &fm.imports {
         declared.insert(import.stem.clone());
     }
@@ -314,6 +317,7 @@ pub(super) fn check_name_collisions(
         .iter()
         .map(String::as_str)
         .chain(fm.consts.iter().map(|c| c.name.as_str()))
+        .chain(fm.env.iter().map(|e| e.name.as_str()))
         .collect();
     for inline_name in inline_templates.keys() {
         if param_and_const_names.contains(inline_name.as_str()) {
@@ -328,6 +332,7 @@ pub(super) fn check_name_collisions(
         .iter()
         .map(String::as_str)
         .chain(fm.consts.iter().map(|c| c.name.as_str()))
+        .chain(fm.env.iter().map(|e| e.name.as_str()))
         .chain(fm.imports.iter().map(|i| i.stem.as_str()))
         .chain(inline_templates.keys().map(String::as_str))
         .collect();
@@ -483,6 +488,7 @@ fn check_internal_key_in_operand(op: &compiled::ConditionOperand) -> Result<(), 
     }
 }
 
+#[cfg(not(feature = "std"))]
 pub(crate) fn hash_source_no_std(source: &str) -> u64 {
     crate::__private::fnv1a_hash(source.as_bytes())
 }

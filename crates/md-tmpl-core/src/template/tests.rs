@@ -501,7 +501,11 @@ Hello {{ name }}!
     ctx.set("name", "world");
     ctx.set("extra", "unused");
     let output = tmpl.render_ctx(&ctx).unwrap();
-    assert_eq!(output, "Hello world!\n");
+    assert_eq!(
+        output,
+        "Hello world!
+"
+    );
 }
 
 #[test]
@@ -816,7 +820,11 @@ line3",
 #[test]
 fn syntax_error_display_includes_line() {
     let syn = crate::error::SyntaxError::new("bad token").at_line(5, "{% bad %}");
-    assert_eq!(syn.to_string(), "line 5: bad token\n  --> {% bad %}");
+    assert_eq!(
+        syn.to_string(),
+        "line 5: bad token
+  --> {% bad %}"
+    );
 }
 
 // -- type mismatch with path diagnostics ----------------------------------
@@ -1428,7 +1436,8 @@ LOW
         ctx.set("severity", val);
         assert_eq!(
             tmpl.render_ctx(&ctx).unwrap(),
-            "CRITICAL: deadline missed\n"
+            "CRITICAL: deadline missed
+"
         );
     }
 
@@ -1438,7 +1447,11 @@ LOW
         let val = crate::to_value(&Severity::High).unwrap();
         let mut ctx = Context::new();
         ctx.set("severity", val);
-        assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "HIGH\n");
+        assert_eq!(
+            tmpl.render_ctx(&ctx).unwrap(),
+            "HIGH
+"
+        );
     }
 
     #[test]
@@ -1446,7 +1459,11 @@ LOW
         let tmpl = Template::from_source(ENUM_TEMPLATE).unwrap();
         let mut ctx = Context::new();
         ctx.set("severity", crate::to_value(&Severity::Low).unwrap());
-        assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "LOW\n");
+        assert_eq!(
+            tmpl.render_ctx(&ctx).unwrap(),
+            "LOW
+"
+        );
     }
 
     #[test]
@@ -1455,14 +1472,22 @@ LOW
         let ctx = crate::ctx! {
             severity: { __kind__: "Critical", reason: "system outage" }
         };
-        assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "CRITICAL: system outage\n");
+        assert_eq!(
+            tmpl.render_ctx(&ctx).unwrap(),
+            "CRITICAL: system outage
+"
+        );
     }
 
     #[test]
     fn ctx_macro_with_string_for_unit_variant() {
         let tmpl = Template::from_source(ENUM_TEMPLATE).unwrap();
         let ctx = crate::ctx! { severity: "High" };
-        assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "HIGH\n");
+        assert_eq!(
+            tmpl.render_ctx(&ctx).unwrap(),
+            "HIGH
+"
+        );
     }
 
     #[test]
@@ -1470,7 +1495,11 @@ LOW
         let tmpl = Template::from_source(ENUM_TEMPLATE).unwrap();
         let mut ctx = Context::new();
         ctx.set("severity", "Low");
-        assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "LOW\n");
+        assert_eq!(
+            tmpl.render_ctx(&ctx).unwrap(),
+            "LOW
+"
+        );
     }
 
     #[test]
@@ -1486,7 +1515,8 @@ LOW
         );
         assert_eq!(
             tmpl.render_ctx(&ctx).unwrap(),
-            "CRITICAL: data corruption\n"
+            "CRITICAL: data corruption
+"
         );
     }
 
@@ -1510,13 +1540,21 @@ LOW
         .unwrap();
         let mut ctx = Context::new();
         ctx.set("severity", val);
-        assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "CRITICAL: critical issue\n");
+        assert_eq!(
+            tmpl.render_ctx(&ctx).unwrap(),
+            "CRITICAL: critical issue
+"
+        );
 
         // Unit variant with #[serde(tag)] produces {"__kind__": "High"} dict
         let val = crate::to_value(&TaggedSeverity::High).unwrap();
         let mut ctx = Context::new();
         ctx.set("severity", val);
-        assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "HIGH\n");
+        assert_eq!(
+            tmpl.render_ctx(&ctx).unwrap(),
+            "HIGH
+"
+        );
     }
 
     #[test]
@@ -1553,13 +1591,21 @@ ERROR
         .unwrap();
         let mut ctx = Context::new();
         ctx.set("r", val);
-        assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "success (200)\n");
+        assert_eq!(
+            tmpl.render_ctx(&ctx).unwrap(),
+            "success (200)
+"
+        );
 
         // Also exercise the Err variant so it's genuinely used.
         let err_val = crate::to_value(&Result::Err).unwrap();
         let mut err_ctx = Context::new();
         err_ctx.set("r", err_val);
-        assert_eq!(tmpl.render_ctx(&err_ctx).unwrap(), "ERROR\n");
+        assert_eq!(
+            tmpl.render_ctx(&err_ctx).unwrap(),
+            "ERROR
+"
+        );
     }
 }
 
@@ -1881,7 +1927,11 @@ allow_unused: true
     )
     .unwrap();
     let ctx = crate::ctx! { items: [{ name: "hello" }] };
-    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "hello\n");
+    assert_eq!(
+        tmpl.render_ctx(&ctx).unwrap(),
+        "hello
+"
+    );
 }
 
 #[test]
@@ -1900,7 +1950,11 @@ allow_unused: true
     let ctx = crate::ctx! {
         items: [{ children: [{ name: "leaf" }] }]
     };
-    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "  leaf\n  ");
+    assert_eq!(
+        tmpl.render_ctx(&ctx).unwrap(),
+        "  leaf
+  "
+    );
 }
 
 // -- Blockquote prefix enforcement ----------------------------------------
@@ -2015,7 +2069,11 @@ no
     .unwrap();
     let mut ctx = Context::new();
     ctx.set("x", true);
-    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "yes\n");
+    assert_eq!(
+        tmpl.render_ctx(&ctx).unwrap(),
+        "yes
+"
+    );
 }
 
 // -- render_ctx_into --

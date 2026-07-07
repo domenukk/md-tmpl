@@ -1,6 +1,6 @@
 [package]
 name = "md-tmpl"
-version = "0.5.0"
+version = "0.5.2"
 edition = "2024"
 rust-version = "1.85"
 description = "Lightweight template engine for .tmpl.md prompt files with typed frontmatter"
@@ -11,41 +11,27 @@ keywords = ["template", "prompt", "markdown", "llm", "agent"]
 categories = ["template-engine", "text-processing"]
 
 [features]
-default = ["std", "serde", "typed-builder"]
-std = ["hashbrown/default", "thiserror/std", "ciborium/std", "dep:flexbuffers"]
-serde = ["dep:serde", "dep:ciborium", "hashbrown/serde"]
-# typed-builder is not used directly by core source code. It is re-exported
-# as a feature flag so that `md-tmpl-macros` generated code (e.g.
-# `#[derive(TypedBuilder)]`) can activate it via this crate's feature.
-typed-builder = ["dep:typed-builder"]
+default = ["std", "serde", "typed-builder", "macros"]
+std = ["md-tmpl-core/std"]
+serde = ["md-tmpl-core/serde"]
+typed-builder = ["md-tmpl-core/typed-builder"]
+# Re-export proc macros so users can write `md_tmpl::include_template!`
+# instead of importing `md_tmpl_macros` separately.
+macros = ["dep:md-tmpl-macros"]
 
 [dependencies]
-thiserror = { version = "2", default-features = false }
-const-str = "1.1"
-hashbrown = { version = "0.17", default-features = false, features = [
-  "allocator-api2",
-  "default-hasher",
+md-tmpl-core = { version = "0.5.2", path = "../md-tmpl-core", default-features = false }
+md-tmpl-macros = { path = "../md-tmpl-macros", optional = true, features = [
+  "serde",
+  "typed-builder",
 ] }
-itoa = { version = "1", default-features = false }
-serde = { version = "1", default-features = false, features = [
-  "derive",
-  "alloc",
-], optional = true }
-flexbuffers = { version = "25.12", optional = true }
-typed-builder = { workspace = true, optional = true }
-spin = { version = "0.12", default-features = false, features = ["lazy"] }
-ciborium = { version = "0.2.2", default-features = false, optional = true }
 
 [dev-dependencies]
 tempfile = "3"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
-md-tmpl-macros = { path = "../md-tmpl-macros", features = [
-  "serde",
-  "typed-builder",
-] }
 typed-builder = { workspace = true }
-criterion = { version = "0.7", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 flexbuffers = "25.12"
 toml = "0.8"
 

@@ -92,7 +92,7 @@ impl HasLastAccessed for CacheEntry {
 /// # Usage
 ///
 /// ```rust
-/// use md_tmpl::TemplateCache;
+/// use md_tmpl_core::TemplateCache;
 ///
 /// let dir = tempfile::tempdir().unwrap();
 /// let path = dir.path().join("greeting.tmpl.md");
@@ -131,7 +131,7 @@ pub(crate) trait IncludeResolver: Send + Sync {
 /// # Examples
 ///
 /// ```
-/// use md_tmpl::TemplateCache;
+/// use md_tmpl_core::TemplateCache;
 ///
 /// let dir = tempfile::tempdir().unwrap();
 /// let path = dir.path().join("greeting.tmpl.md");
@@ -222,7 +222,7 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
     /// ```
     /// use std::{collections::hash_map::DefaultHasher, hash::BuildHasherDefault};
     ///
-    /// use md_tmpl::TemplateCache;
+    /// use md_tmpl_core::TemplateCache;
     ///
     /// let cache = TemplateCache::with_hasher(BuildHasherDefault::<DefaultHasher>::default());
     ///
@@ -238,7 +238,7 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
     /// .unwrap();
     ///
     /// let tmpl = cache.load(&path).unwrap();
-    /// let mut ctx = md_tmpl::Context::new();
+    /// let mut ctx = md_tmpl_core::Context::new();
     /// ctx.set("x", "works");
     /// assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "works");
     /// ```
@@ -261,7 +261,7 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
     /// # Examples
     ///
     /// ```
-    /// use md_tmpl::TemplateCache;
+    /// use md_tmpl_core::TemplateCache;
     ///
     /// let cache = TemplateCache::new().with_max_entries(128);
     /// ```

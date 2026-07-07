@@ -83,6 +83,7 @@ import {
   EXPR_START,
   isValidResolvedPath,
 } from "./consts.js";
+import { parseLiteral } from "./frontmatter.js";
 
 // ---------------------------------------------------------------------------
 // ITemplate — shared interface for all template backends
@@ -133,6 +134,31 @@ export interface ITemplate {
 
   /** Return the raw template body after frontmatter stripping. */
   body(): string;
+}
+
+// ---------------------------------------------------------------------------
+// CompileOptions — compile-time configuration
+// ---------------------------------------------------------------------------
+
+/**
+ * Options for compile-time template configuration.
+ *
+ * `env` provides values for `env:` frontmatter declarations.
+ * Values can be any JS type — strings are parsed to the declared type
+ * (backward compat), other types are converted directly via `fromJs`.
+ *
+ * @example
+ * ```ts
+ * const tmpl = Template.fromSourceWithEnv(source, {
+ *   env: { PATH: '/usr/local/prompts', MAX_RETRIES: 5, DEBUG: true },
+ * });
+ * ```
+ */
+export interface CompileOptions {
+  /** Compile-time environment variable values (typed). */
+  readonly env?: Record<string, unknown>;
+  /** Base directory for resolving imported templates. */
+  readonly baseDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -219,12 +245,24 @@ export class Template implements ITemplate {
         consts.set(decl.name, decl.defaultValue);
       }
     }
+    // Env declarations are resolved at compile time and behave like consts.
+    for (const decl of fm.env) {
+      if (decl.defaultValue !== undefined) {
+        consts.set(decl.name, decl.defaultValue);
+      }
+    }
     for (const [key, jsVal] of Object.entries(fm.importedConsts)) {
       consts.set(key, fromJs(jsVal));
     }
     this.constValues = consts;
     const constsJs = new Map<string, unknown>();
     for (const decl of fm.consts) {
+      if (decl.defaultValue !== undefined) {
+        constsJs.set(decl.name, valueToJs(decl.defaultValue));
+      }
+    }
+    // Env declarations are resolved at compile time and behave like consts.
+    for (const decl of fm.env) {
       if (decl.defaultValue !== undefined) {
         constsJs.set(decl.name, valueToJs(decl.defaultValue));
       }
@@ -278,6 +316,43 @@ export class Template implements ITemplate {
   }
 
   /**
+   * Parse a template from source with compile-time environment variables.
+   *
+   * Resolves `env:` declarations using the provided `CompileOptions.env`
+   * values, type-checks them, and injects them into the template scope.
+   *
+   * @throws {TemplateSyntaxError} If an env var is missing without a default.
+   * @throws {TemplateSyntaxError} If an env var value fails type checking.
+   */
+  static fromSourceWithEnv(source: string, options: CompileOptions): Template {
+    const [fm, body] = parseFrontmatter(source);
+    let resolvedFm = resolveEnvDeclarations(fm, options.env ?? {});
+    validateFrontmatter(resolvedFm);
+    const baseDir = options.baseDir;
+    if (baseDir) {
+      resolvedFm = resolveImportedConsts(resolvedFm, baseDir);
+    }
+    const nodes = parseBody(body, false, resolvedFm.bodyStartLine ?? 1);
+    const tmpl = new Template(resolvedFm, body, nodes, source, baseDir);
+    if (!resolvedFm.allowUnused) {
+      tmpl.checkUnusedParams(body);
+    }
+    tmpl.checkBareEnumAccess();
+    validateBodyCollisions(
+      resolvedFm,
+      collectInlineTemplateNames(nodes),
+      collectForBindings(nodes),
+    );
+    validateDisplayability(
+      nodes,
+      resolvedFm.params,
+      resolvedFm.consts,
+      resolvedFm.typeAliases,
+    );
+    return tmpl;
+  }
+
+  /**
    * Parse a template, allowing declared parameters that aren't used.
    */
   static fromSourceAllowingUnused(source: string): Template {
@@ -323,6 +398,20 @@ export class Template implements ITemplate {
    * @throws {TemplateSyntaxError} If the file contains syntax errors.
    */
   static fromFile(filePath: string): Template {
+    return Template.fromFileWithEnv(filePath);
+  }
+
+  /**
+   * Load a template from a `.tmpl.md` file with compile-time env values.
+   *
+   * Resolves `env:` declarations using the provided options before
+   * resolving imports, so `{{ PROMPTS_DIR }}` can be used in import paths.
+   *
+   * @throws {TemplateError} If the file cannot be read.
+   * @throws {TemplateSyntaxError} If the file contains syntax errors.
+   * @throws {TemplateSyntaxError} If an env var is missing without a default.
+   */
+  static fromFileWithEnv(filePath: string, options?: CompileOptions): Template {
     let source: string;
     try {
       source = getFs().readFileSync(filePath, "utf-8");
@@ -334,8 +423,11 @@ export class Template implements ITemplate {
     const absPath = getPath().resolve(filePath);
     const baseDir = getPath().dirname(absPath);
     const [fm, body] = parseFrontmatter(source);
-    validateFrontmatter(fm);
-    const resolvedFm = resolveImportedConsts(fm, baseDir);
+    // Resolve env declarations before import resolution so env values
+    // (e.g. PROMPTS_DIR) are available in import paths.
+    const envResolved = resolveEnvDeclarations(fm, options?.env ?? {});
+    validateFrontmatter(envResolved);
+    const resolvedFm = resolveImportedConsts(envResolved, baseDir);
     const nodes = parseBody(body, false, resolvedFm.bodyStartLine ?? 1);
     const tmpl = new Template(resolvedFm, body, nodes, source, baseDir);
     if (!resolvedFm.allowUnused) {
@@ -1436,7 +1528,8 @@ function resolveIncludeEntry(
   let stat: { mtimeMs: number } | undefined;
   try {
     stat = getFs().statSync(absPath, { throwIfNoEntry: false });
-  } catch {
+  } catch (_err: unknown) {
+    /* statSync can throw on permission errors; treat as not found */
     return undefined;
   }
   if (!stat) {
@@ -1719,6 +1812,12 @@ function resolveImportedConsts(fm: Frontmatter, baseDir: string): Frontmatter {
       availableConsts.set(c.name, c.defaultValue);
     }
   }
+  // Include env declarations so import paths can reference env: values.
+  for (const e of fm.env) {
+    if (e.defaultValue !== undefined) {
+      availableConsts.set(e.name, e.defaultValue);
+    }
+  }
 
   const imported: Record<string, unknown> = {};
   const fsModule = getFs();
@@ -1750,6 +1849,9 @@ function resolveImportedConsts(fm: Frontmatter, baseDir: string): Frontmatter {
     for (const decl of importedFm.consts) {
       if (decl.defaultValue !== undefined) {
         imported[`${imp.stem}.${decl.name}`] = valueToJs(decl.defaultValue);
+        // Accumulate for sequential/chained resolution: subsequent imports
+        // can reference this const via {{ stem.NAME }} in their paths.
+        availableConsts.set(`${imp.stem}.${decl.name}`, decl.defaultValue);
       }
     }
 
@@ -1821,6 +1923,104 @@ function resolveImportedConsts(fm: Frontmatter, baseDir: string): Frontmatter {
     importedConsts: imported,
     unresolvedDefaults: new Map(),
   };
+}
+
+/**
+ * Resolve `env:` declarations against provided compile-time values.
+ *
+ * For each env declaration:
+ * - If a value is provided, parse the string to the declared type.
+ * - If no value is provided and a default exists, use the default.
+ * - If no value is provided and no default exists, throw a compile error.
+ *
+ * Returns a new Frontmatter with env declarations resolved
+ * (each VarDecl has its `defaultValue` set to the resolved value).
+ */
+function resolveEnvDeclarations(
+  fm: Frontmatter,
+  envValues: Record<string, unknown>,
+): Frontmatter {
+  if (fm.env.length === 0) {
+    return fm;
+  }
+
+  const resolvedEnv: VarDecl[] = [];
+  for (const decl of fm.env) {
+    const provided = envValues[decl.name];
+    if (provided !== undefined) {
+      let parsedValue: Value;
+      try {
+        if (typeof provided === "string") {
+          // String value: parse according to declared type (backward compat).
+          parsedValue = parseEnvStringValue(provided, decl.varType);
+        } else {
+          // Already typed value: convert directly.
+          parsedValue = fromJs(provided);
+        }
+      } catch (err) {
+        throw new TemplateSyntaxError(
+          `env variable '${decl.name}': failed to convert value: ${err instanceof Error ? err.message : String(err)}`,
+          decl.loc?.line,
+          decl.loc?.column,
+          decl.loc?.snippet,
+        );
+      }
+      resolvedEnv.push({
+        name: decl.name,
+        varType: decl.varType,
+        defaultValue: parsedValue,
+        loc: decl.loc,
+      });
+    } else if (decl.defaultValue !== undefined) {
+      resolvedEnv.push(decl);
+    } else {
+      throw new TemplateSyntaxError(
+        `env variable '${decl.name}': no value provided and no default`,
+        decl.loc?.line,
+        decl.loc?.column,
+        decl.loc?.snippet,
+      );
+    }
+  }
+
+  return { ...fm, env: resolvedEnv };
+}
+
+/**
+ * Parse a string value into a typed Value based on the declared VarType.
+ *
+ * This is used for env: values which are always provided as strings
+ * and need to be converted to the appropriate typed value.
+ */
+function parseEnvStringValue(value: string, varType: VarType): Value {
+  switch (varType.kind) {
+    case TYPE_STR:
+      return str(value);
+    case TYPE_INT: {
+      const n = parseInt(value, 10);
+      if (Number.isNaN(n) || String(n) !== value.trim()) {
+        throw new TemplateSyntaxError(`invalid integer value: '${value}'`);
+      }
+      return { type: TYPE_INT, value: n };
+    }
+    case TYPE_FLOAT: {
+      const f = parseFloat(value);
+      if (Number.isNaN(f)) {
+        throw new TemplateSyntaxError(`invalid float value: '${value}'`);
+      }
+      return { type: TYPE_FLOAT, value: f };
+    }
+    case TYPE_BOOL: {
+      if (value === "true") return { type: TYPE_BOOL, value: true };
+      if (value === "false") return { type: TYPE_BOOL, value: false };
+      throw new TemplateSyntaxError(
+        `invalid bool value: '${value}' (expected 'true' or 'false')`,
+      );
+    }
+    default:
+      // For other types, try parseLiteral as fallback
+      return parseLiteral(value, varType);
+  }
 }
 
 // ---------------------------------------------------------------------------

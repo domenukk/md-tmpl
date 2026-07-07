@@ -25,7 +25,7 @@ use crate::{compat::HashMap, value::Value};
 /// # Examples
 ///
 /// ```
-/// use md_tmpl::Value;
+/// use md_tmpl_core::Value;
 /// use serde::Serialize;
 ///
 /// #[derive(Serialize)]
@@ -38,7 +38,7 @@ use crate::{compat::HashMap, value::Value};
 ///     name: "Alice".into(),
 ///     score: 95,
 /// };
-/// let val = md_tmpl::to_value(&agent).unwrap();
+/// let val = md_tmpl_core::to_value(&agent).unwrap();
 /// assert_eq!(val.get_field("name").unwrap().to_string(), "Alice");
 /// assert_eq!(val.get_field("score").unwrap().to_string(), "95");
 /// ```
@@ -388,7 +388,7 @@ impl de::Error for DeError {
 /// # Examples
 ///
 /// ```
-/// use md_tmpl::Value;
+/// use md_tmpl_core::Value;
 /// use serde::Deserialize;
 ///
 /// #[derive(Deserialize, Debug, PartialEq)]
@@ -401,7 +401,7 @@ impl de::Error for DeError {
 ///     ("name", Value::Str("Alice".into())),
 ///     ("score", Value::Int(95)),
 /// ]);
-/// let agent: Agent = md_tmpl::from_value(&val).unwrap();
+/// let agent: Agent = md_tmpl_core::from_value(&val).unwrap();
 /// assert_eq!(
 ///     agent,
 ///     Agent {
@@ -843,11 +843,3 @@ impl<'de> serde::Deserialize<'de> for Value {
         deserializer.deserialize_any(ValueVisitor)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-#[path = "serde_support_tests.rs"]
-mod tests;

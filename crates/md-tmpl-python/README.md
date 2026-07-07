@@ -318,6 +318,39 @@ params:
 constants = tmpl.consts()  # {"MAX_RETRIES": 3, "MODEL": "gemini-3.5-flash"}
 ```
 
+### Environment Variables
+
+Inject values at compile time from the build environment using `env:`
+declarations. Env vars are resolved once when the template is compiled and
+behave like constants at render time.
+
+```python
+tmpl = Template.from_source_with_env("""\
+---
+params:
+  - name = str
+env:
+  - MODEL = str
+  - MAX_TOKENS = int := 4096
+---
+Hello {{ name }}! Using {{ MODEL }} (max {{ MAX_TOKENS }} tokens).""",
+    {"MODEL": "gemini-2.0-flash"},
+)
+
+output = tmpl.render(name="Alice")
+# → "Hello Alice! Using gemini-2.0-flash (max 4096 tokens)."
+```
+
+Or use `from_source_with_options()` to combine env with other compile options:
+
+```python
+tmpl = Template.from_source_with_options(
+    source,
+    base_dir="/path/to/prompts",
+    env={"MODEL": "gemini-2.0-flash"},
+)
+```
+
 ### Caching
 
 ```python
@@ -338,16 +371,18 @@ cache.clear()           # invalidate all entries
 
 ### `Template`
 
-| Method / Constructor                      | Description                                             |
-| ----------------------------------------- | ------------------------------------------------------- |
-| `Template.from_file(path)`                | Load and parse a `.tmpl.md` file                        |
-| `Template.from_source(source)`            | Parse a template from an inline string                  |
-| `tmpl.render(**kwargs)`                   | Render with keyword arguments (type-checked)            |
-| `tmpl.render_dict(params, allow_extra=…)` | Render from a dict; `allow_extra=True` skips extras     |
-| `tmpl.render_empty()`                     | Render a template with only defaults (no user args)     |
-| `tmpl.declarations()`                     | Return `[(name, type_str), …]` for all params           |
-| `tmpl.consts()`                           | Return `{name: value, …}` for constants                 |
-| `tmpl.validate_declarations_against(…)`   | Raise `ValueError` if declarations changed (hot-reload) |
+| Method / Constructor                           | Description                                             |
+| ---------------------------------------------- | ------------------------------------------------------- |
+| `Template.from_file(path)`                     | Load and parse a `.tmpl.md` file                        |
+| `Template.from_source(source)`                 | Parse a template from an inline string                  |
+| `Template.from_source_with_env(source, env)`   | Parse with compile-time environment variables           |
+| `Template.from_source_with_options(source, …)` | Parse with `base_dir`, `env`, and `allow_unused`        |
+| `tmpl.render(**kwargs)`                        | Render with keyword arguments (type-checked)            |
+| `tmpl.render_dict(params, allow_extra=…)`      | Render from a dict; `allow_extra=True` skips extras     |
+| `tmpl.render_empty()`                          | Render a template with only defaults (no user args)     |
+| `tmpl.declarations()`                          | Return `[(name, type_str), …]` for all params           |
+| `tmpl.consts()`                                | Return `{name: value, …}` for constants                 |
+| `tmpl.validate_declarations_against(…)`        | Raise `ValueError` if declarations changed (hot-reload) |
 
 ### Errors
 
@@ -381,28 +416,28 @@ Extra parameters are rejected by default — pass `allow_extra=True` to opt out.
 
 | Scenario        |        md-tmpl |   Jinja2 |    Mako |  Chevron |    Django | string.Template |
 | --------------- | -------------: | -------: | ------: | -------: | --------: | --------------: |
-| **simple**      |        1.65 µs |  6.60 µs | 9.46 µs |  7.40 µs |   7.94 µs |  **1.63 µs** 🏆 |
-| **loop**        | **1.96 µs** 🏆 | 10.32 µs | 6.64 µs | 20.86 µs |  46.52 µs |             N/A |
-| **conditional** | **1.04 µs** 🏆 |  6.44 µs | 6.36 µs |      N/A |  14.62 µs |             N/A |
-| **hero**        | **7.03 µs** 🏆 | 24.74 µs | 9.42 µs |      N/A | 227.48 µs |             N/A |
+| **simple**      | **0.98 µs** 🏆 |  6.38 µs | 6.31 µs |  7.23 µs |   7.91 µs |         1.61 µs |
+| **loop**        | **1.95 µs** 🏆 |  9.68 µs | 6.62 µs | 20.83 µs |  47.28 µs |             N/A |
+| **conditional** | **1.03 µs** 🏆 |  6.50 µs | 6.30 µs |      N/A |  14.37 µs |             N/A |
+| **hero**        | **6.80 µs** 🏆 | 24.06 µs | 9.22 µs |      N/A | 237.52 µs |             N/A |
 
 ### Parse Time (source → template object)
 
 | Scenario        |         md-tmpl |    Jinja2 |      Mako |        Chevron |    Django | string.Template |
 | --------------- | --------------: | --------: | --------: | -------------: | --------: | --------------: |
-| **simple**      |         4.37 µs | 313.39 µs | 394.31 µs | **0.13 µs** 🏆 |  19.16 µs |         0.22 µs |
-| **loop**        |         6.72 µs | 551.93 µs | 500.29 µs | **0.13 µs** 🏆 |  42.96 µs |             N/A |
-| **conditional** |  **8.37 µs** 🏆 | 663.49 µs | 554.38 µs |            N/A |  76.39 µs |             N/A |
-| **hero**        | **27.97 µs** 🏆 |   2.24 ms |   1.40 ms |            N/A | 231.66 µs |             N/A |
+| **simple**      |         4.41 µs | 392.30 µs |   1.13 ms | **0.14 µs** 🏆 |  26.08 µs |         0.35 µs |
+| **loop**        |        10.40 µs | 734.14 µs | 703.42 µs | **0.13 µs** 🏆 |  42.55 µs |             N/A |
+| **conditional** |  **8.73 µs** 🏆 | 946.10 µs | 671.05 µs |            N/A |  76.32 µs |             N/A |
+| **hero**        | **46.91 µs** 🏆 |   3.13 ms |   1.40 ms |            N/A | 231.53 µs |             N/A |
 
 ### End-to-End (parse + render)
 
-| Scenario        |         md-tmpl |    Jinja2 |      Mako |  Chevron |    Django |   str.Template |
-| --------------- | --------------: | --------: | --------: | -------: | --------: | -------------: |
-| **simple**      |         5.71 µs | 336.10 µs | 427.35 µs | 11.52 µs |  42.41 µs | **1.88 µs** 🏆 |
-| **loop**        |  **9.65 µs** 🏆 | 639.43 µs | 579.59 µs | 22.56 µs | 105.59 µs |            N/A |
-| **conditional** |  **9.90 µs** 🏆 | 704.27 µs | 595.91 µs |      N/A | 104.38 µs |            N/A |
-| **hero**        | **38.39 µs** 🏆 |   2.63 ms |   1.52 ms |      N/A | 682.11 µs |            N/A |
+| Scenario        |         md-tmpl |    Jinja2 |      Mako |         Chevron |    Django |   str.Template |
+| --------------- | --------------: | --------: | --------: | --------------: | --------: | -------------: |
+| **simple**      |         6.53 µs | 353.60 µs | 643.35 µs |        13.49 µs |  70.95 µs | **3.30 µs** 🏆 |
+| **loop**        |        22.99 µs | 859.37 µs | 771.68 µs | **21.22 µs** 🏆 | 110.07 µs |            N/A |
+| **conditional** | **10.15 µs** 🏆 | 828.89 µs | 853.32 µs |             N/A | 152.99 µs |            N/A |
+| **hero**        | **55.32 µs** 🏆 |   3.31 ms |   1.94 ms |             N/A | 696.16 µs |            N/A |
 
 ```bash
 just bench-python          # run comparison benchmarks

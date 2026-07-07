@@ -48,7 +48,7 @@ impl Template {
     /// # Examples
     ///
     /// ```
-    /// use md_tmpl::Template;
+    /// use md_tmpl_core::Template;
     ///
     /// // No params — renders as-is
     /// let tmpl = Template::from_source(
@@ -308,7 +308,7 @@ impl Template {
     /// # Examples
     ///
     /// ```
-    /// use md_tmpl::Template;
+    /// use md_tmpl_core::Template;
     /// use serde::Serialize;
     ///
     /// #[derive(Serialize)]

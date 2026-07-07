@@ -4,7 +4,7 @@ Strongly-typed prompt templates for LLMs — markdown files with YAML frontmatte
 validated at **build time** via proc macros, with a full runtime API for dynamic loading.
 
 ```rust
-use md_tmpl_macros::include_template;
+use md_tmpl::include_template;
 
 // Parses and validates the template at build time, generates typed structs + enums.
 include_template!("prompts/task_report.tmpl.md");
@@ -77,8 +77,8 @@ Available on crates.io: <https://crates.io/crates/md-tmpl> (and <https://crates.
 
 ```bash
 cargo add md-tmpl
-# build-time validation + code generation:
-cargo add md-tmpl-macros
+# macros are included by default — no extra dependency needed!
+# (md-tmpl re-exports include_template! and template! macros)
 ```
 
 **MSRV:** 1.85 (Rust 2024 edition) · **`no_std`** compatible (disable default `std` feature)
@@ -91,6 +91,7 @@ cargo add md-tmpl-macros
 | **Type aliases**           | `types:` block defines reusable named types (`Priority = enum(High, Low)`)               |
 | **Cross-template imports** | `imports:` pulls types via dotted paths (`stem.TypeName`)                                |
 | **Constants**              | `consts:` block for file-scoped immutable values                                         |
+| **Environment variables**  | `env:` block for compile-time injection from the build environment                       |
 | **String interpolation**   | `{{ expr }}` inside all quoted strings — conditions, includes, panic messages            |
 | **For loops & else**       | `> {% for task in tasks %} … > {% else %} empty > {% /for %}`                            |
 | **Conditionals**           | `> {% if count > 0 %} … > {% elif active %} … > {% else %} … > {% /if %}`                |
@@ -108,7 +109,7 @@ Reads a `.tmpl.md` file at build time, validates it, and generates a typed
 module:
 
 ```rust
-use md_tmpl_macros::include_template;
+use md_tmpl::include_template;
 
 // Generates: pub mod simple_greeting { pub struct Params { pub name: String } }
 include_template!("prompts/simple_greeting.tmpl.md");
@@ -122,7 +123,7 @@ assert_eq!(output, "\nHello world!\n");
 Inline template strings — same validation, no file needed:
 
 ```rust
-md_tmpl_macros::template!(r#"
+md_tmpl::template!(r#"
 ---
 params:
   - name = str
@@ -142,11 +143,11 @@ Enable `typed-builder` for ergonomic builder patterns:
 
 ```bash
 cargo add md-tmpl --features typed-builder
-cargo add md-tmpl-macros --features typed-builder
+# (typed-builder is a default feature of md-tmpl)
 ```
 
 ```rust
-# md_tmpl_macros::include_template!("prompts/greeting.tmpl.md");
+# md_tmpl::include_template!("prompts/greeting.tmpl.md");
 let params = greeting::Params::builder()
     .name("Alice")       // setter(into): accepts &str or String
     .count(42)
@@ -164,7 +165,7 @@ let output = params.render().unwrap();
 Sub-structs also derive `TypedBuilder`:
 
 ```rust
-# md_tmpl_macros::include_template!("prompts/greeting.tmpl.md");
+# md_tmpl::include_template!("prompts/greeting.tmpl.md");
 let item = greeting::ParamsItemsItem::builder()
     .label("write docs")
     .build();
@@ -273,13 +274,38 @@ let output = tmpl.render_ctx(&ctx).unwrap();
 assert!(output.contains("Hello world!"));
 ```
 
+### Environment Variables
+
+Inject values at compile time from the build environment:
+
+```rust
+use md_tmpl::{ctx, Template, CompileOptions, Value};
+
+let (tmpl, _fm) = Template::compile("\
+---
+params:
+  - name = str
+
+env:
+  - MODEL = str
+  - MAX_TOKENS = int := 4096
+---
+Hello {{ name }}! Using {{ MODEL }} (max {{ MAX_TOKENS }} tokens).",
+    CompileOptions::default().env(&[("MODEL", Value::Str("gemini-2.0-flash".into()))]),
+).unwrap();
+
+let output = tmpl.render_ctx(&ctx! { name: "Alice" }).unwrap();
+assert!(output.contains("gemini-2.0-flash"));
+assert!(output.contains("4096")); // default used
+```
+
 ## Hot-Reload
 
 Load templates from disk at runtime while keeping type safety —
 iterate on prompt wording without recompiling:
 
 ```rust
-# md_tmpl_macros::include_template!("prompts/greeting.tmpl.md");
+# md_tmpl::include_template!("prompts/greeting.tmpl.md");
 let tmpl = md_tmpl::Template::from_file(
     std::path::Path::new("prompts/greeting.tmpl.md")
 ).unwrap();
@@ -366,13 +392,13 @@ assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Alice (5)");
 Criterion benchmarks, render only (pre-parsed template + data → output).
 ([source](../../benchmarks/benches/comparison.rs))
 
-| Scenario        |        md-tmpl |     Tera | `MiniJinja` | Handlebars |
-| --------------- | -------------: | -------: | ----------: | ---------: |
-| **simple**      |  **150 ns** 🏆 |   216 ns |      554 ns |     673 ns |
-| **loop**        |  **467 ns** 🏆 |   598 ns |     2.00 µs |    3.13 µs |
-| **conditional** |  **211 ns** 🏆 |   343 ns |      623 ns |    1.38 µs |
-| **hero**        | **2.08 µs** 🏆 |  2.20 µs |     7.51 µs |   25.42 µs |
-| **mega**        | **8.64 µs** 🏆 | 10.89 µs |    28.49 µs |   88.99 µs |
+| Scenario        |         md-tmpl |           Tera | `MiniJinja` | Handlebars |
+| --------------- | --------------: | -------------: | ----------: | ---------: |
+| **simple**      |          390 ns |  **335 ns** 🏆 |      725 ns |    1.47 µs |
+| **loop**        |   **659 ns** 🏆 |        1.57 µs |     4.05 µs |    8.98 µs |
+| **conditional** |          912 ns |  **890 ns** 🏆 |     2.27 µs |    2.39 µs |
+| **hero**        |         4.50 µs | **3.39 µs** 🏆 |     7.92 µs |   38.39 µs |
+| **mega**        | **12.44 µs** 🏆 |       20.25 µs |    63.17 µs |  164.24 µs |
 
 _Intel Xeon @ 2.60 GHz, 3 runs × 100 Criterion samples._
 

@@ -256,7 +256,7 @@ impl Value {
     /// # Examples
     ///
     /// ```
-    /// use md_tmpl::Value;
+    /// use md_tmpl_core::Value;
     ///
     /// let v = Value::new_struct([("name", "Alice"), ("role", "admin")]);
     /// assert_eq!(v.get_field("name").unwrap().to_string(), "Alice");
@@ -283,7 +283,7 @@ impl Value {
     /// # Examples
     ///
     /// ```
-    /// use md_tmpl::Value;
+    /// use md_tmpl_core::Value;
     ///
     /// let v = Value::list([
     ///     Value::new_struct([("label", "alpha")]),
@@ -315,7 +315,7 @@ impl Value {
     /// # Examples
     ///
     /// ```
-    /// use md_tmpl::Value;
+    /// use md_tmpl_core::Value;
     /// use serde::Serialize;
     ///
     /// #[derive(Serialize)]
@@ -347,7 +347,7 @@ impl Value {
     /// # Examples
     ///
     /// ```
-    /// use md_tmpl::Value;
+    /// use md_tmpl_core::Value;
     /// use serde::Deserialize;
     ///
     /// #[derive(Deserialize, Debug, PartialEq)]

@@ -250,7 +250,8 @@ fn resolve_include_inner_into(
     })?;
 
     let include_base = include_path.parent().unwrap_or(base);
-    let (fm, body) = crate::frontmatter::parse_frontmatter_with_base_dir(&source, include_base)?;
+    let (fm, body) =
+        crate::frontmatter::parse_frontmatter_with_base_dir(&source, include_base, &[])?;
     let (segments, included_inline_templates) = crate::compiled::compile(body, &fm.type_aliases)?;
 
     // Scope the included file's own inline templates: push them for rendering,
@@ -538,7 +539,12 @@ params: [item = str]
         );
         let mut scope = Scope::new(&ctx);
         let result = resolve_include(&directive, &mut scope, Some(dir.path()), None).unwrap();
-        assert_eq!(result, "- first\n- second\n");
+        assert_eq!(
+            result,
+            r"- first
+- second
+"
+        );
     }
 
     #[test]
@@ -625,7 +631,11 @@ params: [item = str]
         );
         let mut scope = Scope::new(&ctx);
         let result = resolve_include(&directive, &mut scope, Some(dir.path()), None).unwrap();
-        assert_eq!(result, "- test\n");
+        assert_eq!(
+            result,
+            "- test
+"
+        );
     }
 
     #[test]
@@ -765,7 +775,11 @@ params:
         );
         let mut scope = Scope::new(&ctx);
         let result = resolve_include(&directive, &mut scope, Some(dir.path()), None).unwrap();
-        assert_eq!(result, "- alpha\n");
+        assert_eq!(
+            result,
+            "- alpha
+"
+        );
     }
 
     /// Regression: when an override IS provided, it must take precedence

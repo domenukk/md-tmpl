@@ -232,6 +232,37 @@ tmpl.render({ name: "Alice" }); // → "Hello, Alice!"
 tmpl.defaults(); // → { greeting: "Hello" }
 ```
 
+### Environment Variables
+
+Inject values at compile time from the build environment using `env:`
+declarations. Env vars are resolved once when the template is compiled and
+behave like constants at render time.
+
+```ts
+const tmpl = Template.fromSourceWithEnv(
+  `---
+params:
+  - name = str
+env:
+  - MODEL = str
+  - MAX_TOKENS = int := 4096
+---
+Hello {{ name }}! Using {{ MODEL }} (max {{ MAX_TOKENS }} tokens).`,
+  { env: { MODEL: "gemini-2.0-flash" } },
+);
+
+tmpl.render({ name: "Alice" });
+// → "Hello Alice! Using gemini-2.0-flash (max 4096 tokens)."
+```
+
+Or load from a file with env:
+
+```ts
+const tmpl = Template.fromFileWithEnv("prompts/agent.tmpl.md", {
+  env: { MODEL: "gemini-2.0-flash", MAX_TOKENS: "8192" },
+});
+```
+
 ### If/Elif/Else
 
 ```markdown
@@ -284,7 +315,9 @@ Expert: {{ name }}
 Template.fromSource(source: string): Template
 Template.fromSourceAllowingUnused(source): Template
 Template.fromSourceWithBaseDir(source, dir): Template
+Template.fromSourceWithEnv(source, options: CompileOptions): Template
 Template.fromFile(path: string): Template
+Template.fromFileWithEnv(path, options?: CompileOptions): Template
 
 // Rendering
 tmpl.render(params, options?)        // type-validated
@@ -342,16 +375,16 @@ function renderGreeting(tmpl: ITemplate, name: string): string {
 
 Node.js 22, single-template timings (lower is better):
 
-| Scenario                 |    render | renderUnchecked |
-| ------------------------ | --------: | --------------: |
-| simple (1 str)           |    622 ns |      **594 ns** |
-| multi-param (4 types)    |  1,760 ns |    **1,163 ns** |
-| list (2 items)           |  4,031 ns |    **1,982 ns** |
-| list (20 items)          | 29,056 ns |             N/A |
-| enum unit variant        |    863 ns |             N/A |
-| enum struct variant      |  1,733 ns |             N/A |
-| filters (idx+add, upper) |  6,948 ns |             N/A |
-| if/elif/else             |  2,148 ns |    **1,615 ns** |
+| Scenario                 |       render | renderUnchecked |
+| ------------------------ | -----------: | --------------: |
+| simple (1 str)           |       622 ns |      **593 ns** |
+| multi-param (4 types)    |     1,725 ns |    **1,161 ns** |
+| list (2 items)           |     3,844 ns |    **2,839 ns** |
+| list (20 items)          |    51,153 ns |             N/A |
+| enum unit variant        |     1,544 ns |             N/A |
+| enum struct variant      |     2,901 ns |             N/A |
+| filters (idx+add, upper) |    11,164 ns |             N/A |
+| if/elif/else             | **2,186 ns** |        2,475 ns |
 
 `renderUnchecked()` skips runtime type validation — use it when TypeScript's
 static checks are sufficient.
@@ -365,11 +398,11 @@ Node.js 22, 50,000 iterations, best of 5 runs
 
 <!-- BENCHMARK:TS_COMPARISON_RENDER -->
 
-| Scenario           | render() | renderUnchecked() | Handlebars |        Mustache |
-| ------------------ | -------: | ----------------: | ---------: | --------------: |
-| **simple**         | 1,087 ns |     **812 ns** 🏆 |   1,143 ns |          906 ns |
-| **loop (5 items)** | 5,297 ns |          2,637 ns |   2,016 ns | **1,800 ns** 🏆 |
-| **conditional**    | 2,360 ns |          1,859 ns |   1,591 ns |   **445 ns** 🏆 |
+| Scenario           | render() | renderUnchecked() |      Handlebars |      Mustache |
+| ------------------ | -------: | ----------------: | --------------: | ------------: |
+| **simple**         | 1,816 ns |     **777 ns** 🏆 |        1,953 ns |      1,591 ns |
+| **loop (5 items)** | 5,110 ns |          2,504 ns | **1,897 ns** 🏆 |      1,955 ns |
+| **conditional**    | 2,366 ns |          2,126 ns |        1,364 ns | **473 ns** 🏆 |
 
 <!-- /BENCHMARK:TS_COMPARISON_RENDER -->
 
@@ -379,8 +412,8 @@ Node.js 22, 50,000 iterations, best of 5 runs
 
 | Scenario           |   md-tmpl | Handlebars |        Mustache |
 | ------------------ | --------: | ---------: | --------------: |
-| **simple**         |  8,646 ns |  81,609 ns |   **929 ns** 🏆 |
-| **loop (5 items)** | 18,483 ns | 114,632 ns | **1,838 ns** 🏆 |
+| **simple**         |  8,701 ns |  79,874 ns |   **922 ns** 🏆 |
+| **loop (5 items)** | 26,952 ns | 189,886 ns | **1,843 ns** 🏆 |
 
 <!-- /BENCHMARK:TS_COMPARISON_ROUNDTRIP -->
 

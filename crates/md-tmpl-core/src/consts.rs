@@ -170,14 +170,6 @@ pub(crate) const STMT_END: &str = "%}";
 pub(crate) const COMMENT_START: &str = "{#";
 /// Delimiter indicating the end of a comment: `#}`.
 pub(crate) const COMMENT_END: &str = "#}";
-#[allow(dead_code)]
-pub(crate) const COMMENT_COMPACT_OPEN: &str = ">{#";
-#[allow(dead_code)]
-pub(crate) const COMMENT_SPACED_OPEN: &str = "> {#";
-#[allow(dead_code)]
-pub(crate) const FRONTMATTER_DELIM: &str = "---";
-#[allow(dead_code)]
-pub(crate) const STMT_START_SHORT: &str = "{%";
 
 /// Whitespace control trim marker: `-`.
 pub(crate) const TRIM_MARKER: char = '-';
@@ -214,14 +206,6 @@ pub(crate) const KW_ELSE: &str = "else";
 pub(crate) const KW_RAW: &str = "raw";
 /// Raw custom delimiter assignment prefix: `raw=`.
 pub(crate) const KW_RAW_ASSIGN: &str = "raw=";
-#[allow(dead_code)]
-pub(crate) const KW_RAW_SPACED: &str = "raw ";
-#[allow(dead_code)]
-pub(crate) const KW_RAW_ASSIGN_SPACED: &str = "raw = ";
-#[allow(dead_code)]
-pub(crate) const CLOSE_RAW_TRIM: &str = "-/raw";
-#[allow(dead_code)]
-pub(crate) const KW_RAW_CLOSE_SPACED: &str = "raw%}";
 
 /// Include keyword: `include`.
 pub(crate) const KW_INCLUDE: &str = "include";
@@ -294,6 +278,8 @@ pub(crate) const FM_TYPES_PREFIX: &str = "types:";
 pub(crate) const FM_IMPORTS_PREFIX: &str = "imports:";
 /// Frontmatter key for global constants: `consts:`.
 pub(crate) const FM_CONSTS_PREFIX: &str = "consts:";
+/// Frontmatter key for compile-time environment variables: `env:`.
+pub(crate) const FM_ENV_PREFIX: &str = "env:";
 
 // -- Type annotations ---------------------------------------------------------
 

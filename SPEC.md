@@ -37,7 +37,7 @@ without a `.tmpl.md`-aware parser. This constrains the syntax:
 parser for `no_std` and cross-platform portability, but YAML conformance
 is enforced via `serde_yaml` cross-validation tests. In practice:
 
-- Each `params:`, `consts:`, and `types:` list item is a YAML plain
+- Each `params:`, `env:`, `consts:`, and `types:` list item is a YAML plain
   scalar string (e.g. `- name = str := "World"`). YAML preserves the
   string verbatim; the engine then parses the type/default syntax.
 - YAML's built-in multiline folding handles continuation lines correctly —
@@ -70,6 +70,19 @@ mandatory. Omitted keys default to empty / absent.
 - **`allow_unused:`** — set to `true` to suppress errors for unused
   parameters and type aliases (default: `false`).
 
+#### Frontmatter Binding Summary
+
+| Section   | When bound     | Who provides     | Available in imports | Available in body |
+| --------- | -------------- | ---------------- | -------------------- | ----------------- |
+| `consts:` | Compile time ¹ | Template author  | ✅                   | ✅                |
+| `env:`    | Compile time ² | Caller (Options) | ✅                   | ✅                |
+| `params:` | Render time    | Caller (Context) | ❌                   | ✅                |
+
+¹ Values are literal in the source — resolved during `from_source()` or `compile()`.
+² Values are provided externally via `CompileOptions` — resolved during `compile()`.
+`from_source()` is equivalent to `compile()` with empty options; both
+parse frontmatter and compile the body in a single step.
+
 ```yaml
 ---
 name: my_template
@@ -81,9 +94,12 @@ types:
 imports:
   - "[shared_types](./shared_types.tmpl.md)"
 
+env:
+  - PROMPTS_DIR = str
+  - MAX_RETRIES = int := 3
+
 consts:
   - NOTEBOOK_FILENAME = str := "thought_process.md"
-  - MAX_RETRIES = int := 3
 
 params:
   - name = str
@@ -94,6 +110,7 @@ params:
   - config = struct(timeout = int, retries = int)
   - status = enum(Active, Paused, Stopped)
   - outcome = enum(Confirmed(evidence = str), Rejected)
+  - label = option(str) := None
   - category = Labelled
   - ext_type = shared_types.SomeType
 
@@ -184,6 +201,16 @@ already creates a list of structs, making the explicit `struct()` wrapper redund
 However, referencing a strong struct type alias inside a list (e.g., `list(MyStructAlias)`)
 **is allowed** and unwraps the struct fields directly into the list elements.
 
+### Structural (Duck) Typing
+
+`struct`, `list`, and `enum` type checks validate that all **declared fields**
+are present with correct types. Extra undeclared fields are silently ignored.
+This applies recursively at every nesting depth, including through type aliases.
+
+Top-level context parameters are subject to a separate extra-key check (see
+[Error Diagnostics](#error-diagnostics)). The structural typing rule applies
+only to values **inside** compound types.
+
 ### Default Values
 
 Append `:= {literal}` after the type:
@@ -232,7 +259,7 @@ Append `:= {literal}` after the type:
 - Struct variant defaults use `VariantName(field = value)` syntax (parentheses).
 - Bare struct variant names without fields are rejected (e.g., `:= Confirmed`
   fails when `Confirmed` has required fields).
-- Unknown variant names are rejected at parse time.
+- Unknown variant names are rejected at compile time.
 - Struct defaults use `{key = value}` syntax (curly braces with `=`).
 - List defaults use `[value, ...]` syntax.
 - **Const-reference defaults**: a default value can reference a local
@@ -243,7 +270,7 @@ Append `:= {literal}` after the type:
 - **YAML constraint**: see [YAML validity](#file-format) — use block
   list format for compound types and defaults containing commas.
 
-Defaults are type-checked at compile/parse time. If a param with a default is
+Defaults are type-checked at compile time. If a param with a default is
 omitted from the render context, the default is injected automatically.
 
 Query defaults programmatically:
@@ -281,13 +308,36 @@ Disable both checks with `allow_unused: true` in frontmatter, or call
 
 #### Best Practice: `allow_unused` vs Comment Suppression
 
-**Prefer comment-based suppression** (`{# unused: {{ type }} #}`) over
+**Prefer comment-based suppression** (`{# unused: {{ param_name }} #}`) over
 `allow_unused: true` in most cases. Comments are explicit, self-documenting,
 and preserve the compiler's ability to catch genuinely unused declarations:
 
 ```markdown
-> {# unused: {{ artist.PathList }}, {{ artist.StringList }} #}
+> {# unused: {{ extra_param }} #}
 ```
+
+**Import tracking is root-level.** The unused-variable check tracks
+imports by their **stem** (root name), not individual sub-fields. Using
+_any_ sub-field — `{{ lib.TypeA }}`, `{{ lib.CONST_X }}`, or even
+`{{ kinds(lib.ForumTag) }}` — marks the entire import as used.
+There is **no need** to claim individual sub-fields in comments:
+
+```markdown
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+params: []
+---
+
+{# ✅ Using lib.TypeA is enough — lib.TypeC and lib.CONST_Y
+do NOT need separate {# unused #} claims #}
+Type: {{ lib.TypeA }}
+```
+
+**Note:** Unused imports are silently allowed — the unused-variable
+check only applies to `params:` and `types:` declarations, not imports.
+An import that is never referenced simply has no effect. Removing
+unnecessary imports is still good practice for readability.
 
 **Reserve `allow_unused: true`** for **type library templates** — files
 whose sole purpose is defining shared types/constants for other templates
@@ -309,32 +359,17 @@ types:
 > {# Type library — no body content #}
 ```
 
-Templates that **import** such a library should use comment suppression
-for any imported types they don't use, rather than setting
-`allow_unused: true` on themselves:
-
-```yaml
----
-imports:
-  - "[shared_types](./shared_types.tmpl.md)"
-
-params:
-  - severity = shared_types.Severity
 ---
 
-> {# unused: {{ shared_types.ItemList }} #}
-
-Content using {{ severity }}...
-```
-
----
-
-### Markdown Blockquotes, Statement Tags, and Comments
+## Markdown Blockquotes, Statement Tags, and Comments
 
 Statement tags (`{% ... %}`) and comments (`{# ... #}`) that start a line **must** be prefixed with a markdown blockquote `> `. This is enforced at compile time — bare tags or comments at line start are syntax errors.
 
 - **Tags and Comments at line start**: If `{%` or `{#` is at the beginning of a line, it **must** start with `> ` (e.g., `> {% ... %}` or `> {# ... #}`). For comments, spaces are required around the content (`{# comment #}`).
 - **Mandatory Blank Lines**: If `{%` or `{#` is at the beginning of a line, the line before and after **must** be blank unless the adjacent line is frontmatter (`---`) or also starts with a blockquote tag/comment (`> {%` or `> {#`).
+- **Whitespace Preservation**: Standalone tags consume surrounding blank lines so they produce no spurious whitespace in the output:
+  - **Tag ↔ content**: The mandatory blank line between a standalone tag and adjacent content is consumed. Extra blank lines beyond the mandatory one are preserved as intentional whitespace: N blank lines → N−1 extra newlines in the output.
+  - **Tag ↔ tag**: Between consecutive standalone tags (e.g., `> {% if %}` followed by `> {% for %}`), **all** blank lines are consumed — they are purely structural and never produce output whitespace.
 - **Multiple Comments and Mixed Tags on a Line**: `{%` and `{#` in the same line work seamlessly (no matter how many follow). Text on the line is treated normally, and any `{# ... #}` comments are omitted from output while preserving the rest of the line.
 - **Content lines inside blocks are normal text.** The lines between `> {% for ... %}` and `> {% /for %}` (or any other block) are just regular template content. The `> ` prefix stripping applies **exclusively** to lines where the first non-whitespace content after `> ` is `{% ` or `{# `. If a content line starts with `> ` (for example, a standard Markdown blockquote), it is **not** stripped and is kept verbatim in the rendered output.
 
@@ -464,7 +499,63 @@ importing template's directory (same as `{% include %}`).
 
 ### Dynamic Import Path Interpolation
 
-Import paths in `imports:` declarations support constant interpolation (e.g., `"[my_types]({{ consts.SHARED_DIR }}/types.tmpl.md)"`). Any `{{ expression }}` within the path is evaluated **prior** to file system lookup or stem validation. Because imports are declared in the YAML frontmatter, only constants (`consts:` from the local template or previously resolved imports) are available during import path evaluation; parameters and loop variables cannot be used in frontmatter import paths.
+Import paths in `imports:` declarations support constant interpolation (e.g., `"[my_types]({{ PROMPTS_DIR }}/types.tmpl.md)"`). Any `{{ expression }}` within the path is evaluated **prior** to file system lookup or stem validation. Because imports are declared in the YAML frontmatter, only `env:` values, `consts:` from the local template, and constants from previously resolved imports are available during import path evaluation; parameters and loop variables cannot be used in frontmatter import paths.
+
+#### Sequential (Chained) Resolution
+
+Imports are resolved **sequentially, top-to-bottom**. Each resolved import's exported constants are accumulated and become available for interpolation in subsequent import paths. This enables a powerful chaining pattern:
+
+```yaml
+---
+imports:
+  - "[env](./env.tmpl.md)"
+  - "[session_layout]({{ env.PROMPTS_DIR }}/session_layout.tmpl.md)"
+  - "[artist]({{ env.PROMPTS_DIR }}/artist.tmpl.md)"
+
+params:
+  - name = str
+---
+```
+
+In this example:
+
+1. `env` is imported first (literal path `./env.tmpl.md`).
+2. `env.tmpl.md` exports `PROMPTS_DIR` as a const.
+3. The second import uses `{{ env.PROMPTS_DIR }}` — this works because `env` was already resolved.
+4. The third import can also use `{{ env.PROMPTS_DIR }}`.
+
+This is the recommended pattern for **dynamic import path resolution** — create a small
+"environment" template that exports path constants, import it first, then use its constants
+in all subsequent import paths.
+
+**Important**: The order matters. An import **cannot** reference constants from an import
+declared below it. If `env` were listed after `session_layout`, the `{{ env.PROMPTS_DIR }}`
+expression would fail with an unresolvable error.
+
+#### Combining with `env:` Frontmatter
+
+The `env:` frontmatter section provides an alternative to the chained import pattern.
+`env:` values are resolved **before** any imports, so they can always be used in import paths:
+
+```yaml
+---
+env:
+  - PROMPTS_DIR = str
+
+imports:
+  - "[session_layout]({{ PROMPTS_DIR }}/session_layout.tmpl.md)"
+  - "[artist]({{ PROMPTS_DIR }}/artist.tmpl.md)"
+
+params:
+  - name = str
+---
+```
+
+The `env:` approach eliminates the need for a separate `env.tmpl.md` file but requires
+the caller to provide the value at compile time.
+
+Both patterns can coexist — `env:` values and previously-resolved import consts are
+both available during import path interpolation.
 
 **Error Behavior:**
 
@@ -504,8 +595,6 @@ template must directly import the templates whose types it uses:
 ---
 types:
   - Priority = enum(High, Medium, Low)
-
-params: []
 ---
 ```
 
@@ -560,7 +649,7 @@ Max retries: {{ MAX_RETRIES }}
 Stage: {{ STAGES.DESIGN }}
 ```
 
-Constants are type-checked at parse time. The value is mandatory — a
+Constants are type-checked at compile time. The value is mandatory — a
 `consts:` entry without `:= value` is a hard error.
 
 ### Scoping
@@ -593,6 +682,126 @@ They do not need to be passed via `with`.
 
 ---
 
+## Compile-Time Environment Variables
+
+The optional `env:` block in frontmatter declares compile-time variables
+that are provided externally by the caller via `CompileOptions`. Unlike
+`params:` (bound at render time) and `consts:` (defined statically in
+the template), `env:` variables are bound at compile time and baked into
+the compiled template.
+
+### Syntax
+
+Each entry uses the same syntax as `params:` — `- NAME = type` for
+required env vars, and `- NAME = type := default` for optional ones:
+
+```markdown
+---
+env:
+  - PROMPTS_DIR = str
+  - MAX_RETRIES = int := 3
+  - DEBUG = bool := false
+
+imports:
+  - "[session_layout]({{ PROMPTS_DIR }}/session_layout.tmpl.md)"
+
+params:
+  - name = str
+---
+
+Max retries: {{ MAX_RETRIES }}
+Debug: {{ DEBUG }}
+```
+
+Env declarations support **all type annotations** — `str`, `int`, `bool`,
+`float`, `list(...)`, `struct(...)`, `enum(...)`, etc. — and follow the
+same type-checking rules as `params:`.
+
+### Providing Env Values
+
+Env values are provided at compile time via `CompileOptions`:
+
+```rust
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+use md_tmpl::{CompileOptions, Template, Value};
+
+let source = "---\nenv:\n  - PROMPTS_DIR = str\n  - MAX_RETRIES = int := 3\n---\nRetries: {{ MAX_RETRIES }}";
+let env_vars = [
+    ("PROMPTS_DIR", Value::Str("/path/to/prompts".into())),
+    ("MAX_RETRIES", Value::Int(5)),
+];
+let (tmpl, fm) = Template::compile(
+    source,
+    CompileOptions::default().env(&env_vars),
+)?;
+# Ok(())
+# }
+```
+
+In TypeScript:
+
+```typescript
+const tmpl = Template.compile(source, {
+  env: { PROMPTS_DIR: "/path/to/prompts", MAX_RETRIES: 5 },
+});
+```
+
+### Defaults
+
+Env vars with defaults (`:=`) are optional in `CompileOptions`:
+
+```yaml
+env:
+  - MAX_RETRIES = int := 3
+```
+
+If `MAX_RETRIES` is not provided via `CompileOptions`, the default `3`
+is used. If provided, the caller's value overrides the default.
+
+Env vars **without** defaults are required — omitting them from
+`CompileOptions` produces a compile-time error:
+
+```text
+compile error: env variable 'PROMPTS_DIR' is required but not provided
+```
+
+### Type Checking
+
+Env values are type-checked at compile time:
+
+- Values are provided as typed `Value` variants (e.g., `Value::Int(42)`
+  for `int`, `Value::Bool(true)` for `bool`). The provided type must
+  match the declared type.
+- Type mismatches produce a compile-time error.
+- Defaults are type-checked at compile time, same as `consts:` defaults.
+
+### Scoping
+
+- **Available in import paths**: env values are resolved before imports,
+  so they can be used in `{{ EXPR }}` interpolation within import paths.
+- **Available in template body**: env values behave like `consts:` in
+  the body — they are injected into the template scope automatically
+  and do not need to be passed via `with`.
+- **Not available at render time**: env values cannot be overridden at
+  render time. They are baked into the compiled template.
+
+### Import Path Interpolation
+
+Env values are the primary mechanism for dynamic import path resolution —
+see [Dynamic Import Path Interpolation](#dynamic-import-path-interpolation)
+for full details, examples, and the chained resolution pattern.
+
+See [Frontmatter Binding Summary](#frontmatter-binding-summary) for a
+comparison of `consts:`, `env:`, and `params:` binding semantics.
+
+### Collision Rules
+
+Env names follow the same [collision rules](#naming-conventions--collision-rules)
+as `params:` and `consts:` — no duplicates, cross-namespace uniqueness,
+and PascalCase type binding all apply.
+
+---
+
 ## Enum Literal Expressions
 
 When an enum type is declared in `types:` (or as an inline param type),
@@ -611,8 +820,6 @@ function, which returns the variant name as a string. Bare access
 types:
   - Stage = enum(Design, Build, Deploy)
   - Status = enum(Active, Paused(reason = str))
-
-params: []
 ---
 
 {{ kind(Stage.Design) }} {# renders: Design #}
@@ -660,8 +867,6 @@ and constants:
 ---
 imports:
   - "[lib](./lib.tmpl.md)"
-
-params: []
 ---
 
 {{ kind(lib.Stage.Design) }} {# renders: Design #}
@@ -704,7 +909,7 @@ Type alias names in `types:` are used as-is (they should already be
 
 ### Collision Rules
 
-All naming checks run at parse time and produce syntax errors.
+All naming checks run at compile time and produce syntax errors.
 
 **Reserved names** — built-in type names (`str`, `bool`, `int`, `float`,
 `list`, `struct`, `enum`, `tmpl`, `params`) cannot be used as parameter,
@@ -810,7 +1015,7 @@ Attempting to use an unrecognized filter name is rejected with a syntax error at
 | Function       | Returns | Description                                                                                                                                                                                 |
 | -------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `idx(binding)` | int     | 0-based loop index of a `for` binding                                                                                                                                                       |
-| `len(expr)`    | int     | Length of a list, string, or struct                                                                                                                                                         |
+| `len(expr)`    | int     | Length of a list (element count) or string (byte length). Structs, enums, and other types are rejected.                                                                                     |
 | `kind(expr)`   | str     | Variant name of an enum value or option value (returns `"Some"` or `"None"` for options). Also works with [enum literal expressions](#enum-literal-expressions), e.g. `kind(Status.Paused)` |
 | `kinds(type)`  | list    | List of strings representing all variant names of an enum type (in declaration order), e.g. `kinds(Status)`. Errors on non-enum                                                             |
 | `has(expr)`    | bool    | `true` if an `option(T)` value is `Some`, `false` if `None`. See [Option Types](#option-types)                                                                                              |
@@ -859,7 +1064,9 @@ dotted paths, function calls (`len()`, `kind()`, etc.), and filters
 
 ```markdown
 ---
-params: [role = str, env = str]
+params:
+  - role = str
+  - env = str
 ---
 
 > {% if role == "admin_{{ env }}" %}
@@ -875,7 +1082,8 @@ Access denied.
 
 ```markdown
 ---
-params: [name = str]
+params:
+  - name = str
 ---
 
 > {% panic("unknown user: {{ name | upper }}") %}
@@ -1177,13 +1385,9 @@ variant's fields are accessible via `expr.field` as usual.
 ```yaml
 params:
   - name = option(str) # required — caller MUST provide a value or null
-  - score = option(int) := None # optional — defaults to absent
-  - label = option(str) := "hello" # optional — defaults to "hello"
+  - score = option(int) := None # optional — defaults to absent (no automatic None default!)
+  - label = option(str) := "hello" # optional — defaults to "hello" (auto-wrapped to Some)
 ```
-
-**Important:** `option(T)` without a default is a **required** parameter, just
-like any other type. There is no automatic default to `None`. If you want
-the parameter to be optional, you must explicitly declare `:= None`.
 
 ### Representation
 
@@ -1285,9 +1489,19 @@ The `{% panic(...) %}` statement tag halts rendering with a fatal error.
 
 - The `[name]` part is a standard markdown link — clickable in editors.
 - The `(path.tmpl.md)` is the file path, resolved **relative to the including
-  template's directory**. All relative include paths **must** begin explicitly with `./` or `../`. Bare relative filenames (e.g., `[child](child.tmpl.md)`) are rejected with syntax errors. Named template references (e.g. `{% include my_tmpl %}`) and absolute paths starting with `/` do not require relative path prefixes.
-- **Dynamic include path interpolation**: Include directive file paths support variable and constant interpolation (e.g., `{% include [foo]({{ consts.SOME_DIR }}/foo.tmpl.md) %}` or `{% include [bar]({{ param_dir }}/bar.tmpl.md) %}`). Any `{{ expression }}` within the path is evaluated against the active scope **prior** to file system lookup or template caching.
-  - **Error Behavior**: If an expression in the path is unclosed (`unclosed '{{' in include path '...'`), empty (`empty expression '{{}}' in include path '...'`), or cannot be resolved against the current scope (`unresolvable expression '{{expr}}' in include path '...'`), a syntax error is raised. After interpolation, the resulting path must satisfy the standard path prefix requirement (beginning with `./`, `../`, or `/`), or else a syntax error is raised.
+  template's directory**.
+  - All relative paths **must** begin with `./` or `../`. Bare filenames
+    (e.g., `[child](child.tmpl.md)`) are rejected.
+  - Named template references (`{% include my_tmpl %}`) and absolute paths
+    starting with `/` do not require relative prefixes.
+- **Dynamic include path interpolation**: file paths support `{{ expr }}`
+  interpolation (e.g., `{% include [foo]({{ SOME_DIR }}/foo.tmpl.md) %}`).
+  Expressions are evaluated against the active scope **prior** to file
+  system lookup or template caching.
+  - Unclosed `{{`, empty `{{ }}`, and unresolvable expressions produce
+    syntax errors.
+  - After interpolation, the resulting path must still begin with `./`,
+    `../`, or `/`.
 - **Explicit parameter passing** via `with` is required; no implicit scope
   leaking. String literal values support `{{ }}` interpolation
   (see [String Interpolation](#string-interpolation)).
@@ -1427,7 +1641,7 @@ file**. Each `.tmpl.md` file has its own namespace:
 - **Same name, different files**: two files can both define `{% tmpl row %}`
   with different content. Each file's `{% include row %}` resolves to its
   own definition.
-- **Duplicate names in the same file**: rejected at parse time.
+- **Duplicate names in the same file**: rejected at compile time.
 
 This scoping applies identically at compile time (proc macros) and runtime
 (dynamic include resolution).
@@ -1530,6 +1744,13 @@ Add `-` inside any delimiter to strip adjacent whitespace:
 | `-%}`     | Strips whitespace _after_ the tag (through next newline)      |
 | `{{-`     | Strips whitespace _before_ the expression                     |
 | `-}}`     | Strips whitespace _after_ the expression                      |
+| `{#-`     | Strips whitespace _before_ the comment                        |
+| `-#}`     | Strips whitespace _after_ the comment                         |
+
+Trim modifiers are designed for **inline** tags where fine-grained whitespace
+control is needed. On **standalone blockquote tags** (`> {% ... %}`), trim
+modifiers have no additional effect — the blockquote preprocessing layer
+already consumes all surrounding blank lines.
 
 ```rust
 use md_tmpl::{ctx, Template};
