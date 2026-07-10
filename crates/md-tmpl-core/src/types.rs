@@ -158,7 +158,9 @@ impl VarType {
             Self::Str => matches!(value, Value::Str(_)),
             Self::Bool => matches!(value, Value::Bool(_)),
             Self::Int => matches!(value, Value::Int(_)),
-            Self::Float => matches!(value, Value::Float(_)),
+            // Accept Int as Float (lossless widening) — important for
+            // JS/JSON backends where 5.0 is indistinguishable from 5.
+            Self::Float => matches!(value, Value::Float(_) | Value::Int(_)),
             Self::List(fields) => Self::check_fast_list(fields, value),
             Self::Struct(fields) => Self::check_fast_struct(fields, value),
             Self::Enum(variants) => Self::check_fast_enum(variants, value),
@@ -297,7 +299,9 @@ impl VarType {
                 }
             }
             Self::Float => {
-                if matches!(value, Value::Float(_)) {
+                // Accept Int as Float (lossless widening) — important for
+                // JS/JSON backends where 5.0 is indistinguishable from 5.
+                if matches!(value, Value::Float(_) | Value::Int(_)) {
                     Ok(())
                 } else {
                     Err(TypeCheckError::new(path, crate::consts::TYPE_FLOAT, value))
@@ -549,6 +553,7 @@ impl TypeCheckError {
                 .map(|(i, _)| i)
                 .take_while(|&i| i <= MAX_PREVIEW_LEN - 3)
                 .last()
+                // NOLINT: empty iterator means string has no chars — 0 is the correct truncation point
                 .unwrap_or(0);
             format!("{}…", &preview[..truncate_at])
         } else {
@@ -775,9 +780,11 @@ mod tests {
     }
 
     #[test]
-    fn float_matches_float_only() {
+    fn float_matches_float_and_int() {
         assert!(VarType::Float.matches(&Value::Float(3.25)));
-        assert!(!VarType::Float.matches(&Value::Int(3)));
+        // Int is accepted as Float (lossless widening).
+        assert!(VarType::Float.matches(&Value::Int(3)));
+        assert!(!VarType::Float.matches(&Value::Str("3.0".into())));
     }
 
     #[test]

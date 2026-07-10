@@ -401,19 +401,20 @@ pub fn include_template(input: TokenStream) -> TokenStream {
             pub mod #mod_ident {
                 const _: &str = include_str!(#path_str);
 
+                fn __init_template() -> #crate_path::Template {
+                    #crate_path::Template::from_precompiled(&#crate_path::PrecompiledTemplateData {
+                        segments: &[#(#segments_tokens),*],
+                        declared_variables: &[#(#decls_tokens),*],
+                        inline_templates: &[#(#inline_templates_tokens),*],
+                        source_hash: #source_hash,
+                        consts: &[#(#consts_tokens),*],
+                        imported_consts: &[#(#imported_consts_tokens),*],
+                        name: #name_token,
+                        description: #desc_token,
+                    })
+                }
                 static __TEMPLATE: #crate_path::__private::LazyLock<#crate_path::Template> =
-                    #crate_path::__private::LazyLock::new(|| {
-                        #crate_path::Template::from_precompiled(&#crate_path::PrecompiledTemplateData {
-                            segments: &[#(#segments_tokens),*],
-                            declared_variables: &[#(#decls_tokens),*],
-                            inline_templates: &[#(#inline_templates_tokens),*],
-                            source_hash: #source_hash,
-                            consts: &[#(#consts_tokens),*],
-                            imported_consts: &[#(#imported_consts_tokens),*],
-                            name: #name_token,
-                            description: #desc_token,
-                        })
-                    });
+                    #crate_path::__private::LazyLock::new(__init_template);
 
                 /// Get a reference to the compile-time validated, pre-compiled template.
                 pub fn template() -> &'static #crate_path::Template {
@@ -552,19 +553,20 @@ pub fn template(input: TokenStream) -> TokenStream {
 
         let expanded = quote! {
             pub mod #mod_ident {
+                fn __init_template() -> #crate_path::Template {
+                    #crate_path::Template::from_precompiled(&#crate_path::PrecompiledTemplateData {
+                        segments: &[#(#segments_tokens),*],
+                        declared_variables: &[#(#decls_tokens),*],
+                        inline_templates: &[#(#inline_templates_tokens),*],
+                        source_hash: #source_hash,
+                        consts: &[#(#consts_tokens),*],
+                        imported_consts: &[#(#imported_consts_tokens),*],
+                        name: #name_token,
+                        description: #desc_token,
+                    })
+                }
                 static __TEMPLATE: #crate_path::__private::LazyLock<#crate_path::Template> =
-                    #crate_path::__private::LazyLock::new(|| {
-                        #crate_path::Template::from_precompiled(&#crate_path::PrecompiledTemplateData {
-                            segments: &[#(#segments_tokens),*],
-                            declared_variables: &[#(#decls_tokens),*],
-                            inline_templates: &[#(#inline_templates_tokens),*],
-                            source_hash: #source_hash,
-                            consts: &[#(#consts_tokens),*],
-                            imported_consts: &[#(#imported_consts_tokens),*],
-                            name: #name_token,
-                            description: #desc_token,
-                        })
-                    });
+                    #crate_path::__private::LazyLock::new(__init_template);
 
                 /// Get a reference to the compile-time validated, pre-compiled template.
                 pub fn template() -> &'static #crate_path::Template {

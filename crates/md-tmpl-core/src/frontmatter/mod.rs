@@ -349,6 +349,7 @@ fn resolve_fm_consts_and_imports(
     }
 
     if let Some(raw) = consts_raw {
+        // NOLINT: const parsing failure here is non-fatal — full validation catches errors later
         if let Ok(decls) =
             parse_declarations(raw, &merged_aliases, &empty_imports, true, &prelim_consts)
         {

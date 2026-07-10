@@ -38,6 +38,125 @@ use crate::{
 // Public API
 // ---------------------------------------------------------------------------
 
+/// Validate only match-label semantics in the compiled segment tree.
+///
+/// Checks:
+/// - `kind()` in match expressions (→ error)
+/// - Quoted labels on enum types (→ error)
+/// - Case label type consistency (numeric on str, quoted on int, etc.)
+///
+/// Does NOT check field accesses, undeclared variables, or body nodes.
+/// Safe to run during `compile_inner` without false positives from
+/// loop bindings, inline templates, etc.
+#[must_use]
+pub fn validate_match_labels(
+    segments: &[Segment],
+    declarations: &[VarDecl],
+    type_aliases: &HashMap<String, VarType>,
+) -> Vec<String> {
+    let type_env = TypeEnv::from_declarations_and_types(declarations, type_aliases);
+    let mut errors = Vec::new();
+    walk_match_labels_only(segments, &type_env, &mut errors);
+    errors
+}
+
+/// Walk segments recursively, but ONLY validate match-label semantics.
+fn walk_match_labels_only(segments: &[Segment], env: &TypeEnv<'_>, errors: &mut Vec<String>) {
+    for seg in segments {
+        match seg {
+            Segment::Match { expr, arms, .. } => {
+                // kind() detection
+                let raw = expr.as_str().trim();
+                let kind_prefix = alloc::format!("{}(", crate::consts::FN_KIND);
+                if raw.starts_with(&kind_prefix) && raw.ends_with(crate::consts::PAREN_CLOSE) {
+                    let inner = &raw[kind_prefix.len()..raw.len() - 1];
+                    let hint =
+                        format!("use {{% match {inner} %}} with unquoted variant names instead");
+                    errors.push(format!(
+                        "match on '{raw}': matching on kind() converts the enum to a string — {hint} for exhaustiveness checking and type safety"
+                    ));
+                } else {
+                    // Label type validation
+                    let expr_type = resolve_compiled_path_type(expr, env).cloned();
+                    match expr_type {
+                        Some(VarType::Enum(ref declared)) => {
+                            // Check quoted labels on enum
+                            for arm in arms {
+                                for v in &arm.variants {
+                                    let label = v.as_ref();
+                                    if is_quoted_label(label) {
+                                        errors.push(format!(
+                                            "match on '{}': quoted string '{}' cannot match enum variants — remove the quotes to match variant name directly",
+                                            expr.as_str(), label
+                                        ));
+                                    }
+                                }
+                            }
+                            // Exhaustiveness check — matches TS backend
+                            // compile-time behaviour.
+                            let has_default = arms.iter().any(|a| {
+                                a.variants
+                                    .iter()
+                                    .any(|v| v.as_ref() == crate::consts::MATCH_DEFAULT)
+                            });
+                            check_exhaustiveness(expr, declared, arms, has_default, errors);
+                        }
+                        Some(VarType::Str | VarType::Int | VarType::Bool | VarType::Float) => {
+                            let type_name = match expr_type.as_ref().unwrap() {
+                                VarType::Str => "str",
+                                VarType::Int => "int",
+                                VarType::Bool => "bool",
+                                VarType::Float => "float",
+                                _ => unreachable!(),
+                            };
+                            for arm in arms {
+                                for v in &arm.variants {
+                                    let label = v.as_ref();
+                                    if label != crate::consts::MATCH_DEFAULT {
+                                        validate_scalar_case_label(expr, type_name, label, errors);
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                // Recurse into arm bodies
+                for arm in arms {
+                    walk_match_labels_only(&arm.body, env, errors);
+                }
+            }
+            Segment::If {
+                branches,
+                else_body,
+                ..
+            } => {
+                for branch in branches {
+                    walk_match_labels_only(&branch.1, env, errors);
+                }
+                walk_match_labels_only(else_body, env, errors);
+            }
+            Segment::ForLoop {
+                body, else_body, ..
+            } => {
+                walk_match_labels_only(body, env, errors);
+                walk_match_labels_only(else_body, env, errors);
+            }
+            Segment::Panic(body) => {
+                walk_match_labels_only(body, env, errors);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Check if a label string is quoted (single or double).
+fn is_quoted_label(label: &str) -> bool {
+    label.len() >= 2
+        && ((label.starts_with('"') && label.ends_with('"'))
+            || (label.starts_with('\'') && label.ends_with('\'')))
+}
+
 /// Validate all field accesses in the compiled segment tree.
 ///
 /// Returns a list of human-readable error messages (empty = valid).
@@ -366,7 +485,24 @@ fn validate_match(
 
     // Resolve the full path type (e.g. `task.cat` → enum, not just `task` → dict).
     let expr_type = resolve_compiled_path_type(expr, env).cloned();
-    // println!("DEBUG validate_match: expr={}, expr_type={:?}", expr.as_str(), expr_type);
+
+    // Detect kind() in match expression — users should match on the enum directly.
+    {
+        let raw = expr.as_str().trim();
+        let kind_prefix = alloc::format!("{}(", crate::consts::FN_KIND);
+        if raw.starts_with(&kind_prefix) && raw.ends_with(crate::consts::PAREN_CLOSE) {
+            let inner = &raw[kind_prefix.len()..raw.len() - 1];
+            let hint = format!("use {{% match {inner} %}} with unquoted variant names instead");
+            errors.push(format!(
+                "match on '{raw}': matching on kind() converts the enum to a string — {hint} for exhaustiveness checking and type safety"
+            ));
+            // Still walk arm bodies for further analysis.
+            for arm in arms {
+                walk_segments(&arm.body, env, errors, visited);
+            }
+            return;
+        }
+    }
 
     match expr_type {
         Some(VarType::Enum(ref declared)) => {
@@ -416,9 +552,19 @@ fn validate_match(
                 }
             }
         }
+        Some(VarType::Str | VarType::Int | VarType::Bool | VarType::Float) => {
+            validate_scalar_match_arms(
+                expr,
+                expr_type.as_ref().unwrap(),
+                arms,
+                env,
+                errors,
+                visited,
+            );
+        }
         Some(ref other) => {
             errors.push(format!(
-                "match on '{}': expected enum or option, got {other}",
+                "match on '{}': expected enum, option, or scalar type, got {other}",
                 expr.as_str()
             ));
             for arm in arms {
@@ -434,6 +580,151 @@ fn validate_match(
                 ));
             }
         }
+    }
+}
+
+/// Validate match arms for scalar types (str, int, bool, float).
+///
+/// Each label is validated against the expression's scalar type.
+fn validate_scalar_match_arms(
+    expr: &CompiledPath,
+    var_type: &VarType,
+    arms: &[super::MatchArm],
+    env: &mut TypeEnv<'_>,
+    errors: &mut Vec<String>,
+    visited: &mut HashSet<String>,
+) {
+    let type_name = match var_type {
+        VarType::Str => "str",
+        VarType::Int => "int",
+        VarType::Bool => "bool",
+        VarType::Float => "float",
+        _ => unreachable!(),
+    };
+    for arm in arms {
+        for v in &arm.variants {
+            let label = v.as_ref();
+            if label == crate::consts::MATCH_DEFAULT {
+                continue;
+            }
+            validate_scalar_case_label(expr, type_name, label, errors);
+        }
+        if let Some(ref guard) = arm.guard {
+            validate_condition(guard, env, errors);
+        }
+        walk_segments(&arm.body, env, errors, visited);
+    }
+}
+
+/// Classify a case label token as a specific type for validation.
+#[derive(Debug, PartialEq)]
+enum LabelKind {
+    /// Quoted string literal: `"foo"` or `'foo'`
+    QuotedStr,
+    /// Interpolated quoted string: `"{{ expr }}"`
+    InterpolatedStr,
+    /// Boolean literal: `true` or `false`
+    BoolLit,
+    /// Integer literal: `42`, `-1`
+    IntLit,
+    /// Float literal: `3.14`, `-0.5`
+    FloatLit,
+    /// Identifier (enum variant, param-ref, or unquoted string literal)
+    Ident,
+}
+
+fn classify_label(label: &str) -> LabelKind {
+    if let Some(inner) = crate::consts::strip_string_literal(label) {
+        if inner.contains(crate::consts::EXPR_START) {
+            return LabelKind::InterpolatedStr;
+        }
+        return LabelKind::QuotedStr;
+    }
+    if label == crate::consts::LIT_TRUE || label == crate::consts::LIT_FALSE {
+        return LabelKind::BoolLit;
+    }
+    if label.parse::<i64>().is_ok() {
+        return LabelKind::IntLit;
+    }
+    if label.parse::<f64>().is_ok() {
+        return LabelKind::FloatLit;
+    }
+    LabelKind::Ident
+}
+
+/// Validate a case label against the match expression's scalar type.
+fn validate_scalar_case_label(
+    expr: &CompiledPath,
+    type_name: &str,
+    label: &str,
+    errors: &mut Vec<String>,
+) {
+    const HINT_BOOL: &str = "use {% case true %} or {% case false %}";
+
+    let kind = classify_label(label);
+    let e = expr.as_str();
+
+    match (type_name, &kind) {
+        // str: quoted strings, interpolated strings, identifiers ok.
+        ("str", LabelKind::IntLit | LabelKind::FloatLit) => {
+            let hint = format!("use {{% case \"{label}\" %}}");
+            errors.push(format!(
+                "match on '{e}': case label '{label}' is a numeric literal, but '{e}' is a str — {hint} for a string literal"
+            ));
+        }
+        ("str", LabelKind::BoolLit) => {
+            let hint = format!("use {{% case \"{label}\" %}}");
+            errors.push(format!(
+                "match on '{e}': case label '{label}' is a bool literal, but '{e}' is a str — {hint} for a string literal"
+            ));
+        }
+
+        // int: integer literals and identifiers ok.
+        ("int", LabelKind::QuotedStr | LabelKind::InterpolatedStr) => {
+            let inner = crate::consts::strip_string_literal(label).unwrap_or(label);
+            let hint = format!("use {{% case {inner} %}}");
+            errors.push(format!(
+                "match on '{e}': quoted string '{label}' cannot match int values — {hint} for an integer literal"
+            ));
+        }
+        ("int", LabelKind::BoolLit) => {
+            errors.push(format!(
+                "match on '{e}': case label '{label}' is a bool literal, but '{e}' is an int"
+            ));
+        }
+        ("int", LabelKind::FloatLit) => {
+            errors.push(format!(
+                "match on '{e}': case label '{label}' is a float literal, but '{e}' is an int"
+            ));
+        }
+
+        // float: float/int literals and identifiers ok.
+        ("float", LabelKind::QuotedStr | LabelKind::InterpolatedStr) => {
+            let inner = crate::consts::strip_string_literal(label).unwrap_or(label);
+            let hint = format!("use {{% case {inner} %}}");
+            errors.push(format!(
+                "match on '{e}': quoted string '{label}' cannot match float values — {hint} for a numeric literal"
+            ));
+        }
+        ("float", LabelKind::BoolLit) => {
+            errors.push(format!(
+                "match on '{e}': case label '{label}' is a bool literal, but '{e}' is a float"
+            ));
+        }
+
+        // bool: true/false and identifiers ok.
+        ("bool", LabelKind::QuotedStr | LabelKind::InterpolatedStr) => {
+            errors.push(format!(
+                "match on '{e}': quoted string '{label}' cannot match bool values — {HINT_BOOL}"
+            ));
+        }
+        ("bool", LabelKind::IntLit | LabelKind::FloatLit) => {
+            errors.push(format!(
+                "match on '{e}': case label '{label}' is a numeric literal, but '{e}' is a bool — {HINT_BOOL}"
+            ));
+        }
+
+        _ => {}
     }
 }
 
@@ -485,12 +776,21 @@ fn validate_match_arms_with_narrowing(
 
         // Check that all case variant names exist in the enum.
         for case_name in &arm.variants {
-            if declared.iter().any(|v| v.name == case_name.as_ref()) {
-                covered_variants.push(case_name.as_ref());
+            let name_ref = case_name.as_ref();
+            if declared.iter().any(|v| v.name == name_ref) {
+                covered_variants.push(name_ref);
+            } else if crate::consts::strip_string_literal(name_ref).is_some() {
+                // Quoted label on enum: specific error with guidance.
+                errors.push(format!(
+                    "match on '{}': quoted string '{}' cannot match enum variants \
+                     — remove the quotes to match variant name directly",
+                    expr.as_str(),
+                    name_ref,
+                ));
             } else {
                 let valid: Vec<&str> = declared.iter().map(|v| v.name.as_str()).collect();
                 errors.push(format!(
-                    "match on '{}': unknown variant '{case_name}' \
+                    "match on '{}': unknown variant '{name_ref}' \
                      (declared variants: {})",
                     expr.as_str(),
                     valid.join(", ")
@@ -526,11 +826,13 @@ fn validate_arm_body(
     errors: &mut Vec<String>,
     visited: &mut HashSet<String>,
 ) {
-    if let Some(ref guard) = arm.guard {
-        validate_condition(guard, env, errors);
-    }
     if let Some(nt) = narrowed_type {
         let prev = env.narrow(expr.as_str(), nt);
+        // Validate guard AFTER narrowing so that field accesses like
+        // `status.score` are valid when narrowed to the Active variant.
+        if let Some(ref guard) = arm.guard {
+            validate_condition(guard, env, errors);
+        }
         walk_segments(&arm.body, env, errors, visited);
         match prev {
             Some(t) => {
@@ -541,6 +843,9 @@ fn validate_arm_body(
             }
         }
     } else {
+        if let Some(ref guard) = arm.guard {
+            validate_condition(guard, env, errors);
+        }
         walk_segments(&arm.body, env, errors, visited);
     }
 }
@@ -704,6 +1009,7 @@ pub(super) fn resolve_field<'a>(ty: &'a VarType, field: &str) -> FieldResult<'a>
                 }
                 let suggestion = best
                     .map(|(s, _)| format!(" Did you mean '{s}'?"))
+                    // NOLINT: None means no close match found — empty suggestion is intentional
                     .unwrap_or_default();
                 FieldResult::NotAvailable {
                     reason: format!(
@@ -795,6 +1101,7 @@ fn resolve_enum_field<'a>(variants: &'a [VariantDecl], field: &str) -> FieldResu
         }
         let suggestion = best
             .map(|(s, _)| format!(" Did you mean '{s}'?"))
+            // NOLINT: None means no close match found — empty suggestion is intentional
             .unwrap_or_default();
         let variant_names: Vec<&str> = variants.iter().map(|v| v.name.as_str()).collect();
         FieldResult::NotAvailable {

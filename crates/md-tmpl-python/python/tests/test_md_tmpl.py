@@ -1965,18 +1965,20 @@ params: [name = str]
 
     def test_limit_then_join(self) -> None:
         tmpl = Template.from_source("""---
-params: [tags = list(name = str)]
+params: [tags = list(str)]
 ---
 {{ tags | limit(2) | join(", ") }}""")
-        output = tmpl.render(
-            tags=[
-                {"name": "a"},
-                {"name": "b"},
-                {"name": "c"},
-            ]
-        )
-        # This depends on the engine's behavior for join on list of structs
-        assert output  # at least doesn't crash
+        output = tmpl.render(tags=["alpha", "beta", "gamma"])
+        assert output == "alpha, beta"
+
+    def test_join_on_struct_list_raises(self) -> None:
+        """join() on a struct-typed list is a render-time error."""
+        tmpl = Template.from_source("""---
+params: [tags = list(name = str)]
+---
+{{ tags | join(", ") }}""")
+        with pytest.raises(Exception):
+            tmpl.render(tags=[{"name": "a"}, {"name": "b"}])
 
 
 # ---------------------------------------------------------------------------

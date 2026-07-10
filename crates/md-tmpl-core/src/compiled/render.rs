@@ -44,6 +44,16 @@ const POW10: [f64; 19] = {
 /// is ~3× faster than `write!("{f:.precision$}")`.
 #[inline]
 fn write_fixed_float(f: f64, precision: usize, output: &mut String) {
+    /// Convert a known-positive, bounded f64 to u64.
+    ///
+    /// Callers guarantee `v` is in `[0, u64::MAX as f64]`.
+    // NOLINT: caller guarantees v is non-negative and within u64 range; truncation/sign-loss is intentional
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    fn positive_f64_to_u64(v: f64) -> u64 {
+        debug_assert!(v >= 0.0 && v.is_finite());
+        v as u64
+    }
+
     if precision > MAX_FAST_FIXED_PRECISION || !f.is_finite() {
         // Fallback for extreme precision or NaN/Inf.
         use core::fmt::Write;
@@ -56,9 +66,7 @@ fn write_fixed_float(f: f64, precision: usize, output: &mut String) {
 
     // Multiply by 10^precision and round to nearest integer.
     let scale = POW10[precision];
-    // Safety: abs >= 0, scale > 0 → always positive; precision ≤ 18 → fits u64.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let scaled = (abs * scale + 0.5) as u64;
+    let scaled = positive_f64_to_u64(abs * scale + 0.5);
 
     if precision == 0 {
         if is_neg {
@@ -70,9 +78,7 @@ fn write_fixed_float(f: f64, precision: usize, output: &mut String) {
     }
 
     // Split into integer and fractional parts.
-    // Safety: POW10 entries are exact positive integers ≤ 10^18, all fit u64.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let divisor = scale as u64;
+    let divisor = positive_f64_to_u64(scale);
     let int_part = scaled / divisor;
     let frac_part = scaled % divisor;
 
@@ -505,13 +511,7 @@ fn apply_filters_and_render(
 /// call this to associate `{{ idx(binding) }}` metadata.
 #[inline]
 pub(crate) fn register_loop_meta(scope: &mut Scope<'_>, binding: &str, i: usize) {
-    // SAFETY: `usize` always fits in `i64` on both 32-bit and 64-bit
-    // platforms (`usize::MAX <= i64::MAX` even on 64-bit because
-    // `usize::MAX` is 2^64-1 which exceeds `i64::MAX`, but collection
-    // lengths are bounded by `isize::MAX` which always fits).
-    #[allow(clippy::cast_possible_wrap)]
-    let index = i as i64;
-    debug_assert!(index >= 0, "loop index overflowed i64");
+    let index = i64::try_from(i).expect("loop index exceeds i64::MAX");
     scope.set_loop_meta(binding, crate::scope::LoopMeta { index });
 }
 
@@ -667,10 +667,7 @@ fn render_match(
     let active_variant = resolve_match_variant(expr, is_option, scope)?;
 
     for arm in arms {
-        let variant_matches = arm
-            .variants
-            .iter()
-            .any(|v| v.as_ref() == crate::consts::MATCH_DEFAULT || active_variant == v.as_ref());
+        let variant_matches = arm_matches(&active_variant, &arm.variants, scope);
         if variant_matches {
             // Evaluate guard if present.
             if let Some(ref guard) = arm.guard {
@@ -699,10 +696,7 @@ fn render_match_no_std(
     let active_variant = resolve_match_variant(expr, is_option, scope)?;
 
     for arm in arms {
-        let variant_matches = arm
-            .variants
-            .iter()
-            .any(|v| v.as_ref() == crate::consts::MATCH_DEFAULT || active_variant == v.as_ref());
+        let variant_matches = arm_matches(&active_variant, &arm.variants, scope);
         if variant_matches {
             if let Some(ref guard) = arm.guard {
                 if !eval_condition(guard, scope)? {
@@ -716,37 +710,93 @@ fn render_match_no_std(
     Ok(())
 }
 
-/// Resolve the active enum/option variant name for a match expression.
+/// Check if any arm variant matches the active variant.
 ///
-/// When `is_option` is `true`, uses `Value::None` discriminant check
-/// (zero-cost) instead of string-based variant tag lookup.
+/// Matching rules:
+/// - `_` (`MATCH_DEFAULT`): always matches
+/// - Quoted label (e.g. `"Active"`): strip quotes, compare literally
+/// - Unquoted label matching an enum variant: compare literally
+/// - Unquoted label (param-ref on str match): resolve the param value
+///   from scope and compare the resolved value against `active_variant`
+fn arm_matches(active_variant: &str, variants: &[Cow<'_, str>], scope: &Scope<'_>) -> bool {
+    for v in variants {
+        let label = v.as_ref();
+        if label == crate::consts::MATCH_DEFAULT {
+            return true;
+        }
+        // Quoted string literal: strip quotes, interpolate if needed, and compare.
+        if let Some(inner) = crate::consts::strip_string_literal(label) {
+            if inner.contains(crate::consts::EXPR_START) {
+                // Contains {{ expr }} — compile and render the interpolated string.
+                // NOLINT: compile/render failure means the label doesn't match — fall through to literal comparison
+                if let Ok(segments) = crate::compiled::compile_body(inner) {
+                    // NOLINT: render failure means the interpolated label is unresolvable — not a match
+                    if let Ok(rendered) = render_interpolated_str(&segments, scope) {
+                        if active_variant == rendered.as_str() {
+                            return true;
+                        }
+                    }
+                }
+            } else if active_variant == inner {
+                return true;
+            }
+            continue;
+        }
+        // Direct comparison (enum variant name).
+        if active_variant == label {
+            return true;
+        }
+        // Param-ref: resolve label as a variable and compare its string value.
+        if let Some(Value::Str(s)) = scope.resolve(label) {
+            if active_variant == s.as_str() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Resolve the active variant name for a match expression.
+///
+/// - **enum**: returns the variant tag (unit or struct variant).
+/// - **option**: returns `"Some"` or `"None"`.
+/// - **str**: returns the string value itself.
+/// - **int/bool/float**: returns the value formatted as a string.
 fn resolve_match_variant<'a>(
     expr: &CompiledPath,
     is_option: bool,
     scope: &'a Scope<'_>,
-) -> Result<&'a str, TemplateError> {
+) -> Result<Cow<'a, str>, TemplateError> {
     let value = scope.resolve_path(expr)?;
 
     match value {
         // Absent option value → "None" variant.
-        Value::None => Ok(crate::consts::OPTION_NONE),
+        Value::None => Ok(Cow::Borrowed(crate::consts::OPTION_NONE)),
         // For option(T): any non-None value is the "Some" branch.
-        _ if is_option => Ok(crate::consts::OPTION_SOME),
+        _ if is_option => Ok(Cow::Borrowed(crate::consts::OPTION_SOME)),
         // Unit enum variant stored as plain string.
-        Value::Str(s) => Ok(s.as_str()),
+        Value::Str(s) => Ok(Cow::Borrowed(s.as_str())),
         // Struct variant stored as dict with "tag" key.
         Value::Struct(map) => {
             let tag_key = crate::consts::ENUM_TAG_KEY;
             match map.get(tag_key) {
-                Some(Value::Str(tag)) => Ok(tag.as_str()),
+                Some(Value::Str(tag)) => Ok(Cow::Borrowed(tag.as_str())),
                 _ => Err(TemplateError::syntax(alloc::format!(
-                    "match: \'{}\' is a dict without a \'tag\' field",
+                    "match: '{}' is a dict without a 'tag' field",
                     expr.as_str()
                 ))),
             }
         }
-        _ => Err(TemplateError::syntax(alloc::format!(
-            "match: \'{}\' is not an enum value (got {})",
+        // Scalar types: format as string for label comparison.
+        Value::Int(n) => Ok(Cow::Owned(alloc::format!("{n}"))),
+        Value::Float(f) => Ok(Cow::Owned(alloc::format!("{f}"))),
+        Value::Bool(b) => Ok(Cow::Borrowed(if *b { "true" } else { "false" })),
+        Value::List(_) => Err(TemplateError::syntax(alloc::format!(
+            "match: '{}' is a list — match requires a scalar or enum value",
+            expr.as_str(),
+        ))),
+        Value::Tmpl(_) => Err(TemplateError::syntax(alloc::format!(
+            "match: '{}' is not an enum value (got {})",
             expr.as_str(),
             value.type_name()
         ))),
@@ -930,7 +980,11 @@ pub(super) fn eval_condition(
         } => {
             let active_variant = resolve_match_variant(expr, *is_option, scope)?;
             Ok(variants.iter().any(|v| {
-                v.as_ref() == crate::consts::MATCH_DEFAULT || active_variant == v.as_ref()
+                let label = v.as_ref();
+                label == crate::consts::MATCH_DEFAULT
+                    || active_variant == label
+                    || crate::consts::strip_string_literal(label)
+                        .is_some_and(|inner| active_variant == inner)
             }))
         }
     }
@@ -1063,6 +1117,7 @@ fn render_include_no_std_inner(
     }
 
     // 2. Value::Tmpl parameter.
+    // NOLINT: resolution failure means path is not a tmpl() param — fall through to filesystem
     if let Ok(Value::Tmpl(tmpl)) = scope.resolve_path_str(directive.path) {
         let tmpl = tmpl.clone();
         scope.push_inline_templates(tmpl.inline_templates().clone());

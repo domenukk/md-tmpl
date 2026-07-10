@@ -120,6 +120,7 @@ function varTypeEquals(a: VarType, b: VarType): boolean {
     case TYPE_SCALAR_LIST:
       return varTypeEquals(a.elementType, (b as typeof a).elementType);
     case TYPE_LIST:
+    case TYPE_TMPL:
     case TYPE_STRUCT: {
       const bFields = (b as typeof a).fields;
       if (a.fields.length !== bFields.length) return false;
@@ -170,6 +171,7 @@ function varTypeReferencesAlias(
     case TYPE_SCALAR_LIST:
       return varTypeReferencesAlias(ty.elementType, aliasType, aliasName);
     case TYPE_LIST:
+    case TYPE_TMPL:
     case TYPE_STRUCT:
       return ty.fields.some((f) =>
         varTypeReferencesAlias(f.varType, aliasType, aliasName),
@@ -457,6 +459,11 @@ function isDisplayableType(ty: VarType): boolean {
   // Alias types can't be resolved here (we'd need the full type alias map).
   // Conservatively allow them — the resolved type may be scalar.
   if (ty.kind === TYPE_ALIAS) return true;
+  // Enum types with only unit variants (no fields) are displayable since
+  // they're just string values at runtime (e.g., enum(admin, guest)).
+  if (ty.kind === TYPE_ENUM) {
+    return ty.variants.every((v) => v.fields.length === 0);
+  }
   return (
     ty.kind === TYPE_STR ||
     ty.kind === TYPE_INT ||
@@ -475,6 +482,7 @@ function varTypeLabel(ty: VarType): string {
     case TYPE_SCALAR_LIST:
     case TYPE_UNTYPED_LIST:
       return TYPE_LIST;
+    case TYPE_TMPL:
     case TYPE_STRUCT:
       return TYPE_STRUCT;
     case TYPE_ENUM:
@@ -493,6 +501,7 @@ function displayHint(ty: VarType): string {
     case TYPE_SCALAR_LIST:
     case TYPE_UNTYPED_LIST:
       return "use {% for %} to iterate, or | join()";
+    case TYPE_TMPL:
     case TYPE_STRUCT:
       return "access fields with dot notation, e.g. {{ x.field }}";
     case TYPE_ENUM:
@@ -621,6 +630,7 @@ class TypeEnv {
  */
 function resolveFieldType(ty: VarType, field: string): VarType | undefined {
   switch (ty.kind) {
+    case TYPE_TMPL:
     case TYPE_STRUCT:
     case TYPE_LIST: {
       const fieldDecl = ty.fields.find((f) => f.name === field);
@@ -845,9 +855,10 @@ function walkNodesWithNarrowing(
 
         // Inline guard
         if (node.inlineGuard) {
+          const guard = node.inlineGuard;
           if (exprType?.kind === TYPE_ENUM) {
             const matchedVariants = exprType.variants.filter(
-              (v) => v.name === node.inlineGuard!.variant,
+              (v) => v.name === guard.variant,
             );
             if (matchedVariants.length > 0) {
               const narrowedType: VarType = {

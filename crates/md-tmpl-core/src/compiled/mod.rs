@@ -33,6 +33,7 @@ pub(crate) use render::render_segments_into;
 pub(crate) use render::render_segments_into_no_std;
 pub use type_check::{
     validate_field_accesses, validate_field_accesses_full, validate_field_accesses_with_opaque,
+    validate_match_labels,
 };
 
 pub use crate::scope::{CompiledExpr, CompiledPath, ConditionOperand};
@@ -301,6 +302,7 @@ fn enrich_error(err: TemplateError, source: &str) -> TemplateError {
                         .map(|(i, _)| i)
                         .take_while(|&i| i <= SNIPPET_MAX_LEN - 3)
                         .last()
+                        // NOLINT: empty iterator means string has no chars — 0 is the correct truncation point
                         .unwrap_or(0);
                     format!("{}…", &line_text[..truncate_at])
                 } else {
@@ -599,6 +601,7 @@ fn compile_statement<'a>(
             &stmt[5..]
         } else {
             stmt.strip_prefix(crate::consts::TAG_PANIC_PREFIX)
+                // NOLINT: missing prefix means stmt IS the panic arg — empty default is correct
                 .unwrap_or_default()
         };
         compile_panic(panic_arg, after_tag)

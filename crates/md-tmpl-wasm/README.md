@@ -127,12 +127,12 @@ renderGreeting(TsTemplate.fromSource(src), "Alice");
 
 | Scenario                                |    WASM (Rust) |      TypeScript | speedup |
 | --------------------------------------- | -------------: | --------------: | ------: |
-| parse simple                            |        8.83 µs |         8.47 µs |   ~1.0× |
-| render simple (1 param)                 |        3.99 µs |  **1.19 µs** 🏆 | 3.4× TS |
-| render list/for (20 items)              |       65.09 µs | **29.85 µs** 🏆 | 2.2× TS |
-| render complex (nested+list+filter)     |       19.03 µs | **11.16 µs** 🏆 | 1.7× TS |
-| declarations()                          |   **50 ns** 🏆 |          914 ns |   18.2× |
-| renderJson complex (nested+list+filter) | **9.38 µs** 🏆 |        13.89 µs |    1.5× |
+| parse simple                            |        6.65 µs |  **4.55 µs** 🏆 | 1.5× TS |
+| render simple (1 param)                 |        3.43 µs |   **604 ns** 🏆 | 5.7× TS |
+| render list/for (20 items)              |       51.61 µs | **27.34 µs** 🏆 | 1.9× TS |
+| render complex (nested+list+filter)     |       15.14 µs |  **8.54 µs** 🏆 | 1.8× TS |
+| declarations()                          |   **37 ns** 🏆 |          591 ns |   16.0× |
+| renderJson complex (nested+list+filter) | **6.37 µs** 🏆 |         8.57 µs |    1.3× |
 
 Pure-TS is faster for rendering due to JS↔WASM serialization overhead.
 WASM wins on metadata access. Use WASM when you need exact Rust-engine

@@ -376,6 +376,9 @@ pub struct Scope<'a> {
     imported_consts_stack: Vec<Arc<HashMap<String, Value>>>,
     /// Stack of parameter declarations (used to check option types).
     declarations_stack: Vec<Arc<[crate::types::VarDecl]>>,
+    /// Compile-time environment values for propagation to included files.
+    #[cfg(feature = "std")]
+    env_values: Arc<[(String, Value)]>,
 }
 
 impl<'a> Scope<'a> {
@@ -398,6 +401,8 @@ impl<'a> Scope<'a> {
             consts_stack: Vec::new(),
             imported_consts_stack: Vec::new(),
             declarations_stack: Vec::new(),
+            #[cfg(feature = "std")]
+            env_values: Arc::from([]),
         }
     }
 
@@ -422,6 +427,7 @@ impl<'a> Scope<'a> {
             consts_stack: Vec::new(),
             imported_consts_stack: Vec::new(),
             declarations_stack: Vec::new(),
+            env_values: Arc::from([]),
         }
     }
 
@@ -432,6 +438,18 @@ impl<'a> Scope<'a> {
         self.cache
     }
 
+    /// Set compile-time environment values for propagation to included files.
+    #[cfg(feature = "std")]
+    pub(crate) fn set_compile_env(&mut self, env: Arc<[(String, Value)]>) {
+        self.env_values = env;
+    }
+
+    /// Get the compile-time environment values.
+    #[cfg(feature = "std")]
+    #[must_use]
+    pub(crate) fn compile_env(&self) -> &[(String, Value)] {
+        &self.env_values
+    }
     /// Push a new empty layer, returning a mutable reference to populate it.
     pub fn push_layer(&mut self) -> &mut HashMap<String, Value> {
         if self.active_len < self.layers.len() {
@@ -822,8 +840,11 @@ impl<'a> Scope<'a> {
     #[inline]
     #[must_use]
     pub fn resolve(&self, key: &str) -> Option<&Value> {
-        // Fast path: no consts and no layers — go straight to loop bindings + context.
-        if self.consts_stack.is_empty() && self.active_len == 0 {
+        // Fast path: no consts, no imported consts, and no layers — go straight to loop bindings + context.
+        if self.consts_stack.is_empty()
+            && self.imported_consts_stack.is_empty()
+            && self.active_len == 0
+        {
             // Check loop bindings (innermost first).
             for (k, v, _) in self.loop_bindings[..self.active_loop_bindings].iter().rev() {
                 if k == key {
@@ -836,6 +857,12 @@ impl<'a> Scope<'a> {
         // Search stack innermost first.
         for consts in self.consts_stack.iter().rev() {
             if let Some(v) = consts.get(key) {
+                return Some(v);
+            }
+        }
+        // 1b. Imported constants (type aliases, included template consts).
+        for imported in self.imported_consts_stack.iter().rev() {
+            if let Some(v) = imported.get(key) {
                 return Some(v);
             }
         }

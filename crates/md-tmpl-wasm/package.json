@@ -1,6 +1,6 @@
 {
   "name": "md-tmpl-wasm-tests",
-  "version": "0.5.3",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,6 +10,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "smol-toml": "^1.7.0",
     "typescript": "^5.7.0"
   }
 }

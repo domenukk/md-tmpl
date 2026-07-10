@@ -1,6 +1,6 @@
 {
   "name": "md-tmpl",
-  "version": "0.5.3",
+  "version": "0.6.0",
   "description": "Strongly-typed template engine for LLM prompts, designed for markdown",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

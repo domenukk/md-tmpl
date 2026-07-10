@@ -392,13 +392,13 @@ assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Alice (5)");
 Criterion benchmarks, render only (pre-parsed template + data → output).
 ([source](../../benchmarks/benches/comparison.rs))
 
-| Scenario        |         md-tmpl |           Tera | `MiniJinja` | Handlebars |
-| --------------- | --------------: | -------------: | ----------: | ---------: |
-| **simple**      |          390 ns |  **335 ns** 🏆 |      725 ns |    1.47 µs |
-| **loop**        |   **659 ns** 🏆 |        1.57 µs |     4.05 µs |    8.98 µs |
-| **conditional** |          912 ns |  **890 ns** 🏆 |     2.27 µs |    2.39 µs |
-| **hero**        |         4.50 µs | **3.39 µs** 🏆 |     7.92 µs |   38.39 µs |
-| **mega**        | **12.44 µs** 🏆 |       20.25 µs |    63.17 µs |  164.24 µs |
+| Scenario        |        md-tmpl |     Tera | `MiniJinja` | Handlebars |
+| --------------- | -------------: | -------: | ----------: | ---------: |
+| **simple**      |  **164 ns** 🏆 |   214 ns |      548 ns |     715 ns |
+| **loop**        |  **499 ns** 🏆 |   637 ns |     1.90 µs |    3.32 µs |
+| **conditional** |  **218 ns** 🏆 |   369 ns |      598 ns |    1.39 µs |
+| **hero**        | **2.13 µs** 🏆 |  2.18 µs |     7.58 µs |   24.01 µs |
+| **mega**        | **8.53 µs** 🏆 | 10.63 µs |    28.46 µs |   90.35 µs |
 
 _Intel Xeon @ 2.60 GHz, 3 runs × 100 Criterion samples._
 

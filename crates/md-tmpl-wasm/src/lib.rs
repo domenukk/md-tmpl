@@ -1,5 +1,8 @@
 #![forbid(unsafe_code)]
-#![allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
+#![expect(
+    clippy::missing_errors_doc,
+    reason = "WASM FFI crate; errors documented with JS-style 'Throws' convention"
+)]
 //! WebAssembly bindings for the `md-tmpl` engine.
 //!
 //! Exposes the core Rust template engine to JavaScript/TypeScript via
@@ -240,7 +243,10 @@ impl Template {
     /// Same source → same hash. Useful for cache invalidation.
     #[must_use]
     #[wasm_bindgen(js_name = "sourceHash")]
-    #[allow(clippy::cast_possible_truncation)]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "intentional: wasm_bindgen cannot return u64, lower 32 bits suffice for cache keys"
+    )]
     pub fn source_hash(&self) -> u32 {
         self.inner.source_hash() as u32
     }
@@ -315,7 +321,10 @@ impl Template {
     ///
     /// Accepts optional `base_dir`, `env`, and `allow_unused` parameters.
     #[wasm_bindgen(js_name = "fromSourceWithOptions")]
-    #[allow(clippy::needless_pass_by_value)] // wasm_bindgen requires owned types
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "wasm_bindgen requires owned types"
+    )]
     pub fn from_source_with_options(
         source: &str,
         base_dir: Option<String>,
@@ -361,13 +370,18 @@ impl Template {
 // ---------------------------------------------------------------------------
 
 /// Saturating conversion from `usize` to `u32` (JS array indices are u32).
-#[allow(clippy::cast_possible_truncation)]
 fn u32_from_usize(n: usize) -> u32 {
-    if n > u32::MAX as usize {
-        u32::MAX
-    } else {
-        n as u32
-    }
+    u32::try_from(n).unwrap_or(u32::MAX)
+}
+
+/// Convert an `f64` to `i64`, assuming the caller has verified `n` is a whole
+/// number within `±2^53` (the JS safe-integer range).
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "caller guarantees n is within ±2^53 and integral"
+)]
+fn safe_f64_to_i64(n: f64) -> i64 {
+    n as i64
 }
 
 /// Extract `(key, value)` pairs from a JS `Record<string, unknown>` object.
@@ -400,10 +414,13 @@ fn js_to_env_value(val: &JsValue) -> Result<md_tmpl::Value, JsValue> {
     } else if let Some(b) = val.as_bool() {
         Ok(md_tmpl::Value::Bool(b))
     } else if let Some(n) = val.as_f64() {
-        // Check if it's an integer.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
-        if n.fract() == 0.0 && n >= i64::MIN as f64 && n <= i64::MAX as f64 {
-            Ok(md_tmpl::Value::Int(n as i64))
+        // Check if it's an integer within the safe i64 range.
+        // JS numbers are IEEE 754 f64, so integers beyond ±2^53 lose
+        // precision. 2^53 is exactly representable as f64.
+        const MAX_SAFE: f64 = 9_007_199_254_740_992.0; // 2^53
+        const MIN_SAFE: f64 = -9_007_199_254_740_992.0; // -(2^53)
+        if n.fract() == 0.0 && (MIN_SAFE..=MAX_SAFE).contains(&n) {
+            Ok(md_tmpl::Value::Int(safe_f64_to_i64(n)))
         } else {
             Ok(md_tmpl::Value::Float(n))
         }
@@ -467,7 +484,13 @@ fn value_to_js(val: &Value) -> JsValue {
 }
 
 /// Convert an `i64` into a JS number.
-#[allow(clippy::cast_precision_loss)]
+///
+/// JS numbers are IEEE 754 f64; integers beyond ±2^53 lose precision.
+/// This matches the JS `Number` semantics that callers already expect.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "JS numbers are f64; precision loss mirrors JS semantics"
+)]
 fn int_to_js(i: i64) -> JsValue {
     JsValue::from_f64(i as f64)
 }

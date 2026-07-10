@@ -42,6 +42,7 @@ import {
   TYPE_NONE,
   TYPE_STR,
   TYPE_STRUCT,
+  TYPE_TMPL,
   TYPE_ENUM,
   TYPE_OPTION,
   OPTION_NONE,
@@ -168,14 +169,22 @@ function resolveExpr(expr: string, scope: Scope): Value {
 }
 
 /**
- * Get the variant name from an enum value.
+ * Get the variant name from an enum or string value.
+ *
  * For NoneValue: returns "None".
  * For non-None values used in option match: returns "Some".
+ * For string values: returns the string itself — this covers both:
+ *   - Unit enum variants (stored as plain strings at runtime)
+ *   - String matching with quoted case labels ({% case "value" %})
+ *   Type safety between these two is enforced at compile time, not runtime.
  */
 export function getVariantName(val: Value, isOption: boolean): string {
   if (val.type === TYPE_NONE) return OPTION_NONE;
   // In option context, any non-None value is "Some"
   if (isOption) return OPTION_SOME;
+  // Str covers both unit enum variants and string literal matching.
+  // The type checker ensures unquoted case labels only appear with enum
+  // params and quoted labels only appear with str params.
   if (val.type === TYPE_STR) return val.value;
   if (val.type === TYPE_STRUCT) {
     const tag = val.fields.get(ENUM_TAG_KEY);
@@ -183,6 +192,13 @@ export function getVariantName(val: Value, isOption: boolean): string {
     throw new TemplateSyntaxError(
       "kind() requires an enum value (struct with variant tag)",
     );
+  }
+  // Scalar types: convert to string for label comparison.
+  if (val.type === TYPE_INT || val.type === TYPE_FLOAT) {
+    return String(val.value);
+  }
+  if (val.type === TYPE_BOOL) {
+    return val.value ? "true" : "false";
   }
   throw new TemplateSyntaxError(
     `cannot determine variant name for value of type '${val.type}' — expected enum (str or dict with tag) or option`,
@@ -1000,6 +1016,7 @@ function checkIncludeValueType(
         );
       }
       break;
+    case TYPE_TMPL:
     case TYPE_STRUCT:
       if (value.type !== TYPE_STRUCT) {
         throw new TypeMismatchError(
@@ -1014,8 +1031,17 @@ function checkIncludeValueType(
       checkIncludeValueType(path, value, varType.innerType, includeName);
       break;
     case TYPE_ENUM:
-      // Enum type checking is complex; for now validate top-level type
-      if (value.type !== TYPE_STR && value.type !== TYPE_STRUCT) {
+      if (value.type === TYPE_STR) {
+        // Validate that the string matches a valid variant name.
+        const validVariants = varType.variants.map((v) => v.name);
+        if (!validVariants.includes(value.value)) {
+          throw new TypeMismatchError(
+            `${path} (in include '${includeName}')`,
+            `enum variant (${validVariants.join(" | ")})`,
+            `str "${value.value}"`,
+          );
+        }
+      } else if (value.type !== TYPE_STRUCT) {
         throw new TypeMismatchError(
           `${path} (in include '${includeName}')`,
           TYPE_ENUM,

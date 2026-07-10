@@ -70,7 +70,7 @@ mandatory. Omitted keys default to empty / absent.
 - **`allow_unused:`** — set to `true` to suppress errors for unused
   parameters and type aliases (default: `false`).
 
-#### Frontmatter Binding Summary
+### Frontmatter Binding Summary
 
 | Section   | When bound     | Who provides     | Available in imports | Available in body |
 | --------- | -------------- | ---------------- | -------------------- | ----------------- |
@@ -142,9 +142,20 @@ hard error.
 
 #### Template Parameter Signature Matching
 
-When a value of type `tmpl(...)` is provided (via `Value::Tmpl` in Rust,
-or passed through `with` in templates), its parameter declarations are
-validated against the declared signature:
+When a value of type `tmpl(...)` is provided, its parameter declarations
+are validated against the declared signature. This enables **higher-order
+template composition** — passing templates as values and including them
+by variable name.
+
+**Providing `tmpl(...)` values:**
+
+- **Rust**: Use `Value::Tmpl(Arc<Template>)` — wrap a compiled `Template`
+  in an `Arc` and pass it via the context.
+- **TypeScript**: Pass a `Template` instance directly in the render params.
+  The engine detects it automatically via `fromJs()`, or use
+  `template.toValue()` for explicit conversion.
+
+**Signature validation rules:**
 
 1. **All signature params must exist** — the template must declare every
    parameter listed in the `tmpl(...)` signature, with matching types.
@@ -169,7 +180,102 @@ A template with `params: [name = str, color = str]` does NOT match ❌
 A template with `params: [age = int]` does NOT match ❌
 (`name` is missing, `age` is not in the signature).
 
-#### Compound Type Delimiters & Quoting
+**TypeScript example:**
+
+```typescript
+import { Template } from "md-tmpl";
+
+// Define a reusable widget template
+const widget = Template.fromSource(`---
+params:
+  - name = str
+---
+Hello {{ name }}!`);
+
+// Define a layout that accepts a widget
+const layout = Template.fromSource(`---
+params:
+  - greeting = tmpl(name = str)
+---
+> {% include greeting with name="World" %}`);
+
+// Pass the widget template as a parameter
+layout.render({ greeting: widget });
+// → "Hello World!"
+```
+
+**Rust example:**
+
+```rust
+use std::sync::Arc;
+use md_tmpl::{Template, Value};
+
+let widget = Template::from_source("---\nparams:\n  - name = str\n---\nHello {{ name }}!").unwrap();
+let layout = Template::from_source("---\nparams:\n  - greeting = tmpl(name = str)\n---\n> {% include greeting with name=\"World\" %}").unwrap();
+
+let mut ctx = md_tmpl::Context::new();
+ctx.set("greeting", Value::Tmpl(Arc::new(widget)));
+assert_eq!(layout.render_ctx(&ctx).unwrap().trim(), "Hello World!");
+```
+
+#### Nested Template Parameters (`tmpl` inside `tmpl`)
+
+Template parameters can themselves accept template-typed fields, enabling
+multi-level template composition — templates that accept templates as
+parameters:
+
+```yaml
+# A layout that accepts a widget, which itself accepts a sub-widget
+params:
+  - widget = tmpl(target = tmpl(x = str))
+```
+
+This declares that `widget` must be a template with a parameter named
+`target` whose type is `tmpl(x = str)`. At render time, the caller
+provides a template for `widget`, and that template in turn receives
+a template for `target`:
+
+```typescript
+import { Template } from "md-tmpl";
+
+// Inner template: accepts a simple str param
+const inner = Template.fromSource(`---
+params: [x = str]
+---
+inner={{ x }}`);
+
+// Outer template: accepts a tmpl-typed param and includes it
+const outer = Template.fromSource(`---
+params: [target = tmpl(x = str)]
+---
+> {% include target with x="hello" %}`);
+
+// Layout: accepts a widget that itself takes a tmpl param
+const layout = Template.fromSource(`---
+params: [widget = tmpl(target = tmpl(x = str))]
+---
+> {% include widget with target=inner %}`);
+
+// Render: pass templates as values at each level
+outer.render({ target: inner });
+// → "inner=hello"
+
+layout.render({ widget: outer });
+// widget receives `outer`, which in turn receives `inner` via `with`
+```
+
+**Nesting rules:**
+
+- `tmpl(...)` fields inside `tmpl(...)` signatures are validated
+  recursively — each level must match the declared signature.
+- `option(tmpl(...))` — optional template parameters are supported.
+  Pass `null` (TypeScript) or `None` (Rust) to omit, or a `Template`
+  to provide.
+- Deeply nested patterns like `tmpl(a = tmpl(b = tmpl(c = str)))` work
+  to arbitrary depth.
+- Signature mismatches at any nesting level produce clear compile errors.
+
+### Compound Type Delimiters & Quoting
 
 For all compound types (`list`, `struct`, `enum`, `option`, `tmpl`), enclosing delimiters **must** be parentheses `(...)` (e.g., `list(str)`, `option(int)`, `struct(name = str)`).
 
@@ -190,6 +296,9 @@ Compound types can be nested, with one restriction:
 - label = option(str) # required (caller must provide string or null)
 - scores = list(option(int)) # list of optional ints
 - meta = option(struct(key = str, value = str)) # optional struct
+- widget = tmpl(name = str) # template parameter (higher-order)
+- layout = tmpl(body = tmpl(x = str)) # nested tmpl (tmpl inside tmpl)
+- panel = option(tmpl(title = str)) # optional template parameter
 
 # ❌ Forbidden — redundant raw struct wrapper
 
@@ -326,12 +435,13 @@ There is **no need** to claim individual sub-fields in comments:
 ---
 imports:
   - "[lib](./lib.tmpl.md)"
+
 params: []
 ---
 
-{# ✅ Using lib.TypeA is enough — lib.TypeC and lib.CONST_Y
-do NOT need separate {# unused #} claims #}
-Type: {{ lib.TypeA }}
+> {# ✅ Using lib.TypeA is enough — lib.TypeC and lib.CONST_Y
+> do NOT need separate {# unused #} claims #}
+> Type: {{ lib.TypeA }}
 ```
 
 **Note:** Unused imports are silently allowed — the unused-variable
@@ -562,7 +672,7 @@ both available during import path interpolation.
 - **Unclosed expression**: If a `{{` is not closed by a matching `}}`, a syntax error is raised (e.g., `unclosed '{{' in import path '...'`).
 - **Empty expression**: An empty expression `{{}}` or `{{ }}` raises a syntax error (e.g., `empty expression '{{}}' in import path '...'`).
 - **Unresolvable expression**: If the referenced constant is undefined or cannot be evaluated, a syntax error is raised (e.g., `unresolvable expression '{{consts.UNKNOWN}}' in import path '...'`).
-- **Invalid resulting path**: After interpolation, the resulting path must still satisfy the strict path requirement (it must begin explicitly with `./`, `../`, or `/`). Otherwise, a syntax error is raised.
+- **Invalid resulting path**: After interpolation, the resulting path must still satisfy the [strict path requirement](#cross-template-imports) (`./`, `../`, or `/` prefix). Otherwise, a syntax error is raised.
 
 ### Stem Validation
 
@@ -1008,6 +1118,11 @@ Attempting to use an unrecognized filter name is rejected with a syntax error at
 | `add(N)`      | number | number | Add N to the value                |
 | `sub(N)`      | number | number | Subtract N from the value         |
 
+> **Note:** `join()` is designed for **scalar lists** (`list(str)`, `list(int)`,
+> etc.). Applying `join()` to a struct-typed list (e.g., `list(name = str,
+score = int)`) produces a render-time error — use `{% for %}` and render
+> fields individually instead.
+
 ---
 
 ## Built-in Functions
@@ -1310,21 +1425,159 @@ after type narrowing:
 - `{{ outcome.evidence }}` outside a `{% case Confirmed %}` is a compile error
   if `evidence` is not shared by all variants.
 
+### Match / Case (All Types)
+
+`{% match %}` supports matching on **any scalar type** — not only enums and
+options but also `str`, `int`, `bool`, and `float`:
+
+<!-- prettier-ignore -->
+```markdown
+
+> {% match status %}
+> {% case "Active" %}
+
+Currently active.
+
+> {% case "Paused" %}
+
+On hold.
+
+> {% else %}
+
+Unknown status.
+
+> {% /match %}
+```
+
+**Inline guard** (renders only if the value matches):
+
+```markdown
+> {% match role case "Admin" %}⚙️ admin panel{% /match %}
+```
+
+**Multi-value arm** (shared body for several values):
+
+```markdown
+> {% case "Active" | "Pending" %}
+```
+
+**Scalar matching** (`int`, `bool`, `float`):
+
+```markdown
+> {% match count %}
+> {% case 0 %}
+
+No items.
+
+> {% case 1 %}
+
+One item.
+
+> {% else %}
+
+Multiple items.
+
+> {% /match %}
+```
+
+> **Best practice:** Prefer `enum` types and unquoted variant names for
+> dispatch whenever possible. Enum matching provides exhaustiveness checking
+> and compile-time variant validation that scalar matching cannot.
+
+#### Case Label Semantics
+
+| Syntax                    | Meaning                   | Valid on       | Example                                                             |
+| ------------------------- | ------------------------- | -------------- | ------------------------------------------------------------------- |
+| `{% case Active %}`       | Enum variant name         | `enum` types   | `{% match status case Active %}`                                    |
+| `{% case "Active" %}`     | String literal value      | `str` only     | `{% match name case "Alice" %}`                                     |
+| `{% case "{{ expr }}" %}` | Interpolated string label | `str` only     | `{% match status case "{{ expected }}" %}`                          |
+| `{% case Some %}`         | Option discriminant       | `option` types | `{% match label case Some %}`                                       |
+| `{% case other %}`        | Param-reference match     | any type       | `{% match status case expected %}` (resolves `expected` at runtime) |
+| `{% case 42 %}`           | Numeric literal           | `int`, `float` | `{% match count case 0 %}`                                          |
+| `{% case true %}`         | Boolean literal           | `bool`         | `{% match enabled case true %}`                                     |
+
+- **Unquoted** case labels on **enum** or **option** params are **type
+  identifiers** — enum variant names or option discriminants (`Some`, `None`).
+  They are validated against the declared type at compile time.
+- **Unquoted** case labels on **non-enum** params are compared literally
+  against the stringified value at runtime. They can also act as param-reference
+  matches: if the label resolves as a declared parameter, its runtime value
+  is used for comparison.
+- **Quoted** case labels (including interpolated strings — see below) are
+  **string literal comparisons**. They are only valid on `str` parameters;
+  using them on `int`, `bool`, or `float` is a compile error.
+  Both `"double"` and `'single'` quotes are valid.
+- **Quoted case labels on enum params are a compile error** — use unquoted
+  variant names instead. The error message directs you to remove the quotes.
+- Unquoted case labels on **enum** params that are not declared variant
+  names are a **compile error** (typo protection).
+
+#### Interpolation in Quoted Case Labels
+
+Quoted case labels support `{{ expr }}` interpolation, just like quoted
+strings in condition expressions:
+
+```markdown
+> {% match status %}{% case "{{ expected }}" %}matched{% else %}no match{% /match %}
+```
+
+The `{{ expr }}` inside the quoted label is evaluated at render time. This
+enables dynamic matching — the label value is computed from the current scope.
+
+**Concatenation** is supported:
+
+```markdown
+> {% match status %}{% case "{{ prefix }}_done" %}done{% else %}pending{% /match %}
+```
+
+**`kind()` in labels** — combine with enum type constants for type-safe
+dynamic matching:
+
+```markdown
+> {% match status %}{% case "{{ kind(TaskState.Active) }}" %}on{% else %}off{% /match %}
+```
+
+> **Tip:** To compare a `str` parameter against a known enum variant name,
+> use `{% if status == kind(Status.Active) %}` instead of `{% match %}`.
+> The `kind()` function returns the variant name as a string, enabling
+> type-safe string comparisons against enum variant names.
+
+#### Differences from enum matching
+
+Non-enum matching differs from enum matching in several ways:
+
+- **No exhaustiveness** — scalar values are unbounded, so exhaustiveness
+  checking does not apply. Use `{% else %}` for unmatched values.
+- **No field narrowing** — scalars have no fields; the matched expression
+  type remains unchanged inside each arm.
+
 #### Compile-time guarantees for `match`
 
-1. **Variant validation** — unknown variant names → compile error.
-2. **Field narrowing** — field access outside a matching arm → compile error.
-3. **Multi-variant intersection** — only shared fields are accessible.
-4. **Exhaustiveness** — multi-arm matches must cover **all** variants. Adding a
+1. **Variant validation** — unknown variant names → compile error (enum only).
+2. **Field narrowing** — field access outside a matching arm → compile error (enum only).
+3. **Multi-variant intersection** — only shared fields are accessible (enum only).
+4. **Exhaustiveness** — multi-arm matches must cover **all** variants (enum only). Adding a
    new variant to the enum and forgetting to handle it is a compile error.
    Use `{% else %}` as a catch-all if you don't need per-variant handling.
 5. **No `==` on enums** — comparing an enum with `==` or `!=` is a compile error.
    Do not use `kind()` to work around this — string comparisons defeat
    exhaustiveness checking and break silently when variants are renamed.
    Always use `{% match %}` for enum dispatch.
-6. **Syntax validity** — a `match` block without an expression, without any case arms, or with empty variant names in `{% case %}` is a syntax error at compile time.
+6. **Syntax validity** — a `match` block without an expression, without any
+   case arms, or with empty variant names in `{% case %}` is a syntax error.
+7. **Quoted labels on enums** — quoted string literals on an `enum` param are
+   compile errors (with a helpful message directing you to use unquoted variant
+   names instead).
+8. **Case label type consistency** — case labels must match the expression type.
+   Numeric literals on `str`, quoted strings on `int`/`bool`/`float`, bool
+   literals on `int`, etc. are compile errors with suggestions for the correct
+   syntax.
+9. **No `kind()` in match expression** — `{% match kind(x) %}` is a compile
+   error. Matching on `kind()` converts the enum to a string, defeating
+   exhaustiveness checking. Use `{% match x %}` with unquoted variant names
+   instead.
 
-#### Match as Boolean Condition
+### Match as Boolean Condition
 
 A `match X case Y` expression can be used inside `{% if %}` as a boolean
 sub-expression. It evaluates to `true` if the variant matches, `false`
@@ -1351,7 +1604,7 @@ with `&&`, `||`, and `!` like any other boolean expression:
 > **Note:** No field narrowing occurs in the `{% if %}` body when using
 > `match` as a boolean condition. Use `{% match %}` blocks for field access.
 
-#### Match Guards
+### Match Guards
 
 Inline `{% match %}` blocks support an optional guard expression using
 `&&`. The guard is evaluated after the variant matches; the body is
@@ -1388,6 +1641,11 @@ params:
   - score = option(int) := None # optional — defaults to absent (no automatic None default!)
   - label = option(str) := "hello" # optional — defaults to "hello" (auto-wrapped to Some)
 ```
+
+> [!IMPORTANT]
+> **`option(T)` does NOT default to `None`.** A bare `option(str)` param
+> is _required_ — the caller must explicitly provide a value or `null`.
+> To make it truly optional, add `:= None` as a default.
 
 ### Representation
 
@@ -1489,19 +1747,16 @@ The `{% panic(...) %}` statement tag halts rendering with a fatal error.
 
 - The `[name]` part is a standard markdown link — clickable in editors.
 - The `(path.tmpl.md)` is the file path, resolved **relative to the including
-  template's directory**.
-  - All relative paths **must** begin with `./` or `../`. Bare filenames
-    (e.g., `[child](child.tmpl.md)`) are rejected.
-  - Named template references (`{% include my_tmpl %}`) and absolute paths
-    starting with `/` do not require relative prefixes.
+  template's directory**. The same [strict path requirement](#cross-template-imports)
+  applies — relative paths must begin with `./` or `../`.
+  Named template references (`{% include my_tmpl %}`) and absolute paths
+  starting with `/` do not require relative prefixes.
 - **Dynamic include path interpolation**: file paths support `{{ expr }}`
   interpolation (e.g., `{% include [foo]({{ SOME_DIR }}/foo.tmpl.md) %}`).
   Expressions are evaluated against the active scope **prior** to file
-  system lookup or template caching.
-  - Unclosed `{{`, empty `{{ }}`, and unresolvable expressions produce
-    syntax errors.
-  - After interpolation, the resulting path must still begin with `./`,
-    `../`, or `/`.
+  system lookup or template caching. The same error and path validation
+  rules as [import path interpolation](#dynamic-import-path-interpolation)
+  apply.
 - **Explicit parameter passing** via `with` is required; no implicit scope
   leaking. String literal values support `{{ }}` interpolation
   (see [String Interpolation](#string-interpolation)).
@@ -1514,20 +1769,64 @@ The `{% panic(...) %}` statement tag halts rendering with a fatal error.
   the iteration binding.
 - **Bare name includes**: if the include name refers to an inline template
   defined via `{% tmpl name %}` (or a variable of type `tmpl(...)`), use
-  `{% include name with ... %}` without the markdown link syntax. The
-  engine resolves inline templates before falling back to the filesystem.
+  `{% include name with ... %}` without the markdown link syntax.
+- **Resolution order** for bare name includes:
+  1. **Inline templates** — `{% tmpl name %}...{% /tmpl %}` definitions in
+     the current file.
+  2. **`tmpl(...)` parameter variables** — if the name resolves to a
+     variable of type `tmpl(...)`, the engine renders the referenced
+     template with the `with` values. This enables higher-order template
+     composition (passing templates as callback-like parameters).
+  3. **Filesystem** — falls through to file-based lookup.
 - Parameters are type-checked against the included template's frontmatter.
+
+**Higher-order template include example:**
+
+```markdown
+---
+params:
+  - widget = tmpl(name = str)
+---
+
+> {% include widget with name="World" %}
+```
+
+When `widget` is a `tmpl(name = str)` typed parameter, the engine resolves
+it as a template reference and renders it with `name="World"`. The included
+template's parameter declarations are validated against the `tmpl(...)`
+signature at the point the value is provided.
 
 ### Depth Limits
 
-- **Runtime**: Maximum nesting depth defaults to 16. Configurable via
-  `.with_max_include_depth(n)` on the `Template`.
-- **Compile-time** (`include_template!`): Maximum depth defaults to 64.
-  Override with the `MD_TMPL_MAX_INCLUDE_DEPTH` environment variable.
-- **Circular includes** are detected at both compile time (via canonical
-  path tracking) and runtime (via depth limit). A cycle is not a hard error
-  at compile time — the included template's declarations are loaded for
-  boundary type checking, but the body is not recursed into.
+- **Runtime**: Default max nesting depth is 16, configurable via
+  `.with_max_include_depth(n)`.
+- **Compile-time** (`include_template!`): Default 64. Override with
+  `MD_TMPL_MAX_INCLUDE_DEPTH` env var.
+- **Circular `{% include %}`** hits the depth limit at runtime.
+  At compile time, cycles are not fatal — declarations are loaded for
+  type checking but the body is not recursed into.
+
+### Import Resolution
+
+`imports:` reads the target file's frontmatter (types, consts) but does
+**not** recursively chase the target's own `imports:`. See
+[Transitive Imports](#transitive-imports) for details on how multi-level
+import chains work.
+
+- **Mutual imports work**: A imports B, B imports A — no problem.
+- **Duplicate imports** (same canonical path twice) are rejected.
+- **No transitive access**: A importing B does not give A access to
+  B's imports. Import explicitly.
+
+### Include Path Interpolation Scope
+
+| Available in `{% include %}` paths    | Available in `imports:` paths               |
+| ------------------------------------- | ------------------------------------------- |
+| ✅ `env:`, `consts:`, imported consts | ✅ `env:`, `consts:`, prior imported consts |
+| ✅ `params`, loop variables           | ❌ `params`, loop variables                 |
+
+Param-based include paths work but skip compile-time type checking
+(path unknown until render time).
 
 ### Self-Recursive Includes
 
@@ -1592,6 +1891,71 @@ are handled.
   different directories correctly resolve to the same file.
 - The same file included from multiple places is compiled once and its body
   is type-checked once (deduplication by canonical path / `Arc` identity).
+
+### Imports in Included Files
+
+Included templates can declare their own `imports:` block in frontmatter.
+These imports are resolved **relative to the included file's directory**
+when the file is loaded — just like top-level template imports. This
+enables included templates to use strongly typed parameters from imported
+enum types, access imported constants, and perform `{% match %}`/`{% case %}`
+dispatch on imported enums.
+
+```yaml
+# types.tmpl.md — shared type definitions
+---
+name: types
+types: [Role = enum(admin, editor, viewer)]
+---
+```
+
+```yaml
+# child.tmpl.md — included by a parent template
+---
+imports:
+  - "[types](./types.tmpl.md)"
+
+params: [role = types.Role]
+---
+> {% match role %}
+> {% case admin %}
+Admin panel
+> {% case editor %}
+Editor view
+> {% case viewer %}
+Read-only
+> {% /match %}
+```
+
+```yaml
+# parent.tmpl.md — includes child.tmpl.md
+---
+params: [role = str]
+---
+> {% include [child](./child.tmpl.md) with role=role %}
+```
+
+Key rules:
+
+- **Relative resolution**: The included file's `imports:` paths are resolved
+  relative to the included file's own directory, not the parent's directory.
+  An included file in `sub/child.tmpl.md` can import `../types.tmpl.md` to
+  reach a file one level above itself.
+- **Full type support**: Imported types (`types.Role`), constants
+  (`config.APP_NAME`), and enum functions (`kinds(types.Role)`) are all
+  available within the included file's body.
+- **Type checking at load time**: Type validation on `with` parameters
+  happens after the included file's imports are resolved. Passing an
+  invalid enum variant to an imported-type param produces a type mismatch
+  error.
+- **Independent namespaces**: Each included file resolves its own imports
+  independently. Two included files can import different type-definition
+  files without conflict.
+- **Env propagation**: The parent template's compile-time `env:` values
+  **are** automatically propagated to included files. An included file
+  that declares `env: [PROMPTS_DIR = str]` receives the value from the
+  parent's `CompileOptions::env()`. This enables included files to use
+  env-based paths for imports or constants.
 
 ---
 

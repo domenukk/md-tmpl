@@ -21,7 +21,7 @@ use crate::{
 /// Unit variants map to `Value::Str(name)`. Struct variants map to a tagged
 /// dict with just `__kind__` set (a partial value suitable for `kind()` and
 /// match arms).
-pub(super) fn inject_enum_type_constants(
+pub fn inject_enum_type_constants(
     type_aliases: &HashMap<String, VarType>,
     consts: &mut HashMap<String, Value>,
 ) {

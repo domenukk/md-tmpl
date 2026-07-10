@@ -315,7 +315,6 @@ pub fn resolve_imports<S: core::hash::BuildHasher>(
 ///
 /// Returns [`TemplateError`] if an import path cannot be interpolated, read, parsed, or forms a cycle.
 #[cfg(feature = "std")]
-#[allow(clippy::missing_errors_doc)]
 pub fn resolve_imports_with_consts<S: core::hash::BuildHasher>(
     imports: &mut [Import],
     base_dir: &Path,

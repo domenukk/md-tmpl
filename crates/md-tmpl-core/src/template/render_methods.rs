@@ -161,6 +161,10 @@ impl Template {
         }
         scope.set_inline_templates(&self.inline_templates);
         #[cfg(feature = "std")]
+        if !self.env_values.is_empty() {
+            scope.set_compile_env(self.env_values.clone());
+        }
+        #[cfg(feature = "std")]
         return compiled::render::render_segments_into(
             &self.segments,
             &mut scope,
@@ -233,6 +237,9 @@ impl Template {
             scope.set_consts(&self.consts, &self.imported_consts);
         }
         scope.set_inline_templates(&self.inline_templates);
+        if !self.env_values.is_empty() {
+            scope.set_compile_env(self.env_values.clone());
+        }
         compiled::render_segments(&self.segments, &mut scope, self.base_dir.as_deref())
     }
 
@@ -260,6 +267,9 @@ impl Template {
             scope.set_consts(&self.consts, &self.imported_consts);
         }
         scope.set_inline_templates(&self.inline_templates);
+        if !self.env_values.is_empty() {
+            scope.set_compile_env(self.env_values.clone());
+        }
         compiled::render_segments(&self.segments, &mut scope, self.base_dir.as_deref())
     }
 

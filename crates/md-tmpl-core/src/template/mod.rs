@@ -16,7 +16,7 @@ use crate::{
     value::Value,
 };
 
-mod analysis;
+pub(crate) mod analysis;
 mod render_methods;
 #[cfg(not(feature = "std"))]
 use self::analysis::hash_source_no_std;
@@ -122,6 +122,10 @@ pub struct Template {
     imported_consts: Arc<HashMap<String, crate::value::Value>>,
     /// Pre-computed estimated output capacity (cached from segment tree walk).
     estimated_capacity: usize,
+    /// Compile-time environment values, propagated to included files so their
+    /// `env:` frontmatter declarations can be resolved.
+    #[cfg(feature = "std")]
+    env_values: alloc::sync::Arc<[(String, Value)]>,
     /// Cached `TypeId`s of Rust types that have passed validation.
     ///
     /// When `render::<T>()` is called, the first invocation runs full
@@ -161,6 +165,8 @@ impl Clone for Template {
             consts: self.consts.clone(),
             imported_consts: self.imported_consts.clone(),
             estimated_capacity: self.estimated_capacity,
+            #[cfg(feature = "std")]
+            env_values: self.env_values.clone(),
             // Clone inherits cached type IDs — the validation is
             // shape-based, not instance-based.
             #[cfg(feature = "std")]
@@ -355,6 +361,12 @@ impl Template {
         check_bare_enum_access(&segments, &enum_keys)?;
         check_static_enum_in_conditions(&segments, &fm.type_aliases)?;
         check_internal_key_access(&segments)?;
+        // Match-label validation: kind() detection, label type consistency.
+        let label_errors =
+            compiled::validate_match_labels(&segments, &fm.declarations, &fm.type_aliases);
+        if !label_errors.is_empty() {
+            return Err(TemplateError::Syntax(label_errors.join("; ").into()));
+        }
 
         let has_defaults = fm.declarations.iter().any(|d| d.default_value.is_some());
         let mut consts: HashMap<String, Value> = fm
@@ -372,6 +384,10 @@ impl Template {
         inject_enum_type_constants(&fm.type_aliases, &mut consts);
         let segments: Arc<[Segment]> = Arc::from(segments);
         let estimated_capacity = compiled::render::estimate_output_capacity(&segments);
+        let env_values: alloc::sync::Arc<[(String, Value)]> = env_values
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect();
         let tmpl = Self {
             body,
             name: fm.name.clone(),
@@ -386,6 +402,7 @@ impl Template {
             consts: Arc::new(consts),
             imported_consts: Arc::new(fm.imported_consts.clone()),
             estimated_capacity,
+            env_values,
             checked_type_ids: std::sync::Mutex::new(Vec::new()),
         };
         Ok((tmpl, fm))
@@ -421,6 +438,12 @@ impl Template {
         check_bare_enum_access(&segments, &enum_keys)?;
         check_static_enum_in_conditions(&segments, &fm.type_aliases)?;
         check_internal_key_access(&segments)?;
+        // Match-label validation: kind() detection, label type consistency.
+        let label_errors =
+            compiled::validate_match_labels(&segments, &fm.declarations, &fm.type_aliases);
+        if !label_errors.is_empty() {
+            return Err(TemplateError::Syntax(label_errors.join("; ").into()));
+        }
 
         let has_defaults = fm.declarations.iter().any(|d| d.default_value.is_some());
         let mut consts: HashMap<String, Value> = fm
@@ -482,6 +505,7 @@ impl Template {
             consts: data.consts,
             imported_consts: data.imported_consts,
             estimated_capacity,
+            env_values: alloc::sync::Arc::from([]),
             checked_type_ids: std::sync::Mutex::new(Vec::new()),
         }
     }
@@ -526,6 +550,8 @@ impl Template {
             consts: Arc::new(const_map),
             imported_consts: Arc::new(imported_const_map),
             estimated_capacity,
+            #[cfg(feature = "std")]
+            env_values: alloc::sync::Arc::from([]),
             #[cfg(feature = "std")]
             checked_type_ids: std::sync::Mutex::new(Vec::new()),
         }
@@ -879,6 +905,7 @@ impl serde::Serialize for Template {
 #[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for Template {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // NOLINT: serde's IgnoredAny pattern — the value is intentionally discarded to consume input
         let _ = <serde::de::IgnoredAny as serde::Deserialize>::deserialize(deserializer)?;
         Err(serde::de::Error::custom(
             "Template cannot be deserialized; construct from source with \
@@ -918,3 +945,6 @@ mod render_integration_tests;
 mod shared_tests;
 #[cfg(all(test, feature = "std"))]
 mod tests;
+
+#[cfg(all(test, feature = "std"))]
+mod doc_example_tests;

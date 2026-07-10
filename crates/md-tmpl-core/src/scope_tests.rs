@@ -347,6 +347,7 @@ fn get_field_unchecked_debug_asserts_on_tag_key() {
         Value::Str("Variant".into()),
     )])));
     // This should trigger the debug_assert.
+    // NOLINT: test asserts the field exists without using the value
     let _ = dict.get_field_unchecked(crate::consts::ENUM_TAG_KEY);
 }
 

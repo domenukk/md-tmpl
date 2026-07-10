@@ -159,9 +159,28 @@ fn apply_join(value: &Value, args: Option<&str>) -> Result<Value, TemplateError>
                 }
                 match v {
                     Value::Str(s) => buf.push_str(s),
-                    other => {
+                    Value::Int(_) | Value::Float(_) | Value::Bool(_) => {
                         use core::fmt::Write;
-                        write!(buf, "{other}").expect("fmt::Write to String is infallible");
+                        write!(buf, "{v}").expect("fmt::Write to String is infallible");
+                    }
+                    Value::None => {} // option None renders as empty, same as {{ none_val }}
+                    Value::Struct(_) => {
+                        return Err(TemplateError::syntax(
+                            "cannot display struct value directly \
+                             — access individual fields (e.g. '{{ value.field }}') instead",
+                        ));
+                    }
+                    Value::List(_) => {
+                        return Err(TemplateError::syntax(
+                            "cannot display nested list value directly \
+                             — use {% for %} to iterate instead",
+                        ));
+                    }
+                    Value::Tmpl(_) => {
+                        return Err(TemplateError::syntax(
+                            "cannot display template value directly \
+                             — use {% include %} to render instead",
+                        ));
                     }
                 }
             }
@@ -207,6 +226,7 @@ fn parse_num_arg(arg: &str, filter_name: &str) -> Result<NumArg, TemplateError> 
 /// For values within `i32` range, `f64::from(i32)` is exact.  For larger
 /// values the cast may lose low-order bits; this is acceptable for template
 /// arithmetic.
+// NOLINT: i64→f64 precision loss is inherent for |i| > 2^53; acceptable for template arithmetic
 #[allow(clippy::cast_precision_loss)]
 fn i64_to_f64(i: i64) -> f64 {
     if let Ok(small) = i32::try_from(i) {

@@ -959,3 +959,1180 @@ types:
   - Status = enum(Open, Closed)
 ---
 '''
+
+# ---------------------------------------------------------------------------
+# Imports in included files
+# ---------------------------------------------------------------------------
+# When template A {% include %}s template B, template B can have its own
+# imports: block in frontmatter. Those imports are resolved relative to
+# template B's directory, enabling included files to use strongly typed
+# enum params, imported consts, and match/case from imported types.
+
+[[tests]]
+name = "included_file_with_own_imports_enum_param"
+description = "An included file can import a type-definition file and use its enum type for params"
+parent_template = '''
+---
+params: [role = str]
+---
+> {% include [child](./child.tmpl.md) with role=role %}'''
+expected_output = "Role: admin"
+
+[tests.params]
+role = "admin"
+
+[tests.files]
+"types.tmpl.md" = '''
+---
+name: types
+types: [Role = enum(admin, editor, viewer)]
+---
+'''
+"child.tmpl.md" = '''
+---
+imports:
+  - "[types](./types.tmpl.md)"
+
+params: [role = types.Role]
+---
+Role: {{ role }}'''
+
+[[tests]]
+name = "included_file_with_imports_match_case"
+description = "An included file can import enum types and use match/case dispatch on them"
+parent_template = '''
+---
+params: [severity = str]
+---
+> {% include [alert](./alert.tmpl.md) with severity=severity %}'''
+expected_output = "🔴 Critical!\n"
+
+[tests.params]
+severity = "Critical"
+
+[tests.files]
+"severity_types.tmpl.md" = '''
+---
+name: severity_types
+types: [Severity = enum(Critical, High, Low)]
+---
+'''
+"alert.tmpl.md" = '''
+---
+imports:
+  - "[severity_types](./severity_types.tmpl.md)"
+
+params: [severity = severity_types.Severity]
+---
+
+> {% match severity %}
+> {% case Critical %}
+
+🔴 Critical!
+
+> {% case High %}
+
+🟠 High
+
+> {% case Low %}
+
+🟢 Low
+
+> {% /match %}'''
+
+[[tests]]
+name = "included_file_with_imports_consts"
+description = "An included file can import a template and use its exported constants"
+parent_template = '''
+---
+params: []
+---
+> {% include [banner](./banner.tmpl.md) %}'''
+expected_output = "App: MyApp v2.0"
+params = {}
+
+[tests.files]
+"config.tmpl.md" = '''
+---
+name: config
+consts:
+  - APP_NAME = str := "MyApp"
+  - VERSION = str := "2.0"
+---
+'''
+"banner.tmpl.md" = '''
+---
+imports:
+  - "[config](./config.tmpl.md)"
+
+params: []
+---
+App: {{ config.APP_NAME }} v{{ config.VERSION }}'''
+
+[[tests]]
+name = "included_file_with_imports_relative_parent_dir"
+description = "An included file in a subdirectory can import from a parent directory using ../"
+parent_template = '''
+---
+params: [prio = str]
+---
+> {% include [widget](./sub/widget.tmpl.md) with prio=prio %}'''
+expected_output = "Priority: High"
+
+[tests.params]
+prio = "High"
+
+[tests.files]
+"types.tmpl.md" = '''
+---
+name: types
+types: [Priority = enum(High, Medium, Low)]
+---
+'''
+"sub/widget.tmpl.md" = '''
+---
+imports:
+  - "[types](../types.tmpl.md)"
+
+params: [prio = types.Priority]
+---
+Priority: {{ prio }}'''
+
+[[tests]]
+name = "included_file_with_imports_enum_wrong_variant_rejected"
+description = "An included file with imported enum type rejects invalid variant values"
+parent_template = '''
+---
+params: [role = str]
+---
+> {% include [child](./child.tmpl.md) with role=role %}'''
+expected_error = "type mismatch"
+
+[tests.params]
+role = "superadmin"
+
+[tests.files]
+"types.tmpl.md" = '''
+---
+name: types
+types: [Role = enum(admin, editor, viewer)]
+---
+'''
+"child.tmpl.md" = '''
+---
+imports:
+  - "[types](./types.tmpl.md)"
+
+params: [role = types.Role]
+---
+Role: {{ role }}'''
+
+[[tests]]
+name = "nested_includes_each_with_own_imports"
+description = "Multiple levels of includes, each with its own independent imports"
+parent_template = '''
+---
+params: [role = str, prio = str]
+---
+> {% include [level1](./level1.tmpl.md) with role=role, prio=prio %}'''
+expected_output = "Role: admin | Priority: High"
+
+[tests.params]
+role = "admin"
+prio = "High"
+
+[tests.files]
+"role_types.tmpl.md" = '''
+---
+name: role_types
+types: [Role = enum(admin, editor)]
+---
+'''
+"prio_types.tmpl.md" = '''
+---
+name: prio_types
+types: [Priority = enum(High, Medium, Low)]
+---
+'''
+"level1.tmpl.md" = '''
+---
+imports:
+  - "[role_types](./role_types.tmpl.md)"
+
+params:
+  - role = role_types.Role
+  - prio = str
+---
+Role: {{ role }} | {% include [level2](./level2.tmpl.md) with prio=prio %}'''
+"level2.tmpl.md" = '''
+---
+imports:
+  - "[prio_types](./prio_types.tmpl.md)"
+
+params: [prio = prio_types.Priority]
+---
+Priority: {{ prio }}'''
+
+[[tests]]
+name = "included_file_with_imports_kinds_function"
+description = "An included file can use kinds() on imported enum types"
+parent_template = '''
+---
+params: []
+---
+> {% include [lister](./lister.tmpl.md) %}'''
+expected_output = "Roles: admin, editor, viewer"
+params = {}
+
+[tests.files]
+"types.tmpl.md" = '''
+---
+name: types
+types: [Role = enum(admin, editor, viewer)]
+---
+'''
+"lister.tmpl.md" = '''
+---
+imports:
+  - "[types](./types.tmpl.md)"
+
+params: []
+---
+Roles: {{ kinds(types.Role) | join(", ") }}'''
+
+[[tests]]
+name = "included_file_with_imports_and_local_types"
+description = "An included file can combine its own local types with imported types"
+parent_template = '''
+---
+params: [role = str, status = str]
+---
+> {% include [card](./card.tmpl.md) with role=role, status=status %}'''
+expected_output = "admin (Active)"
+
+[tests.params]
+role = "admin"
+status = "Active"
+
+[tests.files]
+"role_types.tmpl.md" = '''
+---
+name: role_types
+types: [Role = enum(admin, editor)]
+---
+'''
+"card.tmpl.md" = '''
+---
+imports:
+  - "[role_types](./role_types.tmpl.md)"
+
+types: [Status = enum(Active, Inactive)]
+
+params:
+  - role = role_types.Role
+  - status = Status
+---
+{{ role }} ({{ status }})'''
+
+[[tests]]
+name = "included_file_with_imports_default_enum_value"
+description = "An included file can declare a default value for an imported enum param"
+parent_template = '''
+---
+params: []
+---
+> {% include [child](./child.tmpl.md) %}'''
+expected_output = "Role: viewer"
+params = {}
+
+[tests.files]
+"types.tmpl.md" = '''
+---
+name: types
+types: [Role = enum(admin, editor, viewer)]
+---
+'''
+"child.tmpl.md" = '''
+---
+imports:
+  - "[types](./types.tmpl.md)"
+
+params:
+  - role = types.Role := "viewer"
+---
+Role: {{ role }}'''
+
+[[tests]]
+name = "included_file_with_env_propagation"
+description = "An included file receives env values from the parent template's compile-time env"
+parent_template = '''
+---
+params: []
+---
+> {% include [child](./child.tmpl.md) %}'''
+expected_output = "Path: /usr/local/prompts"
+params = {}
+
+[tests.env]
+BASE_PATH = "/usr/local/prompts"
+
+[tests.files]
+"child.tmpl.md" = '''
+---
+env: [BASE_PATH = str]
+
+params: []
+---
+Path: {{ BASE_PATH }}'''
+
+[[tests]]
+name = "included_file_env_used_in_import_path"
+description = "An included file uses env values that are available as constants alongside imports"
+parent_template = '''
+---
+params: [role = str]
+---
+> {% include [child](./child.tmpl.md) with role=role %}'''
+expected_output = "admin @ /prompts"
+
+[tests.params]
+role = "admin"
+
+[tests.env]
+PROMPT_DIR = "/prompts"
+
+[tests.files]
+"types.tmpl.md" = '''
+---
+name: types
+types: [Role = enum(admin, editor)]
+---
+'''
+"child.tmpl.md" = '''
+---
+env: [PROMPT_DIR = str]
+
+imports:
+  - "[types](./types.tmpl.md)"
+
+params: [role = types.Role]
+---
+{{ role }} @ {{ PROMPT_DIR }}'''
+
+# ---------------------------------------------------------------------------
+# Cross-directory relative path includes
+# ---------------------------------------------------------------------------
+# Tests that validate includes across sibling directories, ensuring relative
+# path resolution (../) works correctly in various configurations.
+
+[[tests]]
+name = "include_sibling_dir_simple"
+description = "Include a template from a sibling directory via ../sibling/"
+parent_template = '''
+---
+params: [name = str]
+---
+> {% include [greet](./dir_a/greet.tmpl.md) with name=name %}'''
+expected_output = "Hello Alice from dir_a!"
+
+[tests.params]
+name = "Alice"
+
+[tests.files]
+"dir_a/greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+Hello {{ name }} from dir_a!'''
+
+[[tests]]
+name = "include_cross_sibling_dirs"
+description = "Template in dir_a/ includes a template from sibling dir_b/ via ../dir_b/"
+parent_template = '''
+---
+params: [name = str]
+---
+> {% include [wrapper](./dir_a/wrapper.tmpl.md) with name=name %}'''
+expected_output = "Wrapped: Greeting from dir_b: Alice"
+
+[tests.params]
+name = "Alice"
+
+[tests.files]
+"dir_a/wrapper.tmpl.md" = '''
+---
+params: [name = str]
+---
+Wrapped: {% include [greet](../dir_b/greet.tmpl.md) with name=name %}'''
+"dir_b/greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+Greeting from dir_b: {{ name }}'''
+
+[[tests]]
+name = "include_cross_sibling_with_types"
+description = "Template in components/ imports types from ../types/ and includes from ../layouts/"
+parent_template = '''
+---
+params: [role = str]
+---
+> {% include [card](./components/card.tmpl.md) with role=role %}'''
+expected_output = "Role: admin | Layout: default"
+
+[tests.params]
+role = "admin"
+
+[tests.files]
+"types/role.tmpl.md" = '''
+---
+name: role
+types: [Role = enum(admin, editor, viewer)]
+---
+'''
+"layouts/base.tmpl.md" = '''
+---
+params: []
+consts: [LAYOUT_NAME = str := "default"]
+---
+Layout: {{ LAYOUT_NAME }}'''
+"components/card.tmpl.md" = '''
+---
+imports:
+  - "[role](../types/role.tmpl.md)"
+
+params: [role = role.Role]
+---
+Role: {{ role }} | {% include [layout](../layouts/base.tmpl.md) %}'''
+
+[[tests]]
+name = "include_deeply_nested_cross_dirs"
+description = "Three directories deep with cross-references: a/b/c/ → ../../types/ and ../../../shared/"
+parent_template = '''
+---
+params: [msg = str]
+---
+> {% include [deep](./a/b/c/deep.tmpl.md) with msg=msg %}'''
+expected_output = "Message: hello | Version: 1.0"
+
+[tests.params]
+msg = "hello"
+
+[tests.files]
+"shared/config.tmpl.md" = '''
+---
+name: config
+consts: [VERSION = str := "1.0"]
+---
+'''
+"a/b/c/deep.tmpl.md" = '''
+---
+imports:
+  - "[config](../../../shared/config.tmpl.md)"
+
+params: [msg = str]
+---
+Message: {{ msg }} | Version: {{ config.VERSION }}'''
+
+# ---------------------------------------------------------------------------
+# Env-based include path resolution
+# ---------------------------------------------------------------------------
+# Tests that use env: variables in include/import paths, simulating real-world
+# scenarios where template directories are configured externally.
+
+[[tests]]
+name = "env_include_path_basic"
+description = "Include path resolved via env variable pointing to a subdirectory"
+parent_template = '''
+---
+env: [TMPL_DIR = str]
+
+params: [name = str]
+---
+> {% include [greet]({{ TMPL_DIR }}/greet.tmpl.md) with name=name %}'''
+expected_output = "Hello Alice!"
+
+[tests.params]
+name = "Alice"
+
+[tests.env]
+TMPL_DIR = "./templates"
+
+[tests.files]
+"templates/greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+Hello {{ name }}!'''
+
+[[tests]]
+name = "env_include_path_multiple_includes"
+description = "Multiple includes using the same env-based path prefix"
+parent_template = '''
+---
+env: [TMPL_DIR = str]
+
+params: [name = str]
+---
+> {% include [header]({{ TMPL_DIR }}/header.tmpl.md) %}
+
+> {% include [greet]({{ TMPL_DIR }}/greet.tmpl.md) with name=name %}
+
+> {% include [footer]({{ TMPL_DIR }}/footer.tmpl.md) %}'''
+expected_output = '''
+=== Header ===
+Hello Alice!
+=== Footer ===
+'''
+
+[tests.params]
+name = "Alice"
+
+[tests.env]
+TMPL_DIR = "./parts"
+
+[tests.files]
+"parts/header.tmpl.md" = '''
+---
+params: []
+---
+=== Header ===
+'''
+"parts/greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+Hello {{ name }}!
+'''
+"parts/footer.tmpl.md" = '''
+---
+params: []
+---
+=== Footer ===
+'''
+
+[[tests]]
+name = "env_import_path_with_typed_include"
+description = "Import types via env path, then include a template that uses those types"
+parent_template = '''
+---
+env: [LIB_DIR = str]
+
+imports:
+  - "[types]({{ LIB_DIR }}/types.tmpl.md)"
+
+params: [role = types.Role]
+---
+> {% include [card]({{ LIB_DIR }}/card.tmpl.md) with role=role %}'''
+expected_output = "User role: admin"
+
+[tests.params]
+role = "admin"
+
+[tests.env]
+LIB_DIR = "./lib"
+
+[tests.files]
+"lib/types.tmpl.md" = '''
+---
+name: types
+types: [Role = enum(admin, editor, viewer)]
+---
+'''
+"lib/card.tmpl.md" = '''
+---
+params: [role = str]
+---
+User role: {{ role }}'''
+
+[[tests]]
+name = "env_include_different_dirs"
+description = "Two env vars pointing to different directories, used in separate includes"
+parent_template = '''
+---
+env:
+  - COMP_DIR = str
+  - DATA_DIR = str
+
+params: [name = str]
+---
+> {% include [header]({{ COMP_DIR }}/header.tmpl.md) %}
+
+> {% include [user]({{ DATA_DIR }}/user.tmpl.md) with name=name %}'''
+expected_output = '''
+-- Header --
+User: Alice
+'''
+
+[tests.params]
+name = "Alice"
+
+[tests.env]
+COMP_DIR = "./ui"
+DATA_DIR = "./data"
+
+[tests.files]
+"ui/header.tmpl.md" = '''
+---
+params: []
+---
+-- Header --
+'''
+"data/user.tmpl.md" = '''
+---
+params: [name = str]
+---
+User: {{ name }}
+'''
+
+[[tests]]
+name = "env_include_with_chained_import_consts"
+description = "Import a config template, then use its exported const alongside env in include paths"
+parent_template = '''
+---
+env: [BASE = str]
+
+imports:
+  - "[cfg]({{ BASE }}/cfg.tmpl.md)"
+
+params: [name = str]
+---
+> {% include [greet]({{ BASE }}/greet.tmpl.md) with name=name %}
+
+Version: {{ cfg.VERSION }}
+'''
+expected_output = '''
+Hi Alice!
+Version: 3.0
+'''
+
+[tests.params]
+name = "Alice"
+
+[tests.env]
+BASE = "."
+
+[tests.files]
+"cfg.tmpl.md" = '''
+---
+name: cfg
+consts: [VERSION = str := "3.0"]
+---
+'''
+"greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+Hi {{ name }}!
+'''
+
+[[tests]]
+name = "env_nested_include_child_uses_env"
+description = "Parent uses env for include; included child also declares and uses the same env variable"
+parent_template = '''
+---
+env: [PROMPT_DIR = str]
+
+params: [name = str]
+---
+> {% include [child]({{ PROMPT_DIR }}/child.tmpl.md) with name=name %}'''
+expected_output = "Hello Alice at ./prompts"
+
+[tests.params]
+name = "Alice"
+
+[tests.env]
+PROMPT_DIR = "./prompts"
+
+[tests.files]
+"prompts/child.tmpl.md" = '''
+---
+env: [PROMPT_DIR = str]
+
+params: [name = str]
+---
+Hello {{ name }} at {{ PROMPT_DIR }}'''
+
+[[tests]]
+name = "env_include_with_cross_dir_child_imports"
+description = "Parent uses env for include; child in subdir imports types from sibling dir via ../"
+parent_template = '''
+---
+env: [COMP_DIR = str]
+
+params: [role = str]
+---
+> {% include [widget]({{ COMP_DIR }}/widget.tmpl.md) with role=role %}'''
+expected_output = "Role: editor"
+
+[tests.params]
+role = "editor"
+
+[tests.env]
+COMP_DIR = "./components"
+
+[tests.files]
+"types/role.tmpl.md" = '''
+---
+name: role
+types: [Role = enum(admin, editor, viewer)]
+---
+'''
+"components/widget.tmpl.md" = '''
+---
+imports:
+  - "[role](../types/role.tmpl.md)"
+
+params: [role = role.Role]
+---
+Role: {{ role }}'''
+
+[[tests]]
+name = "env_include_path_missing_env_error"
+description = "Using an undeclared env variable in an include path should produce an error"
+parent_template = '''
+---
+params: [name = str]
+---
+> {% include [greet]({{ MISSING_DIR }}/greet.tmpl.md) with name=name %}'''
+expected_error = "undeclared variable"
+files = {}
+
+[tests.params]
+name = "World"
+
+[[tests]]
+name = "relative_include_parent_then_child_back"
+description = "Include from parent dir (../), then that template includes back into a subdirectory"
+parent_template = '''
+---
+params: [x = str]
+---
+> {% include [outer](./sub/outer.tmpl.md) with x=x %}'''
+expected_output = "outer -> inner: hello"
+
+[tests.params]
+x = "hello"
+
+[tests.files]
+"sub/outer.tmpl.md" = '''
+---
+params: [x = str]
+---
+outer -> {% include [inner](../deep/inner.tmpl.md) with x=x %}'''
+"deep/inner.tmpl.md" = '''
+---
+params: [x = str]
+---
+inner: {{ x }}'''
+
+[[tests]]
+name = "env_and_relative_combined"
+description = "Parent uses env for include dir; child uses relative ../ to import types from sibling"
+parent_template = '''
+---
+env: [VIEWS_DIR = str]
+
+imports:
+  - "[types](./shared/types.tmpl.md)"
+
+params: [prio = types.Priority]
+---
+> {% include [view]({{ VIEWS_DIR }}/prio_view.tmpl.md) with prio=prio %}'''
+expected_output = "Priority: High"
+
+[tests.params]
+prio = "High"
+
+[tests.env]
+VIEWS_DIR = "./views"
+
+[tests.files]
+"shared/types.tmpl.md" = '''
+---
+name: types
+types: [Priority = enum(High, Medium, Low)]
+---
+'''
+"views/prio_view.tmpl.md" = '''
+---
+imports:
+  - "[types](../shared/types.tmpl.md)"
+
+params: [prio = types.Priority]
+---
+Priority: {{ prio }}'''
+
+# ---------------------------------------------------------------------------
+# Cross-directory circular includes (depth limit)
+# ---------------------------------------------------------------------------
+# Circular includes across different directories should hit the depth limit
+# just like same-directory circulars.
+
+[[tests]]
+name = "circular_includes_cross_dir_rejected"
+description = "Circular includes across sibling directories should exceed max include depth"
+parent_template = '''
+---
+params: []
+---
+> {% include [a](./dir_a/a.tmpl.md) %}'''
+expected_error = "maximum include depth"
+params = {}
+
+[tests.files]
+"dir_a/a.tmpl.md" = '''
+---
+params: []
+---
+A> {% include [b](../dir_b/b.tmpl.md) %}'''
+"dir_b/b.tmpl.md" = '''
+---
+params: []
+---
+B> {% include [a](../dir_a/a.tmpl.md) %}'''
+
+[[tests]]
+name = "self_recursive_include_rejected"
+description = "A template that includes itself should exceed max include depth"
+parent_template = '''
+---
+params: []
+---
+> {% include [self](./self.tmpl.md) %}'''
+expected_error = "maximum include depth"
+params = {}
+
+[tests.files]
+"self.tmpl.md" = '''
+---
+params: []
+---
+R> {% include [self](./self.tmpl.md) %}'''
+
+# ---------------------------------------------------------------------------
+# Non-circular re-includes from first path
+# ---------------------------------------------------------------------------
+# Template A includes B in a different dir, B includes C back in A's dir.
+# This is NOT circular — it's just cross-directory path traversal.
+
+[[tests]]
+name = "re_include_from_original_dir"
+description = "A includes B in sub/, B includes C back in root — not circular"
+parent_template = '''
+---
+params: [name = str]
+---
+> {% include [wrapper](./sub/wrapper.tmpl.md) with name=name %}'''
+expected_output = "Wrapped: Hello Alice from root!"
+
+[tests.params]
+name = "Alice"
+
+[tests.files]
+"sub/wrapper.tmpl.md" = '''
+---
+params: [name = str]
+---
+Wrapped: {% include [greet](../greet.tmpl.md) with name=name %}'''
+"greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+Hello {{ name }} from root!'''
+
+[[tests]]
+name = "re_include_chain_three_dirs"
+description = "Chain: root → dir_a/ → dir_b/ → root/shared/ — all relative, non-circular"
+parent_template = '''
+---
+params: [msg = str]
+---
+> {% include [step1](./dir_a/step1.tmpl.md) with msg=msg %}'''
+expected_output = "step1 > step2 > final: hello"
+
+[tests.params]
+msg = "hello"
+
+[tests.files]
+"dir_a/step1.tmpl.md" = '''
+---
+params: [msg = str]
+---
+step1 > {% include [step2](../dir_b/step2.tmpl.md) with msg=msg %}'''
+"dir_b/step2.tmpl.md" = '''
+---
+params: [msg = str]
+---
+step2 > {% include [final](../shared/final.tmpl.md) with msg=msg %}'''
+"shared/final.tmpl.md" = '''
+---
+params: [msg = str]
+---
+final: {{ msg }}'''
+
+# ---------------------------------------------------------------------------
+# Mutual imports (frontmatter — non-recursive, should work)
+# ---------------------------------------------------------------------------
+# A imports B for B's types, B imports A for A's types.
+# Since imports are non-recursive (only reading direct frontmatter),
+# this should work without circular issues.
+
+[[tests]]
+name = "mutual_imports_consts"
+description = "A imports B for consts, B imports A for consts — works because imports are non-recursive"
+parent_template = '''
+---
+imports:
+  - "[b](./b.tmpl.md)"
+
+params: []
+---
+B says: {{ b.GREETING }}'''
+expected_output = "B says: Hello from B"
+params = {}
+
+[tests.files]
+"b.tmpl.md" = '''
+---
+name: b
+
+imports:
+  - "[a](./a.tmpl.md)"
+
+consts: [GREETING = str := "Hello from B"]
+
+params: []
+---
+'''
+"a.tmpl.md" = '''
+---
+name: a
+
+consts: [GREETING = str := "Hello from A"]
+
+params: []
+---
+'''
+
+[[tests]]
+name = "mutual_imports_types_for_include"
+description = "Parent imports types from lib, includes child that also imports types from lib — shared import, not circular"
+parent_template = '''
+---
+imports:
+  - "[types](./types.tmpl.md)"
+
+params: [role = types.Role]
+---
+Parent: {{ role }} | {% include [child](./child.tmpl.md) with role=role %}'''
+expected_output = "Parent: admin | Child: admin"
+
+[tests.params]
+role = "admin"
+
+[tests.files]
+"types.tmpl.md" = '''
+---
+name: types
+types: [Role = enum(admin, editor, viewer)]
+---
+'''
+"child.tmpl.md" = '''
+---
+imports:
+  - "[types](./types.tmpl.md)"
+
+params: [role = types.Role]
+---
+Child: {{ role }}'''
+
+# ---------------------------------------------------------------------------
+# Param-based include paths (runtime interpolation)
+# ---------------------------------------------------------------------------
+# Include paths can use runtime params — resolved at render time.
+
+[[tests]]
+name = "param_based_include_path"
+description = "Include path uses a runtime param to select the template directory"
+parent_template = '''
+---
+params:
+  - tmpl_dir = str
+  - name = str
+---
+> {% include [greet]({{ tmpl_dir }}/greet.tmpl.md) with name=name %}'''
+expected_output = "Hello Alice!"
+
+[tests.params]
+tmpl_dir = "./templates"
+name = "Alice"
+
+[tests.files]
+"templates/greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+Hello {{ name }}!'''
+
+[[tests]]
+name = "param_based_include_path_different_values"
+description = "Same param-based include path pattern works with different runtime values"
+parent_template = '''
+---
+params:
+  - locale = str
+  - name = str
+---
+> {% include [greet](./locales/{{ locale }}/greet.tmpl.md) with name=name %}'''
+expected_output = "Bonjour Alice!"
+
+[tests.params]
+locale = "fr"
+name = "Alice"
+
+[tests.files]
+"locales/fr/greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+Bonjour {{ name }}!'''
+
+[[tests]]
+name = "param_combined_with_env_in_include_path"
+description = "Include path mixes env (compile-time) with param (runtime) for path construction"
+parent_template = '''
+---
+env: [BASE = str]
+
+params:
+  - variant = str
+  - name = str
+---
+> {% include [greet]({{ BASE }}/{{ variant }}/greet.tmpl.md) with name=name %}'''
+expected_output = "Hola Alice!"
+
+[tests.params]
+variant = "es"
+name = "Alice"
+
+[tests.env]
+BASE = "./locales"
+
+[tests.files]
+"locales/es/greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+Hola {{ name }}!'''
+
+# ---------------------------------------------------------------------------
+# Inline template scoping (no leaking between files)
+# ---------------------------------------------------------------------------
+# SPEC: Inline templates are scoped to their defining file.
+# Parent {% tmpl %} defs must NOT leak to included files.
+# Included file's {% tmpl %} defs must NOT leak to parent.
+
+[[tests]]
+name = "inline_tmpl_preferred_over_file"
+description = "When both inline and file template exist with same name, inline wins"
+parent_template = '''
+---
+params: [name = str]
+---
+> {% tmpl greet %}
+---
+params: [name = str]
+---
+Inline: {{ name }}
+
+> {% /tmpl %}
+
+> {% include greet with name=name %}'''
+expected_output = '''Inline: Alice
+'''
+
+[tests.params]
+name = "Alice"
+
+[tests.files]
+"greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+File: {{ name }}'''
+
+[[tests]]
+name = "file_include_not_affected_by_parent_inline"
+description = "Included file's own inline templates are independent from parent's"
+parent_template = '''
+---
+params: [name = str]
+---
+> {% tmpl helper %}
+---
+params: []
+---
+PARENT_HELPER
+
+> {% /tmpl %}
+
+> {% include [child](./child.tmpl.md) with name=name %}'''
+expected_output = '''CHILD_HELPER: Alice
+'''
+
+[tests.params]
+name = "Alice"
+
+[tests.files]
+"child.tmpl.md" = '''
+---
+params: [name = str]
+---
+> {% tmpl helper %}
+---
+params: [name = str]
+---
+CHILD_HELPER: {{ name }}
+
+> {% /tmpl %}
+
+> {% include helper with name=name %}'''
+
+[[tests]]
+name = "same_named_tmpl_parent_and_child_independent"
+description = "Parent and child both define {% tmpl greeting %} — each uses its own"
+parent_template = '''
+---
+params: []
+---
+> {% tmpl greeting %}
+---
+params: []
+---
+PARENT_GREETING
+
+> {% /tmpl %}
+
+> {% include greeting %}
+
+> {% include [child](./child.tmpl.md) %}'''
+expected_output = '''PARENT_GREETING
+CHILD_GREETING
+'''
+params = {}
+
+[tests.files]
+"child.tmpl.md" = '''
+---
+params: []
+---
+> {% tmpl greeting %}
+---
+params: []
+---
+CHILD_GREETING
+
+> {% /tmpl %}
+
+> {% include greeting %}'''

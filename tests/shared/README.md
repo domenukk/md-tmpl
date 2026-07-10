@@ -34,6 +34,7 @@ The following table catalogs the core feature areas covered by the E2E test infr
 | 9   | Built-in functions (`kind()`, `kinds()`)                       | SPEC §Functions      | 4      | 3      | —      | —      |
 | 10  | For loop edge cases (`idx()` nested, empty list)               | SPEC §ForLoops       | 2      | —      | —      | —      |
 | 11  | Raw blocks and comments (`{% raw %}`, `{# ... #}`)             | SPEC §Raw/Comments   | 2      | —      | —      | —      |
+| 12  | Imports in included files (enum types, consts, `match`/`case`) | SPEC §Includes       | 9      | —      | ✓      | —      |
 
 ### Tier Definitions
 

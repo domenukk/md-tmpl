@@ -53,14 +53,44 @@ pub(crate) fn compile_template_to_ast(
     env_values: &[(&str, md_tmpl_core::Value)],
 ) -> Result<CompiledTemplateAst, String> {
     let source_hash = hash_source(source);
-    let (fm, body) = md_tmpl_core::parse_frontmatter_with_base_dir(source, base_dir, env_values)
-        .map_err(|e| e.to_string())?;
+    let (mut fm, body) =
+        md_tmpl_core::parse_frontmatter_with_base_dir(source, base_dir, env_values)
+            .map_err(|e| e.to_string())?;
 
     let (mut segments, inline_templates) =
         md_tmpl_core::compiled::compile(body, &fm.type_aliases).map_err(|e| e.to_string())?;
 
     // Static analysis: Enforce that all parameters referenced in the body are declared.
-    let referenced = md_tmpl_core::compiled::collect_referenced_params(&segments);
+    check_undeclared_variables(&fm, &inline_templates, &segments)?;
+
+    // Recursively resolve includes at compile time.
+    resolve_compile_time_includes(&mut segments, base_dir, &fm, &inline_templates)?;
+
+    // Flow-sensitive type check: validate variant names and field access.
+    validate_types(&fm, &segments)?;
+
+    // Inject enum type alias constants so that kind(TypeName.Variant)
+    // and kinds(TypeName) work at render time. Reuses the same function
+    // as the runtime `from_source` path (DRY).
+    md_tmpl_core::__private::inject_enum_type_constants(&fm.type_aliases, &mut fm.imported_consts);
+
+    Ok(CompiledTemplateAst {
+        frontmatter: fm,
+        segments,
+        inline_templates,
+        source_hash,
+    })
+}
+
+/// Check that all parameters referenced in the template body are declared
+/// in the frontmatter (params, consts, env, imports, inline templates,
+/// or type aliases).
+fn check_undeclared_variables(
+    fm: &md_tmpl_core::Frontmatter,
+    inline_templates: &HashMap<String, md_tmpl_core::compiled::CompiledInlineTemplate>,
+    segments: &[md_tmpl_core::compiled::Segment],
+) -> Result<(), String> {
+    let referenced = md_tmpl_core::compiled::collect_referenced_params(segments);
     let mut declared: HashSet<String> = fm.params.iter().cloned().collect();
     for c in &fm.consts {
         declared.insert(c.name.clone());
@@ -76,6 +106,11 @@ pub(crate) fn compile_template_to_ast(
     for inline_name in inline_templates.keys() {
         declared.insert(inline_name.clone());
     }
+    // Type alias names are valid references in kind()/kinds() expressions
+    // (e.g., `kind(Status.Active)`, `kinds(Role)`).
+    for type_name in fm.type_aliases.keys() {
+        declared.insert(type_name.clone());
+    }
     let undeclared: Vec<&String> = referenced
         .iter()
         .filter(|v| !declared.contains(v.as_str()))
@@ -88,10 +123,17 @@ pub(crate) fn compile_template_to_ast(
             names.join(", ")
         ));
     }
+    Ok(())
+}
 
-    // Recursively resolve includes at compile time.
-    // Collect declared tmpl() parameter names — these are dynamic includes
-    // resolved at runtime, not compile-time file lookups.
+/// Recursively resolve includes at compile time, collecting declared
+/// `tmpl()` parameter names to skip dynamic includes.
+fn resolve_compile_time_includes(
+    segments: &mut [md_tmpl_core::compiled::Segment],
+    base_dir: &std::path::Path,
+    fm: &md_tmpl_core::Frontmatter,
+    inline_templates: &HashMap<String, md_tmpl_core::compiled::CompiledInlineTemplate>,
+) -> Result<(), String> {
     let tmpl_params: HashSet<String> = fm
         .declarations
         .iter()
@@ -100,19 +142,23 @@ pub(crate) fn compile_template_to_ast(
         .collect();
     let mut visited_paths = HashSet::new();
     resolve_includes_recursive(
-        &mut segments,
+        segments,
         base_dir,
         &mut visited_paths,
-        &inline_templates,
+        inline_templates,
         &tmpl_params,
         0,
-    )?;
+    )
+}
 
-    // Flow-sensitive type check: validate variant names and field access.
+/// Flow-sensitive type check: validate variant names and field access
+/// using the full type alias map.
+fn validate_types(
+    fm: &md_tmpl_core::Frontmatter,
+    segments: &[md_tmpl_core::compiled::Segment],
+) -> Result<(), String> {
     // Import stems and const names are opaque to field-level type checking —
     // their structure is resolved at runtime, not at compile time.
-    // Block scope ensures `opaque_roots` (which borrows `&str` from `fm`)
-    // is dropped before `fm` is moved into the return struct.
     let mut opaque_roots: HashSet<String> = HashSet::new();
     for import in &fm.imports {
         opaque_roots.insert(import.stem.clone());
@@ -124,21 +170,21 @@ pub(crate) fn compile_template_to_ast(
         opaque_roots.insert(e.name.clone());
     }
 
-    let type_errors = md_tmpl_core::compiled::validate_field_accesses_with_opaque(
-        &segments,
+    let type_aliases: HashMap<String, md_tmpl_core::VarType> = fm
+        .type_aliases
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    let type_errors = md_tmpl_core::compiled::validate_field_accesses_full(
+        segments,
         &fm.declarations,
+        &type_aliases,
         &opaque_roots,
     );
     if !type_errors.is_empty() {
         return Err(type_errors.join("\n"));
     }
-
-    Ok(CompiledTemplateAst {
-        frontmatter: fm,
-        segments,
-        inline_templates,
-        source_hash,
-    })
+    Ok(())
 }
 
 /// Maximum compile-time include depth. Prevents pathological non-circular
@@ -148,6 +194,7 @@ const DEFAULT_MAX_COMPILE_INCLUDE_DEPTH: usize = 64;
 
 pub(crate) fn max_compile_include_depth() -> usize {
     std::env::var("MD_TMPL_MAX_INCLUDE_DEPTH")
+        // NOLINT: missing or invalid env var is expected — fall back to compiled default
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_MAX_COMPILE_INCLUDE_DEPTH)

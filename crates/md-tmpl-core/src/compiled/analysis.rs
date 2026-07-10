@@ -108,10 +108,17 @@ fn collect_refs_inner(
                 }
             }
             Segment::Match { expr, arms, .. } => {
-                if let Some(root) = extract_path_variable(expr, loop_bindings) {
+                // Use extract_root_variable to handle kind(x) and other function calls.
+                if let Some(root) = extract_root_variable(expr.as_str(), loop_bindings) {
                     vars.insert(root);
                 }
                 for arm in arms {
+                    // Scan case labels for {{ expr }} interpolation references.
+                    for variant in &arm.variants {
+                        if let Some(inner) = crate::consts::strip_string_literal(variant.as_ref()) {
+                            extract_interpolation_refs(inner, vars, loop_bindings);
+                        }
+                    }
                     if let Some(ref guard) = arm.guard {
                         extract_condition_variables(guard, vars, loop_bindings);
                     }
@@ -206,6 +213,27 @@ fn is_literal(token: &str) -> bool {
         || token == LIT_FALSE
         || token.parse::<i64>().is_ok()
         || token.parse::<f64>().is_ok()
+}
+
+/// Extract variable references from `{{ expr }}` interpolations inside a string.
+fn extract_interpolation_refs(
+    s: &str,
+    vars: &mut HashSet<String>,
+    loop_bindings: &HashSet<String>,
+) {
+    let mut remaining: &str = s;
+    while let Some(start) = remaining.find(crate::consts::EXPR_START) {
+        remaining = &remaining[start + crate::consts::EXPR_START.len()..];
+        if let Some(end) = remaining.find(crate::consts::EXPR_END) {
+            let expr = &remaining[..end];
+            if let Some(root) = extract_root_variable(expr, loop_bindings) {
+                vars.insert(root);
+            }
+            remaining = &remaining[end + crate::consts::EXPR_END.len()..];
+        } else {
+            break;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

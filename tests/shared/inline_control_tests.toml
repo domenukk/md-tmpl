@@ -1147,3 +1147,267 @@ b
 
 [tests.params]
 items = [{ name = "a" }, { name = "b" }]
+
+# ============================================================================
+# Match type safety — compile errors
+# ============================================================================
+
+[[tests]]
+name = "match_quoted_label_on_enum_error"
+description = "Quoted case labels on an enum param produce a type error"
+template = '''
+---
+types: [Status = enum(Active, Paused)]
+params: [status = Status]
+---
+> {% match status %}{% case "Active" %}on{% else %}off{% /match %}'''
+expected_error = "quoted string"
+
+[[tests]]
+name = "match_on_int_renders"
+description = "Match on an int param matches case labels as strings"
+template = '''
+---
+params: [count = int]
+---
+> {% match count %}{% case 0 %}zero{% case 1 %}one{% else %}many{% /match %}'''
+expected_output = "one"
+
+[tests.params]
+count = 1
+
+[[tests]]
+name = "match_on_bool_renders"
+description = "Match on a bool param matches true/false labels"
+template = '''
+---
+params: [flag = bool]
+---
+> {% match flag %}{% case true %}yes{% case false %}no{% /match %}'''
+expected_output = "yes"
+
+[tests.params]
+flag = true
+
+[[tests]]
+name = "match_on_float_renders"
+description = "Match on a float param matches case labels as strings"
+template = '''
+---
+params: [score = float]
+---
+> {% match score %}{% case 3.14 %}pi{% else %}other{% /match %}'''
+expected_output = "pi"
+
+[tests.params]
+score = 3.14
+
+[[tests]]
+name = "match_on_str_unquoted_renders"
+description = "Unquoted case labels on str match literally"
+template = '''
+---
+params: [status = str]
+---
+> {% match status %}{% case Active %}on{% else %}off{% /match %}'''
+expected_output = "on"
+
+[tests.params]
+status = "Active"
+
+# -- Match case label interpolation --
+
+[[tests]]
+name = "match_case_label_interpolation"
+description = "Quoted case label with {{ expr }} interpolation matches dynamically"
+template = '''
+---
+params: [status = str, expected = str]
+---
+> {% match status %}{% case "{{ expected }}" %}yes{% else %}no{% /match %}'''
+expected_output = "yes"
+
+[tests.params]
+status = "Active"
+expected = "Active"
+
+[[tests]]
+name = "match_case_label_interpolation_no_match"
+description = "Quoted case label with {{ expr }} interpolation does not match when different"
+template = '''
+---
+params: [status = str, expected = str]
+---
+> {% match status %}{% case "{{ expected }}" %}yes{% else %}no{% /match %}'''
+expected_output = "no"
+
+[tests.params]
+status = "Active"
+expected = "Paused"
+
+[[tests]]
+name = "match_case_label_interpolation_concat"
+description = "Quoted case label with {{ expr }} concatenation"
+template = '''
+---
+params: [status = str, prefix = str]
+---
+> {% match status %}{% case "{{ prefix }}_done" %}yes{% else %}no{% /match %}'''
+expected_output = "yes"
+
+[tests.params]
+status = "task_done"
+prefix = "task"
+
+[[tests]]
+name = "match_case_label_interpolation_on_enum"
+description = "Quoted case label with {{ kind(Enum.Variant) }} for dynamic enum matching"
+template = '''
+---
+types: [TaskState = enum(Active, Paused)]
+params: [status = str]
+---
+> {% match status %}{% case "{{ kind(TaskState.Active) }}" %}on{% else %}off{% /match %}'''
+expected_output = "on"
+
+[tests.params]
+status = "Active"
+
+# -- Multi-variant arms on scalars --
+
+[[tests]]
+name = "match_str_multi_variant"
+description = "Multi-variant arm on str type"
+template = '''
+---
+params: [status = str]
+---
+> {% match status %}{% case "Active" | "Pending" %}go{% else %}stop{% /match %}'''
+expected_output = "go"
+
+[tests.params]
+status = "Pending"
+
+[[tests]]
+name = "match_int_multi_variant"
+description = "Multi-variant arm on int type"
+template = '''
+---
+params: [count = int]
+---
+> {% match count %}{% case 0 | 1 %}few{% else %}many{% /match %}'''
+expected_output = "few"
+
+[tests.params]
+count = 1
+
+[[tests]]
+name = "match_bool_multi_variant"
+description = "Multi-variant arm on bool type"
+template = '''
+---
+params: [a = bool, b = bool]
+---
+> {% match a %}{% case true %}A{% case false %}B{% /match %}{% match b %}{% case true %}C{% case false %}D{% /match %}'''
+expected_output = "AD"
+
+[tests.params]
+a = true
+b = false
+
+# -- Type mismatch errors --
+
+[[tests]]
+name = "match_int_on_str_error"
+description = "Numeric literal on str param is a compile error"
+template = '''
+---
+params: [name = str]
+---
+> {% match name %}{% case 42 %}x{% else %}y{% /match %}'''
+expected_error = "numeric literal"
+
+[tests.params]
+name = "Alice"
+
+[[tests]]
+name = "match_quoted_on_int_error"
+description = "Quoted string on int param is a compile error"
+template = '''
+---
+params: [count = int]
+---
+> {% match count %}{% case "hello" %}x{% else %}y{% /match %}'''
+expected_error = "cannot match int"
+
+[tests.params]
+count = 0
+
+[[tests]]
+name = "match_quoted_on_bool_error"
+description = "Quoted string on bool param is a compile error"
+template = '''
+---
+params: [flag = bool]
+---
+> {% match flag %}{% case "yes" %}x{% else %}y{% /match %}'''
+expected_error = "cannot match bool"
+
+[tests.params]
+flag = true
+
+[[tests]]
+name = "match_bool_on_int_error"
+description = "Bool literal on int param is a compile error"
+template = '''
+---
+params: [count = int]
+---
+> {% match count %}{% case true %}x{% else %}y{% /match %}'''
+expected_error = "bool literal"
+
+[tests.params]
+count = 0
+
+[[tests]]
+name = "match_float_on_int_error"
+description = "Float literal on int param is a compile error"
+template = '''
+---
+params: [count = int]
+---
+> {% match count %}{% case 3.14 %}x{% else %}y{% /match %}'''
+expected_error = "float literal"
+
+[tests.params]
+count = 0
+
+[[tests]]
+name = "match_quoted_on_enum_error"
+description = "Quoted string on enum param is a compile error"
+template = '''
+---
+types: [Color = enum(Red, Blue)]
+params: [c = Color]
+---
+> {% match c %}{% case "Red" %}x{% else %}y{% /match %}'''
+expected_error = "quoted string"
+
+[tests.params]
+c = "Red"
+
+# -- kind() in match expression error --
+
+[[tests]]
+name = "match_kind_error"
+description = "Matching on kind() should error — use enum match instead"
+template = '''
+---
+types: [Color = enum(Red, Blue)]
+params: [c = Color]
+---
+> {% match kind(c) %}{% case "Red" %}x{% else %}y{% /match %}'''
+expected_error = "kind()"
+
+[tests.params]
+c = "Red"

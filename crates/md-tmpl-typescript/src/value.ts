@@ -14,6 +14,7 @@ import {
   TYPE_FLOAT,
   TYPE_LIST,
   TYPE_STRUCT,
+  TYPE_TMPL,
   TYPE_NONE,
   OPTION_SOME,
   OPTION_NONE,
@@ -30,6 +31,7 @@ export {
   TYPE_FLOAT,
   TYPE_LIST,
   TYPE_STRUCT,
+  TYPE_TMPL,
   TYPE_NONE,
   OPTION_SOME,
   OPTION_NONE,
@@ -82,6 +84,30 @@ export interface NoneValue {
   readonly type: typeof TYPE_NONE;
 }
 
+/** Template value — wraps a parsed template for higher-order composition. */
+export interface TmplValue {
+  readonly type: typeof TYPE_TMPL;
+  readonly ref: TmplRef;
+}
+
+/** Interface for higher-order template references (avoids circular deps). */
+export interface TmplRef {
+  declarations(): ReadonlyArray<readonly [string, string]>;
+  rawDeclarations(): ReadonlyArray<{
+    name: string;
+    varType: unknown;
+    defaultValue?: Value;
+  }>;
+  renderForInclude(
+    params: ReadonlyMap<string, Value>,
+    parentConsts: ReadonlyMap<string, Value>,
+    parentOptionParams: ReadonlySet<string>,
+    maxDepth: number,
+    templateLoader?: unknown,
+    basePath?: string,
+  ): string;
+}
+
 /** Discriminated union of all template value types. */
 export type Value =
   | StrValue
@@ -90,7 +116,8 @@ export type Value =
   | FloatValue
   | ListValue
   | StructValue
-  | NoneValue;
+  | NoneValue
+  | TmplValue;
 
 // ---------------------------------------------------------------------------
 // Constructors
@@ -133,6 +160,11 @@ export const dict = structVal;
 
 /** Singleton None value. */
 export const NONE: NoneValue = { type: TYPE_NONE };
+
+/** Create a template value wrapping a TmplRef. */
+export function tmplVal(ref: TmplRef): TmplValue {
+  return { type: TYPE_TMPL, ref };
+}
 
 // ---------------------------------------------------------------------------
 // Namespaced constructors (preferred — avoids shadowing JS builtins)
@@ -181,6 +213,8 @@ export function isTruthy(v: Value): boolean {
       return v.items.length > 0;
     case TYPE_STRUCT:
       return v.fields.size > 0;
+    case TYPE_TMPL:
+      return true;
   }
 }
 
@@ -212,6 +246,10 @@ export function display(v: Value): string {
         "cannot display struct value directly — access individual fields (e.g. '{{ value.field }}') instead",
       );
     }
+    case TYPE_TMPL:
+      throw new Error(
+        "cannot display template value directly — use '{% include name %}' to render it",
+      );
   }
 }
 
@@ -263,6 +301,7 @@ export function fromJs(
       t === TYPE_FLOAT ||
       t === TYPE_LIST ||
       t === TYPE_STRUCT ||
+      t === TYPE_TMPL ||
       t === TYPE_NONE ||
       t === "dict"
     ) {
@@ -282,6 +321,9 @@ export function fromJs(
     return float(value);
   }
   if (typeof value === "object" || typeof value === "function") {
+    if (typeof (value as TmplRef).renderForInclude === "function") {
+      return tmplVal(value as TmplRef);
+    }
     if (seen.has(value as object)) {
       throw new TemplateError("cyclic object detected in template parameter");
     }
@@ -340,6 +382,8 @@ export function valueToJs(v: Value): unknown {
       }
       return obj;
     }
+    case TYPE_TMPL:
+      return v.ref;
     case TYPE_NONE:
       return null;
   }
@@ -353,6 +397,7 @@ export const V = {
   list,
   structVal,
   dict,
+  tmplVal,
   NONE,
   typeName,
   isTruthy,

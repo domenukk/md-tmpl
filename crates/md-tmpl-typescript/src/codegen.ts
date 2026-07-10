@@ -54,6 +54,7 @@ import {
   TYPE_FLOAT,
   TYPE_LIST,
   TYPE_STRUCT,
+  TYPE_TMPL,
   TYPE_ENUM,
   TYPE_OPTION,
   TYPE_ALIAS,
@@ -369,6 +370,7 @@ class CodegenContext {
         this.emitInterface(itemName, vt.fields);
         return `readonly ${itemName}[]`;
       }
+      case TYPE_TMPL:
       case TYPE_STRUCT: {
         if (vt.fields.length === 0) {
           return "Record<string, unknown>";
@@ -578,6 +580,7 @@ function varTypeToLabel(vt: VarType): string {
       return `list(${varTypeToLabel(vt.elementType)})`;
     case TYPE_LIST:
       return "list(…)";
+    case TYPE_TMPL:
     case TYPE_STRUCT:
       return "struct(…)";
     case TYPE_ENUM:
@@ -616,6 +619,7 @@ function varTypeToTsType(
     case TYPE_LIST:
       if (vt.fields.length === 0) return "unknown[]";
       return `Array<{ ${vt.fields.map((f) => `${f.name}: ${varTypeToTsType(f.name, f.varType, typeAliases)}`).join("; ")} }>`;
+    case TYPE_TMPL:
     case TYPE_STRUCT:
       if (vt.fields.length === 0) return "Record<string, unknown>";
       return `{ ${vt.fields.map((f) => `${f.name}: ${varTypeToTsType(f.name, f.varType, typeAliases)}`).join("; ")} }`;
@@ -698,6 +702,8 @@ function valueToJsSource(v: Value): string {
     }
     case TYPE_NONE:
       return "null";
+    case TYPE_TMPL:
+      return "null /* tmpl ref */";
   }
 }
 
@@ -721,6 +727,8 @@ function valueToJsLiteral(v: Value): unknown {
       return obj;
     }
     case TYPE_NONE:
+      return null;
+    case TYPE_TMPL:
       return null;
   }
 }

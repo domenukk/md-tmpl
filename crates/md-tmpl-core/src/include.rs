@@ -161,20 +161,7 @@ fn resolve_include_inner_into(
 ) -> Result<(), TemplateError> {
     // 0. Use compile-time precompiled AST if present.
     if let Some(compiled) = inline_compiled {
-        scope.push_consts(
-            (*compiled.consts).clone(),
-            (*compiled.imported_consts).clone(),
-        );
-        let result = validate_and_render_into(
-            &compiled.segments,
-            &compiled.declarations,
-            directive,
-            scope,
-            base_dir,
-            output,
-        );
-        scope.pop_consts();
-        return result;
+        return resolve_from_precompiled(compiled, directive, scope, base_dir, output);
     }
 
     // 1. Check inline templates first (defined via {% tmpl name %})
@@ -182,45 +169,75 @@ fn resolve_include_inner_into(
     //    Clone the compiled template to release the immutable borrow on scope,
     //    allowing mutable access for build_overrides/rendering.
     if let Some(compiled) = scope.get_inline_template(directive.path).cloned() {
-        scope.push_consts(
-            (*compiled.consts).clone(),
-            (*compiled.imported_consts).clone(),
-        );
-        let result = validate_and_render_into(
-            &compiled.segments,
-            &compiled.declarations,
-            directive,
-            scope,
-            base_dir,
-            output,
-        );
-        scope.pop_consts();
-        return result;
+        return resolve_from_precompiled(&compiled, directive, scope, base_dir, output);
     }
 
     // 1b. Check if path is a variable resolving to a template (higher-order).
-    // Try to resolve the path as an expression in the current scope.
+    // NOLINT: resolution failure means path is not a tmpl() param — fall through to filesystem
     if let Ok(Value::Tmpl(tmpl)) = scope.resolve_path_str(directive.path) {
         let tmpl = tmpl.clone();
-        // Scope the template's constants and inline templates.
-        scope.push_inline_templates(tmpl.inline_templates().clone());
-        scope.push_consts((*tmpl.consts()).clone(), (*tmpl.imported_consts()).clone());
-
-        let result = validate_and_render_into(
-            tmpl.segments(),
-            tmpl.declarations(),
-            directive,
-            scope,
-            tmpl.base_dir(),
-            output,
-        );
-
-        scope.pop_consts();
-        scope.pop_inline_templates();
-        return result;
+        return resolve_from_tmpl_value(&tmpl, directive, scope, output);
     }
 
     // 2. Fall through to filesystem lookup.
+    resolve_from_filesystem(directive, scope, base_dir, output)
+}
+
+/// Resolve an include from a precompiled inline template.
+fn resolve_from_precompiled(
+    compiled: &CompiledInlineTemplate,
+    directive: &IncludeDirective<'_>,
+    scope: &mut Scope<'_>,
+    base_dir: Option<&Path>,
+    output: &mut String,
+) -> Result<(), TemplateError> {
+    scope.push_consts(
+        (*compiled.consts).clone(),
+        (*compiled.imported_consts).clone(),
+    );
+    let result = validate_and_render_into(
+        &compiled.segments,
+        &compiled.declarations,
+        directive,
+        scope,
+        base_dir,
+        output,
+    );
+    scope.pop_consts();
+    result
+}
+
+/// Resolve an include from a `Value::Tmpl` (higher-order template parameter).
+fn resolve_from_tmpl_value(
+    tmpl: &std::sync::Arc<crate::template::Template>,
+    directive: &IncludeDirective<'_>,
+    scope: &mut Scope<'_>,
+    output: &mut String,
+) -> Result<(), TemplateError> {
+    scope.push_inline_templates(tmpl.inline_templates().clone());
+    scope.push_consts((*tmpl.consts()).clone(), (*tmpl.imported_consts()).clone());
+
+    let result = validate_and_render_into(
+        tmpl.segments(),
+        tmpl.declarations(),
+        directive,
+        scope,
+        tmpl.base_dir(),
+        output,
+    );
+
+    scope.pop_consts();
+    scope.pop_inline_templates();
+    result
+}
+
+/// Resolve an include from the filesystem (cache or disk).
+fn resolve_from_filesystem(
+    directive: &IncludeDirective<'_>,
+    scope: &mut Scope<'_>,
+    base_dir: Option<&Path>,
+    output: &mut String,
+) -> Result<(), TemplateError> {
     let base = base_dir.ok_or_else(|| {
         TemplateError::IncludeNotFound(format!(
             "cannot resolve '{}': no base directory",
@@ -230,11 +247,12 @@ fn resolve_include_inner_into(
 
     let include_path = base.join(directive.path);
 
-    // 2a. Try the template cache first — avoids re-reading and re-compiling
-    //     unchanged include files.
+    // Try the template cache first — avoids re-reading and re-compiling
+    // unchanged include files.
     if let Some(cache) = scope.cache() {
         let cached = cache.resolve_include(&include_path)?;
-        return validate_and_render_into(
+        scope.push_consts(cached.consts.clone(), cached.imported_consts.clone());
+        let result = validate_and_render_into(
             &cached.segments,
             &cached.declarations,
             directive,
@@ -242,16 +260,25 @@ fn resolve_include_inner_into(
             Some(cached.base_dir.as_path()),
             output,
         );
+        scope.pop_consts();
+        return result;
     }
 
-    // 2b. No cache — read and compile from disk.
+    // No cache — read and compile from disk.
     let source = std::fs::read_to_string(&include_path).map_err(|err| {
         TemplateError::IncludeNotFound(format!("{}: {err}", include_path.display()))
     })?;
 
     let include_base = include_path.parent().unwrap_or(base);
+    // Propagate compile-time env values to included files so their
+    // `env:` frontmatter declarations are resolved with the same values.
+    let env_pairs: Vec<(&str, crate::value::Value)> = scope
+        .compile_env()
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.clone()))
+        .collect();
     let (fm, body) =
-        crate::frontmatter::parse_frontmatter_with_base_dir(&source, include_base, &[])?;
+        crate::frontmatter::parse_frontmatter_with_base_dir(&source, include_base, &env_pairs)?;
     let (segments, included_inline_templates) = crate::compiled::compile(body, &fm.type_aliases)?;
 
     // Scope the included file's own inline templates: push them for rendering,
@@ -263,6 +290,14 @@ fn resolve_include_inner_into(
     for d in &fm.consts {
         if let Some(v) = d.default_value.clone() {
             include_consts.insert(d.name.clone(), v);
+        }
+    }
+    // Inject resolved env values as constants (mirrors compile_inner behavior).
+    for d in &fm.env {
+        if let Some(ref v) = d.default_value {
+            include_consts
+                .entry(d.name.clone())
+                .or_insert_with(|| v.clone());
         }
     }
     scope.push_consts(include_consts, fm.imported_consts);

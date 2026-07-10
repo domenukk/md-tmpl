@@ -12,7 +12,8 @@ import {
   isOptionMatchNode,
 } from "./evaluator.js";
 import { parseBody } from "./parser.js";
-import { type Value, display } from "./value.js";
+import { parseFrontmatter } from "./frontmatter.js";
+import { type Value, type TmplRef, display, TYPE_TMPL } from "./value.js";
 import {
   TemplateError,
   TemplateSyntaxError,
@@ -27,6 +28,7 @@ import {
 import {
   PIPE,
   TYPE_LIST,
+  TYPE_STR,
   TYPE_STRUCT,
   TYPE_OPTION,
   TYPE_NONE,
@@ -49,6 +51,75 @@ import {
   PREFIX_OPTIONS_DOT,
   PREFIX_PARAMS_DOT,
 } from "./consts.js";
+
+/**
+ * Strip surrounding quotes from a case label if present.
+ * `"foo"` or `'foo'` → `foo`; `Active` → `Active`.
+ */
+function stripQuotes(s: string): string {
+  if (s.length >= 2) {
+    const first = s[0];
+    const last = s[s.length - 1];
+    if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+      return s.slice(1, -1);
+    }
+  }
+  return s;
+}
+
+/** Check if a string is surrounded by quotes. */
+function isQuotedLabel(s: string): boolean {
+  if (s.length < 2) return false;
+  return (
+    (s[0] === '"' && s[s.length - 1] === '"') ||
+    (s[0] === "'" && s[s.length - 1] === "'")
+  );
+}
+
+/**
+ * Check if a case arm label matches the active variant.
+ *
+ * Matching rules:
+ * - Quoted label (`"Active"`): strip quotes, compare literally
+ * - Unquoted label equal to variant: matches (enum variant name)
+ * - Unquoted label (param-ref): resolve from scope, compare the
+ *   resolved string value against `activeVariant`
+ */
+function armLabelMatches(
+  label: string,
+  variant: string,
+  scope: Scope,
+): boolean {
+  // Quoted string literal: strip quotes and compare (with interpolation).
+  if (isQuotedLabel(label)) {
+    const inner = stripQuotes(label);
+    if (inner.includes(EXPR_START)) {
+      // Contains {{ expr }} — parse and render the interpolated string.
+      try {
+        const nodes = parseBody(inner, false, 0);
+        const rendered = renderNodes(nodes, scope);
+        return rendered === variant;
+      } catch {
+        return false;
+      }
+    }
+    return inner === variant;
+  }
+  // Direct comparison (enum variant name, wildcard, etc.).
+  if (label === variant) {
+    return true;
+  }
+  // Param-ref: resolve label as a variable and compare its string value.
+  try {
+    const resolved = scope.resolvePath(label);
+    if (resolved.type === TYPE_STR) {
+      return (resolved.value as string) === variant;
+    }
+  } catch {
+    // Label is not a resolvable variable — no match.
+  }
+  return false;
+}
 
 export interface RenderOptions {
   /** Inline template definitions available for `{% include %}`. */
@@ -170,7 +241,9 @@ export function renderNodes(
         const variant = getVariantName(val, isOpt);
 
         if (node.inlineGuard) {
-          if (node.inlineGuard.variant === variant) {
+          const label = node.inlineGuard.variant;
+          const guardMatches = armLabelMatches(label, variant, scope);
+          if (guardMatches) {
             const layer = scope.pushLayer();
             try {
               if (variant === OPTION_SOME && val.type !== TYPE_NONE) {
@@ -188,7 +261,10 @@ export function renderNodes(
 
         let matched = false;
         for (const arm of node.arms) {
-          if (arm.variants.includes(variant)) {
+          const armMatches = arm.variants.some((v) =>
+            armLabelMatches(v, variant, scope),
+          );
+          if (armMatches) {
             const layer = scope.pushLayer();
             try {
               if (variant === OPTION_SOME && val.type !== TYPE_NONE) {
@@ -208,10 +284,6 @@ export function renderNodes(
         }
         if (!matched && node.elseArm) {
           parts.push(renderNodes(node.elseArm, scope, options));
-        } else if (!matched) {
-          throw new TemplateError(
-            `non-exhaustive match: variant '${variant}' not covered`,
-          );
         }
         break;
       }
@@ -248,12 +320,80 @@ export function renderNodes(
           includedNodes = loadedNodes;
           decls = loadedDecls;
           consts = loadedConsts;
+          // Scope inline templates to the child file: collect the child's
+          // own {% tmpl %} definitions, NOT the parent's. (SPEC: "no leaking
+          // downward")
+          const childInline = collectChildInlineTemplates(loadedNodes);
           fileChildOpts = {
             ...options,
+            inlineTemplates: childInline.size > 0 ? childInline : undefined,
             currentBasePath: loadedBasePath ?? options.currentBasePath,
             maxIncludeDepth: maxDepth - 1,
           };
         } else {
+          // Try to resolve name from scope as a higher-order TmplValue
+          let tmplRef: TmplRef | undefined;
+          try {
+            const resolved = scope.resolvePath(node.name);
+            if (resolved && resolved.type === TYPE_TMPL) {
+              tmplRef = resolved.ref;
+            }
+          } catch {
+            // Not in scope — fall through to inline templates
+          }
+
+          if (tmplRef) {
+            // Higher-order template: collect params and delegate to renderForInclude
+            if (maxDepth <= 0) {
+              throw new TemplateError(
+                `maximum include depth exceeded when including '${node.name}'`,
+              );
+            }
+            if (node.forBinding && node.forExpr) {
+              const listVal = evaluateExpression(node.forExpr, scope);
+              if (listVal.type !== TYPE_LIST) {
+                throw new TemplateSyntaxError(
+                  `include ... for ... in requires list, got ${listVal.type}`,
+                );
+              }
+              const results: string[] = [];
+              for (const item of listVal.items) {
+                const iterCtx = new Map<string, Value>();
+                iterCtx.set(node.forBinding, item);
+                for (const [targetKey, sourceExpr] of node.withMappings) {
+                  iterCtx.set(targetKey, evaluateExpression(sourceExpr, scope));
+                }
+                results.push(
+                  tmplRef.renderForInclude(
+                    iterCtx,
+                    scope.allConsts(),
+                    scope.optionParamNames(),
+                    maxDepth - 1,
+                    options?.templateLoader,
+                    options?.currentBasePath,
+                  ),
+                );
+              }
+              parts.push(results.join(""));
+              break;
+            }
+            const childCtx = new Map<string, Value>();
+            for (const [targetKey, sourceExpr] of node.withMappings) {
+              childCtx.set(targetKey, evaluateExpression(sourceExpr, scope));
+            }
+            parts.push(
+              tmplRef.renderForInclude(
+                childCtx,
+                scope.allConsts(),
+                scope.optionParamNames(),
+                maxDepth - 1,
+                options?.templateLoader,
+                options?.currentBasePath,
+              ),
+            );
+            break;
+          }
+
           const inline = options?.inlineTemplates?.get(node.name);
           if (!inline) {
             throw new TemplateError(
@@ -382,6 +522,52 @@ function isUndefinedVariableError(err: unknown): boolean {
     err instanceof UndefinedVariableError ||
     (err instanceof Error && err.message.includes("undefined variable"))
   );
+}
+
+/**
+ * Extract inline template definitions from a child file's parsed nodes.
+ *
+ * Each included file gets its own namespace of inline templates.
+ * Parent inline templates do NOT leak to included files.
+ */
+function collectChildInlineTemplates(
+  nodes: readonly Node[],
+): Map<
+  string,
+  { declarations: readonly VarDecl[]; body: string; consts: Map<string, Value> }
+> {
+  const result = new Map<
+    string,
+    {
+      declarations: readonly VarDecl[];
+      body: string;
+      consts: Map<string, Value>;
+    }
+  >();
+  for (const n of nodes) {
+    if (n.kind !== "tmpl") continue;
+    if (n.source.trimStart().startsWith("---")) {
+      const [inlineFm, inlineBody] = parseFrontmatter(n.source);
+      const inlineConsts = new Map<string, Value>();
+      for (const decl of inlineFm.consts) {
+        if (decl.defaultValue !== undefined) {
+          inlineConsts.set(decl.name, decl.defaultValue);
+        }
+      }
+      result.set(n.name, {
+        declarations: inlineFm.params,
+        body: inlineBody,
+        consts: inlineConsts,
+      });
+    } else {
+      result.set(n.name, {
+        declarations: [],
+        body: n.source,
+        consts: new Map(),
+      });
+    }
+  }
+  return result;
 }
 
 function interpolateIncludePath(path: string, scope: Scope): string {

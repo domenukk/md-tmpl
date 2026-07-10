@@ -28,6 +28,7 @@ use crate::{
     error::TemplateError,
     frontmatter::{self, Frontmatter},
     types::VarDecl,
+    value::Value,
 };
 
 /// A compiled include entry, ready for rendering without re-parsing.
@@ -39,6 +40,10 @@ pub(crate) struct CachedInclude {
     pub declarations: Arc<[VarDecl]>,
     /// Base directory for resolving nested includes.
     pub base_dir: PathBuf,
+    /// Local constants from the included template's frontmatter.
+    pub consts: HashMap<String, Value>,
+    /// Imported constants (e.g. from `imports:` in frontmatter).
+    pub imported_consts: HashMap<String, Value>,
 }
 
 /// Content-hash of a source string.
@@ -478,17 +483,34 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
         }
 
         // Cache miss — compile.
-        let (fm, body) = frontmatter::parse_frontmatter(&source)?;
-        let (segments, _inline_templates) = compiled::compile(body, &fm.type_aliases)?;
         let base_dir = include_path
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
+        let (fm, body) = frontmatter::parse_frontmatter_with_base_dir(&source, &base_dir, &[])?;
+        let (segments, _inline_templates) = compiled::compile(body, &fm.type_aliases)?;
+
+        let mut include_consts = HashMap::new();
+        for d in &fm.consts {
+            if let Some(v) = d.default_value.clone() {
+                include_consts.insert(d.name.clone(), v);
+            }
+        }
+        // Inject resolved env values as constants.
+        for d in &fm.env {
+            if let Some(ref v) = d.default_value {
+                include_consts
+                    .entry(d.name.clone())
+                    .or_insert_with(|| v.clone());
+            }
+        }
 
         let cached = CachedInclude {
             segments: Arc::from(segments),
             declarations: Arc::from(fm.declarations),
             base_dir,
+            consts: include_consts,
+            imported_consts: fm.imported_consts,
         };
 
         {
@@ -742,6 +764,118 @@ Body",
         assert_eq!(cache.include_count(), 1); // same entry, no new compilation
     }
 
+    /// Regression: cached includes must preserve `consts:` from the included
+    /// template's frontmatter so that constants are visible during rendering
+    /// from cache (not only on the first uncached render).
+    #[test]
+    fn cached_include_preserves_consts() {
+        let dir = tempfile::tempdir().unwrap();
+
+        std::fs::write(
+            dir.path().join("with_const.tmpl.md"),
+            r#"---
+name: with_const
+consts: [GREETING = str := "Howdy"]
+params: [name = str]
+---
+{{ GREETING }} {{ name }}!"#,
+        )
+        .unwrap();
+
+        let main_path = dir.path().join("main.tmpl.md");
+        std::fs::write(
+            &main_path,
+            r"---
+params: [name = str]
+---
+> {% include [with_const](./with_const.tmpl.md) with name=name %}",
+        )
+        .unwrap();
+
+        let cache = TemplateCache::new();
+        let tmpl = cache.load(&main_path).unwrap();
+
+        let mut ctx = crate::Context::new();
+        ctx.set("name", "World");
+
+        // First render — uncached include.
+        let out1 = tmpl.render_ctx_cached(&ctx, &cache).unwrap();
+        assert!(
+            out1.contains("Howdy World!"),
+            "first render should contain const: {out1}"
+        );
+
+        // Second render — cached include must still see the const.
+        let out2 = tmpl.render_ctx_cached(&ctx, &cache).unwrap();
+        assert_eq!(out1, out2, "cached render must match uncached render");
+    }
+
+    /// Regression: cached includes must preserve `imports:` from the included
+    /// template's frontmatter. Without this, custom types defined via imports
+    /// (e.g. `artist.WorkRole`) cause "unknown type" errors on cached renders.
+    #[test]
+    fn cached_include_preserves_imported_consts() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create a "types" template that defines an enum.
+        std::fs::write(
+            dir.path().join("types.tmpl.md"),
+            r#"---
+name: types
+description: "Type definitions"
+types: [Color = enum(Red, Green, Blue)]
+params: []
+---
+"#,
+        )
+        .unwrap();
+
+        // Create an included template that imports the enum.
+        std::fs::write(
+            dir.path().join("colorful.tmpl.md"),
+            r#"---
+name: colorful
+imports:
+  - "[types](./types.tmpl.md)"
+
+params:
+  - favorite = types.Color := Red
+---
+Color: {{ favorite }}"#,
+        )
+        .unwrap();
+
+        let main_path = dir.path().join("main.tmpl.md");
+        std::fs::write(
+            &main_path,
+            r"---
+params: []
+---
+> {% include [colorful](./colorful.tmpl.md) %}",
+        )
+        .unwrap();
+
+        let cache = TemplateCache::new();
+        let tmpl = cache.load(&main_path).unwrap();
+
+        let ctx = crate::Context::new();
+
+        // First render — uncached, compiles include from disk.
+        let out1 = tmpl.render_ctx_cached(&ctx, &cache).unwrap();
+        assert!(
+            out1.contains("Color: Red"),
+            "first render should show default enum value: {out1}"
+        );
+
+        // Second render — from cache. Before the fix, this would fail with
+        // "unknown type" because imported_consts were not stored in CachedInclude.
+        let out2 = tmpl.render_ctx_cached(&ctx, &cache).unwrap();
+        assert_eq!(
+            out1, out2,
+            "cached render must match uncached render (imported consts preserved)"
+        );
+    }
+
     #[test]
     fn with_hasher_custom_builder() {
         use std::hash::BuildHasherDefault;
@@ -849,6 +983,7 @@ params: []
         successful_loads: &AtomicUsize,
     ) {
         use std::sync::atomic::Ordering;
+        // NOLINT: Err is acceptable — clear() may have raced with load()
         if let Ok(tmpl) = cache.load(path) {
             // Verify the loaded template is functional.
             assert!(
@@ -868,9 +1003,11 @@ params: []
         successful_renders: &AtomicUsize,
     ) {
         use std::sync::atomic::Ordering;
+        // NOLINT: Err is acceptable — clear() may have raced with load()
         if let Ok(tmpl) = cache.load(path) {
             let mut ctx = crate::Context::new();
             ctx.set("x", "hello");
+            // NOLINT: render may fail if clear() raced — expected in stress test
             if let Ok(output) = tmpl.render_ctx_cached(&ctx, cache) {
                 assert!(
                     output.contains("hello"),
@@ -897,6 +1034,7 @@ params: []
             cache.clear();
         }
         // Load after clear to verify cache rebuilds correctly.
+        // NOLINT: Err is acceptable — load after clear may race
         if let Ok(tmpl) = cache.load(path) {
             assert!(
                 !tmpl.declarations().is_empty(),
@@ -919,6 +1057,7 @@ params: []
         let ic = cache.include_count();
         assert!(tc <= paths_len, "template count {tc} exceeds file count");
         assert!(ic <= 100, "include count {ic} unexpectedly large");
+        // NOLINT: Err is acceptable — clear() may have raced with load()
         if let Ok(tmpl) = cache.load(path) {
             assert!(
                 !tmpl.declarations().is_empty(),

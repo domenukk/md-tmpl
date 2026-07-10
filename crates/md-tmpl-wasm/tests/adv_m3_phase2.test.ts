@@ -11,16 +11,20 @@ describe("Tier 5 Phase 2 White-box Adversarial Coverage — WASM", () => {
     it("WasmTemplate instances support setMaxIncludeDepth", () => {
       const tmpl = WasmTemplate.fromSource("---\nparams:\n  - x = int\n---\nHello world {{ x }}");
       assert.strictEqual(
+        // NOLINT: testing WASM binding name variants requires dynamic property access
         typeof (tmpl as any).setMaxIncludeDepth,
         "function",
         "WasmTemplate should have setMaxIncludeDepth method",
       );
       assert.strictEqual(
+        // NOLINT: testing WASM binding name variants requires dynamic property access
         typeof (tmpl as any).set_max_include_depth,
         "function",
         "WasmTemplate should have set_max_include_depth method",
       );
+      // NOLINT: testing WASM binding name variants requires dynamic property access
       (tmpl as any).setMaxIncludeDepth(10);
+      // NOLINT: testing WASM binding name variants requires dynamic property access
       (tmpl as any).set_max_include_depth(5);
     });
   });

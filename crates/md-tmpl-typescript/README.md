@@ -375,16 +375,16 @@ function renderGreeting(tmpl: ITemplate, name: string): string {
 
 Node.js 22, single-template timings (lower is better):
 
-| Scenario                 |       render | renderUnchecked |
-| ------------------------ | -----------: | --------------: |
-| simple (1 str)           |       622 ns |      **593 ns** |
-| multi-param (4 types)    |     1,725 ns |    **1,161 ns** |
-| list (2 items)           |     3,844 ns |    **2,839 ns** |
-| list (20 items)          |    51,153 ns |             N/A |
-| enum unit variant        |     1,544 ns |             N/A |
-| enum struct variant      |     2,901 ns |             N/A |
-| filters (idx+add, upper) |    11,164 ns |             N/A |
-| if/elif/else             | **2,186 ns** |        2,475 ns |
+| Scenario                 |    render | renderUnchecked |
+| ------------------------ | --------: | --------------: |
+| simple (1 str)           |    623 ns |      **510 ns** |
+| multi-param (4 types)    |  1,901 ns |    **1,090 ns** |
+| list (2 items)           |  3,810 ns |    **2,136 ns** |
+| list (20 items)          | 27,245 ns |             N/A |
+| enum unit variant        | 18,371 ns |             N/A |
+| enum struct variant      |  1,714 ns |             N/A |
+| filters (idx+add, upper) |  6,552 ns |             N/A |
+| if/elif/else             |  1,919 ns |    **1,557 ns** |
 
 `renderUnchecked()` skips runtime type validation — use it when TypeScript's
 static checks are sufficient.
@@ -398,11 +398,11 @@ Node.js 22, 50,000 iterations, best of 5 runs
 
 <!-- BENCHMARK:TS_COMPARISON_RENDER -->
 
-| Scenario           | render() | renderUnchecked() |      Handlebars |      Mustache |
-| ------------------ | -------: | ----------------: | --------------: | ------------: |
-| **simple**         | 1,816 ns |     **777 ns** 🏆 |        1,953 ns |      1,591 ns |
-| **loop (5 items)** | 5,110 ns |          2,504 ns | **1,897 ns** 🏆 |      1,955 ns |
-| **conditional**    | 2,366 ns |          2,126 ns |        1,364 ns | **473 ns** 🏆 |
+| Scenario           | render() | renderUnchecked() | Handlebars |        Mustache |
+| ------------------ | -------: | ----------------: | ---------: | --------------: |
+| **simple**         | 1,040 ns |            814 ns |   1,258 ns |   **745 ns** 🏆 |
+| **loop (5 items)** | 5,233 ns |          2,850 ns |   1,897 ns | **1,863 ns** 🏆 |
+| **conditional**    | 2,442 ns |          2,110 ns |   1,549 ns |   **450 ns** 🏆 |
 
 <!-- /BENCHMARK:TS_COMPARISON_RENDER -->
 
@@ -412,8 +412,8 @@ Node.js 22, 50,000 iterations, best of 5 runs
 
 | Scenario           |   md-tmpl | Handlebars |        Mustache |
 | ------------------ | --------: | ---------: | --------------: |
-| **simple**         |  8,701 ns |  79,874 ns |   **922 ns** 🏆 |
-| **loop (5 items)** | 26,952 ns | 189,886 ns | **1,843 ns** 🏆 |
+| **simple**         |  9,276 ns |  80,225 ns |   **934 ns** 🏆 |
+| **loop (5 items)** | 19,706 ns | 113,190 ns | **1,861 ns** 🏆 |
 
 <!-- /BENCHMARK:TS_COMPARISON_ROUNDTRIP -->
 

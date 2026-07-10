@@ -882,30 +882,19 @@ before   {{- x -}}   after
 // F. Match/Case Edge Cases
 // ============================================================================
 
-/// Match on a non-enum value (integer) should error at runtime.
+/// Match on an integer value should work (case labels compared as strings).
 #[test]
-fn match_on_non_enum_value_errors() {
+fn match_on_int_value_renders() {
     let source = r"---
 params: [count = int]
 ---
-> {% match count %}
-> {% case One %}
-
-one
-
-> {% /match %}
+> {% match count %}{% case 42 %}found{% else %}nope{% /match %}
 ";
     let tmpl = Template::from_source(source).unwrap();
     let mut ctx = Context::new();
     ctx.set("count", Value::Int(42));
-    let err = tmpl
-        .render_ctx(&ctx)
-        .expect_err("matching on integer should fail");
-    let msg = err.to_string();
-    assert!(
-        msg.contains("not an enum"),
-        "error should mention non-enum: {msg}"
-    );
+    let result = tmpl.render_ctx(&ctx).unwrap();
+    assert_eq!(result.trim(), "found");
 }
 
 /// Match where no arm matches should produce empty output (not an error).

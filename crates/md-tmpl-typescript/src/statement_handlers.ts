@@ -301,7 +301,7 @@ function handleMatch(
       variantPart = caseContent;
     }
 
-    // Parse variant name(s) (separated by |)
+    // Parse variant name(s) (separated by |), preserving quotes
     const variants = variantPart
       .split(PIPE)
       .map((v) => v.trim())
@@ -368,6 +368,7 @@ function handleMatch(
             guardExpr === undefined
               ? { variant: variants[0]!, body }
               : undefined,
+
           loc: getLoc(tagStart, lineMap),
         },
       ],

@@ -178,4 +178,14 @@ export class Scope {
     }
     return result;
   }
+
+  /** Return all constants visible in this scope. */
+  allConsts(): ReadonlyMap<string, Value> {
+    return this.consts;
+  }
+
+  /** Return the set of option-typed parameter names. */
+  optionParamNames(): ReadonlySet<string> {
+    return this.optionParams;
+  }
 }

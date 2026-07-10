@@ -1879,6 +1879,45 @@ expected_output = "only"
 items = ["only"]
 
 [[tests]]
+name = "filter_join_int_list"
+description = "join on list(int) converts integers to strings and joins"
+template = '''
+---
+params:
+  - nums = list(int)
+---
+{{ nums | join("-") }}'''
+expected_output = "1-2-3"
+[tests.params]
+nums = [1, 2, 3]
+
+[[tests]]
+name = "filter_join_bool_list"
+description = "join on list(bool) converts booleans to strings and joins"
+template = '''
+---
+params:
+  - flags = list(bool)
+---
+{{ flags | join(", ") }}'''
+expected_output = "true, false, true"
+[tests.params]
+flags = [true, false, true]
+
+[[tests]]
+name = "filter_join_struct_list"
+description = "join on struct-typed list is rejected — structs are not displayable"
+template = '''
+---
+params:
+  - items = list(name = str, score = int)
+---
+{{ items | join(", ") }}'''
+expected_error = "struct"
+[tests.params]
+items = [{ name = "a", score = 1 }, { name = "b", score = 2 }]
+
+[[tests]]
 name = "filter_limit_basic"
 description = "limit(N) takes first N elements, combined with join"
 template = '''
@@ -1918,6 +1957,84 @@ expected_output = "[]"
 items = ["a", "b", "c"]
 
 [[tests]]
+name = "filter_add_int"
+description = "add(N) adds integer N to integer value"
+template = '''
+---
+params:
+  - n = int
+---
+{{ n | add(3) }}'''
+expected_output = "8"
+[tests.params]
+n = 5
+
+[[tests]]
+name = "filter_add_negative"
+description = "add(N) with negative N subtracts from value"
+template = '''
+---
+params:
+  - n = int
+---
+{{ n | add(-2) }}'''
+expected_output = "8"
+[tests.params]
+n = 10
+
+[[tests]]
+name = "filter_add_float"
+description = "add(float) on int promotes result to float"
+template = '''
+---
+params:
+  - n = int
+---
+{{ n | add(0.5) }}'''
+expected_output = "3.5"
+[tests.params]
+n = 3
+
+[[tests]]
+name = "filter_sub_int"
+description = "sub(N) subtracts integer N from integer value"
+template = '''
+---
+params:
+  - n = int
+---
+{{ n | sub(3) }}'''
+expected_output = "7"
+[tests.params]
+n = 10
+
+[[tests]]
+name = "filter_sub_float"
+description = "sub(float) on float value produces float result"
+template = '''
+---
+params:
+  - n = float
+---
+{{ n | sub(1.5) }}'''
+expected_output = "3.5"
+[tests.params]
+n = 5.0
+
+[[tests]]
+name = "filter_add_on_non_number_rejected"
+description = "add filter on a string value is rejected as a type error"
+template = '''
+---
+params:
+  - name = str
+---
+{{ name | add(1) }}'''
+expected_error = "number"
+[tests.params]
+name = "hi"
+
+[[tests]]
 name = "filter_unknown_rejected"
 description = "unknown filter is rejected at compile time"
 template = '''
@@ -1929,6 +2046,73 @@ params:
 expected_error = "unknown filter"
 [tests.params]
 name = "test"
+
+# ============================================================================
+# F12: Whitespace Control — {{- -}}, {%- -%}, {#- -#}
+# ============================================================================
+
+[[tests]]
+name = "whitespace_strip_before_expr"
+description = "{{- strips whitespace before the expression tag"
+template = '''
+---
+params:
+  - name = str
+---
+hello  {{- name }}'''
+expected_output = "helloworld"
+[tests.params]
+name = "world"
+
+[[tests]]
+name = "whitespace_strip_after_expr"
+description = "-}} strips whitespace after the expression tag"
+template = '''
+---
+params:
+  - name = str
+---
+{{ name -}}  bye'''
+expected_output = "hellobye"
+[tests.params]
+name = "hello"
+
+[[tests]]
+name = "whitespace_strip_both_expr"
+description = "{{- -}} strips whitespace on both sides of expression"
+template = '''
+---
+params:
+  - name = str
+---
+hello  {{- name -}}  bye'''
+expected_output = "helloworldbye"
+[tests.params]
+name = "world"
+
+[[tests]]
+name = "whitespace_strip_statement_tag"
+description = "{%- strips whitespace before statement tag, -%} strips after"
+template = '''
+---
+params: []
+---
+> {%- if true %}yes{%- /if %}'''
+expected_output = "yes"
+params = {}
+
+[[tests]]
+name = "whitespace_no_strip_without_dash"
+description = "Without dash modifiers, whitespace around tags is preserved"
+template = '''
+---
+params:
+  - name = str
+---
+hello {{ name }} bye'''
+expected_output = "hello world bye"
+[tests.params]
+name = "world"
 
 # ============================================================================
 # F9: Built-in Functions — kind(), kinds()
@@ -2103,3 +2287,561 @@ params:
 expected_output = "> hello end"
 [tests.params]
 name = "hello"
+
+# ============================================================================
+# F6: Match / Case on strings (quoted case labels)
+# ============================================================================
+
+[[tests]]
+name = "f6_t1_str_match_multi_arm"
+description = "Match on str with quoted case labels — multi-arm"
+template = '''
+---
+params: [status = str]
+---
+> {% match status %}{% case "Active" %}on{% case "Paused" %}paused{% /match %}'''
+expected_output = "on"
+[tests.params]
+status = "Active"
+
+[[tests]]
+name = "f6_t1_str_match_multi_arm_second"
+description = "Match on str with quoted case labels — second arm"
+template = '''
+---
+params: [status = str]
+---
+> {% match status %}{% case "Active" %}on{% case "Paused" %}paused{% /match %}'''
+expected_output = "paused"
+[tests.params]
+status = "Paused"
+
+[[tests]]
+name = "f6_t1_str_match_inline"
+description = "Inline match on str with quoted case label"
+template = '''
+---
+params: [role = str]
+---
+> {% match role case "Admin" %}admin{% /match %}'''
+expected_output = "admin"
+[tests.params]
+role = "Admin"
+
+[[tests]]
+name = "f6_t1_str_match_inline_no_match"
+description = "Inline match on str — no match produces empty"
+template = '''
+---
+params: [role = str]
+---
+> {% match role case "Admin" %}admin{% /match %}'''
+expected_output = ""
+[tests.params]
+role = "User"
+
+[[tests]]
+name = "f6_t1_str_match_multi_value_pipe"
+description = "Match on str with multiple quoted values via pipe"
+template = '''
+---
+params: [level = str]
+---
+> {% match level %}{% case "High" | "Critical" %}urgent{% case "Low" %}fine{% /match %}'''
+expected_output = "urgent"
+[tests.params]
+level = "Critical"
+
+[[tests]]
+name = "f6_t1_str_match_else_fallback"
+description = "Match on str with else fallback for unmatched values"
+template = '''
+---
+params: [color = str]
+---
+> {% match color %}{% case "red" %}stop{% case "green" %}go{% else %}unknown{% /match %}'''
+expected_output = "unknown"
+[tests.params]
+color = "blue"
+
+[[tests]]
+name = "f6_t1_str_match_else_matched"
+description = "Match on str — matching case is preferred over else"
+template = '''
+---
+params: [color = str]
+---
+> {% match color %}{% case "red" %}stop{% case "green" %}go{% else %}unknown{% /match %}'''
+expected_output = "stop"
+[tests.params]
+color = "red"
+
+[[tests]]
+name = "f6_t2_str_match_single_quoted"
+description = "Match on str with single-quoted case labels"
+template = '''
+---
+params: [mode = str]
+---
+> {% match mode %}{% case 'fast' %}speed{% case 'slow' %}safe{% /match %}'''
+expected_output = "speed"
+[tests.params]
+mode = "fast"
+
+[[tests]]
+name = "f6_t2_str_match_param_ref_match"
+description = "Unquoted label that IS a declared str param — param-ref match"
+template = '''
+---
+params:
+  - status = str
+  - expected = str
+
+allow_unused: true
+---
+> {% match status %}{% case expected %}matched{% else %}nope{% /match %}'''
+expected_output = "matched"
+[tests.params]
+status = "Active"
+expected = "Active"
+
+[[tests]]
+name = "f6_t2_str_match_param_ref_no_match"
+description = "Param-ref match where param values differ — else arm taken"
+template = '''
+---
+params:
+  - status = str
+  - expected = str
+
+allow_unused: true
+---
+> {% match status %}{% case expected %}matched{% else %}nope{% /match %}'''
+expected_output = "nope"
+[tests.params]
+status = "Active"
+expected = "Paused"
+
+[[tests]]
+name = "f6_t2_str_match_mixed_param_ref_and_quoted"
+description = "Mixed param-ref and quoted string labels in str match"
+template = '''
+---
+params:
+  - status = str
+  - alt = str
+
+allow_unused: true
+---
+> {% match status %}{% case "Active" %}a{% case alt %}b{% else %}c{% /match %}'''
+expected_output = "b"
+[tests.params]
+status = "Paused"
+alt = "Paused"
+
+
+[[tests]]
+name = "f6_t3_kind_comparison_with_str"
+description = "Comparing str param to kind(EnumType.Variant) works"
+template = '''
+---
+types: [StatusKind = enum(Active, Paused, Done)]
+params: [status = str]
+allow_unused: true
+---
+> {% if status == kind(StatusKind.Active) %}matched{% else %}nope{% /if %}'''
+expected_output = "matched"
+[tests.params]
+status = "Active"
+
+[[tests]]
+name = "f6_t3_kind_comparison_no_match"
+description = "kind() comparison on str — no match when values differ"
+template = '''
+---
+types: [StatusKind = enum(Active, Paused, Done)]
+params: [status = str]
+allow_unused: true
+---
+> {% if status == kind(StatusKind.Active) %}matched{% else %}nope{% /if %}'''
+expected_output = "nope"
+[tests.params]
+status = "Paused"
+
+# ============================================================================
+# Frontmatter Formatting: Blank Line After Block List
+# ============================================================================
+# SPEC rule: A block list (imports:, types:, consts:, params:, env:) must be
+# followed by a blank line before the next section keyword. This ensures raw
+# markdown renderers don't merge the list with the following key.
+
+[[tests]]
+name = "fm_blank_line_imports_before_params_reject"
+description = "Missing blank line after imports: block list before params: is rejected"
+template = '''
+---
+imports:
+  - "[shared](./shared.tmpl.md)"
+params:
+  - x = int
+---
+body'''
+expected_error = "blank line is required after a block list"
+
+[[tests]]
+name = "fm_blank_line_consts_before_params_reject"
+description = "Missing blank line after consts: block list before params: is rejected"
+template = '''
+---
+consts:
+  - FOO = str := "bar"
+params:
+  - x = int
+---
+body'''
+expected_error = "blank line is required after a block list"
+
+[[tests]]
+name = "fm_blank_line_types_before_consts_reject"
+description = "Missing blank line after types: block list before consts: is rejected"
+template = '''
+---
+types:
+  - Severity = enum(Low, Medium, High)
+consts:
+  - FOO = str := "bar"
+---
+body'''
+expected_error = "blank line is required after a block list"
+
+[[tests]]
+name = "fm_blank_line_consts_before_allow_unused_reject"
+description = "Missing blank line after consts: block list before allow_unused: is rejected"
+template = '''
+---
+consts:
+  - FOO = str := "bar"
+allow_unused: true
+---
+body'''
+expected_error = "blank line is required after a block list"
+
+[[tests]]
+name = "fm_blank_line_env_before_params_reject"
+description = "Missing blank line after env: block list before params: is rejected"
+template = '''
+---
+env:
+  - DIR = str
+params:
+  - x = int
+---
+body'''
+expected_error = "blank line is required after a block list"
+
+[[tests]]
+name = "fm_blank_line_params_before_allow_unused_reject"
+description = "Missing blank line after params: block list before allow_unused: is rejected"
+template = '''
+---
+params:
+  - x = str
+allow_unused: true
+---
+{{ x }}'''
+expected_error = "blank line is required after a block list"
+
+[[tests]]
+name = "fm_blank_line_present_consts_before_params_accept"
+description = "Blank line after consts: block list before params: is accepted"
+template = '''
+---
+consts:
+  - FOO = str := "bar"
+
+params:
+  - x = str
+---
+{{ FOO }}: {{ x }}'''
+expected_output = "bar: hello"
+[tests.params]
+x = "hello"
+
+[[tests]]
+name = "fm_blank_line_inline_list_no_blank_line_ok"
+description = "Inline list format (params: [...]) followed by another key without blank line is accepted"
+template = '''
+---
+params: [x = str]
+allow_unused: true
+---
+{{ x }}'''
+expected_output = "hi"
+[tests.params]
+x = "hi"
+
+# ============================================================================
+# Type Alias Tests
+# ============================================================================
+
+[[tests]]
+name = "type_alias_basic"
+description = "Basic type alias resolves and renders correctly"
+template = '''
+---
+types: [MyStr = str]
+params: [name = MyStr]
+---
+{{ name }}'''
+expected_output = "hello"
+[tests.params]
+name = "hello"
+
+[[tests]]
+name = "type_alias_enum"
+description = "Type alias for enum resolves and match works"
+template = '''
+---
+types: [Status = enum(Active, Paused)]
+params: [s = Status]
+---
+> {% match s %}{% case Active %}ACTIVE{% case Paused %}PAUSED{% /match %}'''
+expected_output = "ACTIVE"
+[tests.params]
+s = { __kind__ = "Active" }
+
+[[tests]]
+name = "type_alias_chained"
+description = "Chained type alias (Name = Base = str) resolves correctly"
+template = '''
+---
+types:
+  - Base = str
+  - Name = Base
+
+params: [n = Name]
+allow_unused: true
+---
+{{ n }}'''
+expected_output = "test"
+[tests.params]
+n = "test"
+
+# NOTE: type_alias_unknown_rejected is skipped in shared tests because:
+# - Rust errors with "unknown type"
+# - TypeScript errors with "missing required parameter(s)"
+# The engines reject unknown types through different validation paths with
+# no common error substring.
+
+# ============================================================================
+# Naming Collision Tests
+# ============================================================================
+
+[[tests]]
+name = "collision_param_shadows_const"
+description = "Param with same name as const is rejected as a collision"
+template = '''
+---
+consts: [X = int := 1]
+
+params: [X = int]
+---
+{{ X }}'''
+expected_error = "conflicts"
+
+[[tests]]
+name = "collision_inline_tmpl_shadows_param"
+description = "Inline tmpl block with same name as param is rejected"
+template = '''
+---
+params: [widget = str]
+---
+> {% tmpl widget %}hello{% /tmpl %}{{ widget }}'''
+expected_error = "conflicts"
+
+# ============================================================================
+# str() — Not a built-in function (rejected)
+# ============================================================================
+
+[[tests]]
+name = "builtin_str_on_int_rejected"
+description = "str() is not a known function — rejected on integer"
+template = '''
+---
+consts: [N = int := 42]
+---
+{{ str(N) }}'''
+expected_error = "unknown function"
+params = {}
+
+[[tests]]
+name = "builtin_str_on_bool_rejected"
+description = "str() is not a known function — rejected on bool"
+template = '''
+---
+consts: [B = bool := true]
+---
+{{ str(B) }}'''
+expected_error = "unknown function"
+params = {}
+
+[[tests]]
+name = "builtin_str_on_enum_variant_rejected"
+description = "str() is not a known function — rejected on enum variant"
+template = '''
+---
+types: [Color = enum(Red, Blue)]
+params: [c = Color]
+---
+> {% match c %}{% case Red %}{{ str(c) }}{% case Blue %}{{ str(c) }}{% /match %}'''
+expected_error = "unknown function"
+[tests.params]
+c = { __kind__ = "Red" }
+
+# ============================================================================
+# len() Positive Tests
+# ============================================================================
+
+[[tests]]
+name = "builtin_len_list"
+description = "len() returns count of list elements"
+template = '''
+---
+params: [items = list(str)]
+---
+{{ len(items) }}'''
+expected_output = "3"
+[tests.params]
+items = ["a", "b", "c"]
+
+[[tests]]
+name = "builtin_len_str"
+description = "len() returns length of a string"
+template = '''
+---
+params: [s = str]
+---
+{{ len(s) }}'''
+expected_output = "5"
+[tests.params]
+s = "hello"
+
+[[tests]]
+name = "builtin_len_empty_list"
+description = "len() returns 0 for an empty list"
+template = '''
+---
+params: [items = list(str)]
+---
+{{ len(items) }}'''
+expected_output = "0"
+[tests.params]
+items = []
+
+# ============================================================================
+# Extra Params Rejected (strict validation)
+# ============================================================================
+
+[[tests]]
+name = "extra_params_rejected"
+description = "Providing an undeclared parameter is rejected"
+template = '''
+---
+params: [name = str]
+---
+{{ name }}'''
+expected_error = "extra"
+[tests.params]
+name = "hi"
+extra = "oops"
+
+# ===========================================================================
+# Unused parameter detection — corner cases
+# ===========================================================================
+
+[[tests]]
+name = "unused_param_in_text_only"
+description = "Param appearing only in plain text (not in {{ }}) must be rejected as unused"
+template = '''
+---
+params: [name = str]
+---
+The name of the project is important.'''
+expected_error = "unused"
+[tests.params]
+name = "hello"
+
+[[tests]]
+name = "unused_param_in_raw_block_only"
+description = "Param appearing only inside {% raw %} block must be rejected as unused"
+template = '''
+---
+params: [name = str]
+---
+> {% raw %}{{ name }}{% /raw %}'''
+expected_error = "unused"
+[tests.params]
+name = "hello"
+
+[[tests]]
+name = "unused_param_in_comment_only_suppresses"
+description = "Param mentioned as {{ name }} in {# comment #} suppresses unused error"
+template = '''
+---
+params: [name = str]
+---
+> {# {{ name }} is intentionally unused here #}
+
+No params used.'''
+expected_output = "No params used."
+[tests.params]
+name = "hello"
+
+[[tests]]
+name = "param_used_in_expr_is_not_unused"
+description = "Param used in {{ expr }} is correctly detected as used"
+template = '''
+---
+params: [name = str]
+---
+Hello {{ name }}!'''
+expected_output = "Hello hello!"
+[tests.params]
+name = "hello"
+
+[[tests]]
+name = "param_used_only_in_condition_is_not_unused"
+description = "Param used only in {% if %} condition (not in body text) is not unused"
+template = '''
+---
+params: [flag = bool]
+---
+> {% if flag %}yes{% else %}no{% /if %}'''
+expected_output = "yes"
+[tests.params]
+flag = true
+
+[[tests]]
+name = "param_used_only_in_for_iter_is_not_unused"
+description = "Param used only as for-loop iterable (not in body text) is not unused"
+template = '''
+---
+params: [items = list(str)]
+---
+> {% for item in items %}{{ item }}{% /for %}'''
+expected_output = "ab"
+[tests.params]
+items = ["a", "b"]
+
+[[tests]]
+name = "for_binding_shadows_param_is_unused"
+description = "Param shadowed by for-loop binding is correctly detected as unused"
+template = '''
+---
+params: [item = str, items = list(str)]
+---
+> {% for item in items %}{{ item }}{% /for %}'''
+expected_error = "unused"
+[tests.params]
+item = "hello"
+items = ["a", "b"]

@@ -432,3 +432,223 @@ No cb
     let result = main.render_ctx(&ctx).unwrap();
     assert!(result.contains("Inner: Nested Success"), "got: {result}");
 }
+
+/// `option(tmpl())` with empty signature: Some path renders, None path skips.
+#[test]
+fn test_higher_order_option_empty_tmpl() {
+    let helper = Template::from_source(
+        r"---
+params: []
+---
+Static content from helper.",
+    )
+    .unwrap();
+
+    let main = Template::from_source(
+        r"---
+params: [widget = option(tmpl())]
+---
+> {% if has(widget) %}
+> {% include widget %}
+> {% else %}
+
+No widget
+
+> {% /if %}",
+    )
+    .unwrap();
+
+    // Some path
+    let mut ctx_some = crate::Context::new();
+    ctx_some.set("widget", Value::Tmpl(Arc::new(helper)));
+    let result_some = main.render_ctx(&ctx_some).unwrap();
+    assert!(
+        result_some.contains("Static content from helper."),
+        "got: {result_some}"
+    );
+
+    // None path
+    let mut ctx_none = crate::Context::new();
+    ctx_none.set("widget", Value::None);
+    let result_none = main.render_ctx(&ctx_none).unwrap();
+    assert!(result_none.contains("No widget"), "got: {result_none}");
+}
+
+/// `option(tmpl(x = str))` rejects a template with the wrong signature.
+#[test]
+fn test_higher_order_option_tmpl_type_mismatch() {
+    let wrong_helper = Template::from_source(
+        r"---
+params: [count = int]
+---
+Count: {{ count }}",
+    )
+    .unwrap();
+
+    let main = Template::from_source(
+        r#"---
+params: [cb = option(tmpl(name = str))]
+---
+> {% if has(cb) %}
+> {% include cb with name="test" %}
+> {% /if %}"#,
+    )
+    .unwrap();
+
+    let mut ctx = crate::Context::new();
+    ctx.set("cb", Value::Tmpl(Arc::new(wrong_helper)));
+
+    let err = main.render_ctx(&ctx).unwrap_err();
+    assert!(
+        err.to_string().contains("type mismatch") || err.to_string().contains("name"),
+        "expected type mismatch for option(tmpl) with wrong signature, got: {err}"
+    );
+}
+
+/// Multiple `option(tmpl(...))` params — one Some, one None.
+#[test]
+fn test_higher_order_multiple_option_tmpl_mixed() {
+    let header_tmpl = Template::from_source(
+        r"---
+params: [title = str]
+---
+# {{ title }}",
+    )
+    .unwrap();
+
+    let main = Template::from_source(
+        r#"---
+params:
+  - header = option(tmpl(title = str))
+  - footer = option(tmpl(note = str))
+---
+> {% if has(header) %}
+> {% include header with title="Welcome" %}
+> {% /if %}
+
+Body content
+
+> {% if has(footer) %}
+> {% include footer with note="bye" %}
+> {% else %}
+
+No footer
+
+> {% /if %}"#,
+    )
+    .unwrap();
+
+    let mut ctx = crate::Context::new();
+    ctx.set("header", Value::Tmpl(Arc::new(header_tmpl)));
+    ctx.set("footer", Value::None);
+
+    let result = main.render_ctx(&ctx).unwrap();
+    assert!(
+        result.contains("# Welcome"),
+        "header should render, got: {result}"
+    );
+    assert!(
+        result.contains("No footer"),
+        "footer should show fallback, got: {result}"
+    );
+}
+
+/// `option(tmpl(...))` with both options set to None produces only fallback text.
+#[test]
+fn test_higher_order_all_option_tmpl_none() {
+    let main = Template::from_source(
+        r#"---
+params:
+  - a = option(tmpl(x = str))
+  - b = option(tmpl())
+---
+> {% if has(a) %}
+> {% include a with x="test" %}
+> {% else %}
+
+no-a
+
+> {% /if %}
+> {% if has(b) %}
+> {% include b %}
+> {% else %}
+
+no-b
+
+> {% /if %}"#,
+    )
+    .unwrap();
+
+    let mut ctx = crate::Context::new();
+    ctx.set("a", Value::None);
+    ctx.set("b", Value::None);
+
+    let result = main.render_ctx(&ctx).unwrap();
+    assert!(result.contains("no-a"), "got: {result}");
+    assert!(result.contains("no-b"), "got: {result}");
+}
+
+/// `tmpl()` inside a struct field: `struct(widget = tmpl(x = str))`.
+#[test]
+fn test_higher_order_struct_containing_tmpl() {
+    let helper = Template::from_source(
+        r"---
+params: [x = str]
+---
+Widget: {{ x }}",
+    )
+    .unwrap();
+
+    let main = Template::from_source(
+        r#"---
+params: [widget = tmpl(x = str), label = str]
+---
+Label: {{ label }}
+
+> {% include widget with x="rendered" %}"#,
+    )
+    .unwrap();
+
+    let mut ctx = crate::Context::new();
+    ctx.set("widget", Value::Tmpl(Arc::new(helper)));
+    ctx.set("label", "my-label");
+
+    let result = main.render_ctx(&ctx).unwrap();
+    assert!(result.contains("Label: my-label"), "got: {result}");
+    assert!(result.contains("Widget: rendered"), "got: {result}");
+}
+
+/// option(tmpl) where the child template has extra *defaulted* params passes.
+#[test]
+fn test_higher_order_option_tmpl_extra_defaults_accepted() {
+    let helper = Template::from_source(
+        r#"---
+params:
+  - name = str
+  - greeting = str := "Hey"
+---
+{{ greeting }} {{ name }}!"#,
+    )
+    .unwrap();
+
+    let main = Template::from_source(
+        r#"---
+params: [cb = option(tmpl(name = str))]
+---
+> {% if has(cb) %}
+> {% include cb with name="World" %}
+> {% else %}
+
+none
+
+> {% /if %}"#,
+    )
+    .unwrap();
+
+    // Extra defaulted param should be accepted by option(tmpl(name = str))
+    let mut ctx = crate::Context::new();
+    ctx.set("cb", Value::Tmpl(Arc::new(helper)));
+
+    let result = main.render_ctx(&ctx).unwrap();
+    assert!(result.contains("Hey World!"), "got: {result}");
+}

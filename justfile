@@ -44,8 +44,8 @@ fmt-ts:
 
 # ── Lint ──────────────────────────────────────────────────────────────
 
-# Lint all code (Rust clippy, TOML, Markdown, Justfile, Go, Python, TypeScript)
-lint: lint-rust lint-toml lint-markdown lint-just lint-python lint-go lint-ts
+# Lint all code (Rust clippy, TOML, Markdown, Justfile, Go, Python, TypeScript, hygiene)
+lint: lint-rust lint-toml lint-markdown lint-just lint-python lint-go lint-ts lint-hygiene
 
 # Lint Rust with clippy (pedantic + all, deny warnings)
 lint-rust:
@@ -83,6 +83,10 @@ lint-go: build-go-ffi
 lint-ts:
     cd crates/md-tmpl-typescript && npx tsc --noEmit --strict
     cd crates/md-tmpl-typescript && npx -y prettier@latest --check '**/*.ts'
+
+# Run hygiene linter (suppression patterns, error handling, file length)
+lint-hygiene:
+    python3 scripts/lint_hygiene.py
 
 # Run all tests
 test: test-rust test-no-std test-python test-go test-ts test-wasm

@@ -94,14 +94,25 @@ pub(super) fn resolve_operand_type<'a>(
     operand: &ConditionOperand,
     env: &'a TypeEnv<'_>,
 ) -> Option<&'a VarType> {
+    // Leaked statics for returning references to function-return types.
+    // These are cheap and live for the program's duration.
+    static STR_TYPE: VarType = VarType::Str;
+    static INT_TYPE: VarType = VarType::Int;
+    static BOOL_TYPE: VarType = VarType::Bool;
+
     match operand {
-        ConditionOperand::Literal(_) | ConditionOperand::InterpolatedStr(_) => None,
-        ConditionOperand::Path { path, .. }
-        | ConditionOperand::Len(path)
-        | ConditionOperand::Kind(path)
-        | ConditionOperand::Kinds(path)
-        | ConditionOperand::Has(path) => resolve_compiled_path_type(path, env),
-        ConditionOperand::Idx(_) => Some(&VarType::Int),
+        ConditionOperand::Path { path, .. } => resolve_compiled_path_type(path, env),
+        // kind() always returns a string (the variant name).
+        ConditionOperand::Kind(_) => Some(&STR_TYPE),
+        // len() and idx() always return an integer.
+        ConditionOperand::Len(_) | ConditionOperand::Idx(_) => Some(&INT_TYPE),
+        // has() always returns a boolean.
+        ConditionOperand::Has(_) => Some(&BOOL_TYPE),
+        // kinds() returns a list of strings; fall back to None for type checking.
+        // Literals and interpolated strings also have no declared type.
+        ConditionOperand::Literal(_)
+        | ConditionOperand::InterpolatedStr(_)
+        | ConditionOperand::Kinds(_) => None,
     }
 }
 

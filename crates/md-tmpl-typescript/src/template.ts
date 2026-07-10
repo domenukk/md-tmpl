@@ -17,12 +17,10 @@
 let _fs: typeof import("node:fs") | undefined;
 let _path: typeof import("node:path") | undefined;
 function getFs(): typeof import("node:fs") {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const mod = _fs ?? (_fs = require("node:fs"));
   return mod;
 }
 function getPath(): typeof import("node:path") {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const mod = _path ?? (_path = require("node:path"));
   return mod;
 }
@@ -56,12 +54,15 @@ import {
 } from "./parser.js";
 import {
   type Value,
+  type TmplRef,
+  type TmplValue,
   ENUM_TAG_KEY,
   ENUM_VARIANTS_KEY,
   NONE,
   str,
   list,
   structVal,
+  tmplVal,
   fromJs,
   valueToJs,
 } from "./value.js";
@@ -74,6 +75,7 @@ import {
   TYPE_FLOAT,
   TYPE_LIST,
   TYPE_STRUCT,
+  TYPE_TMPL,
   TYPE_ENUM,
   TYPE_OPTION,
   TYPE_NONE,
@@ -81,6 +83,16 @@ import {
   TYPE_SCALAR_LIST,
   TYPE_UNTYPED_LIST,
   EXPR_START,
+  NODE_TEXT,
+  NODE_EXPR,
+  NODE_COMMENT,
+  NODE_FOR,
+  NODE_IF,
+  NODE_MATCH,
+  NODE_RAW,
+  NODE_INCLUDE,
+  NODE_TMPL,
+  NODE_PANIC,
   isValidResolvedPath,
 } from "./consts.js";
 import { parseLiteral } from "./frontmatter.js";
@@ -183,7 +195,7 @@ export interface CompileOptions {
  * // → "Hello world!"
  * ```
  */
-export class Template implements ITemplate {
+export class Template implements ITemplate, TmplRef {
   private readonly fm: Frontmatter;
   private readonly bodyStr: string;
   private readonly nodes: Node[];
@@ -202,6 +214,8 @@ export class Template implements ITemplate {
   private _maxIncludeDepth = 16;
   /** Optional reference to the TemplateCache that loaded this template. */
   _cache?: TemplateCache;
+  /** Compile-time env values, stored for propagation to included templates. */
+  private readonly _compileEnv: Record<string, unknown>;
   private readonly _includeCache = new Map<
     string,
     { hash: number; mtimeMs: number; cached: CachedInclude }
@@ -223,12 +237,14 @@ export class Template implements ITemplate {
     nodes: Node[],
     source: string,
     basePath?: string,
+    compileEnv?: Record<string, unknown>,
   ) {
     this.fm = fm;
     this.bodyStr = bodyStr;
     this.nodes = nodes;
     this.hash = hashString(source);
     this._basePath = basePath;
+    this._compileEnv = compileEnv ?? {};
 
     // Pre-compute immutable render data
     this.declaredNames = new Set(fm.params.map((d) => d.name));
@@ -306,6 +322,7 @@ export class Template implements ITemplate {
       tmpl.checkUnusedParams(body);
     }
     tmpl.checkBareEnumAccess();
+    tmpl.checkMatchTypeSafety();
     validateBodyCollisions(
       fm,
       collectInlineTemplateNames(nodes),
@@ -326,18 +343,27 @@ export class Template implements ITemplate {
    */
   static fromSourceWithEnv(source: string, options: CompileOptions): Template {
     const [fm, body] = parseFrontmatter(source);
-    let resolvedFm = resolveEnvDeclarations(fm, options.env ?? {});
+    const envValues = options.env ?? {};
+    let resolvedFm = resolveEnvDeclarations(fm, envValues);
     validateFrontmatter(resolvedFm);
     const baseDir = options.baseDir;
     if (baseDir) {
       resolvedFm = resolveImportedConsts(resolvedFm, baseDir);
     }
     const nodes = parseBody(body, false, resolvedFm.bodyStartLine ?? 1);
-    const tmpl = new Template(resolvedFm, body, nodes, source, baseDir);
+    const tmpl = new Template(
+      resolvedFm,
+      body,
+      nodes,
+      source,
+      baseDir,
+      envValues,
+    );
     if (!resolvedFm.allowUnused) {
       tmpl.checkUnusedParams(body);
     }
     tmpl.checkBareEnumAccess();
+    tmpl.checkMatchTypeSafety();
     validateBodyCollisions(
       resolvedFm,
       collectInlineTemplateNames(nodes),
@@ -360,6 +386,7 @@ export class Template implements ITemplate {
     const nodes = parseBody(body, false, fm.bodyStartLine ?? 1);
     const tmpl = new Template(fm, body, nodes, source);
     tmpl.checkBareEnumAccess();
+    tmpl.checkMatchTypeSafety();
     validateDisplayability(nodes, fm.params, fm.consts, fm.typeAliases);
     return tmpl;
   }
@@ -377,6 +404,7 @@ export class Template implements ITemplate {
       tmpl.checkUnusedParams(body);
     }
     tmpl.checkBareEnumAccess();
+    tmpl.checkMatchTypeSafety();
     validateBodyCollisions(
       resolvedFm,
       collectInlineTemplateNames(nodes),
@@ -425,15 +453,24 @@ export class Template implements ITemplate {
     const [fm, body] = parseFrontmatter(source);
     // Resolve env declarations before import resolution so env values
     // (e.g. PROMPTS_DIR) are available in import paths.
-    const envResolved = resolveEnvDeclarations(fm, options?.env ?? {});
+    const envValues = options?.env ?? {};
+    const envResolved = resolveEnvDeclarations(fm, envValues);
     validateFrontmatter(envResolved);
     const resolvedFm = resolveImportedConsts(envResolved, baseDir);
     const nodes = parseBody(body, false, resolvedFm.bodyStartLine ?? 1);
-    const tmpl = new Template(resolvedFm, body, nodes, source, baseDir);
+    const tmpl = new Template(
+      resolvedFm,
+      body,
+      nodes,
+      source,
+      baseDir,
+      envValues,
+    );
     if (!resolvedFm.allowUnused) {
       tmpl.checkUnusedParams(body);
     }
     tmpl.checkBareEnumAccess();
+    tmpl.checkMatchTypeSafety();
     validateBodyCollisions(
       resolvedFm,
       collectInlineTemplateNames(nodes),
@@ -573,6 +610,67 @@ params:
    */
   declarations(): [string, string][] {
     return this.fm.params.map((d) => [d.name, varTypeToString(d.varType)]);
+  }
+
+  /**
+   * Return raw parameter declarations with VarType objects.
+   * Used by TmplRef for higher-order template signature validation.
+   */
+  rawDeclarations(): ReadonlyArray<{
+    name: string;
+    varType: VarType;
+    defaultValue?: Value;
+  }> {
+    return this.fm.params;
+  }
+
+  /**
+   * Render this template when included as a higher-order tmpl value.
+   *
+   * Merges parent constants and option params, wires up template loading,
+   * and renders the body with the provided params.
+   */
+  renderForInclude(
+    params: ReadonlyMap<string, Value>,
+    parentConsts: ReadonlyMap<string, Value>,
+    parentOptionParams: ReadonlySet<string>,
+    maxDepth: number,
+    templateLoader?: unknown,
+    basePath?: string,
+  ): string {
+    // Merge parent consts with our own
+    const mergedConsts = new Map<string, Value>(parentConsts);
+    for (const [k, v] of this.constValues) {
+      mergedConsts.set(k, v);
+    }
+    const combinedOpts = new Set<string>(parentOptionParams);
+    for (const p of this.optionParams) {
+      combinedOpts.add(p);
+    }
+    const scope = new ScopeImpl(params, mergedConsts, combinedOpts);
+    const opts: RenderOptions = {
+      maxIncludeDepth: maxDepth,
+    };
+    // Set up inline templates from this template's body
+    const inlineTmpls = collectInlineTemplateMap(this.nodes);
+    if (inlineTmpls.size > 0) {
+      opts.inlineTemplates = inlineTmpls;
+    }
+    // Wire up file includes if we have a base path
+    const effectiveBase = this._basePath ?? basePath;
+    if (effectiveBase || this._cache) {
+      opts.templateLoader = this.makeTemplateLoader(effectiveBase ?? "");
+      opts.currentBasePath = effectiveBase;
+    } else if (templateLoader && typeof templateLoader === "function") {
+      opts.templateLoader = templateLoader as RenderOptions["templateLoader"];
+      opts.currentBasePath = basePath;
+    }
+    return renderNodes(this.nodes, scope, opts);
+  }
+
+  /** Convert this Template to a TmplValue for passing as a parameter. */
+  toValue(): TmplValue {
+    return tmplVal(this);
   }
 
   /**
@@ -784,6 +882,23 @@ params:
           }
         }
         break;
+      case TYPE_TMPL:
+        if (value.type === TYPE_TMPL) {
+          // Higher-order: validate template signature
+          this.typeCheckTmplSignature(path, value.ref, varType.fields);
+        } else if (value.type === TYPE_STRUCT) {
+          // Backward compat: accept struct as tmpl (legacy behavior)
+          for (const field of varType.fields) {
+            const fieldVal = value.fields.get(field.name);
+            if (fieldVal === undefined) {
+              throw new MissingParamsError([`${path}.${field.name}`]);
+            }
+            this.typeCheck(`${path}.${field.name}`, fieldVal, field.varType);
+          }
+        } else {
+          throw new TypeMismatchError(path, "tmpl", value.type);
+        }
+        break;
       case TYPE_STRUCT:
         if (value.type !== TYPE_STRUCT) {
           throw new TypeMismatchError(path, "struct", value.type);
@@ -829,13 +944,24 @@ params:
               "struct without __kind__",
             );
           }
-          const validNames = varType.variants.map((v) => v.name);
-          if (!validNames.includes(tag.value)) {
+          const matchedVariant = varType.variants.find(
+            (v) => v.name === tag.value,
+          );
+          if (!matchedVariant) {
+            const validNames = varType.variants.map((v) => v.name);
             throw new TypeMismatchError(
               path,
               `enum(${validNames.join(", ")})`,
               `variant("${tag.value}")`,
             );
+          }
+          // Recursively validate variant field types (matches Rust behavior)
+          for (const field of matchedVariant.fields) {
+            const fieldVal = value.fields.get(field.name);
+            if (fieldVal === undefined) {
+              throw new MissingParamsError([`${path}.${field.name}`]);
+            }
+            this.typeCheck(`${path}.${field.name}`, fieldVal, field.varType);
           }
         } else {
           throw new TypeMismatchError(path, "enum", value.type);
@@ -873,6 +999,46 @@ params:
     }
   }
 
+  private typeCheckTmplSignature(
+    path: string,
+    ref: TmplRef,
+    expectedFields: readonly VarDecl[],
+  ): void {
+    const actualDecls = ref.rawDeclarations();
+    for (const exp of expectedFields) {
+      const actual = actualDecls.find((d) => d.name === exp.name);
+      if (!actual) {
+        throw new TypeMismatchError(
+          `${path}.${exp.name}`,
+          varTypeToString(exp.varType),
+          "missing",
+        );
+      }
+      if (
+        varTypeToString(actual.varType as VarType) !==
+        varTypeToString(exp.varType)
+      ) {
+        throw new TypeMismatchError(
+          `${path}.${exp.name}`,
+          varTypeToString(exp.varType),
+          varTypeToString(actual.varType as VarType),
+        );
+      }
+    }
+    for (const actual of actualDecls) {
+      if (
+        actual.defaultValue === undefined &&
+        !expectedFields.some((e) => e.name === actual.name)
+      ) {
+        throw new TypeMismatchError(
+          `${path}.${actual.name}`,
+          "in signature",
+          "extra required param without default",
+        );
+      }
+    }
+  }
+
   private renderWithContext(ctx: Context): string {
     const scope = new ScopeImpl(
       ctx.values,
@@ -885,66 +1051,10 @@ params:
 
     // Wire up file-based include resolution if we have a base path or cache
     if (this._basePath || this._cache) {
-      const defaultBase = this._basePath ?? "";
-      options.templateLoader = (
-        includePath: string,
-        basePath?: string,
-      ):
-        | [
-            readonly Node[],
-            ReadonlyMap<string, Value>,
-            readonly VarDecl[],
-            string?,
-          ]
-        | undefined => {
-        const cached = this.resolveInclude(
-          includePath,
-          basePath ?? defaultBase,
-        );
-        if (!cached) return undefined;
-        return [
-          cached.nodes,
-          cached.consts,
-          cached.declarations,
-          cached.baseDir,
-        ];
-      };
+      options.templateLoader = this.makeTemplateLoader(this._basePath ?? "");
     }
     // Collect inline template definitions ({% tmpl name %}...{% /tmpl %})
-    // Parse each inline template's frontmatter to extract declarations
-    // for contract validation and type checking at include time.
-    const inlineTmpls = new Map<
-      string,
-      {
-        declarations: readonly VarDecl[];
-        body: string;
-        consts: Map<string, Value>;
-      }
-    >();
-    for (const n of this.nodes) {
-      if (n.kind === "tmpl") {
-        if (n.source.trimStart().startsWith("---")) {
-          const [inlineFm, inlineBody] = parseFrontmatter(n.source);
-          const inlineConsts = new Map<string, Value>();
-          for (const decl of inlineFm.consts) {
-            if (decl.defaultValue !== undefined) {
-              inlineConsts.set(decl.name, decl.defaultValue);
-            }
-          }
-          inlineTmpls.set(n.name, {
-            declarations: inlineFm.params,
-            body: inlineBody,
-            consts: inlineConsts,
-          });
-        } else {
-          inlineTmpls.set(n.name, {
-            declarations: [],
-            body: n.source,
-            consts: new Map(),
-          });
-        }
-      }
-    }
+    const inlineTmpls = collectInlineTemplateMap(this.nodes);
     if (inlineTmpls.size > 0) {
       options.inlineTemplates = inlineTmpls;
     }
@@ -952,10 +1062,40 @@ params:
     return renderNodes(this.nodes, scope, options);
   }
 
-  private checkUnusedParams(body: string): void {
+  private makeTemplateLoader(
+    defaultBase: string,
+  ): RenderOptions["templateLoader"] {
+    return (
+      includePath: string,
+      basePath?: string,
+    ):
+      | [
+          readonly Node[],
+          ReadonlyMap<string, Value>,
+          readonly VarDecl[],
+          string?,
+        ]
+      | undefined => {
+      const cached = this.resolveInclude(includePath, basePath ?? defaultBase);
+      if (!cached) return undefined;
+      return [cached.nodes, cached.consts, cached.declarations, cached.baseDir];
+    };
+  }
+
+  private checkUnusedParams(_body: string): void {
+    const referenced = collectReferencedParams(this.nodes);
+    // Also scan {# comment #} tags for {{ var }} references.
+    // The AST comment node doesn't store text, so we scan the raw body.
+    // This mirrors Rust's extract_comment_variable_refs: only {{ expr }}
+    // patterns inside comments count as references, not bare words.
+    const commentPattern = /\{#(.*?)#\}/gs;
+    let match;
+    while ((match = commentPattern.exec(_body)) !== null) {
+      const commentText = match[1]!;
+      extractInterpolationRefs(commentText, referenced, new Set());
+    }
     for (const decl of this.fm.params) {
-      const pattern = new RegExp(`\\b${escapeRegex(decl.name)}\\b`);
-      if (!pattern.test(body)) {
+      if (!referenced.has(decl.name)) {
         throw new TemplateSyntaxError(
           `unused parameter '${decl.name}' declared but not referenced in body`,
           decl.loc?.line,
@@ -1046,15 +1186,47 @@ params:
     walkNodesForBareEnumAccess(this.nodes, enumTypeNames);
   }
 
+  /**
+   * Reject type-unsafe match/case combinations at compile time:
+   * - unquoted case labels on str params (use quoted labels instead)
+   * - quoted case labels on enum params (use unquoted variant names instead)
+   */
+  private checkMatchTypeSafety(): void {
+    // Build a map of param name → resolved type kind for quick lookup.
+    // Resolve type aliases so e.g. `status = Status` where `Status = enum(...)`
+    // correctly maps to "enum".
+    const paramTypes = new Map<string, string>();
+    for (const decl of this.fm.params) {
+      let vt = decl.varType;
+      while (vt.kind === "alias") {
+        const resolved = this.fm.typeAliases.get(vt.name);
+        if (!resolved) break;
+        vt = resolved;
+      }
+      paramTypes.set(decl.name, vt.kind);
+    }
+    walkNodesForMatchTypeSafety(this.nodes, paramTypes);
+  }
+
   private resolveInclude(
     includePath: string,
     basePath?: string,
   ): CachedInclude | undefined {
     if (this._cache) {
-      return this._cache.resolveInclude(includePath, basePath);
+      return this._cache.resolveInclude(
+        includePath,
+        basePath,
+        this._compileEnv,
+      );
     }
     const currentBase = basePath ?? this._basePath ?? "";
-    return resolveIncludeEntry(this._includeCache, includePath, currentBase);
+    return resolveIncludeEntry(
+      this._includeCache,
+      includePath,
+      currentBase,
+      undefined,
+      this._compileEnv,
+    );
   }
 }
 
@@ -1412,6 +1584,8 @@ export interface CachedInclude {
   readonly consts: ReadonlyMap<string, Value>;
   readonly declarations: readonly VarDecl[];
   readonly baseDir: string;
+  /** Type aliases from the child's own frontmatter + imports. */
+  readonly typeAliases?: ReadonlyMap<string, VarType>;
 }
 
 /**
@@ -1488,12 +1662,14 @@ export class TemplateCache {
   resolveInclude(
     filePath: string,
     baseDir?: string,
+    envValues?: Record<string, unknown>,
   ): CachedInclude | undefined {
     return resolveIncludeEntry(
       this.includes,
       filePath,
       baseDir,
       this.maxEntries,
+      envValues,
     );
   }
 
@@ -1522,6 +1698,7 @@ function resolveIncludeEntry(
   filePath: string,
   baseDir?: string,
   maxEntries?: number,
+  envValues?: Record<string, unknown>,
 ): CachedInclude | undefined {
   const currentBase = baseDir ?? "";
   const absPath = getPath().resolve(currentBase, filePath);
@@ -1556,7 +1733,20 @@ function resolveIncludeEntry(
     return entry.cached;
   }
   try {
-    const [fm, body] = parseFrontmatter(source);
+    const [rawFm, body] = parseFrontmatter(source);
+    const childBaseDir = getPath().dirname(absPath);
+
+    // Resolve env declarations from parent's compile-time env values.
+    let fm = rawFm;
+    if (rawFm.env.length > 0 && envValues) {
+      fm = resolveEnvDeclarations(rawFm, envValues);
+    }
+
+    // Resolve imports for the child template (types, consts from siblings).
+    if (fm.imports.length > 0) {
+      fm = resolveImportedConsts(fm, childBaseDir);
+    }
+
     const nodes = parseBody(body, false, fm.bodyStartLine ?? 1);
     const consts = new Map<string, Value>();
     for (const decl of fm.consts) {
@@ -1564,11 +1754,33 @@ function resolveIncludeEntry(
         consts.set(decl.name, decl.defaultValue);
       }
     }
+    // Include env-resolved values as consts so they're available in scope.
+    for (const decl of fm.env) {
+      if (decl.defaultValue !== undefined) {
+        consts.set(decl.name, decl.defaultValue);
+      }
+    }
+    // Include imported consts (e.g. config.APP_NAME, types.Role).
+    for (const [key, jsVal] of Object.entries(fm.importedConsts)) {
+      consts.set(key, fromJs(jsVal));
+    }
+    // Inject enum type constants from imported type aliases.
+    if (fm.typeAliases.size > 0) {
+      const constsJs = new Map<string, unknown>();
+      for (const [k, v] of consts) {
+        constsJs.set(k, valueToJs(v));
+      }
+      injectEnumTypeConstants(fm.typeAliases, consts, constsJs);
+    }
+    // Resolve alias types in declarations (e.g., types.Role → enum(...))
+    // so validateIncludeTypes can properly type-check params.
+    const resolvedDecls = resolveAliasesInDecls(fm.params, fm.typeAliases);
     const cached: CachedInclude = {
       nodes,
       consts,
-      declarations: fm.params,
-      baseDir: getPath().dirname(absPath),
+      declarations: resolvedDecls,
+      baseDir: childBaseDir,
+      typeAliases: fm.typeAliases.size > 0 ? fm.typeAliases : undefined,
     };
     cache.delete(absPath);
     cache.set(absPath, { hash, mtimeMs: stat.mtimeMs, cached });
@@ -1587,11 +1799,6 @@ function resolveIncludeEntry(
     );
     return undefined;
   }
-}
-
-/** Escape special regex characters in a string. */
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**
@@ -1705,6 +1912,201 @@ function walkNodesForBareEnumAccess(
 }
 
 /**
+ * Walk AST nodes and reject type-unsafe match/case combinations:
+ * - `{% match str_param %}{% case Foo %}` where `Foo` is NOT a declared param → type error
+ * - `{% match enum_param %}{% case "Active" %}` (quoted on enum) → type error
+ *
+ * Unquoted case labels on str params ARE allowed when the label is a declared
+ * param name — this enables dynamic param-reference matching:
+ *   `{% match status %}{% case expected_status %}` matches when status == expected_status
+ */
+function walkNodesForMatchTypeSafety(
+  nodes: readonly Node[],
+  paramTypes: ReadonlyMap<string, string>,
+): void {
+  for (const node of nodes) {
+    switch (node.kind) {
+      case "match": {
+        const typeKind = paramTypes.get(node.expr);
+
+        // Detect kind() in match expression.
+        if (node.expr.startsWith("kind(") && node.expr.endsWith(")")) {
+          const inner = node.expr.slice(5, -1);
+          throw new TemplateSyntaxError(
+            `match on '${node.expr}': matching on kind() converts the enum to a string` +
+              ` — use {% match ${inner} %} with unquoted variant names instead` +
+              ` for exhaustiveness checking and type safety`,
+            node.loc?.line,
+            node.loc?.column,
+            node.loc?.snippet,
+          );
+        }
+
+        const allLabels = collectMatchLabels(node);
+        const isQuoted = (l: string) =>
+          l.length >= 2 &&
+          ((l[0] === '"' && l[l.length - 1] === '"') ||
+            (l[0] === "'" && l[l.length - 1] === "'"));
+
+        if (typeKind === "enum") {
+          // Quoted labels on enum types are an error.
+          const quotedLabel = allLabels.find(isQuoted);
+          if (quotedLabel) {
+            throw new TemplateSyntaxError(
+              `match on '${node.expr}': quoted string '${quotedLabel}' cannot match enum variants` +
+                ` — remove the quotes to match variant name directly`,
+              node.loc?.line,
+              node.loc?.column,
+              node.loc?.snippet,
+            );
+          }
+        } else if (typeKind) {
+          // Validate label types against scalar match type.
+          for (const label of allLabels) {
+            if (label === "_") continue;
+            validateScalarCaseLabel(node.expr, typeKind, label, node.loc);
+          }
+        }
+
+        for (const arm of node.arms) {
+          walkNodesForMatchTypeSafety(arm.body, paramTypes);
+        }
+        if (node.elseArm) {
+          walkNodesForMatchTypeSafety(node.elseArm, paramTypes);
+        }
+        if (node.inlineGuard) {
+          walkNodesForMatchTypeSafety(node.inlineGuard.body, paramTypes);
+        }
+        break;
+      }
+      case "for":
+        walkNodesForMatchTypeSafety(node.body, paramTypes);
+        if (node.elseBody) {
+          walkNodesForMatchTypeSafety(node.elseBody, paramTypes);
+        }
+        break;
+      case "if":
+        for (const branch of node.branches) {
+          walkNodesForMatchTypeSafety(branch.body, paramTypes);
+        }
+        if (node.elseBody) {
+          walkNodesForMatchTypeSafety(node.elseBody, paramTypes);
+        }
+        break;
+    }
+  }
+}
+
+/** Collect all case labels from a match node (both arms and inline guard). */
+const HINT_BOOL = "use {% case true %} or {% case false %}";
+
+/**
+ * Classify a case label as quoted, bool, int, float, or identifier.
+ */
+type LabelKind = "quoted" | "interpolated" | "bool" | "int" | "float" | "ident";
+
+function classifyLabel(label: string): LabelKind {
+  if (
+    label.length >= 2 &&
+    ((label[0] === '"' && label[label.length - 1] === '"') ||
+      (label[0] === "'" && label[label.length - 1] === "'"))
+  ) {
+    const inner = label.slice(1, -1);
+    if (inner.includes(EXPR_START)) return "interpolated";
+    return "quoted";
+  }
+  if (label === "true" || label === "false") return "bool";
+  if (/^-?\d+$/.test(label)) return "int";
+  if (/^-?\d+\.\d+$/.test(label)) return "float";
+  return "ident";
+}
+
+/**
+ * Validate a case label against the match expression's scalar type.
+ */
+function validateScalarCaseLabel(
+  expr: string,
+  typeName: string,
+  label: string,
+  loc?: { line?: number; column?: number; snippet?: string },
+): void {
+  const kind = classifyLabel(label);
+
+  const err = (msg: string) => {
+    throw new TemplateSyntaxError(msg, loc?.line, loc?.column, loc?.snippet);
+  };
+
+  switch (typeName) {
+    case "str":
+      if (kind === "int" || kind === "float") {
+        err(
+          `match on '${expr}': case label '${label}' is a numeric literal, but '${expr}' is a str — use {% case "${label}" %} for a string literal`,
+        );
+      }
+      if (kind === "bool") {
+        err(
+          `match on '${expr}': case label '${label}' is a bool literal, but '${expr}' is a str — use {% case "${label}" %} for a string literal`,
+        );
+      }
+      break;
+    case "int":
+      if (kind === "quoted" || kind === "interpolated") {
+        const inner = label.slice(1, -1);
+        err(
+          `match on '${expr}': quoted string '${label}' cannot match int values — use {% case ${inner} %} for an integer literal`,
+        );
+      }
+      if (kind === "bool") {
+        err(
+          `match on '${expr}': case label '${label}' is a bool literal, but '${expr}' is an int`,
+        );
+      }
+      if (kind === "float") {
+        err(
+          `match on '${expr}': case label '${label}' is a float literal, but '${expr}' is an int`,
+        );
+      }
+      break;
+    case "float":
+      if (kind === "quoted" || kind === "interpolated") {
+        const inner = label.slice(1, -1);
+        err(
+          `match on '${expr}': quoted string '${label}' cannot match float values — use {% case ${inner} %} for a numeric literal`,
+        );
+      }
+      if (kind === "bool") {
+        err(
+          `match on '${expr}': case label '${label}' is a bool literal, but '${expr}' is a float`,
+        );
+      }
+      break;
+    case "bool":
+      if (kind === "quoted" || kind === "interpolated") {
+        err(
+          `match on '${expr}': quoted string '${label}' cannot match bool values — ${HINT_BOOL}`,
+        );
+      }
+      if (kind === "int" || kind === "float") {
+        err(
+          `match on '${expr}': case label '${label}' is a numeric literal, but '${expr}' is a bool — ${HINT_BOOL}`,
+        );
+      }
+      break;
+  }
+}
+
+function collectMatchLabels(node: Extract<Node, { kind: "match" }>): string[] {
+  const labels: string[] = [];
+  if (node.inlineGuard) {
+    labels.push(node.inlineGuard.variant);
+  }
+  for (const arm of node.arms) {
+    labels.push(...arm.variants);
+  }
+  return labels;
+}
+
+/**
  * Extract the bare dotted path from an expression string, or `undefined`
  * if the expression is a function call.
  *
@@ -1792,6 +2194,47 @@ function injectEnumTypeConstants(
 }
 
 /**
+ * Resolve alias types in VarDecl arrays using type aliases.
+ *
+ * Walks through declarations and replaces `{ kind: "alias", name: X }`
+ * with the actual type from the typeAliases map. This ensures that
+ * `validateIncludeTypes` can properly type-check params that reference
+ * imported types (e.g., `types.Role` → `enum(admin, editor, viewer)`).
+ */
+function resolveAliasesInDecls(
+  decls: readonly VarDecl[],
+  typeAliases: ReadonlyMap<string, VarType>,
+): VarDecl[] {
+  if (typeAliases.size === 0) return [...decls];
+  return decls.map((decl) => {
+    const resolved = resolveAliasType(decl.varType, typeAliases);
+    if (resolved === decl.varType) return decl;
+    return { ...decl, varType: resolved };
+  });
+}
+
+/**
+ * Recursively resolve an alias VarType through the typeAliases map.
+ * Returns the original type unchanged if it's not an alias.
+ */
+function resolveAliasType(
+  vt: VarType,
+  typeAliases: ReadonlyMap<string, VarType>,
+): VarType {
+  if (vt.kind !== "alias") return vt;
+  let resolved: VarType = vt;
+  const seen = new Set<string>();
+  while (resolved.kind === "alias") {
+    if (seen.has(resolved.name)) break; // prevent infinite loops
+    seen.add(resolved.name);
+    const target = typeAliases.get(resolved.name);
+    if (!target) break;
+    resolved = target;
+  }
+  return resolved;
+}
+
+/**
  * Resolve imported template files and collect their exported constants.
  *
  * For each import in `fm.imports`, reads the referenced `.tmpl.md` file
@@ -1822,6 +2265,7 @@ function resolveImportedConsts(fm: Frontmatter, baseDir: string): Frontmatter {
   const imported: Record<string, unknown> = {};
   const fsModule = getFs();
   const pathModule = getPath();
+  const mergedTypeAliases = new Map(fm.typeAliases);
 
   for (const imp of fm.imports) {
     let impPath = imp.path;
@@ -1856,7 +2300,10 @@ function resolveImportedConsts(fm: Frontmatter, baseDir: string): Frontmatter {
     }
 
     // Inject enum type constants from the imported template's type aliases.
+    // Also merge ALL imported type aliases (prefixed by stem) so param
+    // declarations with alias types (e.g., types.Role) can be resolved.
     for (const [typeName, varType] of importedFm.typeAliases) {
+      mergedTypeAliases.set(`${imp.stem}.${typeName}`, varType);
       if (varType.kind !== "enum") continue;
       const key = `${imp.stem}.${typeName}`;
       if (key in imported) continue;
@@ -1875,7 +2322,15 @@ function resolveImportedConsts(fm: Frontmatter, baseDir: string): Frontmatter {
     }
   }
 
+  // Merge imported type aliases into fm.typeAliases so they're available
+  // for resolving alias types (e.g., types.Role → enum(admin, editor, viewer)).
+  // The mergedTypeAliases map was populated during the import loop above.
+
   if (Object.keys(imported).length === 0) {
+    // Even if no consts were imported, we may have imported type aliases.
+    if (mergedTypeAliases.size > fm.typeAliases.size) {
+      return { ...fm, typeAliases: mergedTypeAliases };
+    }
     return fm;
   }
 
@@ -1883,7 +2338,7 @@ function resolveImportedConsts(fm: Frontmatter, baseDir: string): Frontmatter {
   // During parseFrontmatter(), imported consts weren't available yet, so
   // param defaults like `stem.NAME` were deferred in unresolvedDefaults.
   if (fm.unresolvedDefaults.size === 0) {
-    return { ...fm, importedConsts: imported };
+    return { ...fm, importedConsts: imported, typeAliases: mergedTypeAliases };
   }
 
   const importedValues = new Map<string, Value>();
@@ -1921,6 +2376,7 @@ function resolveImportedConsts(fm: Frontmatter, baseDir: string): Frontmatter {
     ...fm,
     params: newParams,
     importedConsts: imported,
+    typeAliases: mergedTypeAliases,
     unresolvedDefaults: new Map(),
   };
 }
@@ -2036,6 +2492,480 @@ function collectInlineTemplateNames(nodes: readonly Node[]): Set<string> {
     }
   }
   return names;
+}
+
+/**
+ * Parse inline `{% tmpl name %}` blocks and return a map for the renderer.
+ *
+ * Each entry carries the child template's declarations (for contract
+ * validation at include time), body text, and its own constants.
+ */
+function collectInlineTemplateMap(nodes: readonly Node[]): Map<
+  string,
+  {
+    declarations: readonly VarDecl[];
+    body: string;
+    consts: Map<string, Value>;
+  }
+> {
+  const inlineTmpls = new Map<
+    string,
+    {
+      declarations: readonly VarDecl[];
+      body: string;
+      consts: Map<string, Value>;
+    }
+  >();
+  for (const n of nodes) {
+    if (n.kind === "tmpl") {
+      if (n.source.trimStart().startsWith("---")) {
+        const [inlineFm, inlineBody] = parseFrontmatter(n.source);
+        const inlineConsts = new Map<string, Value>();
+        for (const decl of inlineFm.consts) {
+          if (decl.defaultValue !== undefined) {
+            inlineConsts.set(decl.name, decl.defaultValue);
+          }
+        }
+        inlineTmpls.set(n.name, {
+          declarations: inlineFm.params,
+          body: inlineBody,
+          consts: inlineConsts,
+        });
+      } else {
+        inlineTmpls.set(n.name, {
+          declarations: [],
+          body: n.source,
+          consts: new Map(),
+        });
+      }
+    }
+  }
+  return inlineTmpls;
+}
+
+// ---------------------------------------------------------------------------
+// AST-based referenced parameter collection
+// ---------------------------------------------------------------------------
+
+/** Built-in function names whose argument is extracted as the reference. */
+const BUILTIN_FUNCTIONS = new Set(["idx", "len", "kind", "kinds", "has"]);
+
+/**
+ * Extract the root variable name from an expression string.
+ * Handles `path.field`, `func(arg)`, `expr | filter`, and literals.
+ * Returns undefined for literals, loop bindings, and unknown functions.
+ */
+function extractRootVariable(
+  expr: string,
+  loopBindings: ReadonlySet<string>,
+): string | undefined {
+  const trimmed = expr.trim();
+  if (trimmed.length === 0) return undefined;
+
+  // Handle function calls: func(arg)
+  const parenIdx = trimmed.indexOf("(");
+  if (parenIdx > 0 && trimmed.endsWith(")")) {
+    const funcName = trimmed.slice(0, parenIdx).trim();
+    if (BUILTIN_FUNCTIONS.has(funcName)) {
+      const arg = trimmed.slice(parenIdx + 1, -1).trim();
+      const root = arg.split(".")[0]!.trim();
+      if (root.length > 0 && !loopBindings.has(root) && !isLiteralToken(root)) {
+        return root;
+      }
+      return undefined;
+    }
+  }
+
+  // Handle pipe expressions: take the part before the first `|`
+  const pipeIdx = trimmed.indexOf("|");
+  const base = pipeIdx >= 0 ? trimmed.slice(0, pipeIdx).trim() : trimmed;
+
+  // Extract root from dotted path, also strip any trailing operators/whitespace
+  const dotRoot = base.split(".")[0]!.trim();
+  // Split on whitespace to handle fragments like "a &&" or "x || y"
+  const root = dotRoot.split(/\s/)[0]!.trim();
+  if (
+    root.length === 0 ||
+    isLiteralToken(root) ||
+    loopBindings.has(root) ||
+    !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(root) // Must be a valid identifier
+  ) {
+    return undefined;
+  }
+  return root;
+}
+
+/** Returns true if the token looks like a literal (string, number, bool). */
+function isLiteralToken(token: string): boolean {
+  if (token === "true" || token === "false") return true;
+  if (
+    (token.startsWith('"') && token.endsWith('"')) ||
+    (token.startsWith("'") && token.endsWith("'"))
+  ) {
+    return true;
+  }
+  if (/^-?\d+(\.\d+)?$/.test(token)) return true;
+  return false;
+}
+
+/**
+ * Extract variable references from a condition string (used in {% if %} tags).
+ * Handles &&, ||, !, comparisons, 'in' operator, and match-as-condition.
+ */
+function extractConditionVariables(
+  condition: string,
+  refs: Set<string>,
+  loopBindings: ReadonlySet<string>,
+): void {
+  const trimmed = condition.trim();
+
+  // Remove balanced outer parens
+  if (trimmed.startsWith("(") && trimmed.endsWith(")")) {
+    let depth = 0;
+    let balanced = true;
+    for (let i = 0; i < trimmed.length - 1; i++) {
+      if (trimmed[i] === "(") depth++;
+      else if (trimmed[i] === ")") depth--;
+      if (depth === 0) {
+        balanced = false;
+        break;
+      }
+    }
+    if (balanced) {
+      extractConditionVariables(trimmed.slice(1, -1), refs, loopBindings);
+      return;
+    }
+  }
+
+  // Remove leading !
+  if (trimmed.startsWith("!")) {
+    extractConditionVariables(trimmed.slice(1), refs, loopBindings);
+    return;
+  }
+
+  // Try to split on top-level && or ||
+  for (const delim of [" && ", " || "]) {
+    const parts = splitTopLevel(trimmed, delim);
+    if (parts.length > 1) {
+      for (const part of parts) {
+        extractConditionVariables(part, refs, loopBindings);
+      }
+      return;
+    }
+  }
+
+  // Handle match-as-condition: "match expr case Variant"
+  if (trimmed.startsWith("match ")) {
+    const caseIdx = trimmed.indexOf(" case ");
+    if (caseIdx > 0) {
+      const matchExpr = trimmed.slice(6, caseIdx).trim();
+      const root = extractRootVariable(matchExpr, loopBindings);
+      if (root) refs.add(root);
+      return;
+    }
+  }
+
+  // Handle comparisons: ==, !=, <=, >=, <, >, ' in ', ' not in '
+  for (const op of ["==", "!=", "<=", ">=", "<", ">", " in ", " not in "]) {
+    const idx = findTopLevelOp(trimmed, op);
+    if (idx >= 0) {
+      const left = trimmed.slice(0, idx).trim();
+      const right = trimmed.slice(idx + op.length).trim();
+      extractOperandRefs(left, refs, loopBindings);
+      extractOperandRefs(right, refs, loopBindings);
+      return;
+    }
+  }
+
+  // Plain truthiness — also serves as fallback for malformed conditions.
+  // Extract all identifier-like tokens that could be variable references.
+  const identifiers = trimmed.match(/\b[a-zA-Z_][a-zA-Z0-9_]*\b/g);
+  if (identifiers) {
+    const keywords = new Set([
+      "true",
+      "false",
+      "match",
+      "case",
+      "in",
+      "not",
+      "if",
+      "else",
+      "for",
+      "and",
+      "or",
+    ]);
+    for (const id of identifiers) {
+      if (
+        !keywords.has(id) &&
+        !loopBindings.has(id) &&
+        !BUILTIN_FUNCTIONS.has(id)
+      ) {
+        refs.add(id);
+      }
+    }
+  }
+}
+
+/**
+ * Extract variable refs from a condition operand.
+ * Handles plain variables, function calls, and string interpolation.
+ */
+function extractOperandRefs(
+  operand: string,
+  refs: Set<string>,
+  loopBindings: ReadonlySet<string>,
+): void {
+  // If it's a string literal with interpolation, extract {{ expr }} refs
+  if (
+    (operand.startsWith('"') && operand.endsWith('"')) ||
+    (operand.startsWith("'") && operand.endsWith("'"))
+  ) {
+    const inner = operand.slice(1, -1);
+    extractInterpolationRefs(inner, refs, loopBindings);
+    return;
+  }
+  // Otherwise extract the root variable
+  const root = extractRootVariable(operand, loopBindings);
+  if (root) {
+    refs.add(root);
+    return;
+  }
+  // Fallback: scan for any identifier-like tokens (handles fragments like "&& a")
+  const identifiers = operand.match(/\b[a-zA-Z_][a-zA-Z0-9_]*\b/g);
+  if (identifiers) {
+    const keywords = new Set([
+      "true",
+      "false",
+      "match",
+      "case",
+      "in",
+      "not",
+      "if",
+      "else",
+      "for",
+      "and",
+      "or",
+    ]);
+    for (const id of identifiers) {
+      if (
+        !keywords.has(id) &&
+        !loopBindings.has(id) &&
+        !BUILTIN_FUNCTIONS.has(id)
+      ) {
+        refs.add(id);
+      }
+    }
+  }
+}
+
+/** Extract variable references from {{ expr }} interpolations inside a string. */
+function extractInterpolationRefs(
+  s: string,
+  refs: Set<string>,
+  loopBindings: ReadonlySet<string>,
+): void {
+  let remaining = s;
+  while (remaining.includes(EXPR_START)) {
+    const startIdx = remaining.indexOf(EXPR_START);
+    remaining = remaining.slice(startIdx + EXPR_START.length);
+    const endIdx = remaining.indexOf("}}");
+    if (endIdx >= 0) {
+      const expr = remaining.slice(0, endIdx).trim();
+      const root = extractRootVariable(expr, loopBindings);
+      if (root) refs.add(root);
+      remaining = remaining.slice(endIdx + 2);
+    } else {
+      break;
+    }
+  }
+}
+
+/** Split a string at top-level occurrences of a delimiter (not inside parens). */
+function splitTopLevel(s: string, delim: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === "(") depth++;
+    else if (s[i] === ")") depth--;
+    else if (
+      depth === 0 &&
+      i + delim.length <= s.length &&
+      s.slice(i, i + delim.length) === delim
+    ) {
+      parts.push(s.slice(start, i).trim());
+      i += delim.length - 1;
+      start = i + 1;
+    }
+  }
+  const last = s.slice(start).trim();
+  if (last.length > 0) parts.push(last);
+  return parts;
+}
+
+/** Find the first top-level occurrence of an operator string. */
+function findTopLevelOp(s: string, op: string): number {
+  let depth = 0;
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === "(") depth++;
+    else if (s[i] === ")") depth--;
+    else if (s[i] === "'" || s[i] === '"') {
+      const quote = s[i]!;
+      i++;
+      while (i < s.length && s[i] !== quote) i++;
+    } else if (
+      depth === 0 &&
+      i + op.length <= s.length &&
+      s.slice(i, i + op.length) === op
+    ) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Collect all root parameter names referenced in parsed AST nodes.
+ *
+ * Mirrors Rust's `collect_referenced_params`:
+ * - Walks expressions, conditions, match targets, includes
+ * - Excludes text and raw nodes (plain text does NOT count as a reference)
+ * - Tracks for-loop bindings to exclude shadowed names
+ */
+function collectReferencedParams(nodes: readonly Node[]): Set<string> {
+  const refs = new Set<string>();
+  const loopBindings = new Set<string>();
+  collectRefsInner(nodes, refs, loopBindings);
+  return refs;
+}
+
+function collectRefsInner(
+  nodes: readonly Node[],
+  refs: Set<string>,
+  loopBindings: Set<string>,
+): void {
+  for (const node of nodes) {
+    switch (node.kind) {
+      case NODE_TEXT:
+      case NODE_RAW:
+      case NODE_COMMENT:
+        // Plain text, raw blocks, and comments do NOT count as variable refs.
+        break;
+
+      case NODE_EXPR: {
+        const root = extractRootVariable(node.expr, loopBindings);
+        if (root) refs.add(root);
+        break;
+      }
+
+      case NODE_FOR:
+        // Collect refs from the list expression
+        {
+          const iterRoot = extractRootVariable(node.iterExpr, loopBindings);
+          if (iterRoot) refs.add(iterRoot);
+        }
+        // The binding is local — track it to exclude from refs
+        loopBindings.add(node.binding);
+        collectRefsInner(node.body, refs, loopBindings);
+        loopBindings.delete(node.binding);
+        // else_body runs when the list is empty — binding NOT in scope
+        if (node.elseBody) {
+          collectRefsInner(node.elseBody, refs, loopBindings);
+        }
+        break;
+
+      case NODE_IF:
+        for (const branch of node.branches) {
+          extractConditionVariables(branch.condition, refs, loopBindings);
+          collectRefsInner(branch.body, refs, loopBindings);
+        }
+        if (node.elseBody) {
+          collectRefsInner(node.elseBody, refs, loopBindings);
+        }
+        break;
+
+      case NODE_MATCH: {
+        const matchRoot = extractRootVariable(node.expr, loopBindings);
+        if (matchRoot) refs.add(matchRoot);
+        for (const arm of node.arms) {
+          // Scan case labels for references
+          for (const variant of arm.variants) {
+            if (
+              (variant.startsWith('"') && variant.endsWith('"')) ||
+              (variant.startsWith("'") && variant.endsWith("'"))
+            ) {
+              // Quoted string: extract {{ expr }} interpolation refs
+              extractInterpolationRefs(
+                variant.slice(1, -1),
+                refs,
+                loopBindings,
+              );
+            } else {
+              // Unquoted label: could be a param name used as a dynamic case
+              const root = extractRootVariable(variant, loopBindings);
+              if (root) refs.add(root);
+            }
+          }
+          collectRefsInner(arm.body, refs, loopBindings);
+        }
+        if (node.elseArm) {
+          collectRefsInner(node.elseArm, refs, loopBindings);
+        }
+        if (node.inlineGuard) {
+          collectRefsInner(node.inlineGuard.body, refs, loopBindings);
+        }
+        break;
+      }
+
+      case NODE_INCLUDE:
+        // Include with-mappings reference variables
+        for (const [, valExpr] of node.withMappings) {
+          const root = extractRootVariable(valExpr, loopBindings);
+          if (root) refs.add(root);
+        }
+        // Include for-binding iteration expression
+        if (node.forExpr) {
+          const root = extractRootVariable(node.forExpr, loopBindings);
+          if (root) refs.add(root);
+        }
+        // Dynamic include paths with {{ expr }}
+        if (node.path && node.path.includes(EXPR_START)) {
+          let remaining = node.path;
+          while (remaining.includes(EXPR_START)) {
+            const startIdx = remaining.indexOf(EXPR_START);
+            remaining = remaining.slice(startIdx + EXPR_START.length);
+            const endIdx = remaining.indexOf("}}");
+            if (endIdx >= 0) {
+              const innerExpr = remaining.slice(0, endIdx);
+              const root = extractRootVariable(innerExpr, loopBindings);
+              if (root) refs.add(root);
+              remaining = remaining.slice(endIdx + 2);
+            } else {
+              break;
+            }
+          }
+        }
+        // Static include name that isn't a file path → might be a variable
+        if (
+          node.name &&
+          !node.path &&
+          !node.name.endsWith(".tmpl.md") &&
+          !node.name.endsWith(".md")
+        ) {
+          const root = extractRootVariable(node.name, loopBindings);
+          if (root) refs.add(root);
+        }
+        break;
+
+      case NODE_TMPL:
+        // Inline template definitions don't reference parent params
+        break;
+
+      case NODE_PANIC:
+        collectRefsInner(node.body, refs, loopBindings);
+        break;
+    }
+  }
 }
 
 /** Collect all for-loop binding names from parsed nodes (recursive). */

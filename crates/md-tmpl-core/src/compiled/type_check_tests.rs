@@ -307,29 +307,24 @@ params:
 // -- Match on non-enum rejects at compile time ----------------------
 
 #[test]
-fn match_on_str_is_compile_error() {
+fn match_on_str_compiles_ok() {
     let decls = vec![VarDecl {
         name: "status".to_string(),
         var_type: VarType::Str,
         default_value: None,
     }];
-    let tmpl = r"---
+    let tmpl = r#"---
 name: t
 params:
   - status = str
 ---
-> {% match status %}{% case Active %}active{% /match %}";
+> {% match status %}{% case "Active" %}active{% /match %}"#;
     let errors = compile_and_check(tmpl, &decls);
-    assert_eq!(errors.len(), 1, "expected error: {errors:?}");
-    assert!(
-        errors[0].contains("expected enum") && errors[0].contains("str"),
-        "got: {}",
-        errors[0]
-    );
+    assert!(errors.is_empty(), "expected no errors: {errors:?}");
 }
 
 #[test]
-fn match_on_int_is_compile_error() {
+fn match_on_int_compiles_ok() {
     let decls = vec![VarDecl {
         name: "count".to_string(),
         var_type: VarType::Int,
@@ -340,18 +335,13 @@ name: t
 params:
   - count = int
 ---
-> {% match count %}{% case One %}one{% /match %}";
+> {% match count %}{% case 0 %}zero{% case 1 %}one{% else %}many{% /match %}";
     let errors = compile_and_check(tmpl, &decls);
-    assert_eq!(errors.len(), 1, "expected error: {errors:?}");
-    assert!(
-        errors[0].contains("expected enum") && errors[0].contains("int"),
-        "got: {}",
-        errors[0]
-    );
+    assert!(errors.is_empty(), "match on int should compile: {errors:?}");
 }
 
 #[test]
-fn match_on_bool_is_compile_error() {
+fn match_on_bool_compiles_ok() {
     let decls = vec![VarDecl {
         name: "flag".to_string(),
         var_type: VarType::Bool,
@@ -362,13 +352,11 @@ name: t
 params:
   - flag = bool
 ---
-> {% match flag %}{% case True %}yes{% /match %}";
+> {% match flag %}{% case true %}yes{% case false %}no{% /match %}";
     let errors = compile_and_check(tmpl, &decls);
-    assert_eq!(errors.len(), 1, "expected error: {errors:?}");
     assert!(
-        errors[0].contains("expected enum") && errors[0].contains("bool"),
-        "got: {}",
-        errors[0]
+        errors.is_empty(),
+        "match on bool should compile: {errors:?}"
     );
 }
 
@@ -2423,4 +2411,188 @@ params:
         errors.iter().any(|e| e.contains("undeclared")),
         "loop binding should not be accessible in else body: {errors:?}"
     );
+}
+
+// -- String match (quoted case labels) -----------------------------------
+
+#[test]
+fn string_match_on_str_param_ok() {
+    let decls = vec![VarDecl {
+        name: "status".to_string(),
+        var_type: VarType::Str,
+        default_value: None,
+    }];
+    let tmpl = r#"---
+name: t
+params:
+  - status = str
+---
+> {% match status %}{% case "Active" %}active{% case "Inactive" %}inactive{% /match %}"#;
+    let errors = compile_and_check(tmpl, &decls);
+    assert!(
+        errors.is_empty(),
+        "quoted string cases on str should work: {errors:?}"
+    );
+}
+
+#[test]
+fn match_on_str_with_quoted_cases_renders() {
+    let tmpl = crate::Template::from_source(
+        r#"---
+params:
+  - status = str
+---
+> {% match status %}{% case "Active" %}active{% case "Inactive" %}inactive{% /match %}"#,
+    )
+    .unwrap();
+    let mut ctx = crate::Context::new();
+    ctx.set("status", "Active");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "active");
+    ctx.set("status", "Inactive");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "inactive");
+    ctx.set("status", "Unknown");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "");
+}
+
+#[test]
+fn match_on_enum_with_quoted_cases_is_error() {
+    let decls = vec![enum_decl(
+        "status",
+        vec![unit_variant("Active"), unit_variant("Inactive")],
+    )];
+    let tmpl = r#"---
+name: t
+params:
+  - status = enum(Active, Inactive)
+---
+> {% match status %}{% case "Active" %}active{% /match %}"#;
+    let errors = compile_and_check(tmpl, &decls);
+    assert!(
+        !errors.is_empty(),
+        "quoted cases on enum should error: {errors:?}"
+    );
+}
+
+#[test]
+fn inline_match_quoted_case_on_str_ok() {
+    let decls = vec![VarDecl {
+        name: "status".to_string(),
+        var_type: VarType::Str,
+        default_value: None,
+    }];
+    let tmpl = r#"---
+name: t
+params:
+  - status = str
+---
+> {% match status case "Active" %}yes{% /match %}"#;
+    let errors = compile_and_check(tmpl, &decls);
+    assert!(
+        errors.is_empty(),
+        "inline quoted case on str should work: {errors:?}"
+    );
+}
+
+#[test]
+fn mixed_quoted_unquoted_cases_compiles_ok() {
+    // Mixed quoted/unquoted labels on str params are allowed.
+    // Quoted labels compare against the string value (quotes stripped),
+    // while unquoted labels compare literally.
+    let tmpl = crate::Template::from_source(
+        r#"---
+params:
+  - status = str
+---
+> {% match status %}{% case "Active" %}a{% case Inactive %}b{% /match %}"#,
+    )
+    .expect("mixed quoted/unquoted should compile");
+    let mut ctx = crate::Context::new();
+    ctx.set("status", "Active");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "a");
+    ctx.set("status", "Inactive");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "b");
+}
+
+#[test]
+fn string_match_with_else_arm() {
+    let tmpl = crate::Template::from_source(
+        r#"---
+params:
+  - status = str
+---
+> {% match status %}{% case "Active" %}active{% else %}other{% /match %}"#,
+    )
+    .unwrap();
+    let mut ctx = crate::Context::new();
+    ctx.set("status", "Active");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "active");
+    ctx.set("status", "Inactive");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "other");
+    ctx.set("status", "Whatever");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "other");
+}
+
+#[test]
+fn inline_single_quoted_case_renders() {
+    let tmpl = crate::Template::from_source(
+        r#"---
+params:
+  - status = str
+---
+> {% match status case "Active" %}yes{% /match %}"#,
+    )
+    .unwrap();
+    let mut ctx = crate::Context::new();
+    ctx.set("status", "Active");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "yes");
+    ctx.set("status", "Inactive");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "");
+}
+
+// -- Param-reference matching (unquoted labels on str params) --------
+
+#[test]
+fn param_ref_match_compiles_when_label_is_declared_param() {
+    let decls = vec![
+        VarDecl {
+            name: "status".to_string(),
+            var_type: VarType::Str,
+            default_value: None,
+        },
+        VarDecl {
+            name: "expected".to_string(),
+            var_type: VarType::Str,
+            default_value: None,
+        },
+    ];
+    let tmpl = r"---
+name: t
+params:
+  - status = str
+  - expected = str
+---
+> {% match status %}{% case expected %}matched{% /match %}";
+    let errors = compile_and_check(tmpl, &decls);
+    assert!(
+        errors.is_empty(),
+        "param-ref match with declared param should compile: {errors:?}"
+    );
+}
+
+#[test]
+fn str_match_unquoted_label_compiles_and_matches_literally() {
+    // Unquoted labels on str params are compared literally at runtime.
+    let tmpl = crate::Template::from_source(
+        r"---
+params:
+  - status = str
+---
+> {% match status %}{% case Unknown %}nope{% else %}ok{% /match %}",
+    )
+    .expect("unquoted label on str should compile");
+    let mut ctx = crate::Context::new();
+    ctx.set("status", "Unknown");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "nope");
+    ctx.set("status", "Other");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "ok");
 }

@@ -37,7 +37,9 @@ mod value;
 pub mod __private {
     pub use alloc::{borrow::Cow, boxed::Box, format, string::String, sync::Arc, vec, vec::Vec};
 
-    pub use crate::compat::LazyLock;
+    pub use hashbrown::HashMap;
+
+    pub use crate::{compat::LazyLock, template::analysis::inject_enum_type_constants};
 
     /// FNV-1a hash over raw bytes.
     ///

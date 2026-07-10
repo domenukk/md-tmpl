@@ -15,13 +15,10 @@
 //! means success. The caller owns the error string and must free it with
 //! `pt_free_string`.
 
-// FFI code uses match+unsafe patterns that are more readable than let...else
-// with unsafe blocks. The JSON parser intentionally strips prefixes manually.
 // Panic paths in FFI are only reachable via CString::new on controlled strings.
-#![allow(
-    clippy::manual_let_else,
-    clippy::manual_strip,
-    clippy::missing_panics_doc
+#![expect(
+    clippy::missing_panics_doc,
+    reason = "C FFI functions; panics documented in # Safety sections"
 )]
 
 use std::{
@@ -1034,11 +1031,13 @@ pub unsafe extern "C" fn pt_template_from_source_with_frontmatter(
 
             let name_escaped = fm
                 .name
+                // NOLINT: missing name defaults to empty string for JSON output
                 .unwrap_or_default()
                 .replace('\\', "\\\\")
                 .replace('"', "\\\"");
             let desc_escaped = fm
                 .description
+                // NOLINT: missing description defaults to empty string for JSON output
                 .unwrap_or_default()
                 .replace('\\', "\\\\")
                 .replace('"', "\\\"");

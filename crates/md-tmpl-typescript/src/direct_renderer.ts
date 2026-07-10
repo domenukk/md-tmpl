@@ -62,6 +62,37 @@ import {
   KW_IN,
 } from "./consts.js";
 
+/**
+ * Check if a case arm label matches the active variant (direct renderer).
+ * Supports quoted strings with {{ expr }} interpolation.
+ */
+function directLabelMatches(
+  label: string,
+  variantName: string,
+  scope: DirectScope,
+): boolean {
+  if (label === MATCH_DEFAULT || label === variantName) return true;
+  // Quoted string literal: strip quotes and compare (with interpolation).
+  if (
+    label.length >= 2 &&
+    ((label[0] === '"' && label[label.length - 1] === '"') ||
+      (label[0] === "'" && label[label.length - 1] === "'"))
+  ) {
+    const inner = label.slice(1, -1);
+    if (inner.includes(EXPR_START)) {
+      try {
+        return interpolateDirectString(inner, scope) === variantName;
+      } catch {
+        return false;
+      }
+    }
+    return inner === variantName;
+  }
+  // Param-ref: resolve label as a variable and compare.
+  const resolved = scope.resolve(label);
+  return typeof resolved === "string" && resolved === variantName;
+}
+
 export interface DirectRenderOptions {
   inlineTemplates?: Map<
     string,
@@ -1002,6 +1033,10 @@ function getDirectVariantName(value: unknown, isOption: boolean): string {
       return obj._md_tmpl_tag;
     }
   }
+  // Scalar types: convert to string for label comparison.
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
   // Non-None, non-enum values in option match context → "Some"
   return OPTION_SOME;
 }
@@ -1124,7 +1159,8 @@ function renderDirectNodes(
         if (node.inlineGuard) {
           const val = evaluateDirectExpr(node.expr, scope);
           const variantName = getDirectVariantName(val, optMatch);
-          if (variantName === node.inlineGuard.variant) {
+          const label = node.inlineGuard.variant;
+          if (directLabelMatches(label, variantName, scope)) {
             parts.push(
               renderDirectNodes(node.inlineGuard.body, scope, options),
             );
@@ -1135,10 +1171,10 @@ function renderDirectNodes(
 
           let matched = false;
           for (const arm of node.arms) {
-            if (
-              arm.variants.includes(variantName) ||
-              arm.variants.includes(MATCH_DEFAULT)
-            ) {
+            const armMatches = arm.variants.some((v) =>
+              directLabelMatches(v, variantName, scope),
+            );
+            if (armMatches) {
               // If the arm has a guard, evaluate it
               if (arm.guard && !evaluateDirectCondition(arm.guard, scope)) {
                 continue;

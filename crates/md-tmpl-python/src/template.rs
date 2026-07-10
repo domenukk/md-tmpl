@@ -51,7 +51,7 @@ impl PyTemplate {
     /// Raises:
     ///     `ValueError`: If the file cannot be read or contains syntax errors.
     #[staticmethod]
-    #[allow(clippy::needless_pass_by_value)] // PyO3 requires owned PathBuf
+    #[expect(clippy::needless_pass_by_value, reason = "PyO3 requires owned PathBuf")]
     fn from_file(path: std::path::PathBuf) -> PyResult<Self> {
         let (tmpl, fm) = Template::compile_file(&path, CompileOptions::default())
             .map_err(|e| crate::errors::template_error_to_py(&e))?;
@@ -538,7 +538,7 @@ impl PyTemplate {
     /// Raises:
     ///     `ValueError`: If the source contains syntax errors or includes cannot be resolved.
     #[staticmethod]
-    #[allow(clippy::needless_pass_by_value)] // PyO3 requires owned PathBuf
+    #[expect(clippy::needless_pass_by_value, reason = "PyO3 requires owned PathBuf")]
     fn from_source_with_base_dir(source: &str, base_dir: std::path::PathBuf) -> PyResult<Self> {
         let (tmpl, fm) = Template::compile(source, CompileOptions::default().base_dir(&base_dir))
             .map_err(|e| crate::errors::template_error_to_py(&e))?;
@@ -603,7 +603,7 @@ impl PyTemplate {
     ///     Template: A parsed and validated template.
     #[staticmethod]
     #[pyo3(signature = (source, *, base_dir=None, env=None, allow_unused=false))]
-    #[allow(clippy::needless_pass_by_value)] // PyO3 requires owned PathBuf
+    #[expect(clippy::needless_pass_by_value, reason = "PyO3 requires owned PathBuf")]
     fn from_source_with_options(
         source: &str,
         base_dir: Option<std::path::PathBuf>,
@@ -657,7 +657,7 @@ impl PyTemplate {
     }
 
     /// Exit the context manager — never suppresses exceptions.
-    #[allow(clippy::unused_self)]
+    #[expect(clippy::unused_self, reason = "PyO3 requires &self for __exit__")]
     fn __exit__(
         &self,
         _exc_type: &Bound<'_, PyAny>,
@@ -741,7 +741,7 @@ impl PyTemplateCache {
     ///
     /// Raises:
     ///     `ValueError`: If the file cannot be read or contains errors.
-    #[allow(clippy::needless_pass_by_value)] // PyO3 requires owned PathBuf
+    #[expect(clippy::needless_pass_by_value, reason = "PyO3 requires owned PathBuf")]
     fn load(&self, path: std::path::PathBuf) -> PyResult<PyTemplate> {
         let (tmpl, fm) = self
             .inner
@@ -790,7 +790,7 @@ impl PyTemplateCache {
     }
 
     /// Exit the context manager — never suppresses exceptions.
-    #[allow(clippy::unused_self)]
+    #[expect(clippy::unused_self, reason = "PyO3 requires &self for __exit__")]
     fn __exit__(
         &self,
         _exc_type: &Bound<'_, PyAny>,

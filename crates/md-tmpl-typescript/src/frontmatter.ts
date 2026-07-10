@@ -113,6 +113,7 @@ export type VarType =
   | { kind: typeof TYPE_LIST; fields: readonly VarDecl[] }
   | { kind: typeof TYPE_SCALAR_LIST; elementType: VarType }
   | { kind: typeof TYPE_STRUCT; fields: readonly VarDecl[] }
+  | { kind: typeof TYPE_TMPL; fields: readonly VarDecl[] }
   | {
       kind: typeof TYPE_ENUM;
       variants: readonly VariantDecl[];
@@ -180,6 +181,9 @@ export function varTypeToString(vt: VarType): string {
     case TYPE_STRUCT:
       if (vt.fields.length === 0) return "struct()";
       return `struct(${vt.fields.map((f) => `${f.name} = ${varTypeToString(f.varType)}`).join(", ")})`;
+    case TYPE_TMPL:
+      if (vt.fields.length === 0) return "tmpl()";
+      return `tmpl(${vt.fields.map((f) => `${f.name} = ${varTypeToString(f.varType)}`).join(", ")})`;
     case TYPE_ENUM: {
       if (vt.isOption) {
         const someVariant = vt.variants.find((v) => v.name === OPTION_SOME);
@@ -742,15 +746,15 @@ function parseParamDeclDeferred(
   const defaultSplit = splitDefault(cleaned);
   const [nameType, defaultLiteral] = defaultSplit;
 
-  const eqIdx = nameType!.indexOf(EQUALS);
+  const eqIdx = nameType.indexOf(EQUALS);
   if (eqIdx === -1) {
     throw new TemplateSyntaxError(
       `parameter must have explicit type: '${raw}'`,
     );
   }
 
-  const name = stripStringLiteral(nameType!.slice(0, eqIdx).trim());
-  const typeStr = nameType!.slice(eqIdx + 1).trim();
+  const name = stripStringLiteral(nameType.slice(0, eqIdx).trim());
+  const typeStr = nameType.slice(eqIdx + 1).trim();
 
   const varType = parseVarType(typeStr);
   if (defaultLiteral === undefined) {
@@ -943,9 +947,8 @@ export function parseVarType(typeStr: string): VarType {
 
   if (startsWithCompoundType(t, TYPE_TMPL)) {
     const inner = stripTypeBrackets(t, TYPE_TMPL);
-    if (inner === "") return { kind: TYPE_STRUCT, fields: [] };
-    const fields = parseFieldList(inner);
-    return { kind: TYPE_STRUCT, fields };
+    const fields = inner === "" ? [] : parseFieldList(inner);
+    return { kind: TYPE_TMPL, fields };
   }
 
   // Type alias reference

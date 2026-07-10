@@ -1183,12 +1183,12 @@ Found test!
 }
 
 #[test]
-fn match_error_on_non_enum_value() {
-    let template = "> {% match count %}{% case One %}one{% /match %}";
+fn match_on_int_value() {
+    let template = "> {% match count %}{% case 42 %}found{% else %}nope{% /match %}";
     let mut ctx = Context::new();
     ctx.set("count", Value::from(42));
-    let err = compiled_render(template, &ctx).unwrap_err();
-    assert!(err.to_string().contains("not an enum value"), "got: {err}");
+    let result = compiled_render(template, &ctx).unwrap();
+    assert_eq!(result.trim(), "found");
 }
 
 // ---------------------------------------------------------------------------
@@ -2087,12 +2087,7 @@ Section B
     ctx.set("msg", "hello");
     ctx.set("mission", "find bugs");
     let result = compiled_render(template, &ctx);
-    assert!(
-        result.is_ok(),
-        "if inside match should compile: {:?}",
-        result.err()
-    );
-    let output = result.unwrap();
+    let output = result.expect("if inside match should compile");
     assert!(
         output.contains("Mission"),
         "output should contain Mission: {output:?}"
@@ -2134,12 +2129,7 @@ Section B
     ctx.set("role", "A");
     ctx.set("flag", Value::Bool(false));
     let result = compiled_render(template, &ctx);
-    assert!(
-        result.is_ok(),
-        "if/else inside match should compile: {:?}",
-        result.err()
-    );
-    let output = result.unwrap();
+    let output = result.expect("if/else inside match should compile");
     assert!(
         output.contains("flag is not set"),
         "should render else branch: {output:?}"

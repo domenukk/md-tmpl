@@ -78,7 +78,6 @@ fn test_adv_flexbuffers_malformed_input_handling() {
 }
 
 #[test]
-#[allow(clippy::approx_constant, clippy::unreadable_literal)]
 fn test_adv_filter_fixed_precision_boundaries() {
     let src = "\
 ---
@@ -87,9 +86,8 @@ params:
 ---
 {{ val | fixed(0) }} | {{ val | fixed(5) }}";
     let tmpl = Template::from_source(src).expect("compile failed");
-    let output = tmpl
-        .render_ctx(&ctx! { val: 3.14159265 })
-        .expect("render failed");
+    let pi = std::f64::consts::PI;
+    let output = tmpl.render_ctx(&ctx! { val: pi }).expect("render failed");
     assert_eq!(output, "3 | 3.14159");
 }
 

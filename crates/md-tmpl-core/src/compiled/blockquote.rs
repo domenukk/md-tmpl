@@ -99,6 +99,7 @@ pub(super) fn validate_blockquote_prefix(input: &str) -> Result<(), TemplateErro
                     .map(|(i, _)| i)
                     .take_while(|&i| i <= SNIPPET_TRUNCATION_BOUNDARY)
                     .last()
+                    // NOLINT: empty iterator means string has no chars — 0 is the correct truncation point
                     .unwrap_or(0);
                 format!("{}…", &trimmed[..end])
             } else {

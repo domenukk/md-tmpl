@@ -337,18 +337,38 @@ pub(crate) fn var_type_to_rust(
                 let (inner_type, inner_set) =
                     var_type_to_rust(&fields[0].var_type, parent_struct, field_name, sub_structs);
                 let cp2 = cp.clone();
+                let is_copy_scalar = matches!(
+                    fields[0].var_type,
+                    VarType::Int | VarType::Float | VarType::Bool
+                );
+                let is_string = matches!(fields[0].var_type, VarType::Str);
                 (
                     quote! { #cp::__private::Vec<#inner_type> },
                     Box::new(move |val, name| {
                         let name_lit = name.to_string();
-                        let stmts = inner_set(quote! { item }, "item");
                         let cp = &cp2;
+                        // For scalar Copy types, dereference the iterator item.
+                        // For String, clone it. For complex types, use as-is.
+                        let item_binding = if is_copy_scalar {
+                            quote! { let item = *item_ref; }
+                        } else if is_string {
+                            quote! { let item = item_ref.clone(); }
+                        } else {
+                            quote! { let item = item_ref; }
+                        };
+                        // IMPORTANT: inner_set generates `ctx.set(...)` but inside
+                        // the .map() closure we must use `inner_ctx` to avoid borrowing
+                        // the outer `ctx` mutably. We use a local binding to shadow `ctx`.
+                        let stmts = inner_set(quote! { item }, "item");
                         quote! {
                             ctx.set(#name_lit, #cp::Value::List(#cp::__private::Arc::new(
-                                #val.iter().map(|item| {
-                                    let mut inner_ctx = #cp::Context::new();
+                                #val.iter().map(|item_ref| {
+                                    #item_binding
+                                    // Shadow `ctx` with `inner_ctx` so that the inner
+                                    // setter's `ctx.set(...)` actually calls `inner_ctx.set(...)`.
+                                    let mut ctx = #cp::Context::new();
                                     #stmts
-                                    inner_ctx.get("item").cloned().unwrap_or(#cp::Value::Str(#cp::__private::String::new()))
+                                    ctx.get("item").cloned().unwrap_or(#cp::Value::Str(#cp::__private::String::new()))
                                 }).collect()
                             )));
                         }

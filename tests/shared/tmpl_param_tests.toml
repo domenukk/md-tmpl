@@ -196,3 +196,242 @@ expected_output = '''
 
 [tests.params]
 name = "deep"
+
+[[tests]]
+name = "tmpl_param_enum_in_inline"
+description = "Inline template receives an enum-typed param and matches on it"
+template = '''
+---
+types:
+  - Status = enum(Active, Paused)
+
+params: [s = Status]
+---
+
+> {% tmpl badge %}
+---
+params: [status = Status]
+---
+> {% match status %}{% case Active %}🟢{% case Paused %}⏸️{% /match %}
+
+> {% /tmpl %}
+
+> {% include badge with status=s %}'''
+expected_output = '🟢'
+
+[tests.params.s]
+__kind__ = "Active"
+
+[[tests]]
+name = "tmpl_param_for_loop_include"
+description = "Inline template included inside a for-loop"
+template = '''
+---
+params:
+  - items = list(name = str)
+---
+
+> {% tmpl row %}
+---
+params: [name = str]
+---
+- {{ name }}
+
+> {% /tmpl %}
+
+> {% for item in items %}
+> {% include row with name=item.name %}
+> {% /for %}'''
+expected_output = '''
+- alpha
+- beta
+'''
+
+[tests.params]
+items = [{ name = "alpha" }, { name = "beta" }]
+
+[[tests]]
+name = "tmpl_param_bool_int_params"
+description = "Inline template with bool and int params"
+template = '''
+---
+params:
+  - flag = bool
+  - count = int
+---
+
+> {% tmpl display %}
+---
+params:
+  - flag = bool
+  - count = int
+---
+> {% if flag %}count={{ count }}{% else %}off{% /if %}
+
+> {% /tmpl %}
+
+> {% include display with flag=flag, count=count %}'''
+expected_output = 'count=42'
+
+[tests.params]
+flag = true
+count = 42
+
+[[tests]]
+name = "tmpl_param_nested_tmpl_calling_tmpl"
+description = "Inline template that includes another inline template (two-level nesting)"
+template = '''
+---
+params: [msg = str]
+---
+
+> {% tmpl leaf %}
+---
+params: [text = str]
+---
+[{{ text }}]
+
+> {% /tmpl %}
+
+> {% tmpl wrapper %}
+---
+params: [content = str]
+---
+
+> {% include leaf with text=content %}
+
+> {% /tmpl %}
+
+> {% include wrapper with content=msg %}'''
+expected_output = '''
+[hello]
+'''
+
+[tests.params]
+msg = "hello"
+
+[[tests]]
+name = "tmpl_param_option_param"
+description = "Inline template with an option param — Some case"
+template = '''
+---
+params: [label = option(str)]
+---
+
+> {% tmpl show_label %}
+---
+params: [label = option(str)]
+---
+> {% match label %}{% case Some %}{{ label }}{% case None %}n/a{% /match %}
+
+> {% /tmpl %}
+
+> {% include show_label with label=label %}'''
+expected_output = 'hello'
+
+[tests.params]
+label = "hello"
+
+[[tests]]
+name = "tmpl_param_option_param_none"
+description = "Inline template with an option param — None case"
+template = '''
+---
+params: [label = option(str) := None]
+---
+
+> {% tmpl show_label %}
+---
+params: [label = option(str)]
+---
+> {% match label %}{% case Some %}{{ label }}{% case None %}n/a{% /match %}
+
+> {% /tmpl %}
+
+> {% include show_label with label=label %}'''
+expected_output = 'n/a'
+params = {}
+
+[[tests]]
+name = "tmpl_param_float_default"
+description = "Inline template with float param using default value"
+template = '''
+---
+params: []
+---
+
+> {% tmpl scorer %}
+---
+params: [score = float := 0.95]
+---
+score={{ score }}
+
+> {% /tmpl %}
+
+> {% include scorer %}'''
+expected_output = '''
+score=0.95
+'''
+params = {}
+
+[[tests]]
+name = "tmpl_param_multiple_inline_templates"
+description = "Multiple inline templates in the same file, each independently included"
+template = '''
+---
+params:
+  - name = str
+  - count = int
+---
+
+> {% tmpl greet %}
+---
+params: [name = str]
+---
+Hello {{ name }}!
+
+> {% /tmpl %}
+
+> {% tmpl counter %}
+---
+params: [count = int]
+---
+Count: {{ count }}
+
+> {% /tmpl %}
+
+> {% include greet with name=name %}
+> {% include counter with count=count %}'''
+expected_output = '''
+Hello World!
+Count: 5
+'''
+
+[tests.params]
+name = "World"
+count = 5
+
+[[tests]]
+name = "tmpl_param_struct_param"
+description = "Inline template receives a struct-typed param"
+template = '''
+---
+params: [pos = struct(x = int, y = int)]
+---
+
+> {% tmpl display_pos %}
+---
+params: [pos = struct(x = int, y = int)]
+---
+({{ pos.x }}, {{ pos.y }})
+
+> {% /tmpl %}
+
+> {% include display_pos with pos=pos %}'''
+expected_output = '''
+(10, 20)
+'''
+
+[tests.params.pos]
+x = 10
+y = 20
