@@ -2845,3 +2845,68 @@ expected_error = "unused"
 [tests.params]
 item = "hello"
 items = ["a", "b"]
+
+[[tests]]
+name = "bare_name_in_comment_does_not_suppress"
+description = "SPEC: Bare variable name in comment (without {{ }}) does NOT suppress unused error"
+template = '''
+---
+params: [reserved = str, name = str]
+---
+> {# reserved — bare name, does NOT suppress the error #}
+
+Hello {{ name }}!'''
+expected_error = "unused"
+[tests.params]
+reserved = "x"
+name = "world"
+
+[[tests]]
+name = "comment_multi_ref_suppresses"
+description = "SPEC: Multiple {{ }} references in a single comment all suppress unused"
+template = '''
+---
+params: [role_type = str, agent_name = str]
+---
+> {# unused: {{ role_type }}, {{ agent_name }} #}
+
+Done.'''
+expected_output = "Done."
+[tests.params]
+role_type = "admin"
+agent_name = "bot"
+
+[[tests]]
+name = "comment_dotted_path_tracks_root"
+description = "SPEC: Dotted paths like {{ item.label }} in comments track the root variable"
+template = '''
+---
+params: [item = struct(label = str)]
+---
+> {# {{ item.label }} referenced here #}
+
+Done.'''
+expected_output = "Done."
+[tests.params]
+item = { label = "x" }
+
+[[tests]]
+name = "param_used_only_in_match_is_not_unused"
+description = "Param used only in {% match %} expression is correctly detected as used"
+template = '''
+---
+params: [status = enum(Ok, Err)]
+---
+> {% match status %}
+> {% case Ok %}
+
+good
+
+> {% case Err %}
+
+bad
+
+> {% /match %}'''
+expected_output = "good\n"
+[tests.params]
+status = { __kind__ = "Ok" }
