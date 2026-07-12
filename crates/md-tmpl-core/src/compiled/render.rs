@@ -283,8 +283,8 @@ fn render_value_into(val: &Value, output: &mut String) -> Result<(), TemplateErr
     match val {
         Value::Str(s) => output.push_str(s),
         // Direct push avoids the `write!` → `fmt` machinery.
-        Value::Bool(true) => output.push_str("true"),
-        Value::Bool(false) => output.push_str("false"),
+        Value::Bool(true) => output.push_str(crate::consts::LIT_TRUE),
+        Value::Bool(false) => output.push_str(crate::consts::LIT_FALSE),
         // itoa/ryu are ~3x faster than `write!` for number formatting.
         Value::Int(i) => {
             let mut buf = itoa::Buffer::new();
@@ -790,7 +790,11 @@ fn resolve_match_variant<'a>(
         // Scalar types: format as string for label comparison.
         Value::Int(n) => Ok(Cow::Owned(alloc::format!("{n}"))),
         Value::Float(f) => Ok(Cow::Owned(alloc::format!("{f}"))),
-        Value::Bool(b) => Ok(Cow::Borrowed(if *b { "true" } else { "false" })),
+        Value::Bool(b) => Ok(Cow::Borrowed(if *b {
+            crate::consts::LIT_TRUE
+        } else {
+            crate::consts::LIT_FALSE
+        })),
         Value::List(_) => Err(TemplateError::syntax(alloc::format!(
             "match: '{}' is a list — match requires a scalar or enum value",
             expr.as_str(),

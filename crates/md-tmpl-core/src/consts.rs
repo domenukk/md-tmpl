@@ -13,6 +13,8 @@ pub(crate) const FN_LEN: &str = "len";
 
 /// Name of the explicit kind/variant-name function: `kind(expr)`.
 pub(crate) const FN_KIND: &str = "kind";
+/// Prefix for detecting `kind(...)` calls in expressions: `"kind("`.
+pub(crate) const FN_KIND_PREFIX: &str = "kind(";
 /// Name of the enum variants list function: `kinds(expr)`.
 pub(crate) const FN_KINDS: &str = "kinds";
 

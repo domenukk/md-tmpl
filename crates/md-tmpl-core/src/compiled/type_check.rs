@@ -67,9 +67,10 @@ fn walk_match_labels_only(segments: &[Segment], env: &TypeEnv<'_>, errors: &mut 
             Segment::Match { expr, arms, .. } => {
                 // kind() detection
                 let raw = expr.as_str().trim();
-                let kind_prefix = alloc::format!("{}(", crate::consts::FN_KIND);
-                if raw.starts_with(&kind_prefix) && raw.ends_with(crate::consts::PAREN_CLOSE) {
-                    let inner = &raw[kind_prefix.len()..raw.len() - 1];
+                if raw.starts_with(crate::consts::FN_KIND_PREFIX)
+                    && raw.ends_with(crate::consts::PAREN_CLOSE)
+                {
+                    let inner = &raw[crate::consts::FN_KIND_PREFIX.len()..raw.len() - 1];
                     let hint =
                         format!("use {{% match {inner} %}} with unquoted variant names instead");
                     errors.push(format!(
@@ -103,10 +104,10 @@ fn walk_match_labels_only(segments: &[Segment], env: &TypeEnv<'_>, errors: &mut 
                         }
                         Some(VarType::Str | VarType::Int | VarType::Bool | VarType::Float) => {
                             let type_name = match expr_type.as_ref().unwrap() {
-                                VarType::Str => "str",
-                                VarType::Int => "int",
-                                VarType::Bool => "bool",
-                                VarType::Float => "float",
+                                VarType::Str => crate::consts::TYPE_STR,
+                                VarType::Int => crate::consts::TYPE_INT,
+                                VarType::Bool => crate::consts::TYPE_BOOL,
+                                VarType::Float => crate::consts::TYPE_FLOAT,
                                 _ => unreachable!(),
                             };
                             for arm in arms {
@@ -153,8 +154,10 @@ fn walk_match_labels_only(segments: &[Segment], env: &TypeEnv<'_>, errors: &mut 
 /// Check if a label string is quoted (single or double).
 fn is_quoted_label(label: &str) -> bool {
     label.len() >= 2
-        && ((label.starts_with('"') && label.ends_with('"'))
-            || (label.starts_with('\'') && label.ends_with('\'')))
+        && ((label.starts_with(crate::consts::QUOTE_DOUBLE)
+            && label.ends_with(crate::consts::QUOTE_DOUBLE))
+            || (label.starts_with(crate::consts::QUOTE_SINGLE)
+                && label.ends_with(crate::consts::QUOTE_SINGLE)))
 }
 
 /// Validate all field accesses in the compiled segment tree.
@@ -489,9 +492,10 @@ fn validate_match(
     // Detect kind() in match expression — users should match on the enum directly.
     {
         let raw = expr.as_str().trim();
-        let kind_prefix = alloc::format!("{}(", crate::consts::FN_KIND);
-        if raw.starts_with(&kind_prefix) && raw.ends_with(crate::consts::PAREN_CLOSE) {
-            let inner = &raw[kind_prefix.len()..raw.len() - 1];
+        if raw.starts_with(crate::consts::FN_KIND_PREFIX)
+            && raw.ends_with(crate::consts::PAREN_CLOSE)
+        {
+            let inner = &raw[crate::consts::FN_KIND_PREFIX.len()..raw.len() - 1];
             let hint = format!("use {{% match {inner} %}} with unquoted variant names instead");
             errors.push(format!(
                 "match on '{raw}': matching on kind() converts the enum to a string — {hint} for exhaustiveness checking and type safety"
@@ -595,10 +599,10 @@ fn validate_scalar_match_arms(
     visited: &mut HashSet<String>,
 ) {
     let type_name = match var_type {
-        VarType::Str => "str",
-        VarType::Int => "int",
-        VarType::Bool => "bool",
-        VarType::Float => "float",
+        VarType::Str => crate::consts::TYPE_STR,
+        VarType::Int => crate::consts::TYPE_INT,
+        VarType::Bool => crate::consts::TYPE_BOOL,
+        VarType::Float => crate::consts::TYPE_FLOAT,
         _ => unreachable!(),
     };
     for arm in arms {
@@ -666,13 +670,13 @@ fn validate_scalar_case_label(
 
     match (type_name, &kind) {
         // str: quoted strings, interpolated strings, identifiers ok.
-        ("str", LabelKind::IntLit | LabelKind::FloatLit) => {
+        (crate::consts::TYPE_STR, LabelKind::IntLit | LabelKind::FloatLit) => {
             let hint = format!("use {{% case \"{label}\" %}}");
             errors.push(format!(
                 "match on '{e}': case label '{label}' is a numeric literal, but '{e}' is a str — {hint} for a string literal"
             ));
         }
-        ("str", LabelKind::BoolLit) => {
+        (crate::consts::TYPE_STR, LabelKind::BoolLit) => {
             let hint = format!("use {{% case \"{label}\" %}}");
             errors.push(format!(
                 "match on '{e}': case label '{label}' is a bool literal, but '{e}' is a str — {hint} for a string literal"
@@ -680,45 +684,45 @@ fn validate_scalar_case_label(
         }
 
         // int: integer literals and identifiers ok.
-        ("int", LabelKind::QuotedStr | LabelKind::InterpolatedStr) => {
+        (crate::consts::TYPE_INT, LabelKind::QuotedStr | LabelKind::InterpolatedStr) => {
             let inner = crate::consts::strip_string_literal(label).unwrap_or(label);
             let hint = format!("use {{% case {inner} %}}");
             errors.push(format!(
                 "match on '{e}': quoted string '{label}' cannot match int values — {hint} for an integer literal"
             ));
         }
-        ("int", LabelKind::BoolLit) => {
+        (crate::consts::TYPE_INT, LabelKind::BoolLit) => {
             errors.push(format!(
                 "match on '{e}': case label '{label}' is a bool literal, but '{e}' is an int"
             ));
         }
-        ("int", LabelKind::FloatLit) => {
+        (crate::consts::TYPE_INT, LabelKind::FloatLit) => {
             errors.push(format!(
                 "match on '{e}': case label '{label}' is a float literal, but '{e}' is an int"
             ));
         }
 
         // float: float/int literals and identifiers ok.
-        ("float", LabelKind::QuotedStr | LabelKind::InterpolatedStr) => {
+        (crate::consts::TYPE_FLOAT, LabelKind::QuotedStr | LabelKind::InterpolatedStr) => {
             let inner = crate::consts::strip_string_literal(label).unwrap_or(label);
             let hint = format!("use {{% case {inner} %}}");
             errors.push(format!(
                 "match on '{e}': quoted string '{label}' cannot match float values — {hint} for a numeric literal"
             ));
         }
-        ("float", LabelKind::BoolLit) => {
+        (crate::consts::TYPE_FLOAT, LabelKind::BoolLit) => {
             errors.push(format!(
                 "match on '{e}': case label '{label}' is a bool literal, but '{e}' is a float"
             ));
         }
 
         // bool: true/false and identifiers ok.
-        ("bool", LabelKind::QuotedStr | LabelKind::InterpolatedStr) => {
+        (crate::consts::TYPE_BOOL, LabelKind::QuotedStr | LabelKind::InterpolatedStr) => {
             errors.push(format!(
                 "match on '{e}': quoted string '{label}' cannot match bool values — {HINT_BOOL}"
             ));
         }
-        ("bool", LabelKind::IntLit | LabelKind::FloatLit) => {
+        (crate::consts::TYPE_BOOL, LabelKind::IntLit | LabelKind::FloatLit) => {
             errors.push(format!(
                 "match on '{e}': case label '{label}' is a numeric literal, but '{e}' is a bool — {HINT_BOOL}"
             ));

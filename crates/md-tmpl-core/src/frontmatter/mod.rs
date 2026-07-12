@@ -290,8 +290,8 @@ fn validate_env_value(
             .map(Value::Int)
             .map_err(|_| TemplateError::syntax(format!("env '{name}': expected int, got '{raw}'"))),
         (Value::Str(raw), VarType::Bool) => match raw.as_str() {
-            "true" => Ok(Value::Bool(true)),
-            "false" => Ok(Value::Bool(false)),
+            crate::consts::LIT_TRUE => Ok(Value::Bool(true)),
+            crate::consts::LIT_FALSE => Ok(Value::Bool(false)),
             _ => Err(TemplateError::syntax(format!(
                 "env '{name}': expected bool, got '{raw}'"
             ))),
