@@ -1,6 +1,5 @@
 /target
 original_prompt.md
-Cargo.lock
 ORIGINAL_REQUEST.md
 PROJECT.md
 .agents
@@ -24,3 +23,4 @@ benchmarks/target
 
 # Rlease stuff
 *.tgz
+.npmrc
