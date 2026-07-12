@@ -560,7 +560,7 @@ pub(crate) fn generate_unit_enum_impls(
         impl ::core::str::FromStr for #enum_ident {
             type Err = #cp::__private::String;
 
-            fn from_str(s: &str) -> ::core::result::Result<Self, Self::Err> {
+            fn from_str(s: &str) -> ::core::result::Result<Self, <Self as ::core::str::FromStr>::Err> {
                 match s.to_lowercase().as_str() {
                     #(#from_str_arms,)*
                     other => ::core::result::Result::Err(#cp::__private::format!(

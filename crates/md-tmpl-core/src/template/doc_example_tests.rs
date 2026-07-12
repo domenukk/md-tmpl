@@ -188,14 +188,13 @@ fn all_spec_examples_compile() {
         }
     }
 
-    if !failures.is_empty() {
-        panic!(
-            "SPEC.md doc example compilation failures ({} of {}):\n{}",
-            failures.len(),
-            blocks.len(),
-            failures.join("\n")
-        );
-    }
+    assert!(
+        failures.is_empty(),
+        "SPEC.md doc example compilation failures ({} of {}):\n{}",
+        failures.len(),
+        blocks.len(),
+        failures.join("\n")
+    );
 
     eprintln!(
         "SPEC.md: {pass} compiled, {expected_skip} skipped (env/import dependent), 0 failures"
@@ -241,14 +240,13 @@ fn all_readme_examples_compile() {
         }
     }
 
-    if !failures.is_empty() {
-        panic!(
-            "README doc example compilation failures ({} of {}):\n{}",
-            failures.len(),
-            total_pass + total_skip + failures.len(),
-            failures.join("\n")
-        );
-    }
+    assert!(
+        failures.is_empty(),
+        "README doc example compilation failures ({} of {}):\n{}",
+        failures.len(),
+        total_pass + total_skip + failures.len(),
+        failures.join("\n")
+    );
 
     eprintln!(
         "READMEs: {total_pass} compiled, {total_skip} skipped (env/import dependent), 0 failures"
@@ -261,7 +259,7 @@ mod unit_tests {
 
     #[test]
     fn extract_finds_template_blocks() {
-        let md = r#"Some text
+        let md = r"Some text
 
 ```yaml
 ---
@@ -272,7 +270,7 @@ Hello {{ name }}
 ```
 
 More text
-"#;
+";
         let blocks = extract_template_blocks(md, "test.md");
         assert_eq!(blocks.len(), 1);
         assert!(blocks[0].content.starts_with("---"));
