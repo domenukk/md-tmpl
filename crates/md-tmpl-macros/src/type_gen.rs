@@ -256,28 +256,8 @@ pub(crate) fn typed_enum_codegen(
         }
     }
 
-    // Only use `#[serde(tag)]` for enums that contain struct variants.
-    // Unit-variant-only enums serialize as plain strings, which is needed
-    // for template display via `{{ value }}`.
-    let has_data_variants = variants.iter().any(|v| !v.fields.is_empty());
-    let serde_derives = if cfg!(feature = "serde") {
-        if has_data_variants {
-            quote! {
-                #[derive(Debug, Clone, PartialEq, ::serde::Serialize, ::serde::Deserialize)]
-                #[serde(tag = "__kind__")]
-            }
-        } else {
-            // Unit-variant-only enums: no heap data, so Copy is safe and
-            // Hash enables use as HashMap keys.
-            quote! {
-                #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ::serde::Serialize, ::serde::Deserialize)]
-            }
-        }
-    } else if has_data_variants {
-        quote! { #[derive(Debug, Clone, PartialEq)] }
-    } else {
-        quote! { #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)] }
-    };
+    let kind = classify_enum(variants);
+    let (serde_derives, custom_serde) = enum_derive_attrs(&enum_name, variants, kind);
 
     sub_structs.push(quote! {
         /// Auto-generated enum for parameter constraints.
@@ -285,6 +265,8 @@ pub(crate) fn typed_enum_codegen(
         pub enum #enum_name {
             #(#variant_tokens),*
         }
+
+        #custom_serde
     });
 
     let enum_type = enum_name.clone();
@@ -415,7 +397,6 @@ pub(crate) fn generate_toplevel_enum(
     variants: &[md_tmpl_core::VariantDecl],
 ) -> proc_macro2::TokenStream {
     let enum_ident = format_ident!("{}", name);
-    let has_data_variants = variants.iter().any(|v| !v.fields.is_empty());
 
     let mut sub_types = Vec::new();
     let mut variant_tokens = Vec::new();
@@ -455,30 +436,15 @@ pub(crate) fn generate_toplevel_enum(
         }
     }
 
-    let serde_derives = if cfg!(feature = "serde") {
-        if has_data_variants {
-            quote! {
-                #[derive(Debug, Clone, PartialEq, ::serde::Serialize, ::serde::Deserialize)]
-                #[serde(tag = "__kind__")]
-            }
-        } else {
-            quote! {
-                #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ::serde::Serialize, ::serde::Deserialize)]
-            }
-        }
-    } else if has_data_variants {
-        quote! { #[derive(Debug, Clone, PartialEq)] }
-    } else {
-        quote! { #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)] }
-    };
+    let kind = classify_enum(variants);
+    let (serde_derives, custom_serde) = enum_derive_attrs(&enum_ident, variants, kind);
 
     let doc = format!("Type alias `{name}` from template `types:` block.");
 
-    // For unit-variant-only enums, generate Display, FromStr, VARIANTS, all().
-    let extra_impls = if has_data_variants {
-        quote! {}
-    } else {
-        generate_unit_enum_impls(&enum_ident, variants)
+    let extra_impls = match kind {
+        EnumKind::UnitOnly => generate_unit_enum_impls(&enum_ident, variants),
+        EnumKind::Mixed => generate_mixed_enum_impls(&enum_ident, variants),
+        EnumKind::DataOnly => quote! {},
     };
 
     quote! {
@@ -490,7 +456,430 @@ pub(crate) fn generate_toplevel_enum(
             #(#variant_tokens),*
         }
 
+        #custom_serde
         #extra_impls
+    }
+}
+
+/// Map a [`VarType`] to the Rust type token stream used in serde deserialization.
+///
+/// This is a simplified version of `var_type_to_rust` that only produces the
+/// type (no setter closure) and is used inside generated `Deserialize` impls
+/// to call `map.next_value::<T>()`.
+fn var_type_to_serde_type(var_type: &md_tmpl_core::VarType) -> proc_macro2::TokenStream {
+    use md_tmpl_core::VarType;
+    match var_type {
+        VarType::Int => quote! { i64 },
+        VarType::Float => quote! { f64 },
+        VarType::Bool => quote! { bool },
+        // Str and all complex types fall back to String.  Truly complex nested
+        // types in enum variant fields are rare and would need custom handling.
+        _ => quote! { ::std::string::String },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Enum kind classification and shared derive/serde helpers
+// ---------------------------------------------------------------------------
+
+/// Classification of an enum's variant composition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnumKind {
+    /// All variants are unit variants (no fields).
+    UnitOnly,
+    /// All variants carry data (struct fields).
+    DataOnly,
+    /// Mix of unit variants and data variants.
+    Mixed,
+}
+
+/// Classify an enum as unit-only, data-only, or mixed.
+fn classify_enum(variants: &[md_tmpl_core::VariantDecl]) -> EnumKind {
+    let has_unit = variants.iter().any(|v| v.fields.is_empty());
+    let has_data = variants.iter().any(|v| !v.fields.is_empty());
+    match (has_unit, has_data) {
+        (true, false) => EnumKind::UnitOnly,
+        (false, true) => EnumKind::DataOnly,
+        _ => EnumKind::Mixed,
+    }
+}
+
+/// Generate `#[derive(...)]` attributes and optional custom serde impls for an enum.
+///
+/// Returns `(derive_attrs, custom_serde_tokens)` — the custom serde tokens are
+/// empty when derive-based serde is used, and contain manual `Serialize` /
+/// `Deserialize` impls for mixed enums.
+fn enum_derive_attrs(
+    enum_ident: &syn::Ident,
+    variants: &[md_tmpl_core::VariantDecl],
+    kind: EnumKind,
+) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
+    match kind {
+        EnumKind::UnitOnly => {
+            let derives = if cfg!(feature = "serde") {
+                quote! {
+                    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ::serde::Serialize, ::serde::Deserialize)]
+                }
+            } else {
+                quote! { #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)] }
+            };
+            (derives, quote! {})
+        }
+        EnumKind::DataOnly => {
+            let derives = if cfg!(feature = "serde") {
+                quote! {
+                    #[derive(Debug, Clone, PartialEq, ::serde::Serialize, ::serde::Deserialize)]
+                    #[serde(tag = "__kind__")]
+                }
+            } else {
+                quote! { #[derive(Debug, Clone, PartialEq)] }
+            };
+            (derives, quote! {})
+        }
+        EnumKind::Mixed => {
+            // Mixed enums never derive Serialize/Deserialize (custom impl is
+            // generated separately).  We only derive PartialEq (not Eq/Hash)
+            // because data variants may contain f64 or other non-Eq types.
+            let derives = quote! { #[derive(Debug, Clone, PartialEq)] };
+            let custom_serde = if cfg!(feature = "serde") {
+                generate_mixed_enum_serde(enum_ident, variants)
+            } else {
+                quote! {}
+            };
+            (derives, custom_serde)
+        }
+    }
+}
+
+/// Generate custom `Serialize` and `Deserialize` impls for a mixed enum.
+///
+/// Unit variants serialize as plain strings (`"VariantName"`), while data
+/// variants serialize as maps with a `__kind__` discriminator field.
+fn generate_mixed_enum_serde(
+    enum_ident: &syn::Ident,
+    variants: &[md_tmpl_core::VariantDecl],
+) -> proc_macro2::TokenStream {
+    let names: Vec<String> = variants.iter().map(|v| v.name.clone()).collect();
+    let deduped = deduplicate_variant_idents(&names);
+
+    let ser_arms = mixed_serialize_arms(variants, &deduped);
+
+    let unit_str_arms: Vec<_> = variants
+        .iter()
+        .zip(deduped.iter())
+        .filter(|(v, _)| v.fields.is_empty())
+        .map(|(v, (ident, _))| {
+            let name_str = &v.name;
+            quote! { #name_str => ::core::result::Result::Ok(#enum_ident::#ident) }
+        })
+        .collect();
+
+    let all_unit_names: Vec<_> = variants
+        .iter()
+        .filter(|v| v.fields.is_empty())
+        .map(|v| v.name.as_str())
+        .collect();
+    let all_data_names: Vec<_> = variants
+        .iter()
+        .filter(|v| !v.fields.is_empty())
+        .map(|v| v.name.as_str())
+        .collect();
+
+    let data_kind_arms = mixed_deserialize_kind_arms(enum_ident, variants, &deduped);
+
+    let enum_name_str = enum_ident.to_string();
+    let expecting_msg =
+        format!("a string (unit variant) or map with __kind__ (data variant) for {enum_name_str}");
+
+    quote! {
+        impl ::serde::Serialize for #enum_ident {
+            fn serialize<S: ::serde::Serializer>(&self, serializer: S) -> ::core::result::Result<S::Ok, S::Error> {
+                match self {
+                    #(#ser_arms),*
+                }
+            }
+        }
+
+        impl<'de> ::serde::Deserialize<'de> for #enum_ident {
+            fn deserialize<D: ::serde::Deserializer<'de>>(deserializer: D) -> ::core::result::Result<Self, D::Error> {
+                struct __MixedEnumVisitor;
+
+                impl<'de> ::serde::de::Visitor<'de> for __MixedEnumVisitor {
+                    type Value = #enum_ident;
+
+                    fn expecting(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                        f.write_str(#expecting_msg)
+                    }
+
+                    fn visit_str<E: ::serde::de::Error>(self, v: &str) -> ::core::result::Result<Self::Value, E> {
+                        match v {
+                            #(#unit_str_arms,)*
+                            other => ::core::result::Result::Err(::serde::de::Error::unknown_variant(
+                                other,
+                                &[#(#all_unit_names),*],
+                            )),
+                        }
+                    }
+
+                    fn visit_map<A: ::serde::de::MapAccess<'de>>(self, mut map: A) -> ::core::result::Result<Self::Value, A::Error> {
+                        let mut __kind: ::core::option::Option<::std::string::String> = ::core::option::Option::None;
+                        if let ::core::option::Option::Some(first_key) = map.next_key::<::std::string::String>()? {
+                            if first_key == "__kind__" {
+                                __kind = ::core::option::Option::Some(map.next_value()?);
+                            } else {
+                                let _: ::serde::de::IgnoredAny = map.next_value()?;
+                                while let ::core::option::Option::Some(key) = map.next_key::<::std::string::String>()? {
+                                    if key == "__kind__" {
+                                        __kind = ::core::option::Option::Some(map.next_value()?);
+                                        break;
+                                    }
+                                    let _: ::serde::de::IgnoredAny = map.next_value()?;
+                                }
+                            }
+                        }
+
+                        let __kind_val = __kind.ok_or_else(|| ::serde::de::Error::missing_field("__kind__"))?;
+                        match __kind_val.as_str() {
+                            #(#data_kind_arms,)*
+                            other => ::core::result::Result::Err(::serde::de::Error::unknown_variant(
+                                other,
+                                &[#(#all_data_names),*],
+                            )),
+                        }
+                    }
+                }
+
+                deserializer.deserialize_any(__MixedEnumVisitor)
+            }
+        }
+    }
+}
+
+/// Generate Serialize match arms for a mixed enum.
+///
+/// Unit variants become `serialize_str`; data variants become `serialize_map`
+/// with a `__kind__` discriminator entry.
+fn mixed_serialize_arms(
+    variants: &[md_tmpl_core::VariantDecl],
+    deduped: &[(syn::Ident, Option<String>)],
+) -> Vec<proc_macro2::TokenStream> {
+    variants
+        .iter()
+        .zip(deduped.iter())
+        .map(|(v, (ident, _))| {
+            let name_str = &v.name;
+            if v.fields.is_empty() {
+                quote! { Self::#ident => serializer.serialize_str(#name_str) }
+            } else {
+                let field_count = v.fields.len() + 1; // +1 for __kind__
+                let field_idents: Vec<_> = v
+                    .fields
+                    .iter()
+                    .map(|f| format_ident!("{}", f.name))
+                    .collect();
+                let field_names: Vec<_> = v.fields.iter().map(|f| f.name.as_str()).collect();
+                quote! {
+                    Self::#ident { #(#field_idents),* } => {
+                        use ::serde::ser::SerializeMap;
+                        let mut map = serializer.serialize_map(::core::option::Option::Some(#field_count))?;
+                        map.serialize_entry("__kind__", #name_str)?;
+                        #(map.serialize_entry(#field_names, #field_idents)?;)*
+                        map.end()
+                    }
+                }
+            }
+        })
+        .collect()
+}
+
+/// Generate per-variant Deserialize match arms for `visit_map`.
+///
+/// Each arm declares typed `Option<T>` variables, reads remaining map entries,
+/// and constructs the variant.
+fn mixed_deserialize_kind_arms(
+    enum_ident: &syn::Ident,
+    variants: &[md_tmpl_core::VariantDecl],
+    deduped: &[(syn::Ident, Option<String>)],
+) -> Vec<proc_macro2::TokenStream> {
+    variants
+        .iter()
+        .zip(deduped.iter())
+        .filter(|(v, _)| !v.fields.is_empty())
+        .map(|(v, (ident, _))| {
+            let name_str = &v.name;
+            let field_idents: Vec<_> = v
+                .fields
+                .iter()
+                .map(|f| format_ident!("__field_{}", f.name))
+                .collect();
+            let field_names: Vec<_> = v.fields.iter().map(|f| f.name.as_str()).collect();
+            let field_result_idents: Vec<_> = v
+                .fields
+                .iter()
+                .map(|f| format_ident!("{}", f.name))
+                .collect();
+            let field_types: Vec<_> = v
+                .fields
+                .iter()
+                .map(|f| var_type_to_serde_type(&f.var_type))
+                .collect();
+
+            let field_match_arms: Vec<_> = field_idents
+                .iter()
+                .zip(field_names.iter())
+                .zip(field_types.iter())
+                .map(|((fi, fn_str), ft)| {
+                    quote! {
+                        #fn_str => {
+                            #fi = ::core::option::Option::Some(map.next_value::<#ft>()?);
+                        }
+                    }
+                })
+                .collect();
+
+            let field_unwraps: Vec<_> = field_idents
+                .iter()
+                .zip(field_names.iter())
+                .zip(field_result_idents.iter())
+                .map(|((fi, fn_str), fr)| {
+                    quote! {
+                        let #fr = #fi.ok_or_else(|| ::serde::de::Error::missing_field(#fn_str))?;
+                    }
+                })
+                .collect();
+
+            quote! {
+                #name_str => {
+                    #(let mut #field_idents: ::core::option::Option<#field_types> = ::core::option::Option::None;)*
+                    while let ::core::option::Option::Some(key) = map.next_key::<::std::string::String>()? {
+                        match key.as_str() {
+                            #(#field_match_arms)*
+                            _ => { let _: ::serde::de::IgnoredAny = map.next_value()?; }
+                        }
+                    }
+                    #(#field_unwraps)*
+                    ::core::result::Result::Ok(#enum_ident::#ident { #(#field_result_idents),* })
+                }
+            }
+        })
+        .collect()
+}
+
+/// Generate `Display`, `FromStr`, `VARIANT_NAMES`, `ALL`, and `as_str` for mixed enums.
+///
+/// Mixed enums have both unit and struct variants.  The impls handle data
+/// variants by matching with `{ .. }` wildcard patterns where needed.
+fn generate_mixed_enum_impls(
+    enum_ident: &syn::Ident,
+    variants: &[md_tmpl_core::VariantDecl],
+) -> proc_macro2::TokenStream {
+    let names: Vec<String> = variants.iter().map(|v| v.name.clone()).collect();
+    let deduped = deduplicate_variant_idents(&names);
+
+    let total_variant_count = variants.len();
+    let unit_variant_count = variants.iter().filter(|v| v.fields.is_empty()).count();
+
+    // Display: all variants display their declared name.
+    let display_arms: Vec<_> = variants
+        .iter()
+        .zip(deduped.iter())
+        .map(|(v, (ident, _))| {
+            let name_str = &v.name;
+            if v.fields.is_empty() {
+                quote! { Self::#ident => f.write_str(#name_str) }
+            } else {
+                quote! { Self::#ident { .. } => f.write_str(#name_str) }
+            }
+        })
+        .collect();
+
+    // as_str: all variants return their declared name. NOT const fn because
+    // of data variant patterns.
+    let as_str_arms: Vec<_> = variants
+        .iter()
+        .zip(deduped.iter())
+        .map(|(v, (ident, _))| {
+            let name_str = &v.name;
+            if v.fields.is_empty() {
+                quote! { Self::#ident => #name_str }
+            } else {
+                quote! { Self::#ident { .. } => #name_str }
+            }
+        })
+        .collect();
+
+    // FromStr: only unit variants can be constructed from a string.
+    let from_str_arms: Vec<_> = variants
+        .iter()
+        .zip(deduped.iter())
+        .filter(|(v, _)| v.fields.is_empty())
+        .map(|(v, (ident, _))| {
+            let lower = v.name.to_lowercase();
+            quote! { #lower => ::core::result::Result::Ok(Self::#ident) }
+        })
+        .collect();
+
+    // VARIANT_NAMES: all variant names (unit and data).
+    let variant_name_strs: Vec<_> = variants
+        .iter()
+        .map(|v| {
+            let name_str = &v.name;
+            quote! { #name_str }
+        })
+        .collect();
+
+    // ALL: only unit variants (can't construct data variants at const time).
+    let unit_variant_idents: Vec<_> = variants
+        .iter()
+        .zip(deduped.iter())
+        .filter(|(v, _)| v.fields.is_empty())
+        .map(|(_, (ident, _))| {
+            quote! { Self::#ident }
+        })
+        .collect();
+
+    let enum_name_str = enum_ident.to_string();
+    let cp = crate_path();
+
+    quote! {
+        impl ::core::fmt::Display for #enum_ident {
+            fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
+                match self {
+                    #(#display_arms),*
+                }
+            }
+        }
+
+        impl ::core::str::FromStr for #enum_ident {
+            type Err = #cp::__private::String;
+
+            fn from_str(s: &str) -> ::core::result::Result<Self, <Self as ::core::str::FromStr>::Err> {
+                match s.to_lowercase().as_str() {
+                    #(#from_str_arms,)*
+                    other => ::core::result::Result::Err(#cp::__private::format!(
+                        "unknown {} variant {:?}: expected one of [{}]",
+                        #enum_name_str,
+                        other,
+                        Self::VARIANT_NAMES.join(", "),
+                    )),
+                }
+            }
+        }
+
+        impl #enum_ident {
+            /// Return the variant name as a static string slice.
+            pub fn as_str(&self) -> &'static str {
+                match self {
+                    #(#as_str_arms),*
+                }
+            }
+
+            /// All variant names as strings (in declaration order).
+            pub const VARIANT_NAMES: [&'static str; #total_variant_count] = [#(#variant_name_strs),*];
+
+            /// All unit variants (in declaration order).
+            pub const ALL: [Self; #unit_variant_count] = [#(#unit_variant_idents),*];
+        }
     }
 }
 

@@ -156,6 +156,18 @@ fn process_test_case(tc: &toml::Table, output: &mut String) -> Option<bool> {
         return Some(false);
     }
 
+    // Skip tests explicitly marked for runtime-only execution (e.g.,
+    // templates with nested type aliases that generate typed Rust structs
+    // which can't be populated by toml_to_context).
+    if tc
+        .get("skip_compile_time")
+        .and_then(toml::Value::as_bool)
+        // NOLINT: optional TOML field — absent means "don't skip", so false is the correct default
+        .unwrap_or(false)
+    {
+        return Some(false);
+    }
+
     // Must have inline template source and expected_output.
     let template_src = tc.get("template").and_then(|v| v.as_str())?;
 

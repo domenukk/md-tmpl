@@ -2910,3 +2910,361 @@ bad
 expected_output = "good\n"
 [tests.params]
 status = { __kind__ = "Ok" }
+
+# ============================================================================
+# Mixed enum (unit + data variants) E2E tests
+# ============================================================================
+
+[[tests]]
+name = "mixed_enum_match_data_variant"
+description = "Match on a data variant extracts its fields"
+template = '''
+---
+types:
+  - Status = enum(Active(score = int), Paused, Stopped)
+
+params: [status = Status]
+---
+> {% match status %}
+> {% case Active %}
+
+score={{ status.score }}
+
+> {% case Paused %}
+
+paused
+
+> {% case Stopped %}
+
+stopped
+
+> {% /match %}'''
+expected_output = "score=42\n"
+[tests.params]
+status = { "__kind__" = "Active", "score" = 42 }
+
+[[tests]]
+name = "mixed_enum_match_unit_variant"
+description = "Match on a unit variant of a mixed enum works"
+template = '''
+---
+types:
+  - Status = enum(Active(score = int), Paused, Stopped)
+
+params: [status = Status]
+---
+> {% match status %}
+> {% case Active %}
+
+active
+
+> {% case Paused %}
+
+paused
+
+> {% case Stopped %}
+
+stopped
+
+> {% /match %}'''
+expected_output = "paused\n"
+[tests.params]
+status = "Paused"
+
+[[tests]]
+name = "mixed_enum_kind_on_data_variant"
+description = "kind() returns variant name for a data variant"
+template = '''
+---
+types:
+  - Status = enum(Active(score = int), Paused, Stopped)
+
+params: [status = Status]
+---
+{{ kind(status) }}'''
+expected_output = "Active"
+[tests.params]
+status = { "__kind__" = "Active", "score" = 10 }
+
+[[tests]]
+name = "mixed_enum_kind_on_unit_variant"
+description = "kind() returns variant name for a unit variant in a mixed enum"
+template = '''
+---
+types:
+  - Status = enum(Active(score = int), Paused, Stopped)
+
+params: [status = Status]
+---
+{{ kind(status) }}'''
+expected_output = "Stopped"
+[tests.params]
+status = "Stopped"
+
+[[tests]]
+name = "mixed_enum_inline_if_match"
+description = "Inline if with match-as-condition on mixed enum data variant"
+template = '''
+---
+types:
+  - Status = enum(Active(score = int), Paused, Stopped)
+
+params: [status = Status]
+---
+> {% if match status case Active %}active{% else %}not_active{% /if %}'''
+expected_output = "active"
+[tests.params]
+status = { "__kind__" = "Active", "score" = 99 }
+
+[[tests]]
+name = "mixed_enum_inline_if_match_unit"
+description = "Inline if with match-as-condition on mixed enum unit variant"
+template = '''
+---
+types:
+  - Status = enum(Active(score = int), Paused, Stopped)
+
+params: [status = Status]
+---
+> {% if match status case Paused %}paused{% else %}not_paused{% /if %}'''
+expected_output = "paused"
+[tests.params]
+status = "Paused"
+
+[[tests]]
+name = "mixed_enum_multi_data_variants"
+description = "Mixed enum with multiple data variants matches correctly"
+template = '''
+---
+types:
+  - Shape = enum(Circle(radius = float), Rect(w = int, h = int), Point)
+
+params: [s = Shape]
+---
+> {% match s %}
+> {% case Circle %}
+
+circle r={{ s.radius }}
+
+> {% case Rect %}
+
+rect {{ s.w }}x{{ s.h }}
+
+> {% case Point %}
+
+point
+
+> {% /match %}'''
+expected_output = "rect 3x4\n"
+[tests.params]
+s = { "__kind__" = "Rect", "w" = 3, "h" = 4 }
+
+[[tests]]
+name = "mixed_enum_multi_data_point_variant"
+description = "Mixed enum with multiple data variants - selecting unit variant"
+template = '''
+---
+types:
+  - Shape = enum(Circle(radius = float), Rect(w = int, h = int), Point)
+
+params: [s = Shape]
+---
+> {% match s %}
+> {% case Circle %}
+
+circle
+
+> {% case Rect %}
+
+rect
+
+> {% case Point %}
+
+point
+
+> {% /match %}'''
+expected_output = "point\n"
+[tests.params]
+s = "Point"
+
+[[tests]]
+name = "mixed_enum_data_variant_str_field"
+description = "Mixed enum data variant with a string field"
+template = '''
+---
+types:
+  - Msg = enum(Error(detail = str), Ok)
+
+params: [m = Msg]
+---
+> {% match m %}
+> {% case Error %}
+
+err: {{ m.detail }}
+
+> {% case Ok %}
+
+ok
+
+> {% /match %}'''
+expected_output = "err: something failed\n"
+[tests.params]
+m = { "__kind__" = "Error", "detail" = "something failed" }
+
+[[tests]]
+name = "mixed_enum_data_variant_bool_field"
+description = "Mixed enum data variant with a boolean field"
+template = '''
+---
+types:
+  - Result = enum(Done(success = bool), Pending)
+
+params: [r = Result]
+---
+> {% match r %}
+> {% case Done %}
+
+> {% if r.success %}pass{% else %}fail{% /if %}
+
+> {% case Pending %}
+
+wait
+
+> {% /match %}'''
+expected_output = "pass"
+[tests.params]
+r = { "__kind__" = "Done", "success" = true }
+
+# ============================================================================
+# Nested enum tests (struct variant containing enum-typed fields)
+# ============================================================================
+
+[[tests]]
+name = "nested_enum_struct_variant_with_enum_field"
+skip_compile_time = true
+description = "Struct variant containing an enum-typed field — match outer, access inner"
+template = '''
+---
+types:
+  - Severity = enum(High, Medium, Low)
+  - Finding = enum(Found(severity = Severity, detail = str), NotFound)
+
+params: [f = Finding]
+---
+> {% match f %}
+> {% case Found %}
+
+{{ kind(f.severity) }}: {{ f.detail }}
+
+> {% case NotFound %}
+
+nothing
+
+> {% /match %}'''
+expected_output = "High: buffer overflow\n"
+[tests.params]
+f = { "__kind__" = "Found", "severity" = "High", "detail" = "buffer overflow" }
+
+[[tests]]
+name = "nested_enum_inner_unit_variant"
+skip_compile_time = true
+description = "Nested enum — inner field is a unit variant, kind() extracts its name"
+template = '''
+---
+types:
+  - Severity = enum(High, Medium, Low)
+  - Finding = enum(Found(severity = Severity, detail = str), NotFound)
+
+params: [f = Finding]
+---
+> {% match f %}
+> {% case Found %}
+
+{{ kind(f.severity) }}: {{ f.detail }}
+
+> {% case NotFound %}
+
+nothing
+
+> {% /match %}'''
+expected_output = "Low: minor issue\n"
+[tests.params]
+f = { "__kind__" = "Found", "severity" = "Low", "detail" = "minor issue" }
+
+[[tests]]
+name = "nested_enum_outer_unit_variant"
+skip_compile_time = true
+description = "Nested enum — outer is unit variant, inner enum not used"
+template = '''
+---
+types:
+  - Severity = enum(High, Medium, Low)
+  - Finding = enum(Found(severity = Severity, detail = str), NotFound)
+
+params: [f = Finding]
+---
+> {% match f %}
+> {% case Found %}
+
+found
+
+> {% case NotFound %}
+
+nothing
+
+> {% /match %}'''
+expected_output = "nothing\n"
+[tests.params]
+f = "NotFound"
+
+[[tests]]
+name = "nested_enum_kind_on_inner_field"
+skip_compile_time = true
+description = "kind() on inner enum field returns its variant name"
+template = '''
+---
+types:
+  - Priority = enum(Urgent, Normal, Deferred)
+  - Task = enum(Active(priority = Priority, label = str), Archived)
+
+params: [t = Task]
+---
+> {% match t %}
+> {% case Active %}
+
+{{ kind(t.priority) }}-{{ t.label }}
+
+> {% case Archived %}
+
+archived
+
+> {% /match %}'''
+expected_output = "Urgent-deploy fix\n"
+[tests.params]
+t = { "__kind__" = "Active", "priority" = "Urgent", "label" = "deploy fix" }
+
+[[tests]]
+name = "nested_enum_if_match_on_inner"
+skip_compile_time = true
+description = "If-match on inner enum field works"
+template = '''
+---
+types:
+  - Priority = enum(Urgent, Normal, Deferred)
+  - Task = enum(Active(priority = Priority, label = str), Archived)
+
+params: [t = Task]
+---
+> {% match t %}
+> {% case Active %}
+
+> {% if match t.priority case Urgent %}🔴{% else %}⚪{% /if %} {{ t.label }}
+
+> {% case Archived %}
+
+archived
+
+> {% /match %}'''
+expected_output = "🔴 deploy fix\n"
+[tests.params]
+t = { "__kind__" = "Active", "priority" = "Urgent", "label" = "deploy fix" }
