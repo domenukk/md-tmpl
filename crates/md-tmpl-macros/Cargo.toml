@@ -1,6 +1,6 @@
 [package]
 name = "md-tmpl-macros"
-version = "0.6.2"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Proc macros for build-time template validation and pre-parsing"
@@ -14,15 +14,13 @@ categories = ["development-tools::procedural-macro-helpers"]
 proc-macro = true
 
 [features]
-default = ["serde", "typed-builder"]
+default = ["serde"]
 serde = []
-typed-builder = []
 
 [dependencies]
-md-tmpl-core = { version = "0.6.2", path = "../md-tmpl-core", default-features = false, features = [
+md-tmpl-core = { version = "0.7.0", path = "../md-tmpl-core", default-features = false, features = [
   "std",
   "serde",
-  "typed-builder",
 ] }
 hashbrown = { version = "0.17", default-features = false, features = [
   "default-hasher",
@@ -33,7 +31,6 @@ proc-macro2 = "1"
 
 [dev-dependencies]
 serde = { version = "1", features = ["derive"] }
-typed-builder = { workspace = true }
 
 [lints]
 workspace = true

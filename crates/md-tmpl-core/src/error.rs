@@ -86,6 +86,88 @@ impl TemplateError {
     pub(crate) fn syntax(msg: impl Into<String>) -> Self {
         Self::Syntax(SyntaxError::new(msg))
     }
+
+    /// Return the stable, data-independent [`ErrorKind`] of this error.
+    ///
+    /// Unlike matching on the enum variants (which also carry payloads), this
+    /// gives a lightweight, `Copy` discriminant that language bindings can map
+    /// onto their own typed-error hierarchies without parsing the display
+    /// message.
+    #[must_use]
+    pub fn kind(&self) -> ErrorKind {
+        match self {
+            #[cfg(feature = "std")]
+            Self::Io(_) => ErrorKind::Io,
+            Self::UndefinedVariable(_) => ErrorKind::UndefinedVariable,
+            Self::Syntax(_) => ErrorKind::Syntax,
+            Self::MissingParams(_) => ErrorKind::MissingParams,
+            Self::TypeMismatch { .. } => ErrorKind::TypeMismatch,
+            Self::UnknownFilter(_) => ErrorKind::UnknownFilter,
+            Self::IncludeNotFound(_) => ErrorKind::IncludeNotFound,
+            Self::DeclarationsMutated { .. } => ErrorKind::DeclarationsMutated,
+            Self::ExtraParams(_) => ErrorKind::ExtraParams,
+            Self::Panic(_) => ErrorKind::Panic,
+        }
+    }
+}
+
+/// A stable, `Copy` categorisation of a [`TemplateError`].
+///
+/// This mirrors the [`TemplateError`] variants but drops their payloads, giving
+/// a discriminant that is cheap to pass around and stable across releases. It is
+/// primarily intended for FFI and language bindings that expose a typed-error
+/// hierarchy of their own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ErrorKind {
+    /// I/O error while loading a template file. See [`TemplateError::Io`].
+    Io,
+    /// A referenced variable was not found. See [`TemplateError::UndefinedVariable`].
+    UndefinedVariable,
+    /// Syntax error in the template. See [`TemplateError::Syntax`].
+    Syntax,
+    /// Missing required parameters. See [`TemplateError::MissingParams`].
+    MissingParams,
+    /// Type mismatch. See [`TemplateError::TypeMismatch`].
+    TypeMismatch,
+    /// Unknown filter name. See [`TemplateError::UnknownFilter`].
+    UnknownFilter,
+    /// Include file not found. See [`TemplateError::IncludeNotFound`].
+    IncludeNotFound,
+    /// Declarations mutated at runtime. See [`TemplateError::DeclarationsMutated`].
+    DeclarationsMutated,
+    /// Extra undeclared parameters. See [`TemplateError::ExtraParams`].
+    ExtraParams,
+    /// Explicit `{% panic(...) %}`. See [`TemplateError::Panic`].
+    Panic,
+}
+
+impl ErrorKind {
+    /// Return the stable, machine-readable identifier for this kind.
+    ///
+    /// These identifiers are part of the public contract (they cross the FFI
+    /// boundary), so they must not change between releases.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Io => "io",
+            Self::UndefinedVariable => "undefined_variable",
+            Self::Syntax => "syntax",
+            Self::MissingParams => "missing_params",
+            Self::TypeMismatch => "type_mismatch",
+            Self::UnknownFilter => "unknown_filter",
+            Self::IncludeNotFound => "include_not_found",
+            Self::DeclarationsMutated => "declarations_mutated",
+            Self::ExtraParams => "extra_params",
+            Self::Panic => "panic",
+        }
+    }
+}
+
+impl fmt::Display for ErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// A structured syntax error with optional line number and source context.
@@ -348,6 +430,75 @@ mod tests {
     fn template_error_display_panic() {
         let err = TemplateError::panic("custom panic message");
         assert_eq!(err.to_string(), "template panic: custom panic message");
+    }
+
+    // ── ErrorKind ───────────────────────────────────────────────────
+
+    #[test]
+    fn error_kind_maps_every_variant() {
+        assert_eq!(
+            TemplateError::UndefinedVariable("x".into()).kind(),
+            ErrorKind::UndefinedVariable
+        );
+        assert_eq!(TemplateError::syntax("bad").kind(), ErrorKind::Syntax);
+        assert_eq!(
+            TemplateError::MissingParams(vec!["a".into()]).kind(),
+            ErrorKind::MissingParams
+        );
+        assert_eq!(
+            TemplateError::TypeMismatch {
+                name: "n".into(),
+                expected: "int".into(),
+                actual: "str".into(),
+                actual_value: "\"x\"".into(),
+            }
+            .kind(),
+            ErrorKind::TypeMismatch
+        );
+        assert_eq!(
+            TemplateError::UnknownFilter("f".into()).kind(),
+            ErrorKind::UnknownFilter
+        );
+        assert_eq!(
+            TemplateError::IncludeNotFound("i".into()).kind(),
+            ErrorKind::IncludeNotFound
+        );
+        assert_eq!(
+            TemplateError::DeclarationsMutated {
+                details: "d".into()
+            }
+            .kind(),
+            ErrorKind::DeclarationsMutated
+        );
+        assert_eq!(
+            TemplateError::ExtraParams(vec!["e".into()]).kind(),
+            ErrorKind::ExtraParams
+        );
+        assert_eq!(TemplateError::panic("p").kind(), ErrorKind::Panic);
+    }
+
+    #[test]
+    fn error_kind_as_str_is_stable() {
+        // These identifiers cross the FFI boundary and are part of the public
+        // contract — pin them so an accidental rename is caught.
+        assert_eq!(ErrorKind::Io.as_str(), "io");
+        assert_eq!(ErrorKind::UndefinedVariable.as_str(), "undefined_variable");
+        assert_eq!(ErrorKind::Syntax.as_str(), "syntax");
+        assert_eq!(ErrorKind::MissingParams.as_str(), "missing_params");
+        assert_eq!(ErrorKind::TypeMismatch.as_str(), "type_mismatch");
+        assert_eq!(ErrorKind::UnknownFilter.as_str(), "unknown_filter");
+        assert_eq!(ErrorKind::IncludeNotFound.as_str(), "include_not_found");
+        assert_eq!(
+            ErrorKind::DeclarationsMutated.as_str(),
+            "declarations_mutated"
+        );
+        assert_eq!(ErrorKind::ExtraParams.as_str(), "extra_params");
+        assert_eq!(ErrorKind::Panic.as_str(), "panic");
+    }
+
+    #[test]
+    fn error_kind_display_matches_as_str() {
+        assert_eq!(ErrorKind::MissingParams.to_string(), "missing_params");
     }
 
     // ── levenshtein_distance ────────────────────────────────────────

@@ -8,11 +8,39 @@
  * @module
  */
 
+/**
+ * Stable, machine-readable error kind identifiers.
+ *
+ * These mirror the Rust core's `ErrorKind::as_str()` values and the Go
+ * binding's `Kind*` constants. They are part of the public contract and must
+ * not change between releases. The empty string `""` is the
+ * unknown/unclassified sentinel (matching the Go binding's `KindUnknown`).
+ */
+export type ErrorKind =
+  | "io"
+  | "undefined_variable"
+  | "syntax"
+  | "missing_params"
+  | "type_mismatch"
+  | "unknown_filter"
+  | "include_not_found"
+  | "declarations_mutated"
+  | "extra_params"
+  | "panic";
+
 /** Base class for all template errors. */
 export class TemplateError extends Error {
-  constructor(message: string) {
+  /**
+   * Stable, machine-readable identifier for this error's kind.
+   *
+   * Empty string `""` denotes an unknown/unclassified error.
+   */
+  readonly kind: ErrorKind | "";
+
+  constructor(message: string, kind: ErrorKind | "" = "") {
     super(message);
     this.name = "TemplateError";
+    this.kind = kind;
   }
 }
 
@@ -22,38 +50,21 @@ export class TemplateSyntaxError extends TemplateError {
   readonly column?: number;
   readonly snippet?: string;
 
-  constructor(message: string, line?: number, snippet?: string);
   constructor(
     message: string,
     line?: number,
     column?: number,
     snippet?: string,
-  );
-  constructor(
-    message: string,
-    line?: number,
-    columnOrSnippet?: number | string,
-    snippet?: string,
   ) {
-    let actualLine = line;
-    let actualSnippet = snippet;
-    if (typeof columnOrSnippet === "string") {
-      actualSnippet = columnOrSnippet;
-    }
-    let formattedMessage = message;
-    if (actualLine !== undefined) {
-      formattedMessage = `${message} (line ${actualLine}${actualSnippet ? `, --> ${actualSnippet}` : ""})`;
-    }
-    super(formattedMessage);
+    const formattedMessage =
+      line !== undefined
+        ? `${message} (line ${line}${snippet ? `, --> ${snippet}` : ""})`
+        : message;
+    super(formattedMessage, "syntax");
     this.name = "TemplateSyntaxError";
-    this.line = actualLine;
-    if (typeof columnOrSnippet === "string") {
-      this.snippet = columnOrSnippet;
-      this.column = undefined;
-    } else {
-      this.column = columnOrSnippet;
-      this.snippet = actualSnippet;
-    }
+    this.line = line;
+    this.column = column;
+    this.snippet = snippet;
   }
 }
 
@@ -62,7 +73,10 @@ export class MissingParamsError extends TemplateError {
   readonly missing: readonly string[];
 
   constructor(missing: readonly string[]) {
-    super(`missing required parameter(s): ${missing.join(", ")}`);
+    super(
+      `missing required parameter(s): ${missing.join(", ")}`,
+      "missing_params",
+    );
     this.name = "MissingParamsError";
     this.missing = missing;
   }
@@ -75,7 +89,10 @@ export class TypeMismatchError extends TemplateError {
   readonly actual: string;
 
   constructor(path: string, expected: string, actual: string) {
-    super(`type mismatch at '${path}': expected ${expected}, got ${actual}`);
+    super(
+      `type mismatch at '${path}': expected ${expected}, got ${actual}`,
+      "type_mismatch",
+    );
     this.name = "TypeMismatchError";
     this.path = path;
     this.expected = expected;
@@ -88,7 +105,7 @@ export class ExtraParamsError extends TemplateError {
   readonly extra: readonly string[];
 
   constructor(extra: readonly string[]) {
-    super(`extra undeclared parameter(s): ${extra.join(", ")}`);
+    super(`extra undeclared parameter(s): ${extra.join(", ")}`, "extra_params");
     this.name = "ExtraParamsError";
     this.extra = extra;
   }
@@ -99,7 +116,7 @@ export class UndefinedVariableError extends TemplateError {
   readonly variable: string;
 
   constructor(variable: string) {
-    super(`undefined variable: ${variable}`);
+    super(`undefined variable: ${variable}`, "undefined_variable");
     this.name = "UndefinedVariableError";
     this.variable = variable;
   }
@@ -110,7 +127,7 @@ export class UnknownFilterError extends TemplateError {
   readonly filter: string;
 
   constructor(filter: string) {
-    super(`unknown filter: ${filter}`);
+    super(`unknown filter: ${filter}`, "unknown_filter");
     this.name = "UnknownFilterError";
     this.filter = filter;
   }
@@ -119,7 +136,47 @@ export class UnknownFilterError extends TemplateError {
 /** Raised when a {% panic(...) %} statement is executed during rendering. */
 export class TemplatePanicError extends TemplateError {
   constructor(message: string) {
-    super(`template panic: ${message}`);
+    super(`template panic: ${message}`, "panic");
     this.name = "TemplatePanicError";
+  }
+}
+
+/**
+ * Raised when an included template file cannot be found or loaded.
+ *
+ * Mirrors the Rust core's `TemplateError::IncludeNotFound`.
+ */
+export class IncludeNotFoundError extends TemplateError {
+  /** The include path that could not be resolved. */
+  readonly include: string;
+
+  constructor(include: string) {
+    super(`include not found: ${include}`, "include_not_found");
+    this.name = "IncludeNotFoundError";
+    this.include = include;
+  }
+}
+
+/**
+ * Raised when a runtime-reloaded template's parameter declarations differ
+ * from the compile-time contract.
+ *
+ * The frontmatter `params:` block is part of the compile-time contract and
+ * must not be changed. Mirrors the Rust core's
+ * `TemplateError::DeclarationsMutated`.
+ */
+export class DeclarationsMutatedError extends TemplateError {
+  /** Human-readable description of what changed. */
+  readonly details: string;
+
+  constructor(details: string) {
+    super(
+      `template parameter declarations were modified at runtime: ${details}. ` +
+        "The frontmatter `params:` block is part of the compile-time " +
+        "contract and must not be changed",
+      "declarations_mutated",
+    );
+    this.name = "DeclarationsMutatedError";
+    this.details = details;
   }
 }

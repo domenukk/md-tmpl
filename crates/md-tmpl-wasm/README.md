@@ -65,20 +65,24 @@ console.log(tmpl.render({ name: "Alice" }));
 
 ```ts
 Template.fromSource(source: string): Template
-Template.fromSourceAllowingUnused(source: string): Template
 Template.fromSourceWithBaseDir(source: string, baseDir: string): Template
 Template.fromSourceWithEnv(source: string, env: Record<string, string>): Template
+Template.fromSourceWithOptions(source: string, options: object): Template
 ```
 
 ### Rendering
 
 ```ts
 tmpl.render(params: object): string              // type-validated
-tmpl.renderUnchecked(params: object): string      // allows extra params
+tmpl.renderEmpty(): string                        // render with defaults only (no params)
+tmpl.renderUnchecked(params: object): string      // skip ALL validation
+tmpl.renderAllowingExtra(params: object): string  // allow undeclared extra params
 tmpl.renderJson(jsonStr: string): string          // avoids per-field WASM crossings
 tmpl.renderUncheckedJson(jsonStr: string): string
+tmpl.renderAllowingExtraJson(jsonStr: string): string
 tmpl.renderFlexbuffers(buffer: Uint8Array): string        // zero-copy binary
 tmpl.renderUncheckedFlexbuffers(buffer: Uint8Array): string
+tmpl.renderAllowingExtraFlexbuffers(buffer: Uint8Array): string
 ```
 
 ### Metadata

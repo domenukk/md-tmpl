@@ -45,7 +45,15 @@ from md_tmpl import (
     load_types,
     template,
     variant,
+    TemplateError,
     TemplateSyntaxError,
+    MissingParamsError,
+    TypeMismatchError,
+    ExtraParamsError,
+    UndefinedVariableError,
+    UnknownFilterError,
+    IncludeNotFoundError,
+    DeclarationsMutatedError,
 )
 
 # ---------------------------------------------------------------------------
@@ -204,8 +212,10 @@ yes
 params: [name = str, age = int]
 ---
 {{ name }} {{ age }}""")
-        with pytest.raises(ValueError, match="missing"):
+        with pytest.raises(MissingParamsError) as excinfo:
             tmpl.render(name="Alice")
+        assert excinfo.value.kind == "missing_params"
+        assert excinfo.value.missing == ["age"]
 
     def test_type_mismatch_raises(self) -> None:
         tmpl = Template.from_source(textwrap.dedent("""\
@@ -213,8 +223,12 @@ params: [name = str, age = int]
             params: [flag = bool]
             ---
             {{ flag }}"""))
-        with pytest.raises(ValueError, match="type mismatch"):
+        with pytest.raises(TypeMismatchError) as excinfo:
             tmpl.render(flag="not a bool")
+        assert excinfo.value.kind == "type_mismatch"
+        assert excinfo.value.path == "flag"
+        assert excinfo.value.expected == "bool"
+        assert excinfo.value.actual == "str"
 
 
 # ---------------------------------------------------------------------------
@@ -273,8 +287,10 @@ class TestStrictValidation:
             params: [name = str]
             ---
             Hello {{ name }}!"""))
-        with pytest.raises(ValueError, match="extra|undeclared|not declared"):
+        with pytest.raises(ExtraParamsError) as excinfo:
             tmpl.render(name="world", bogus="unexpected")
+        assert excinfo.value.kind == "extra_params"
+        assert excinfo.value.extra == ["bogus"]
 
     def test_allow_extra_ignores_extra_params(self) -> None:
         tmpl = Template.from_source(textwrap.dedent("""\
@@ -291,8 +307,10 @@ class TestStrictValidation:
             params: [name = str]
             ---
             Hello {{ name }}!"""))
-        with pytest.raises(ValueError, match="extra|undeclared|not declared"):
+        with pytest.raises(ExtraParamsError) as excinfo:
             tmpl.render_dict({"name": "world", "bogus": "unexpected"})
+        assert excinfo.value.kind == "extra_params"
+        assert excinfo.value.extra == ["bogus"]
 
     def test_render_dict_allow_extra(self) -> None:
         tmpl = Template.from_source(textwrap.dedent("""\
@@ -328,8 +346,10 @@ class TestRenderDict:
             params: [count = int]
             ---
             {{ count }}"""))
-        with pytest.raises(ValueError, match="type mismatch"):
+        with pytest.raises(TypeMismatchError) as excinfo:
             tmpl.render_dict({"count": "not an int"})
+        assert excinfo.value.kind == "type_mismatch"
+        assert excinfo.value.path == "count"
 
 
 # ---------------------------------------------------------------------------
@@ -362,8 +382,10 @@ class TestRenderJson:
             params: [x = int]
             ---
             {{ x }}"""))
-        with pytest.raises(ValueError, match="extra|undeclared|not declared"):
+        with pytest.raises(ExtraParamsError) as excinfo:
             tmpl.render_json('{"x": 42, "extra": true}')
+        assert excinfo.value.kind == "extra_params"
+        assert excinfo.value.extra == ["extra"]
 
     def test_render_json_invalid_json(self) -> None:
         tmpl = Template.from_source(textwrap.dedent("""\
@@ -459,8 +481,10 @@ class TestStructParams:
 
     def test_struct_missing_field_raises(self, struct_template_path: Path) -> None:
         tmpl = Template.from_file(str(struct_template_path))
-        with pytest.raises(ValueError, match="missing"):
+        with pytest.raises(TypeMismatchError) as excinfo:
             tmpl.render(config={"host": "localhost"})  # missing port
+        assert excinfo.value.kind == "type_mismatch"
+        assert excinfo.value.expected == "int"
 
 
 # ---------------------------------------------------------------------------
@@ -747,7 +771,8 @@ class TestVariantDecorator:
             reason: str
 
         v = NeedsChanges(reason="fix tests")
-        assert v._md_tmpl_tag == "NeedsChanges"
+        # @variant injects _md_tmpl_tag at runtime; dataclass_transform hides it.
+        assert v._md_tmpl_tag == "NeedsChanges"  # type: ignore[attr-defined]
         assert v.reason == "fix tests"
 
     def test_variant_fields_property(self) -> None:
@@ -757,7 +782,8 @@ class TestVariantDecorator:
             message: str
 
         v = Error(code=404, message="not found")
-        fields = v._md_tmpl_fields
+        # @variant injects _md_tmpl_fields at runtime; dataclass_transform hides it.
+        fields = v._md_tmpl_fields  # type: ignore[attr-defined]
         assert fields == {"code": 404, "message": "not found"}
 
     def test_variant_repr(self) -> None:
@@ -843,8 +869,9 @@ class TestVariantsMetaclass:
             Active = ()
             Inactive = ()
 
-        assert Status.Active._md_tmpl_tag == "Active"
-        assert Status.Active._md_tmpl_fields == {}
+        # Metaclass rewrites `()` class-attrs into unit-variant instances at runtime.
+        assert Status.Active._md_tmpl_tag == "Active"  # type: ignore[attr-defined]
+        assert Status.Active._md_tmpl_fields == {}  # type: ignore[attr-defined]
 
     def test_unit_variant_equality(self) -> None:
         class Side(Variants):
@@ -867,12 +894,13 @@ class TestVariantsMetaclass:
             Ok = {"value": str}
             Err = {"code": int, "message": str}
 
-        ok = Result.Ok(value="done")
+        # Metaclass rewrites dict class-attrs into variant constructors at runtime.
+        ok = Result.Ok(value="done")  # type: ignore[operator]
         assert ok._md_tmpl_tag == "Ok"
         assert ok.value == "done"
         assert ok._md_tmpl_fields == {"value": "done"}
 
-        err = Result.Err(code=500, message="fail")
+        err = Result.Err(code=500, message="fail")  # type: ignore[operator]
         assert err._md_tmpl_tag == "Err"
         assert err.code == 500
         assert err.message == "fail"
@@ -884,14 +912,16 @@ class TestVariantsMetaclass:
             NeedsChanges = {"reason": str}
 
         assert repr(Status.Approved) == "Approved"
-        nc = Status.NeedsChanges(reason="fix tests")
+        # Metaclass rewrites the dict class-attr into a variant constructor.
+        nc = Status.NeedsChanges(reason="fix tests")  # type: ignore[operator]
         assert nc.reason == "fix tests"
 
     def test_struct_variant_repr(self) -> None:
         class Wrap(Variants):
             Inner = {"x": int}
 
-        v = Wrap.Inner(x=42)
+        # Metaclass rewrites the dict class-attr into a variant constructor.
+        v = Wrap.Inner(x=42)  # type: ignore[operator]
         assert "Inner" in repr(v)
         assert "42" in repr(v)
 
@@ -899,8 +929,9 @@ class TestVariantsMetaclass:
         class Op(Variants):
             Add = {"n": int}
 
-        assert Op.Add(n=1) == Op.Add(n=1)
-        assert Op.Add(n=1) != Op.Add(n=2)
+        # Metaclass rewrites dict class-attrs into variant constructors.
+        assert Op.Add(n=1) == Op.Add(n=1)  # type: ignore[operator]
+        assert Op.Add(n=1) != Op.Add(n=2)  # type: ignore[operator]
 
 
 # ---------------------------------------------------------------------------
@@ -1055,8 +1086,10 @@ params: [a = str, b = str]
             params: [name = str]
             ---
             {{ name }}"""))
-        with pytest.raises(ValueError, match="declarations changed"):
+        with pytest.raises(DeclarationsMutatedError) as excinfo:
             tmpl.validate_declarations_against([("different", "int")])
+        assert excinfo.value.kind == "declarations_mutated"
+        assert "different" in excinfo.value.details
 
 
 # ---------------------------------------------------------------------------
@@ -1935,44 +1968,49 @@ class TestPathLikeSupport:
 
 
 class TestExceptionHierarchy:
-    """Tests for exception subclass catchability."""
+    """Tests for exception subclass catchability, kinds, and structured fields."""
 
     def test_syntax_error_catchable(self) -> None:
-        from md_tmpl import TemplateSyntaxError
-
-        with pytest.raises(TemplateSyntaxError):
+        with pytest.raises(TemplateSyntaxError) as excinfo:
             Template.from_source("no frontmatter at all")
+        assert excinfo.value.kind == "syntax"
 
     def test_syntax_error_is_value_error(self) -> None:
         """Backward compatibility: still catchable as ValueError."""
         with pytest.raises(ValueError):
             Template.from_source("no frontmatter at all")
 
-    def test_missing_params_error(self) -> None:
-        from md_tmpl import MissingParamsError
+    def test_syntax_error_message_preserved(self) -> None:
+        """str(exc) must still equal the human-readable message."""
+        with pytest.raises(TemplateSyntaxError) as excinfo:
+            Template.from_source("no frontmatter at all")
+        assert "frontmatter" in str(excinfo.value)
 
+    def test_missing_params_error(self) -> None:
         tmpl = Template.from_source("""---
 params: [name = str, age = int]
 ---
 {{ name }} {{ age }}""")
-        with pytest.raises(MissingParamsError):
+        with pytest.raises(MissingParamsError) as excinfo:
             tmpl.render(name="Alice")
+        assert excinfo.value.kind == "missing_params"
+        assert excinfo.value.missing == ["age"]
 
     def test_type_mismatch_error(self) -> None:
-        from md_tmpl import TypeMismatchError
-
         tmpl = Template.from_source(textwrap.dedent("""\
             ---
             params: [flag = bool]
             ---
             {{ flag }}"""))
-        with pytest.raises(TypeMismatchError):
+        with pytest.raises(TypeMismatchError) as excinfo:
             tmpl.render(flag="not a bool")
+        assert excinfo.value.kind == "type_mismatch"
+        assert excinfo.value.path == "flag"
+        assert excinfo.value.expected == "bool"
+        assert excinfo.value.actual == "str"
 
     def test_type_mismatch_is_type_error(self) -> None:
         """TypeMismatchError also inherits TypeError."""
-        from md_tmpl import TypeMismatchError
-
         tmpl = Template.from_source(textwrap.dedent("""\
             ---
             params: [flag = bool]
@@ -1982,22 +2020,103 @@ params: [name = str, age = int]
             tmpl.render(flag="not a bool")
 
     def test_extra_params_error(self) -> None:
-        from md_tmpl import ExtraParamsError
-
         tmpl = Template.from_source(textwrap.dedent("""\
             ---
             params: [name = str]
             ---
             Hello {{ name }}!"""))
-        with pytest.raises(ExtraParamsError):
+        with pytest.raises(ExtraParamsError) as excinfo:
             tmpl.render(name="world", bogus="unexpected")
+        assert excinfo.value.kind == "extra_params"
+        assert excinfo.value.extra == ["bogus"]
+
+    def test_panic_error(self) -> None:
+        tmpl = Template.from_source('---\nparams: []\n---\n> {% panic("halt") %}')
+        with pytest.raises(TemplatePanicError) as excinfo:
+            tmpl.render()
+        assert excinfo.value.kind == "panic"
+        assert "halt" in str(excinfo.value)
+
+    def test_io_error_maps_to_base_with_kind(self) -> None:
+        """Missing files surface as the base TemplateError tagged kind='io'."""
+        with pytest.raises(TemplateError) as excinfo:
+            Template.from_file("/nonexistent/path.tmpl.md")
+        assert excinfo.value.kind == "io"
+        # Must not be a more specific subclass.
+        assert type(excinfo.value) is TemplateError
+
+    def test_include_not_found_error(self, tmp_path: Path) -> None:
+        tmpl = Template.from_source_with_base_dir(
+            "---\nparams: []\n---\n> {% include [x](./nope.tmpl.md) %}",
+            str(tmp_path),
+        )
+        with pytest.raises(IncludeNotFoundError) as excinfo:
+            tmpl.render()
+        assert excinfo.value.kind == "include_not_found"
+        assert "nope.tmpl.md" in excinfo.value.include
+
+    def test_declarations_mutated_error(self) -> None:
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            params: [name = str]
+            ---
+            {{ name }}"""))
+        with pytest.raises(DeclarationsMutatedError) as excinfo:
+            tmpl.validate_declarations_against([("different", "int")])
+        assert excinfo.value.kind == "declarations_mutated"
+        assert "different" in excinfo.value.details
 
     def test_template_error_base_class(self) -> None:
         """All specific errors are catchable as TemplateError."""
-        from md_tmpl import TemplateError
-
         with pytest.raises(TemplateError):
             Template.from_source("no frontmatter")
+
+    def test_specific_errors_catchable_as_value_error(self) -> None:
+        """Back-compat: every specific error is still a ValueError."""
+        tmpl = Template.from_source("""---
+params: [name = str, age = int]
+---
+{{ name }} {{ age }}""")
+        with pytest.raises(ValueError):
+            tmpl.render(name="Alice")
+
+    # -- Classes for variants the Rust core currently reports at compile
+    #    time as a Syntax error (so they aren't produced by the engine from
+    #    Python yet). We still verify the dedicated Python classes exist and
+    #    expose the right kind/fields, matching the Go/TS parity contract.
+
+    def test_undefined_variable_error_class(self) -> None:
+        err = UndefinedVariableError("undefined variable: x", variable="x")
+        assert err.kind == "undefined_variable"
+        assert err.variable == "x"
+        assert isinstance(err, TemplateError)
+        assert isinstance(err, ValueError)
+        assert str(err) == "undefined variable: x"
+
+    def test_unknown_filter_error_class(self) -> None:
+        err = UnknownFilterError("unknown filter: bogus", filter="bogus")
+        assert err.kind == "unknown_filter"
+        assert err.filter == "bogus"
+        assert isinstance(err, TemplateError)
+        assert str(err) == "unknown filter: bogus"
+
+    def test_base_template_error_unknown_kind_sentinel(self) -> None:
+        """The base class uses the empty-string 'unknown' sentinel."""
+        assert TemplateError.kind == ""
+        assert TemplateError("boom").kind == ""
+        assert TemplateError("boom", kind="io").kind == "io"
+
+    def test_every_kind_id_is_stable(self) -> None:
+        """Pin the machine-readable kind ids (they cross the FFI boundary)."""
+        assert TemplateSyntaxError.kind == "syntax"
+        assert UndefinedVariableError.kind == "undefined_variable"
+        assert MissingParamsError.kind == "missing_params"
+        assert TypeMismatchError.kind == "type_mismatch"
+        assert UnknownFilterError.kind == "unknown_filter"
+        assert IncludeNotFoundError.kind == "include_not_found"
+        assert DeclarationsMutatedError.kind == "declarations_mutated"
+        assert ExtraParamsError.kind == "extra_params"
+        assert TemplatePanicError.kind == "panic"
 
 
 # ---------------------------------------------------------------------------
@@ -2809,8 +2928,9 @@ class TestVariantsMetaclassExtended:
         class Op(Variants):
             Add = {"n": int}
 
-        a = Op.Add(n=1)
-        b = Op.Add(n=1)
+        # Metaclass rewrites dict class-attrs into variant constructors.
+        a = Op.Add(n=1)  # type: ignore[operator]
+        b = Op.Add(n=1)  # type: ignore[operator]
         assert hash(a) == hash(b)
         assert len({a, b}) == 1
 
@@ -2818,7 +2938,8 @@ class TestVariantsMetaclassExtended:
         class Op(Variants):
             Add = {"n": int, "m": int}
 
-        v = Op.Add(n=1, m=2)
+        # Metaclass rewrites the dict class-attr into a variant constructor.
+        v = Op.Add(n=1, m=2)  # type: ignore[operator]
         assert v._md_tmpl_fields == {"n": 1, "m": 2}
 
     def test_invalid_field_name_raises(self) -> None:
@@ -2875,7 +2996,8 @@ class TestVariantsMetaclassExtended:
             ERR: {{ outcome.code }}
 
             > {% /match %}"""))
-        result = tmpl.render(outcome=Result.Success(value="done"))
+        # Metaclass rewrites the dict class-attr into a variant constructor.
+        result = tmpl.render(outcome=Result.Success(value="done"))  # type: ignore[operator]
         assert result == "OK: done\n"
 
 
@@ -3263,7 +3385,8 @@ class TestVariantsExecRemoval:
             NeedsWork = {"reason": str}
 
         assert repr(Status.Approved) == "Approved"
-        assert Status.NeedsWork(reason="fix").reason == "fix"
+        # Metaclass rewrites the dict class-attr into a variant constructor.
+        assert Status.NeedsWork(reason="fix").reason == "fix"  # type: ignore[operator]
 
     # (i) Template render with Variants struct variants
 
@@ -3287,7 +3410,8 @@ NO
             Confirmed = {"evidence": str}
             Rejected = ()
 
-        result = tmpl.render(outcome=Outcome.Confirmed(evidence="proof"))
+        # Metaclass rewrites the dict class-attr into a variant constructor.
+        result = tmpl.render(outcome=Outcome.Confirmed(evidence="proof"))  # type: ignore[operator]
         assert "YES: proof" in result
 
 
@@ -3327,12 +3451,7 @@ class TestContextManager:
 # Pattern matching (Python 3.10+)
 # ---------------------------------------------------------------------------
 
-_requires_pattern_matching = pytest.mark.skipif(
-    sys.version_info < (3, 10), reason="match/case requires Python 3.10+"
-)
 
-
-@_requires_pattern_matching
 class TestPatternMatching:
     """Tests for Python 3.10+ match/case support on variant types."""
 
@@ -3360,15 +3479,17 @@ class TestPatternMatching:
 
         def explain(s: Any) -> str:
             match s:
-                case Status.NeedsChanges(reason=r):
+                # Metaclass rewrites the dict class-attr into a matchable variant class.
+                case Status.NeedsChanges(reason=r):  # type: ignore[misc]
                     return f"needs changes: {r}"
                 case Status.Approved:
                     return "approved!"
                 case _:
                     return "unknown"
 
+        # Metaclass rewrites the dict class-attr into a variant constructor.
         assert (
-            explain(Status.NeedsChanges(reason="fix tests"))
+            explain(Status.NeedsChanges(reason="fix tests"))  # type: ignore[operator]
             == "needs changes: fix tests"
         )
         assert explain(Status.Approved) == "approved!"
@@ -4557,3 +4678,241 @@ class TestDuckTypingExtraFields:
             ]
         )
         assert output == "1: hello\n2: world\n"
+
+
+# ---------------------------------------------------------------------------
+# Unchecked rendering (render_unchecked / render_dict_unchecked)
+# ---------------------------------------------------------------------------
+
+
+class TestRenderUnchecked:
+    """Tests for the unvalidated fast-path render methods.
+
+    These methods were implemented in Rust but previously missing from the
+    type stubs. The tests confirm they are callable and behave as documented
+    (skipping parameter validation and extra-argument checks).
+    """
+
+    def test_render_unchecked_basic(self) -> None:
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            params: [name = str]
+            ---
+            Hello {{ name }}!"""))
+        assert tmpl.render_unchecked(name="world") == "Hello world!"
+
+    def test_render_unchecked_skips_extra_validation(self) -> None:
+        """Extra kwargs are accepted (not rejected) by the unchecked path."""
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            params: [name = str]
+            ---
+            Hello {{ name }}!"""))
+        # `bogus` would raise in render(); unchecked silently ignores it.
+        assert tmpl.render_unchecked(name="world", bogus="ignored") == "Hello world!"
+
+    def test_render_dict_unchecked_basic(self) -> None:
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            params: [name = str]
+            ---
+            Hello {{ name }}!"""))
+        assert tmpl.render_dict_unchecked({"name": "dict"}) == "Hello dict!"
+
+    def test_render_dict_unchecked_skips_extra_validation(self) -> None:
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            params: [name = str]
+            ---
+            Hello {{ name }}!"""))
+        result = tmpl.render_dict_unchecked({"name": "world", "bogus": "ignored"})
+        assert result == "Hello world!"
+
+    def test_unchecked_methods_are_stub_visible(self) -> None:
+        """The methods must exist as real attributes on the class."""
+        assert callable(getattr(Template, "render_unchecked"))
+        assert callable(getattr(Template, "render_dict_unchecked"))
+
+
+# ---------------------------------------------------------------------------
+# from_source_with_env / from_source_with_options are stub-visible
+# ---------------------------------------------------------------------------
+
+
+class TestFromSourceConstructorsStubVisible:
+    """Confirm the env/options constructors exist as callable staticmethods."""
+
+    def test_from_source_with_env_is_stub_visible(self) -> None:
+        assert callable(getattr(Template, "from_source_with_env"))
+
+    def test_from_source_with_options_is_stub_visible(self) -> None:
+        assert callable(getattr(Template, "from_source_with_options"))
+
+    def test_from_source_with_options_base_dir_and_allow_unused(
+        self, tmp_path: Path
+    ) -> None:
+        """base_dir + allow_unused combine in a single call."""
+        source = textwrap.dedent("""\
+            ---
+            params: [name = str, unused = int]
+            ---
+            Hello {{ name }}!""")
+        tmpl = Template.from_source_with_options(
+            source, base_dir=str(tmp_path), allow_unused=True
+        )
+        assert tmpl.render(name="world", unused=1) == "Hello world!"
+
+
+# ---------------------------------------------------------------------------
+# render_cached_json (renamed from render_json_cached)
+# ---------------------------------------------------------------------------
+
+
+class TestRenderCachedJson:
+    """Tests for the renamed render_cached_json method."""
+
+    def _cached_template(self, tmp_path: Path) -> tuple[Template, TemplateCache]:
+        path = tmp_path / "greeting.tmpl.md"
+        path.write_text(textwrap.dedent("""\
+            ---
+            params: [name = str]
+            ---
+            Hello {{ name }}!"""))
+        cache = TemplateCache()
+        tmpl = cache.load(str(path))
+        return tmpl, cache
+
+    def test_render_cached_json_basic(self, tmp_path: Path) -> None:
+        tmpl, cache = self._cached_template(tmp_path)
+        assert tmpl.render_cached_json('{"name": "json"}', cache) == "Hello json!"
+
+    def test_render_cached_json_allow_extra(self, tmp_path: Path) -> None:
+        tmpl, cache = self._cached_template(tmp_path)
+        result = tmpl.render_cached_json(
+            '{"name": "json", "extra": true}', cache, allow_extra=True
+        )
+        assert result == "Hello json!"
+
+    def test_render_cached_json_rejects_extra_by_default(self, tmp_path: Path) -> None:
+        tmpl, cache = self._cached_template(tmp_path)
+        with pytest.raises(ValueError, match="extra|undeclared|not declared"):
+            tmpl.render_cached_json('{"name": "json", "extra": true}', cache)
+
+    def test_render_cached_json_matches_render_json(self, tmp_path: Path) -> None:
+        tmpl, cache = self._cached_template(tmp_path)
+        payload = '{"name": "Alice"}'
+        assert tmpl.render_cached_json(payload, cache) == tmpl.render_json(payload)
+
+    def test_old_render_json_cached_name_is_gone(self, tmp_path: Path) -> None:
+        """The pre-rename name must no longer exist (no backward-compat alias)."""
+        tmpl, _cache = self._cached_template(tmp_path)
+        assert not hasattr(tmpl, "render_json_cached")
+        assert not hasattr(Template, "render_json_cached")
+
+    def test_render_cached_json_is_stub_visible(self) -> None:
+        assert callable(getattr(Template, "render_cached_json"))
+
+
+# ---------------------------------------------------------------------------
+# name / description accessors
+# ---------------------------------------------------------------------------
+
+
+class TestNameAndDescription:
+    """Tests for the Template.name() and Template.description() accessors."""
+
+    def test_name_and_description_present(self) -> None:
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            name: greeting
+            description: A friendly greeting template
+            params: [name = str]
+            ---
+            Hello {{ name }}!"""))
+        assert tmpl.name() == "greeting"
+        assert tmpl.description() == "A friendly greeting template"
+
+    def test_name_and_description_none_when_omitted(self) -> None:
+        """Both return None when the frontmatter omits them."""
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            params: [name = str]
+            ---
+            Hello {{ name }}!"""))
+        assert tmpl.name() is None
+        assert tmpl.description() is None
+
+    def test_name_present_description_omitted(self) -> None:
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            name: only_name
+            params: [name = str]
+            ---
+            Hello {{ name }}!"""))
+        assert tmpl.name() == "only_name"
+        assert tmpl.description() is None
+
+    def test_name_and_description_from_file(self, tmp_path: Path) -> None:
+        path = tmp_path / "doc.tmpl.md"
+        path.write_text(textwrap.dedent("""\
+            ---
+            name: doc
+            description: Documented template
+            params: [x = str]
+            ---
+            {{ x }}"""))
+        tmpl = Template.from_file(str(path))
+        assert tmpl.name() == "doc"
+        assert tmpl.description() == "Documented template"
+
+    def test_accessors_are_stub_visible(self) -> None:
+        assert callable(getattr(Template, "name"))
+        assert callable(getattr(Template, "description"))
+
+
+# ---------------------------------------------------------------------------
+# Context managers are documented no-ops (still functional)
+# ---------------------------------------------------------------------------
+
+
+class TestContextManagerNoOps:
+    """Confirm the documented no-op context managers keep `with` working."""
+
+    def test_template_enter_returns_self(self) -> None:
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            params: [x = str]
+            ---
+            {{ x }}"""))
+        with tmpl as entered:
+            assert entered is tmpl
+
+    def test_template_exit_does_not_suppress(self) -> None:
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            params: [x = str]
+            ---
+            {{ x }}"""))
+        with pytest.raises(RuntimeError, match="boom"):
+            with tmpl:
+                raise RuntimeError("boom")
+
+    def test_cache_enter_returns_self(self) -> None:
+        cache = TemplateCache()
+        with cache as entered:
+            assert entered is cache
+
+    def test_cache_exit_does_not_clear_entries(self, tmp_path: Path) -> None:
+        """A no-op __exit__ must NOT drop cached entries."""
+        path = tmp_path / "greeting.tmpl.md"
+        path.write_text(textwrap.dedent("""\
+            ---
+            params: [name = str]
+            ---
+            Hello {{ name }}!"""))
+        cache = TemplateCache()
+        with cache:
+            cache.load(str(path))
+            assert len(cache) == 1
+        # Entries remain after exiting the `with` block (no-op __exit__).
+        assert len(cache) == 1

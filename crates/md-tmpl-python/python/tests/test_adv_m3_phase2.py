@@ -2,6 +2,8 @@
 
 import subprocess
 import sys
+from typing import Any
+
 import pytest
 import md_tmpl
 
@@ -58,7 +60,7 @@ params:
 ---
 Hello {% if data %}world{% /if %}!"""
     tmpl = md_tmpl.Template.from_source(src)
-    d = {}
+    d: dict[str, Any] = {}
     d["self"] = d
     with pytest.raises(ValueError, match="cyclic object detected"):
         tmpl.render_dict({"data": d})

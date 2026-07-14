@@ -1,6 +1,6 @@
 {
   "name": "md-tmpl-wasm-tests",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "scripts": {

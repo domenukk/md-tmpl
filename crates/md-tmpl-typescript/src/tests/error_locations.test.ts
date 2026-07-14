@@ -6,7 +6,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { Template, TemplateSyntaxError } from "../index.js";
+import {
+  Template,
+  TemplateError,
+  TemplateSyntaxError,
+  MissingParamsError,
+  TypeMismatchError,
+} from "../index.js";
 
 describe("M1.2: Accurate error location diagnostics (line, column, snippet)", () => {
   describe("Frontmatter syntax errors", () => {
@@ -368,5 +374,95 @@ World`;
         },
       );
     });
+  });
+});
+
+describe("Stable machine-readable error kinds (.kind)", () => {
+  it("syntax error -> kind 'syntax'", () => {
+    const src = `---
+params:
+  - name = str
+---
+Hello {{ name | nonexistent_filter }}`;
+    try {
+      Template.fromSource(src);
+      assert.fail("should have thrown");
+    } catch (err) {
+      assert.ok(
+        err instanceof TemplateError,
+        `expected TemplateError, got ${err}`,
+      );
+      // Unknown filter surfaces as an UnknownFilterError at compile time.
+      assert.strictEqual(err.kind, "unknown_filter");
+      assert.strictEqual(err.name, "UnknownFilterError");
+    }
+  });
+
+  it("malformed frontmatter -> TemplateSyntaxError with kind 'syntax'", () => {
+    const src = `---
+params:
+  - invalid declaration without equal sign
+---
+Hello`;
+    try {
+      Template.fromSource(src);
+      assert.fail("should have thrown");
+    } catch (err) {
+      assert.ok(
+        err instanceof TemplateSyntaxError,
+        `expected TemplateSyntaxError, got ${err}`,
+      );
+      assert.strictEqual(err.kind, "syntax");
+      assert.strictEqual(err.name, "TemplateSyntaxError");
+      // Structured fields remain intact alongside the new kind.
+      assert.strictEqual(err.line, 3);
+    }
+  });
+
+  it("missing param -> MissingParamsError with kind 'missing_params'", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - name = str
+---
+Hello {{ name }}!`);
+    try {
+      tmpl.render({});
+      assert.fail("should have thrown");
+    } catch (err) {
+      assert.ok(
+        err instanceof MissingParamsError,
+        `expected MissingParamsError, got ${err}`,
+      );
+      assert.strictEqual(err.kind, "missing_params");
+      assert.strictEqual(err.name, "MissingParamsError");
+      // Structured field is preserved.
+      assert.deepStrictEqual([...err.missing], ["name"]);
+    }
+  });
+
+  it("type mismatch -> TypeMismatchError with kind 'type_mismatch'", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - n = int
+---
+{{ n }}`);
+    try {
+      tmpl.render({ n: "not_a_number" });
+      assert.fail("should have thrown");
+    } catch (err) {
+      assert.ok(
+        err instanceof TypeMismatchError,
+        `expected TypeMismatchError, got ${err}`,
+      );
+      assert.strictEqual(err.kind, "type_mismatch");
+      assert.strictEqual(err.name, "TypeMismatchError");
+      assert.strictEqual(err.expected, "int");
+    }
+  });
+
+  it("base TemplateError defaults kind to the empty-string sentinel", () => {
+    const err = new TemplateError("generic");
+    assert.strictEqual(err.kind, "");
+    assert.strictEqual(err.name, "TemplateError");
   });
 });

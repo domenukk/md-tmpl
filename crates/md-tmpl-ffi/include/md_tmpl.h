@@ -7,6 +7,12 @@
  * Error convention: functions that can fail return a char* error string.
  * A NULL return means success. The caller owns the error string and must
  * free it with pt_free_string().
+ *
+ * Typed errors: error strings produced from a template error are formatted as
+ * "<kind>\x1f<message>", where <kind> is a stable machine-readable id (e.g.
+ * "missing_params", "type_mismatch", "syntax") and \x1f is the ASCII Unit
+ * Separator (0x1F), which never appears in messages. Bindings may split on it
+ * to recover the kind; errors without the separator are plain messages.
  */
 
 #ifndef MD_TMPL_H
@@ -40,6 +46,19 @@ char *pt_template_from_source_with_base_dir(const char *source,
 char *pt_template_from_source_with_frontmatter(const char *source,
                                                PtTemplate **out_tmpl,
                                                char **out_fm);
+/*
+ * Unified constructors: base_dir and env_json are optional (pass NULL to omit),
+ * allow_unused toggles the unused-parameter check. Unlike the single-purpose
+ * constructors above, these allow all options to be combined in one call.
+ */
+char *pt_template_from_source_with_options(const char *source,
+                                           const char *base_dir,
+                                           const char *env_json,
+                                           bool allow_unused, PtTemplate **out);
+char *pt_template_from_file_with_options(const char *path,
+                                         const char *base_dir,
+                                         const char *env_json,
+                                         bool allow_unused, PtTemplate **out);
 char *pt_template_from_file(const char *path, PtTemplate **out);
 void pt_template_free(PtTemplate *tmpl);
 
@@ -94,9 +113,23 @@ char *pt_template_render_flexbuffers(const PtTemplate *tmpl,
                                      const uint8_t *data, size_t len,
                                      bool allow_extra, char **out_err);
 
+/* Render a parameter-less template with an empty context. */
+char *pt_template_render_empty(const PtTemplate *tmpl, char **out_err);
+
+/* Render without context validation (caller guarantees a valid context). */
+char *pt_template_render_unchecked(const PtTemplate *tmpl, const PtContext *ctx,
+                                  char **out_err);
+
+/* Render, resolving {% include %} directives through the given cache. */
+char *pt_template_render_cached(const PtTemplate *tmpl, const PtContext *ctx,
+                               const PtCache *cache, char **out_err);
+
 /* ---- Template metadata -------------------------------------------------- */
 
 uint64_t pt_template_source_hash(const PtTemplate *tmpl);
+/* Name/description from frontmatter; NULL if absent (caller frees non-NULL). */
+char *pt_template_name(const PtTemplate *tmpl);
+char *pt_template_description(const PtTemplate *tmpl);
 char *pt_template_body(const PtTemplate *tmpl);
 char *pt_template_declarations(const PtTemplate *tmpl);
 void pt_template_set_max_include_depth(PtTemplate *tmpl, size_t depth);

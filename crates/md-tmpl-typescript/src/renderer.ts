@@ -19,6 +19,7 @@ import {
   TemplateSyntaxError,
   TemplatePanicError,
   UndefinedVariableError,
+  IncludeNotFoundError,
 } from "./errors.js";
 import {
   type VarDecl,
@@ -311,9 +312,7 @@ export function renderNodes(
             options.currentBasePath,
           );
           if (!loaded) {
-            throw new TemplateError(
-              `cannot resolve '{% include "${resolvedPath}" %}': file not found or load failed`,
-            );
+            throw new IncludeNotFoundError(resolvedPath);
           }
           const [loadedNodes, loadedConsts, loadedDecls, loadedBasePath] =
             loaded;

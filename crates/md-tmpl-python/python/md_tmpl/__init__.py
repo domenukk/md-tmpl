@@ -40,12 +40,16 @@ from md_tmpl._md_tmpl import (
     generate_python_source_for_template as _generate_python_source,
 )
 from md_tmpl._exceptions import (
+    DeclarationsMutatedError,
     ExtraParamsError,
+    IncludeNotFoundError,
     MissingParamsError,
     TemplateError,
     TemplatePanicError,
     TemplateSyntaxError,
     TypeMismatchError,
+    UndefinedVariableError,
+    UnknownFilterError,
 )
 from md_tmpl._import_hook import md_tmpl_import_hook
 from md_tmpl._template_helper import template
@@ -104,7 +108,9 @@ def generate_types_source(path: str | os.PathLike[str]) -> str:
 
 
 __all__ = [
+    "DeclarationsMutatedError",
     "ExtraParamsError",
+    "IncludeNotFoundError",
     "MissingParamsError",
     "Template",
     "TemplateCache",
@@ -112,6 +118,8 @@ __all__ = [
     "TemplatePanicError",
     "TemplateSyntaxError",
     "TypeMismatchError",
+    "UndefinedVariableError",
+    "UnknownFilterError",
     "generate_types_source",
     "load_template",
     "load_types",

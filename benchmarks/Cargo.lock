@@ -146,12 +146,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
-name = "const-str"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18f12cc9948ed9604230cdddc7c86e270f9401ccbe3c2e98a4378c5e7632212f"
-
-[[package]]
 name = "cpufeatures"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -485,7 +479,7 @@ checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
 name = "md-tmpl"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "md-tmpl-core",
  "md-tmpl-macros",
@@ -494,7 +488,7 @@ dependencies = [
 
 [[package]]
 name = "md-tmpl-benchmarks"
-version = "0.5.3"
+version = "0.7.0"
 dependencies = [
  "criterion",
  "handlebars",
@@ -504,15 +498,13 @@ dependencies = [
  "serde",
  "serde_json",
  "tera",
- "typed-builder",
 ]
 
 [[package]]
 name = "md-tmpl-core"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "ciborium",
- "const-str",
  "flexbuffers",
  "hashbrown",
  "itoa",
@@ -524,7 +516,7 @@ dependencies = [
 
 [[package]]
 name = "md-tmpl-macros"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "hashbrown",
  "md-tmpl-core",

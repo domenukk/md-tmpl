@@ -4,13 +4,17 @@
  * Provides TypeScript equivalents of the Python `@variant` decorator
  * and `Variants` base class:
  *
- * 1. `variant()` — create a struct variant class with the
- *    `_md_tmpl_tag` protocol.
+ * 1. `variant()` — create a struct variant constructor using the
+ *    `__kind__` discriminated-union shape.
  *
  * 2. `unitVariant()` — create a unit variant sentinel.
  *
  * 3. `defineVariants()` — declare mixed enums (unit + struct variants)
  *    in a single call.
+ *
+ * Variant instances use the `__kind__` tag (the same discriminant emitted
+ * by codegen and used by the Rust core's `ENUM_TAG_KEY`). Struct fields are
+ * exposed as direct properties alongside `__kind__`.
  *
  * @example
  * ```ts
@@ -19,7 +23,7 @@
  * // --- variant() ---
  * const NeedsChanges = variant("NeedsChanges", ["reason"]);
  * const v = NeedsChanges({ reason: "fix tests" });
- * console.log(v._md_tmpl_tag); // "NeedsChanges"
+ * console.log(v.__kind__); // "NeedsChanges"
  * console.log(v.reason); // "fix tests"
  *
  * // --- defineVariants() ---
@@ -41,11 +45,16 @@ import { ENUM_TAG_KEY } from "./consts.js";
 // Variant protocol
 // ---------------------------------------------------------------------------
 
-/** A variant instance carries a tag and optional fields. */
+/**
+ * A variant instance carries a `__kind__` tag and exposes any struct fields
+ * as direct properties.
+ *
+ * `__kind__` is the same discriminant used by generated types and the Rust
+ * core (see `ENUM_TAG_KEY`).
+ */
 export interface VariantInstance {
-  readonly _md_tmpl_tag: string;
-  readonly _md_tmpl_fields: Readonly<Record<string, unknown>>;
-  [key: string]: unknown;
+  readonly __kind__: string;
+  readonly [key: string]: unknown;
 }
 
 // ---------------------------------------------------------------------------
@@ -56,22 +65,23 @@ export interface VariantInstance {
  * Create a unit variant sentinel.
  *
  * Unit variants have no fields. They compare by tag name and carry the
- * `_md_tmpl_tag` / `_md_tmpl_fields` protocol.
+ * `__kind__` discriminant.
  *
  * @example
  * ```ts
  * const Approved = unitVariant("Approved");
- * console.log(Approved._md_tmpl_tag); // "Approved"
+ * console.log(Approved.__kind__); // "Approved"
  * ```
  */
 export function unitVariant(tag: string): VariantInstance {
-  return Object.freeze({
-    _md_tmpl_tag: tag,
-    _md_tmpl_fields: Object.freeze({}),
-    toString() {
-      return tag;
-    },
+  const instance: Record<string, unknown> = { [ENUM_TAG_KEY]: tag };
+  // `toString` is non-enumerable so `fromJs` and object spreads treat the
+  // instance as a plain `{ __kind__ }` struct.
+  Object.defineProperty(instance, "toString", {
+    value: () => tag,
+    enumerable: false,
   });
+  return Object.freeze(instance) as VariantInstance;
 }
 
 // ---------------------------------------------------------------------------
@@ -81,16 +91,15 @@ export function unitVariant(tag: string): VariantInstance {
 /** A constructor function for a struct variant. */
 export type VariantConstructor<F extends string = string> = {
   (fields: Record<F, unknown>): VariantInstance;
-  readonly _md_tmpl_tag: string;
+  readonly __kind__: string;
   readonly __match_args__: readonly F[];
 };
 
 /**
  * Create a struct variant constructor.
  *
- * The returned function creates instances that carry the
- * `_md_tmpl_tag` / `_md_tmpl_fields` protocol
- * and expose each field as a direct property.
+ * The returned function creates instances that carry the `__kind__`
+ * discriminant and expose each field as a direct property.
  *
  * @param tag - Variant name (e.g., "NeedsChanges").
  * @param fieldNames - Ordered list of field names.
@@ -130,23 +139,27 @@ export function variant<F extends string>(
       fieldsObj[name] = fields[name];
     }
 
-    const instance: VariantInstance = {
-      _md_tmpl_tag: tag,
-      _md_tmpl_fields: Object.freeze({ ...fieldsObj }),
+    const instance: Record<string, unknown> = {
+      [ENUM_TAG_KEY]: tag,
       ...fieldsObj,
-      toString() {
+    };
+    // `toString` is non-enumerable so `fromJs` and object spreads treat the
+    // instance as a plain `{ __kind__, ...fields }` struct.
+    Object.defineProperty(instance, "toString", {
+      value: () => {
         const parts = fieldNames
           .map((f) => `${f}=${JSON.stringify(fieldsObj[f])}`)
           .join(", ");
         return `${tag}(${parts})`;
       },
-    };
+      enumerable: false,
+    });
 
-    return Object.freeze(instance);
+    return Object.freeze(instance) as VariantInstance;
   };
 
   // Attach metadata to the constructor function
-  Object.defineProperty(ctor, "_md_tmpl_tag", {
+  Object.defineProperty(ctor, ENUM_TAG_KEY, {
     value: tag,
     writable: false,
     enumerable: true,
@@ -265,12 +278,8 @@ export function match<R>(
     fields = {};
   } else if (typeof value === "object" && value !== null) {
     const obj = value as Record<string, unknown>;
-    if (typeof obj._md_tmpl_tag === "string") {
-      // VariantInstance protocol
-      tag = obj._md_tmpl_tag;
-      fields = (obj._md_tmpl_fields as Record<string, unknown>) ?? {};
-    } else if (typeof obj[ENUM_TAG_KEY] === "string") {
-      // __kind__ protocol (from generated types)
+    if (typeof obj[ENUM_TAG_KEY] === "string") {
+      // __kind__ discriminated-union shape
       tag = obj[ENUM_TAG_KEY] as string;
       fields = { ...obj };
       delete fields[ENUM_TAG_KEY];
@@ -292,8 +301,8 @@ export function match<R>(
 /**
  * Check if a value is a specific variant.
  *
- * Works with both the `_md_tmpl_tag` protocol and `__kind__`
- * tagged objects.
+ * Accepts unit variants as bare strings and struct/unit variants tagged
+ * with the `__kind__` discriminant.
  *
  * @example
  * ```ts
@@ -306,7 +315,6 @@ export function isVariant(value: unknown, variantName: string): boolean {
   if (typeof value === "string") return value === variantName;
   if (value !== null && typeof value === "object") {
     const obj = value as Record<string, unknown>;
-    if (obj._md_tmpl_tag === variantName) return true;
     if (obj[ENUM_TAG_KEY] === variantName) return true;
   }
   return false;

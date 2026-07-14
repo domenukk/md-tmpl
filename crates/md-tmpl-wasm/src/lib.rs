@@ -12,7 +12,7 @@
 
 use std::cell::OnceCell;
 
-use js_sys::{Array, Object, Reflect};
+use js_sys::{Array, Error, Object, Reflect};
 use md_tmpl::{Context, Value};
 use wasm_bindgen::prelude::*;
 
@@ -43,6 +43,34 @@ extern "C" {
 fn set_prop(obj: &Object, key: &str, value: &JsValue) {
     Reflect::set(obj, &JsValue::from_str(key), value)
         .expect("Reflect::set on a fresh Object cannot fail");
+}
+
+/// Build a JavaScript `Error` object from a [`TemplateError`](md_tmpl::TemplateError).
+///
+/// Unlike throwing a bare string primitive, the returned value is a real
+/// `Error` instance (`instanceof Error` in JS). Its `name` is set to the
+/// stable, machine-readable [`ErrorKind`](md_tmpl::ErrorKind) identifier
+/// (e.g. `"missing_params"`), so JS callers can branch on `err.name` without
+/// parsing the human-readable message. The same identifier is also exposed as
+/// an own `kind` property, matching the pure-TS engine and Go binding.
+fn js_error(e: &md_tmpl::TemplateError) -> JsValue {
+    let err = Error::new(&e.to_string());
+    err.set_name(e.kind().as_str());
+    set_prop(&err, "kind", &JsValue::from_str(e.kind().as_str()));
+    err.into()
+}
+
+/// Build a JavaScript `Error` object from a plain message string.
+///
+/// Used for error paths that do not originate from a
+/// [`TemplateError`](md_tmpl::TemplateError) (e.g. malformed env records or
+/// `serde` conversion failures), so those also throw real `Error` instances.
+/// Its `kind` is the empty-string sentinel, matching the unknown/unclassified
+/// kind used by the pure-TS engine and Go binding.
+fn js_error_msg(msg: &str) -> JsValue {
+    let err = Error::new(msg);
+    set_prop(&err, "kind", &JsValue::from_str(""));
+    err.into()
 }
 
 // ---------------------------------------------------------------------------
@@ -92,8 +120,7 @@ impl Template {
     /// Throws a JavaScript error if the source contains a syntax error.
     #[wasm_bindgen(js_name = "fromSource")]
     pub fn from_source(source: &str) -> Result<Template, JsValue> {
-        let inner = md_tmpl::Template::from_source(source)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let inner = md_tmpl::Template::from_source(source).map_err(|e| js_error(&e))?;
         Ok(Self::new(inner))
     }
 
@@ -107,19 +134,52 @@ impl Template {
     /// fails.
     pub fn render(&self, params: &JsParams) -> Result<String, JsValue> {
         let ctx = json_to_context(params.as_ref())?;
-        self.inner
-            .render_ctx(&ctx)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        self.inner.render_ctx(&ctx).map_err(|e| js_error(&e))
     }
 
-    /// Render without strict parameter validation (allows extra params,
-    /// skips type checks). Matches the pure-TS `renderUnchecked()` API.
+    /// Render a template that takes no user-provided parameters.
+    ///
+    /// Required so the WASM `Template` satisfies the TypeScript `ITemplate`
+    /// interface. Declared parameters that provide defaults use those defaults.
+    ///
+    /// Throws if any declared parameter lacks a default value, or if rendering
+    /// fails.
+    #[wasm_bindgen(js_name = "renderEmpty")]
+    pub fn render_empty(&self) -> Result<String, JsValue> {
+        self.inner.render_empty().map_err(|e| js_error(&e))
+    }
+
+    /// Render **without any validation**.
+    ///
+    /// Skips *all* validation — missing parameters, type mismatches, and extra
+    /// undeclared keys are ignored — matching the pure-TS `renderUnchecked()`
+    /// API. A wrong-typed or missing parameter does not throw here; only a
+    /// genuine rendering error (e.g. an undefined variable referenced by the
+    /// body) is reported.
+    ///
+    /// Throws only if rendering itself fails.
     #[wasm_bindgen(js_name = "renderUnchecked")]
     pub fn render_unchecked(&self, params: &JsParams) -> Result<String, JsValue> {
         let ctx = json_to_context(params.as_ref())?;
         self.inner
+            .render_ctx_unchecked(&ctx)
+            .map_err(|e| js_error(&e))
+    }
+
+    /// Render allowing extra (undeclared) parameters.
+    ///
+    /// Undeclared keys are silently ignored, but missing required parameters
+    /// and type mismatches are still validated. This preserves the allow-extra
+    /// capability previously exposed (misnamed) by `renderUnchecked`.
+    ///
+    /// Throws if required parameters are missing, types mismatch, or rendering
+    /// fails.
+    #[wasm_bindgen(js_name = "renderAllowingExtra")]
+    pub fn render_allowing_extra(&self, params: &JsParams) -> Result<String, JsValue> {
+        let ctx = json_to_context(params.as_ref())?;
+        self.inner
             .render_ctx_allowing_extra(&ctx)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+            .map_err(|e| js_error(&e))
     }
 
     /// Render from a pre-serialized JSON string.
@@ -133,22 +193,37 @@ impl Template {
     #[wasm_bindgen(js_name = "renderJson")]
     pub fn render_json(&self, json_str: &str) -> Result<String, JsValue> {
         let ctx = json_str_to_context(json_str)?;
-        self.inner
-            .render_ctx(&ctx)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        self.inner.render_ctx(&ctx).map_err(|e| js_error(&e))
     }
 
-    /// Render from a pre-serialized JSON string without strict validation.
+    /// Render from a pre-serialized JSON string **without any validation**.
     ///
-    /// Like `renderJson`, but allows extra (undeclared) parameters.
+    /// Like `renderJson`, but skips all validation (missing, type, extra),
+    /// matching `renderUnchecked`.
     ///
     /// Throws if the JSON is invalid or rendering fails.
     #[wasm_bindgen(js_name = "renderUncheckedJson")]
     pub fn render_unchecked_json(&self, json_str: &str) -> Result<String, JsValue> {
         let ctx = json_str_to_context(json_str)?;
         self.inner
+            .render_ctx_unchecked(&ctx)
+            .map_err(|e| js_error(&e))
+    }
+
+    /// Render from a pre-serialized JSON string, allowing extra (undeclared)
+    /// parameters.
+    ///
+    /// Like `renderAllowingExtra`, but takes a JSON string. Undeclared keys are
+    /// ignored while missing required parameters and types are still validated.
+    ///
+    /// Throws if required parameters are missing, types mismatch, the JSON is
+    /// invalid, or rendering fails.
+    #[wasm_bindgen(js_name = "renderAllowingExtraJson")]
+    pub fn render_allowing_extra_json(&self, json_str: &str) -> Result<String, JsValue> {
+        let ctx = json_str_to_context(json_str)?;
+        self.inner
             .render_ctx_allowing_extra(&ctx)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+            .map_err(|e| js_error(&e))
     }
 
     /// Render the template directly from a `FlexBuffers` binary buffer (`Uint8Array`).
@@ -157,21 +232,29 @@ impl Template {
     /// achieving maximum performance across the WASM boundary.
     #[wasm_bindgen(js_name = "renderFlexbuffers")]
     pub fn render_flexbuffers(&self, buffer: &[u8]) -> Result<String, JsValue> {
-        let ctx = md_tmpl::Context::from_flexbuffers(buffer)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        self.inner
-            .render_ctx(&ctx)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+        let ctx = md_tmpl::Context::from_flexbuffers(buffer).map_err(|e| js_error(&e))?;
+        self.inner.render_ctx(&ctx).map_err(|e| js_error(&e))
     }
 
-    /// Render from a `FlexBuffers` binary buffer without strict validation (allows extra params).
+    /// Render from a `FlexBuffers` binary buffer **without any validation**.
+    ///
+    /// Skips all validation (missing, type, extra), matching `renderUnchecked`.
     #[wasm_bindgen(js_name = "renderUncheckedFlexbuffers")]
     pub fn render_unchecked_flexbuffers(&self, buffer: &[u8]) -> Result<String, JsValue> {
-        let ctx = md_tmpl::Context::from_flexbuffers(buffer)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let ctx = md_tmpl::Context::from_flexbuffers(buffer).map_err(|e| js_error(&e))?;
+        self.inner
+            .render_ctx_unchecked(&ctx)
+            .map_err(|e| js_error(&e))
+    }
+
+    /// Render from a `FlexBuffers` binary buffer, allowing extra (undeclared)
+    /// parameters while still validating missing parameters and types.
+    #[wasm_bindgen(js_name = "renderAllowingExtraFlexbuffers")]
+    pub fn render_allowing_extra_flexbuffers(&self, buffer: &[u8]) -> Result<String, JsValue> {
+        let ctx = md_tmpl::Context::from_flexbuffers(buffer).map_err(|e| js_error(&e))?;
         self.inner
             .render_ctx_allowing_extra(&ctx)
-            .map_err(|e| JsValue::from_str(&e.to_string()))
+            .map_err(|e| js_error(&e))
     }
 
     /// Return the raw template body text (after frontmatter stripping).
@@ -280,7 +363,7 @@ impl Template {
             source,
             md_tmpl::CompileOptions::default().allow_unused(true),
         )
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        .map_err(|e| js_error(&e))?;
         Ok(Self::new(inner))
     }
 
@@ -294,7 +377,7 @@ impl Template {
             source,
             md_tmpl::CompileOptions::default().base_dir(std::path::Path::new(base_dir)),
         )
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        .map_err(|e| js_error(&e))?;
         Ok(Self::new(inner))
     }
 
@@ -313,7 +396,7 @@ impl Template {
             .collect();
         let (inner, _fm) =
             md_tmpl::Template::compile(source, md_tmpl::CompileOptions::default().env(&env_refs))
-                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+                .map_err(|e| js_error(&e))?;
         Ok(Self::new(inner))
     }
 
@@ -347,20 +430,13 @@ impl Template {
         if let Some(ref dir) = base_dir {
             opts = opts.base_dir(std::path::Path::new(dir));
         }
-        let (inner, _fm) = md_tmpl::Template::compile(source, opts)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let (inner, _fm) = md_tmpl::Template::compile(source, opts).map_err(|e| js_error(&e))?;
         Ok(Self::new(inner))
     }
 
-    /// Set the maximum include depth for rendering this template (`camelCase`).
+    /// Set the maximum include depth for rendering this template.
     #[wasm_bindgen(js_name = "setMaxIncludeDepth")]
     pub fn set_max_include_depth(&mut self, depth: usize) {
-        self.inner.set_max_include_depth(depth);
-    }
-
-    /// Set the maximum include depth for rendering this template (`snake_case` alias).
-    #[wasm_bindgen(js_name = "set_max_include_depth")]
-    pub fn set_max_include_depth_alias(&mut self, depth: usize) {
         self.inner.set_max_include_depth(depth);
     }
 }
@@ -369,9 +445,14 @@ impl Template {
 // Small helpers
 // ---------------------------------------------------------------------------
 
-/// Saturating conversion from `usize` to `u32` (JS array indices are u32).
+/// Convert a `usize` collection length/index to `u32` (JS array indices are u32).
+///
+/// A template's declaration count or list length can never approach `u32::MAX`
+/// (~4.3 billion), so a failure here would indicate memory corruption or a
+/// logic bug. We surface it loudly rather than silently truncating to a wrong
+/// index/length.
 fn u32_from_usize(n: usize) -> u32 {
-    u32::try_from(n).unwrap_or(u32::MAX)
+    u32::try_from(n).expect("collection length exceeds u32::MAX — impossible for a template")
 }
 
 /// Convert an `f64` to `i64`, assuming the caller has verified `n` is a whole
@@ -391,16 +472,15 @@ fn js_env_to_values(val: &JsValue) -> Result<Vec<(String, md_tmpl::Value)>, JsVa
     }
     let obj: &Object = val
         .dyn_ref::<Object>()
-        .ok_or_else(|| JsValue::from_str("env must be an object"))?;
+        .ok_or_else(|| js_error_msg("env must be an object"))?;
     let keys = Object::keys(obj);
     let mut pairs = Vec::with_capacity(keys.length() as usize);
     for i in 0..keys.length() {
         let key = keys.get(i);
         let key_str = key
             .as_string()
-            .ok_or_else(|| JsValue::from_str("env key must be a string"))?;
-        let val =
-            Reflect::get(obj, &key).map_err(|_| JsValue::from_str("failed to read env value"))?;
+            .ok_or_else(|| js_error_msg("env key must be a string"))?;
+        let val = Reflect::get(obj, &key).map_err(|_| js_error_msg("failed to read env value"))?;
         let typed_val = js_to_env_value(&val)?;
         pairs.push((key_str, typed_val));
     }
@@ -429,7 +509,7 @@ fn js_to_env_value(val: &JsValue) -> Result<md_tmpl::Value, JsValue> {
     } else {
         // Complex objects (arrays, objects) — use serde.
         serde_wasm_bindgen::from_value(val.clone())
-            .map_err(|e| JsValue::from_str(&format!("env value conversion error: {e}")))
+            .map_err(|e| js_error_msg(&format!("env value conversion error: {e}")))
     }
 }
 
@@ -449,15 +529,15 @@ fn json_to_context(val: &JsValue) -> Result<Context, JsValue> {
         return Ok(Context::new());
     }
     let value: Value = serde_wasm_bindgen::from_value(val.clone())
-        .map_err(|e| JsValue::from_str(&format!("serde_wasm_bindgen error: {e}")))?;
-    Context::from_value(value).map_err(|e| JsValue::from_str(&e.to_string()))
+        .map_err(|e| js_error_msg(&format!("serde_wasm_bindgen error: {e}")))?;
+    Context::from_value(value).map_err(|e| js_error(&e))
 }
 
 /// Parse a JSON string into a [`Context`] via serde.
 fn json_str_to_context(json_str: &str) -> Result<Context, JsValue> {
     let json_value: serde_json::Value =
-        serde_json::from_str(json_str).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    Context::from_serialize(&json_value).map_err(|e| JsValue::from_str(&e.to_string()))
+        serde_json::from_str(json_str).map_err(|e| js_error_msg(&e.to_string()))?;
+    Context::from_serialize(&json_value).map_err(|e| js_error(&e))
 }
 
 // ---------------------------------------------------------------------------

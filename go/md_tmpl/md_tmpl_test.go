@@ -318,9 +318,9 @@ Hello {{ name }}!`)
 		t.Fatalf("SetStr: %v", err)
 	}
 
-	result, err := tmpl.RenderAllowingExtra(ctx)
+	result, err := tmpl.Render(ctx, AllowExtra())
 	if err != nil {
-		t.Fatalf("RenderAllowingExtra: %v", err)
+		t.Fatalf("Render(AllowExtra): %v", err)
 	}
 	if result != "Hello world!" {
 		t.Errorf("got %q, want %q", result, "Hello world!")
@@ -1347,10 +1347,10 @@ func TestDeclarationString(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// RenderMapAllowingExtra
+// RenderMap with AllowExtra
 // ---------------------------------------------------------------------------
 
-func TestRenderMapAllowingExtra(t *testing.T) {
+func TestRenderMapAllowExtra(t *testing.T) {
 	tmpl, err := FromSource(`---
 params: [name = str]
 ---
@@ -1360,12 +1360,12 @@ Hello {{ name }}!`)
 	}
 	defer tmpl.Close()
 
-	result, err := tmpl.RenderMapAllowingExtra(map[string]any{
+	result, err := tmpl.RenderMap(map[string]any{
 		"name":  "Alice",
 		"extra": "ignored",
-	})
+	}, AllowExtra())
 	if err != nil {
-		t.Fatalf("RenderMapAllowingExtra: %v", err)
+		t.Fatalf("RenderMap(AllowExtra): %v", err)
 	}
 	if result != "Hello Alice!" {
 		t.Errorf("got %q, want %q", result, "Hello Alice!")
@@ -1472,7 +1472,7 @@ Body`), 0644); err != nil {
 	if err := ctx.SetStr("title", "Test"); err != nil {
 		t.Fatalf("SetStr: %v", err)
 	}
-	_, err = tmpl.RenderAllowingExtra(ctx)
+	_, err = tmpl.Render(ctx, AllowExtra())
 	if err != nil {
 		t.Fatalf("Render: %v", err)
 	}
@@ -2320,7 +2320,7 @@ params:
 	}
 }
 
-func TestRenderStructAllowingExtra(t *testing.T) {
+func TestRenderStructAllowExtra(t *testing.T) {
 	tmpl, err := FromSource(`---
 params: [name = str]
 ---
@@ -2335,9 +2335,9 @@ params: [name = str]
 		Extra string `json:"extra"`
 	}
 
-	result, err := tmpl.RenderStructAllowingExtra(Params{Name: "Carol", Extra: "ignored"})
+	result, err := tmpl.RenderStruct(Params{Name: "Carol", Extra: "ignored"}, AllowExtra())
 	if err != nil {
-		t.Fatalf("RenderStructAllowingExtra: %v", err)
+		t.Fatalf("RenderStruct(AllowExtra): %v", err)
 	}
 	if result != "Carol" {
 		t.Errorf("got %q, want %q", result, "Carol")
@@ -2969,7 +2969,7 @@ params: [n = int]
 }
 
 // ---------------------------------------------------------------------------
-// Regression: RenderMap / RenderMapAllowingExtra refactoring (renderMapWith)
+// Regression: RenderMap / RenderMap(AllowExtra()) refactoring (renderMapWith)
 // ---------------------------------------------------------------------------
 
 func TestRenderMapStillRejectsExtra(t *testing.T) {
@@ -2988,7 +2988,7 @@ params: [name = str]
 	}
 }
 
-func TestRenderMapAllowingExtraStillWorks(t *testing.T) {
+func TestRenderMapAllowExtraStillWorks(t *testing.T) {
 	tmpl, err := FromSource(`---
 params: [name = str]
 ---
@@ -2998,7 +2998,7 @@ params: [name = str]
 	}
 	defer tmpl.Close()
 
-	result, err := tmpl.RenderMapAllowingExtra(map[string]any{"name": "ok", "extra": "ignored"})
+	result, err := tmpl.RenderMap(map[string]any{"name": "ok", "extra": "ignored"}, AllowExtra())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3126,7 +3126,7 @@ params: [x = str]
 	}
 }
 
-func TestRenderJSONAllowingExtra(t *testing.T) {
+func TestRenderJSONAllowExtra(t *testing.T) {
 	tmpl, err := FromSource(`---
 params: [name = str]
 ---
@@ -3136,12 +3136,80 @@ Hello {{ name }}!`)
 	}
 	defer tmpl.Close()
 
-	result, err := tmpl.RenderJSONAllowingExtra(`{"name": "Alice", "extra": "ignored"}`)
+	result, err := tmpl.RenderJSON(`{"name": "Alice", "extra": "ignored"}`, AllowExtra())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if result != "Hello Alice!" {
 		t.Errorf("got %q, want %q", result, "Hello Alice!")
+	}
+}
+
+// TestAllowExtraOption verifies the unified AllowExtra render option: strict
+// mode (the default) rejects undeclared parameters with a typed ExtraParams
+// error, while AllowExtra() permits them across every render form.
+func TestAllowExtraOption(t *testing.T) {
+	tmpl, err := FromSource(`---
+params: [name = str]
+---
+Hello {{ name }}!`)
+	if err != nil {
+		t.Fatalf("FromSource: %v", err)
+	}
+	defer tmpl.Close()
+
+	extra := map[string]any{"name": "Alice", "extra": "ignored"}
+
+	// Strict (default): the undeclared "extra" key must produce a typed error.
+	if _, err := tmpl.RenderMap(extra); err == nil {
+		t.Fatal("strict RenderMap: expected ExtraParams error, got nil")
+	} else if !errors.Is(err, ErrExtraParams) {
+		t.Fatalf("strict RenderMap: expected ErrExtraParams, got %v", err)
+	}
+
+	// AllowExtra() permits the undeclared key for each render form.
+	got, err := tmpl.RenderMap(extra, AllowExtra())
+	if err != nil {
+		t.Fatalf("RenderMap(AllowExtra): %v", err)
+	}
+	if got != "Hello Alice!" {
+		t.Errorf("RenderMap(AllowExtra): got %q, want %q", got, "Hello Alice!")
+	}
+
+	got, err = tmpl.RenderJSON(`{"name": "Alice", "extra": "ignored"}`, AllowExtra())
+	if err != nil {
+		t.Fatalf("RenderJSON(AllowExtra): %v", err)
+	}
+	if got != "Hello Alice!" {
+		t.Errorf("RenderJSON(AllowExtra): got %q, want %q", got, "Hello Alice!")
+	}
+
+	type params struct {
+		Name  string `json:"name"`
+		Extra string `json:"extra"`
+	}
+	got, err = tmpl.RenderStruct(params{Name: "Alice", Extra: "ignored"}, AllowExtra())
+	if err != nil {
+		t.Fatalf("RenderStruct(AllowExtra): %v", err)
+	}
+	if got != "Hello Alice!" {
+		t.Errorf("RenderStruct(AllowExtra): got %q, want %q", got, "Hello Alice!")
+	}
+
+	ctx := NewContext()
+	defer ctx.Close()
+	if err := ctx.SetStr("name", "Alice"); err != nil {
+		t.Fatalf("SetStr: %v", err)
+	}
+	if err := ctx.SetStr("extra", "ignored"); err != nil {
+		t.Fatalf("SetStr: %v", err)
+	}
+	got, err = tmpl.Render(ctx, AllowExtra())
+	if err != nil {
+		t.Fatalf("Render(AllowExtra): %v", err)
+	}
+	if got != "Hello Alice!" {
+		t.Errorf("Render(AllowExtra): got %q, want %q", got, "Hello Alice!")
 	}
 }
 

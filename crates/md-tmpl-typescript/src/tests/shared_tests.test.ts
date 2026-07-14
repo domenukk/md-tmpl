@@ -213,7 +213,7 @@ describe("Shared: File-based include tests", () => {
 
         if (tc.expected_output !== undefined) {
           const tmpl = tc.env
-            ? Template.fromSourceWithEnv(parentSrc, {
+            ? Template.fromSourceWithOptions(parentSrc, {
                 env: tc.env,
                 baseDir: dir,
               })
@@ -229,7 +229,7 @@ describe("Shared: File-based include tests", () => {
           assert.throws(
             () => {
               const tmpl = tc.env
-                ? Template.fromSourceWithEnv(parentSrc, {
+                ? Template.fromSourceWithOptions(parentSrc, {
                     env: tc.env,
                     baseDir: dir,
                   })
@@ -418,9 +418,7 @@ describe("Shared: Env tests", () => {
       const src = getEnvTemplateSrc(tc);
 
       if (tc.expected_output !== undefined) {
-        const tmpl = Template.fromSourceWithEnv(src, {
-          env: tc.env ?? {},
-        });
+        const tmpl = Template.fromSourceWithEnv(src, tc.env ?? {});
         const output = tmpl.render(transformOptionValues(tc.params ?? {}));
         assert.strictEqual(
           output,
@@ -430,9 +428,7 @@ describe("Shared: Env tests", () => {
       } else if (tc.expected_error !== undefined) {
         assert.throws(
           () => {
-            const tmpl = Template.fromSourceWithEnv(src, {
-              env: tc.env ?? {},
-            });
+            const tmpl = Template.fromSourceWithEnv(src, tc.env ?? {});
             tmpl.render(transformOptionValues(tc.params ?? {}));
           },
           (err: unknown) => {

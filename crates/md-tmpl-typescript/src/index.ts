@@ -63,6 +63,7 @@ export { Context } from "./context.js";
 
 // Error hierarchy
 export {
+  type ErrorKind,
   TemplateError,
   TemplateSyntaxError,
   MissingParamsError,
@@ -70,6 +71,9 @@ export {
   ExtraParamsError,
   UndefinedVariableError,
   UnknownFilterError,
+  TemplatePanicError,
+  IncludeNotFoundError,
+  DeclarationsMutatedError,
 } from "./errors.js";
 
 // Value types
@@ -80,6 +84,7 @@ export {
   type IntValue,
   type FloatValue,
   type ListValue,
+  type StructValue,
   type DictValue,
   type NoneValue,
   type TmplValue,
@@ -90,6 +95,7 @@ export {
   int,
   float,
   list,
+  structVal,
   dict,
   tmplVal,
   NONE,

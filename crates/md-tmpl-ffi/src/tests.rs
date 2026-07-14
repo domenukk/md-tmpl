@@ -1,4 +1,9 @@
+use std::ptr;
+
+use md_tmpl::Value;
+
 use super::*;
+use crate::{json::json_to_value, metadata::value_to_json};
 
 #[test]
 fn test_from_source_and_render() {
@@ -1447,4 +1452,323 @@ params: []
         "error should mention missing key: {err_str}"
     );
     unsafe { pt_free_string(err) };
+}
+
+/// Split a transported error string into its `(kind, message)` parts, mirroring
+/// what a language binding does.
+fn split_kind(err: *const c_char) -> (String, String) {
+    let s = unsafe { CStr::from_ptr(err) }.to_str().unwrap();
+    match s.split_once(ERR_KIND_SEP) {
+        Some((kind, msg)) => (kind.to_string(), msg.to_string()),
+        None => (String::new(), s.to_string()),
+    }
+}
+
+#[test]
+fn test_render_error_carries_kind_prefix() {
+    let source = CString::new(
+        "\
+---
+params: [name = str]
+---
+Hello {{ name }}!",
+    )
+    .unwrap();
+    let mut tmpl: *mut PtTemplate = ptr::null_mut();
+    let err = unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
+    assert!(err.is_null());
+
+    // Render with an empty context — the required `name` param is missing.
+    let ctx = pt_context_new();
+    let mut render_err: *mut c_char = ptr::null_mut();
+    let result = unsafe { pt_template_render(tmpl, ctx, &raw mut render_err) };
+    assert!(result.is_null());
+    assert!(!render_err.is_null());
+
+    let (kind, msg) = split_kind(render_err);
+    assert_eq!(kind, "missing_params", "unexpected kind in {msg:?}");
+    assert!(!msg.is_empty(), "message should be present");
+
+    unsafe {
+        pt_free_string(render_err);
+        pt_context_free(ctx);
+        pt_template_free(tmpl);
+    }
+}
+
+#[test]
+fn test_compile_error_carries_syntax_kind() {
+    // Missing frontmatter is a syntax error.
+    let source = CString::new("no frontmatter here").unwrap();
+    let mut tmpl: *mut PtTemplate = ptr::null_mut();
+    let err = unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
+    assert!(!err.is_null());
+    assert!(tmpl.is_null());
+
+    let (kind, _msg) = split_kind(err);
+    assert_eq!(kind, "syntax");
+    unsafe { pt_free_string(err) };
+}
+
+#[test]
+fn test_render_empty() {
+    let source = CString::new(
+        "\
+---
+params: []
+---
+static output",
+    )
+    .unwrap();
+    let mut tmpl: *mut PtTemplate = ptr::null_mut();
+    let err = unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
+    assert!(err.is_null());
+
+    let mut render_err: *mut c_char = ptr::null_mut();
+    let result = unsafe { pt_template_render_empty(tmpl, &raw mut render_err) };
+    assert!(render_err.is_null(), "expected no render error");
+    let result_str = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
+    assert_eq!(result_str, "static output");
+
+    unsafe {
+        pt_free_string(result);
+        pt_template_free(tmpl);
+    }
+}
+
+#[test]
+fn test_render_unchecked() {
+    let source = CString::new(
+        "\
+---
+params: [name = str]
+---
+Hi {{ name }}",
+    )
+    .unwrap();
+    let mut tmpl: *mut PtTemplate = ptr::null_mut();
+    let err = unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
+    assert!(err.is_null());
+
+    let ctx = pt_context_new();
+    let key = CString::new("name").unwrap();
+    let val = CString::new("Ada").unwrap();
+    let err = unsafe { pt_context_set_str(ctx, key.as_ptr(), val.as_ptr()) };
+    assert!(err.is_null());
+
+    let mut render_err: *mut c_char = ptr::null_mut();
+    let result = unsafe { pt_template_render_unchecked(tmpl, ctx, &raw mut render_err) };
+    assert!(render_err.is_null());
+    let result_str = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
+    assert_eq!(result_str, "Hi Ada");
+
+    unsafe {
+        pt_free_string(result);
+        pt_context_free(ctx);
+        pt_template_free(tmpl);
+    }
+}
+
+#[test]
+fn test_render_cached() {
+    let source = CString::new(
+        "\
+---
+params: [x = str]
+---
+value={{ x }}",
+    )
+    .unwrap();
+    let mut tmpl: *mut PtTemplate = ptr::null_mut();
+    let err = unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
+    assert!(err.is_null());
+
+    let cache = pt_cache_new();
+    let ctx = pt_context_new();
+    let key = CString::new("x").unwrap();
+    let val = CString::new("42").unwrap();
+    let err = unsafe { pt_context_set_str(ctx, key.as_ptr(), val.as_ptr()) };
+    assert!(err.is_null());
+
+    let mut render_err: *mut c_char = ptr::null_mut();
+    let result = unsafe { pt_template_render_cached(tmpl, ctx, cache, &raw mut render_err) };
+    assert!(render_err.is_null(), "expected no render error");
+    let result_str = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
+    assert_eq!(result_str, "value=42");
+
+    unsafe {
+        pt_free_string(result);
+        pt_context_free(ctx);
+        pt_cache_free(cache);
+        pt_template_free(tmpl);
+    }
+}
+
+#[test]
+fn test_name_and_description_present() {
+    let source = CString::new(
+        "\
+---
+name: greeting
+description: A greeting template
+params: []
+---
+hi",
+    )
+    .unwrap();
+    let mut tmpl: *mut PtTemplate = ptr::null_mut();
+    let err = unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
+    assert!(err.is_null());
+
+    let name = unsafe { pt_template_name(tmpl) };
+    assert!(!name.is_null());
+    assert_eq!(
+        unsafe { CStr::from_ptr(name) }.to_str().unwrap(),
+        "greeting"
+    );
+
+    let desc = unsafe { pt_template_description(tmpl) };
+    assert!(!desc.is_null());
+    assert_eq!(
+        unsafe { CStr::from_ptr(desc) }.to_str().unwrap(),
+        "A greeting template"
+    );
+
+    unsafe {
+        pt_free_string(name);
+        pt_free_string(desc);
+        pt_template_free(tmpl);
+    }
+}
+
+#[test]
+fn test_name_and_description_absent_return_null() {
+    let source = CString::new(
+        "\
+---
+params: []
+---
+hi",
+    )
+    .unwrap();
+    let mut tmpl: *mut PtTemplate = ptr::null_mut();
+    let err = unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
+    assert!(err.is_null());
+
+    assert!(unsafe { pt_template_name(tmpl) }.is_null());
+    assert!(unsafe { pt_template_description(tmpl) }.is_null());
+
+    unsafe { pt_template_free(tmpl) };
+}
+
+#[test]
+fn test_from_source_with_options_combines_env_and_allow_unused() {
+    // Declares an unused param and a required env var — both options combined.
+    let source = CString::new(
+        "\
+---
+env:
+  - REGION = str
+
+params:
+  - unused = str := \"x\"
+---
+region={{ REGION }}",
+    )
+    .unwrap();
+    let env_json = CString::new(r#"{"REGION": "eu-west-1"}"#).unwrap();
+    let mut tmpl: *mut PtTemplate = ptr::null_mut();
+    let err = unsafe {
+        pt_template_from_source_with_options(
+            source.as_ptr(),
+            ptr::null(),
+            env_json.as_ptr(),
+            true,
+            &raw mut tmpl,
+        )
+    };
+    assert!(err.is_null(), "expected compile to succeed");
+    assert!(!tmpl.is_null());
+
+    let mut render_err: *mut c_char = ptr::null_mut();
+    let result = unsafe { pt_template_render_empty(tmpl, &raw mut render_err) };
+    assert!(render_err.is_null());
+    assert_eq!(
+        unsafe { CStr::from_ptr(result) }.to_str().unwrap(),
+        "region=eu-west-1"
+    );
+
+    unsafe {
+        pt_free_string(result);
+        pt_template_free(tmpl);
+    }
+}
+
+#[test]
+fn test_from_source_with_options_unused_error_without_allow() {
+    // Same template, but allow_unused=false — should fail to compile.
+    let source = CString::new(
+        "\
+---
+params: [unused = str]
+---
+static",
+    )
+    .unwrap();
+    let mut tmpl: *mut PtTemplate = ptr::null_mut();
+    let err = unsafe {
+        pt_template_from_source_with_options(
+            source.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            false,
+            &raw mut tmpl,
+        )
+    };
+    assert!(!err.is_null(), "expected unused-param error");
+    assert!(tmpl.is_null());
+    unsafe { pt_free_string(err) };
+}
+
+#[test]
+fn test_from_file_with_options() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("opts.tmpl.md");
+    std::fs::write(
+        &path,
+        "\
+---
+params:
+  - unused = str := \"x\"
+---
+from file",
+    )
+    .unwrap();
+
+    let path_c = CString::new(path.to_str().unwrap()).unwrap();
+    let mut tmpl: *mut PtTemplate = ptr::null_mut();
+    let err = unsafe {
+        pt_template_from_file_with_options(
+            path_c.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            true,
+            &raw mut tmpl,
+        )
+    };
+    assert!(err.is_null(), "expected compile to succeed");
+    assert!(!tmpl.is_null());
+
+    let mut render_err: *mut c_char = ptr::null_mut();
+    let result = unsafe { pt_template_render_empty(tmpl, &raw mut render_err) };
+    assert!(render_err.is_null());
+    assert_eq!(
+        unsafe { CStr::from_ptr(result) }.to_str().unwrap(),
+        "from file"
+    );
+
+    unsafe {
+        pt_free_string(result);
+        pt_template_free(tmpl);
+    }
 }

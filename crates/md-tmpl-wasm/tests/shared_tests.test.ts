@@ -112,9 +112,10 @@ function getTemplateSrc(tc: InlineTmplTestCase): string {
 }
 
 function matchesError(err: unknown, expected: string): boolean {
-  // WASM throws string errors, TS throws Error objects
+  // Both WASM and TS throw real Error objects; the string branch is kept as a
+  // defensive fallback for any legacy path.
   const msg = typeof err === "string" ? err : err instanceof Error ? err.message : String(err);
-  const name = err instanceof Error ? err.constructor.name : "";
+  const name = err instanceof Error ? err.name : "";
   return (
     msg.toLowerCase().includes(expected.toLowerCase()) ||
     name.toLowerCase().includes(expected.toLowerCase())

@@ -327,7 +327,7 @@ env:
 ---
 Hello {{ name }}! Using {{ MODEL }} (max {{ MAX_TOKENS }} tokens).`
 
-tmpl, err := pt.FromSourceWithEnv(source, map[string]string{
+tmpl, err := pt.FromSourceWithEnv(source, map[string]any{
     "MODEL": "gemini-2.0-flash",
 })
 if err != nil {
@@ -356,21 +356,26 @@ cache.Clear()
 ### Template
 
 ```go
-// Constructors
-pt.FromSource(source string) (*Template, error)
-pt.FromSourceAllowingUnused(source string) (*Template, error)
+// Constructors — combine settings via functional options:
+//   WithBaseDir(dir), WithEnv(map[string]any), WithAllowUnused()
+pt.FromSource(source string, opts ...Option) (*Template, error)
+pt.FromFile(path string, opts ...Option) (*Template, error)
 pt.FromSourceWithBaseDir(source, baseDir string) (*Template, error)
-pt.FromSourceWithEnv(source string, env map[string]string) (*Template, error)
+pt.FromSourceWithEnv(source string, env map[string]any) (*Template, error)
 pt.FromSourceWithFrontmatter(source string) (*Template, *Frontmatter, error)
-pt.FromFile(path string) (*Template, error)
 
-// Rendering — each has an AllowingExtra variant
-tmpl.Render(ctx *Context) (string, error)
-tmpl.RenderMap(params map[string]any) (string, error)
-tmpl.RenderStruct(v any) (string, error)
-tmpl.RenderJSON(jsonStr string) (string, error)
+// Rendering — pass AllowExtra() to permit undeclared parameters
+tmpl.Render(ctx *Context, opts ...RenderOption) (string, error)
+tmpl.RenderMap(params map[string]any, opts ...RenderOption) (string, error)
+tmpl.RenderStruct(v any, opts ...RenderOption) (string, error)
+tmpl.RenderJSON(jsonStr string, opts ...RenderOption) (string, error)
+tmpl.RenderEmpty() (string, error)              // all params must have defaults
+tmpl.RenderUnchecked(ctx *Context) (string, error) // skip param validation
+tmpl.RenderCached(ctx *Context, cache *Cache) (string, error) // reuse includes
 
 // Metadata
+tmpl.Name() (string, bool)        // frontmatter name (ok=false if absent)
+tmpl.Description() (string, bool) // frontmatter description
 tmpl.Declarations() []Declaration
 tmpl.Defaults() map[string]any
 tmpl.Constants() map[string]any
@@ -404,6 +409,16 @@ ctx.MergeStruct(myStruct) // merge struct fields into context
 ```go
 var pt.ErrClosed     // operating on a closed resource
 var pt.ErrNilContext // rendering with nil context
+
+// Typed engine errors carry a machine-readable Kind. Match them with
+// errors.Is against the per-kind sentinels, or inspect *TemplateError.Kind:
+var pt.ErrSyntax, pt.ErrMissingParams, pt.ErrTypeMismatch, pt.ErrExtraParams
+var pt.ErrUndefinedVariable, pt.ErrUnknownFilter, pt.ErrIncludeNotFound
+var pt.ErrDeclarationsMutated, pt.ErrPanic, pt.ErrIO
+
+// Example:
+_, err := tmpl.RenderMap(map[string]any{"extra": 1})
+if errors.Is(err, pt.ErrExtraParams) { /* handle undeclared params */ }
 ```
 
 ## Performance
@@ -437,7 +452,7 @@ vs Go's `text/template`, median of 3 runs
 Allocations: 2 per render (small/medium/large) vs 3–517 for `text/template`.
 
 ```bash
-just test-go     # 175 tests
+just test-go     # 230 tests
 just bench-go    # 24 benchmarks
 ```
 

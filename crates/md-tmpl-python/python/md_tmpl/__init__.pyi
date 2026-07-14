@@ -40,12 +40,16 @@ class VariantProtocol(Protocol):
 # -- Exception hierarchy -------------------------------------------------
 
 from md_tmpl._exceptions import (
+    DeclarationsMutatedError as DeclarationsMutatedError,
     ExtraParamsError as ExtraParamsError,
+    IncludeNotFoundError as IncludeNotFoundError,
     MissingParamsError as MissingParamsError,
     TemplateError as TemplateError,
     TemplatePanicError as TemplatePanicError,
     TemplateSyntaxError as TemplateSyntaxError,
     TypeMismatchError as TypeMismatchError,
+    UndefinedVariableError as UndefinedVariableError,
+    UnknownFilterError as UnknownFilterError,
 )
 
 # -- Core classes --------------------------------------------------------
@@ -63,10 +67,22 @@ class Template:
     def from_source_with_base_dir(
         source: str, base_dir: str | os.PathLike[str]
     ) -> "Template": ...
+    @staticmethod
+    def from_source_with_env(source: str, env: dict[str, Any]) -> "Template": ...
+    @staticmethod
+    def from_source_with_options(
+        source: str,
+        *,
+        base_dir: str | os.PathLike[str] | None = None,
+        env: dict[str, Any] | None = None,
+        allow_unused: bool = False,
+    ) -> "Template": ...
     def render(self, *, allow_extra: bool = False, **kwargs: Any) -> str: ...
     def render_dict(
         self, params: dict[str, Any], *, allow_extra: bool = False
     ) -> str: ...
+    def render_unchecked(self, **kwargs: Any) -> str: ...
+    def render_dict_unchecked(self, params: dict[str, Any]) -> str: ...
     def render_cached(
         self, cache: "TemplateCache", *, allow_extra: bool = False, **kwargs: Any
     ) -> str: ...
@@ -88,7 +104,7 @@ class Template:
         allow_extra: bool = False,
     ) -> str: ...
     def render_json(self, json_str: str, *, allow_extra: bool = False) -> str: ...
-    def render_json_cached(
+    def render_cached_json(
         self,
         json_str: str,
         cache: "TemplateCache",
@@ -105,14 +121,27 @@ class Template:
         self, expected: list[tuple[str, str]]
     ) -> None: ...
     def body(self) -> str: ...
+    def name(self) -> str | None: ...
+    def description(self) -> str | None: ...
     def set_max_include_depth(self, depth: int) -> None: ...
-    def __enter__(self) -> "Template": ...
+    def __enter__(self) -> "Template":
+        """Return ``self`` unchanged (intentional no-op).
+
+        A ``Template`` holds no OS resources, so entering the context
+        manager acquires nothing. Provided so ``Template`` works with
+        ``with``.
+        """
+        ...
+
     def __exit__(
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
         exc_tb: Any,
-    ) -> bool: ...
+    ) -> bool:
+        """Release nothing and never suppress exceptions (intentional no-op)."""
+        ...
+
     def __repr__(self) -> str: ...
 
 class TemplateCache:
@@ -124,13 +153,23 @@ class TemplateCache:
     def template_count(self) -> int: ...
     def include_count(self) -> int: ...
     def __len__(self) -> int: ...
-    def __enter__(self) -> "TemplateCache": ...
+    def __enter__(self) -> "TemplateCache":
+        """Return ``self`` unchanged (intentional no-op).
+
+        A ``TemplateCache`` holds no OS resources, so entering the context
+        manager acquires nothing. Provided so ``TemplateCache`` works with
+        ``with``. Call ``clear()`` explicitly to drop cached entries.
+        """
+        ...
+
     def __exit__(
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
         exc_tb: Any,
-    ) -> bool: ...
+    ) -> bool:
+        """Release nothing and never suppress exceptions (intentional no-op)."""
+        ...
 
 # -- Template with generated types ---------------------------------------
 
@@ -153,7 +192,6 @@ def template(path: str | os.PathLike[str]) -> TemplateWithTypes: ...
 def load_template(path: str | os.PathLike[str]) -> Template: ...
 def load_types(
     path: str | os.PathLike[str],
-    *,
     pick: Sequence[str] | None = None,
 ) -> _types.SimpleNamespace: ...
 def md_tmpl_import_hook(

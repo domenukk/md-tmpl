@@ -3,7 +3,7 @@
 #
 # This script checks every meaningful combination of features for the
 # `md-tmpl` crate.  It is designed to catch regressions in the
-# no_std / alloc / serde / typed-builder feature gating.
+# no_std / alloc / serde / macros feature gating.
 #
 # Usage:  ./ci/check_feature_matrix.sh
 # Exit:   0 on success, 1 on first failure.
@@ -40,11 +40,11 @@ echo ""
 echo "── Compile checks (host) ─────────────────────────"
 check "no_std (bare)"                     check -p "$CRATE" --no-default-features
 check "no_std + serde"                    check -p "$CRATE" --no-default-features --features serde
-check "no_std + typed-builder"            check -p "$CRATE" --no-default-features --features typed-builder
-check "no_std + serde + typed-builder"    check -p "$CRATE" --no-default-features --features serde,typed-builder
+check "no_std + macros"                   check -p "$CRATE" --no-default-features --features macros
+check "no_std + serde + macros"           check -p "$CRATE" --no-default-features --features serde,macros
 check "std (default features)"            check -p "$CRATE"
 check "std + serde only"                  check -p "$CRATE" --no-default-features --features std,serde
-check "std + typed-builder only"          check -p "$CRATE" --no-default-features --features std,typed-builder
+check "std + macros only"                 check -p "$CRATE" --no-default-features --features std,macros
 check "all features"                      check -p "$CRATE" --all-features
 
 echo ""
@@ -52,8 +52,8 @@ echo "── True no_std target (thumbv7em-none-eabihf) ───"
 NO_STD_TARGET="thumbv7em-none-eabihf"
 check "no_std target (bare)"              build -p "$CRATE" --no-default-features --target "$NO_STD_TARGET"
 check "no_std target + serde"             build -p "$CRATE" --no-default-features --features serde --target "$NO_STD_TARGET"
-check "no_std target + typed-builder"     build -p "$CRATE" --no-default-features --features typed-builder --target "$NO_STD_TARGET"
-check "no_std target + serde + tb"        build -p "$CRATE" --no-default-features --features serde,typed-builder --target "$NO_STD_TARGET"
+check "no_std target + macros"            build -p "$CRATE" --no-default-features --features macros --target "$NO_STD_TARGET"
+check "no_std target + serde + macros"    build -p "$CRATE" --no-default-features --features serde,macros --target "$NO_STD_TARGET"
 
 echo ""
 echo "── Test checks ─────────────────────────────────"

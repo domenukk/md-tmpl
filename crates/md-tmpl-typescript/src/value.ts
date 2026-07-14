@@ -272,7 +272,7 @@ export function getField(v: Value, key: string): Value | undefined {
  * - `number` → `IntValue` if integer, else `FloatValue`
  * - `Array` → `ListValue` (recursively converted)
  * - plain object → `DictValue` (recursively converted)
- * - objects with `_md_tmpl_tag` → enum variant `DictValue`
+ * - objects with a `__kind__` tag → enum variant `StructValue`
  *
  * Throws `TypeError` for unconvertible values (functions, symbols, etc.).
  */
@@ -334,22 +334,12 @@ export function fromJs(
       }
       const obj = value as Record<string, unknown>;
 
-      // Check for variant protocol (like Python's _md_tmpl_tag)
-      if (typeof obj._md_tmpl_tag === "string") {
-        const tag = obj._md_tmpl_tag as string;
-        const fieldsObj =
-          typeof obj._md_tmpl_fields === "object" &&
-          obj._md_tmpl_fields !== null
-            ? (obj._md_tmpl_fields as Record<string, unknown>)
-            : {};
-        const entries: [string, Value][] = [[ENUM_TAG_KEY, str(tag)]];
-        for (const [k, v] of Object.entries(fieldsObj)) {
-          entries.push([k, fromJs(v, seen, depth + 1)]);
-        }
-        return structVal(entries);
-      }
-
-      // Plain object → struct
+      // Plain object → struct.
+      //
+      // Variant instances use the `__kind__` discriminant as an ordinary
+      // (enumerable) property with a non-enumerable `toString`, so they are
+      // converted here like any other struct: the resulting `Value` carries
+      // an `ENUM_TAG_KEY` field with the variant tag.
       const entries: [string, Value][] = [];
       for (const [k, v] of Object.entries(obj)) {
         entries.push([k, fromJs(v, seen, depth + 1)]);

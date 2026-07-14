@@ -313,17 +313,18 @@ Expert: {{ name }}
 ```ts
 // Constructors
 Template.fromSource(source: string): Template
-Template.fromSourceAllowingUnused(source): Template
 Template.fromSourceWithBaseDir(source, dir): Template
-Template.fromSourceWithEnv(source, options: CompileOptions): Template
+Template.fromSourceWithEnv(source, env: Record<string, unknown>): Template
+Template.fromSourceWithOptions(source, options: CompileOptions): Template
 Template.fromFile(path: string): Template
 Template.fromFileWithEnv(path, options?: CompileOptions): Template
 
 // Rendering
 tmpl.render(params, options?)        // type-validated
-tmpl.renderUnchecked(params)         // skip validation (fastest)
+tmpl.renderEmpty()                   // render with defaults only (no params)
+tmpl.renderUnchecked(params)         // skip ALL validation (fastest)
 tmpl.renderDict(params, options?)    // from Map or Record
-// options: { allowExtra?: boolean }
+// options: { allowExtra?: boolean, allowUnused?: boolean }
 
 // Metadata
 tmpl.declarations()                  // → [["name", "str"], ["count", "int"]]

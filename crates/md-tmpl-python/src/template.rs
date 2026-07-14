@@ -376,7 +376,7 @@ impl PyTemplate {
     /// Returns:
     ///     str: The rendered output.
     #[pyo3(signature = (json_str, cache, *, allow_extra=false))]
-    fn render_json_cached(
+    fn render_cached_json(
         &self,
         json_str: &str,
         cache: &PyTemplateCache,
@@ -508,18 +508,26 @@ impl PyTemplate {
     ///     expected: List of (name, `type_string`) tuples.
     ///
     /// Raises:
-    ///     `ValueError`: If the declarations don't match.
+    ///     `DeclarationsMutatedError`: If the declarations don't match. Also
+    ///         catchable as `TemplateError`/`ValueError` for back-compat.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "PyO3 requires an owned Vec to extract the argument from Python"
+    )]
     fn validate_declarations_against(&self, expected: Vec<(String, String)>) -> PyResult<()> {
         let current = self.declarations();
-        // Consume `expected` by iterating; a plain `==` only borrows.
+        // Borrow `expected` for comparison so it remains available for the
+        // error's `details` payload below.
         let matches =
-            current.len() == expected.len() && current.iter().zip(expected).all(|(a, b)| *a == b);
+            current.len() == expected.len() && current.iter().zip(&expected).all(|(a, b)| a == b);
         if matches {
             Ok(())
         } else {
-            Err(pyo3::exceptions::PyValueError::new_err(format!(
-                "template declarations changed: got {current:?}"
-            )))
+            Err(crate::errors::template_error_to_py(
+                &md_tmpl::TemplateError::DeclarationsMutated {
+                    details: format!("expected {expected:?}, got {current:?}"),
+                },
+            ))
         }
     }
 
@@ -641,6 +649,24 @@ impl PyTemplate {
         self.inner.body().to_string()
     }
 
+    /// Return the template's name, if declared in frontmatter.
+    ///
+    /// Returns:
+    ///     `Optional[str]`: The `name:` field from frontmatter, or None if
+    ///     the frontmatter omits it.
+    fn name(&self) -> Option<String> {
+        self.inner.name().map(str::to_string)
+    }
+
+    /// Return the template's description, if declared in frontmatter.
+    ///
+    /// Returns:
+    ///     `Optional[str]`: The `description:` field from frontmatter, or None
+    ///     if the frontmatter omits it.
+    fn description(&self) -> Option<String> {
+        self.inner.description().map(str::to_string)
+    }
+
     /// Set the maximum include depth for rendering this template.
     ///
     /// Controls how deeply nested `{% include %}` directives can recurse.
@@ -652,11 +678,20 @@ impl PyTemplate {
     }
 
     /// Enter the context manager — returns `self` unchanged.
+    ///
+    /// This is an intentional no-op. A `Template` holds no OS resources that
+    /// need releasing (memory is reclaimed by Python's GC), so there is
+    /// nothing to acquire on entry. It exists purely so that `Template`
+    /// works with the `with` statement.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
-    /// Exit the context manager — never suppresses exceptions.
+    /// Exit the context manager — an intentional no-op.
+    ///
+    /// Releases nothing (a `Template` owns no OS resources) and never
+    /// suppresses exceptions, so any exception raised inside the `with`
+    /// block propagates normally. Returns `False` to signal this.
     #[expect(clippy::unused_self, reason = "PyO3 requires &self for __exit__")]
     fn __exit__(
         &self,
@@ -785,11 +820,21 @@ impl PyTemplateCache {
     }
 
     /// Enter the context manager — returns `self` unchanged.
+    ///
+    /// This is an intentional no-op. A `TemplateCache` holds no OS resources
+    /// that need releasing (its entries are freed by Python's GC), so there
+    /// is nothing to acquire on entry. It exists purely so that
+    /// `TemplateCache` works with the `with` statement. Call `clear()`
+    /// explicitly if you want to drop cached entries.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
         slf
     }
 
-    /// Exit the context manager — never suppresses exceptions.
+    /// Exit the context manager — an intentional no-op.
+    ///
+    /// Releases nothing (cached entries are *not* cleared on exit) and never
+    /// suppresses exceptions, so any exception raised inside the `with` block
+    /// propagates normally. Returns `False` to signal this.
     #[expect(clippy::unused_self, reason = "PyO3 requires &self for __exit__")]
     fn __exit__(
         &self,

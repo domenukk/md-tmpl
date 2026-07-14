@@ -24,6 +24,12 @@ RUST_DIRS = ["crates/"]
 TS_DIRS = ["crates/md-tmpl-typescript/src/", "crates/md-tmpl-wasm/"]
 RUST_EXTS = {".rs"}
 TS_EXTS = {".ts", ".tsx"}
+# Go and Python trees — scanned only by the test-integrity checks below, so they
+# are deliberately kept out of ALL_DIRS/ALL_EXTS (no long-file scan for them).
+GO_DIRS = ["go/"]
+GO_EXTS = {".go"}
+PY_DIRS = ["crates/md-tmpl-python/python/"]
+PY_EXTS = {".py"}
 ALL_DIRS = RUST_DIRS + TS_DIRS
 ALL_EXTS = RUST_EXTS | TS_EXTS
 
@@ -223,6 +229,37 @@ CHECKS: list[Check] = [
         dirs=RUST_DIRS,
         exts=RUST_EXTS,
         message="Will panic at runtime. Implement or return an error.",
+    ),
+    # ── Test integrity: ignored/skipped tests are never allowed ───────────
+    Check(
+        name="Rust: #[ignore] (skipped test)",
+        pattern=re.compile(r"#\[ignore\b"),
+        dirs=RUST_DIRS,
+        exts=RUST_EXTS,
+        message="Tests must never be ignored — fix or delete the test.",
+    ),
+    Check(
+        name="Go: t.Skip (skipped test)",
+        pattern=re.compile(r"\b[tb]\.Skip(Now|f)?\("),
+        dirs=GO_DIRS,
+        exts=GO_EXTS,
+        message="Tests must never be skipped — fix or delete the test.",
+    ),
+    Check(
+        name="Python: pytest skip/xfail (skipped test)",
+        pattern=re.compile(
+            r"pytest\.mark\.(skip|skipif|xfail)|pytest\.(skip|xfail)\(|unittest\.skip"
+        ),
+        dirs=PY_DIRS,
+        exts=PY_EXTS,
+        message="Tests must never be skipped or xfail'd — fix or delete the test.",
+    ),
+    Check(
+        name="TypeScript: skipped/focused test (.skip/.only/.todo)",
+        pattern=re.compile(r"\b(describe|it|test|suite)\.(skip|only|todo)\b"),
+        dirs=TS_DIRS,
+        exts=TS_EXTS,
+        message="Tests must never be skipped or focused — remove .skip/.only/.todo.",
     ),
 ]
 

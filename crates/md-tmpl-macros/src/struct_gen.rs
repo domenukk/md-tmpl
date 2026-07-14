@@ -268,34 +268,35 @@ pub(crate) fn build_struct_docs(
         .collect()
 }
 
-/// Choose derive attributes for generated structs based on active features.
+/// Choose derive attributes for generated structs.
 ///
 /// `has_tmpl_fields` — when `true`, serde derives are omitted because
 /// `Arc<Template>` does not support `Serialize` / `Deserialize`.
 ///
-/// **Feature flag design:** `cfg!(feature = "serde")` and
-/// `cfg!(feature = "typed-builder")` check the *proc-macro crate's own*
-/// Cargo features, **not** the downstream user's.  These features are
-/// intentionally empty in `Cargo.toml` — they carry no dependencies of their
-/// own.  Instead, they act as code-generation toggles: when a user enables
-/// `serde` on `md-tmpl-macros`, the proc-macro emits
-/// `#[derive(Serialize, Deserialize)]` into the generated code, relying on
-/// the user's own `serde` dependency to resolve the derive.
+/// The `TypedBuilder` derive is **always** emitted, routed through the crate's
+/// `__private` re-export (`#cp::__private::TypedBuilder`) so downstream crates
+/// get a builder without needing their own `typed-builder` dependency.
+///
+/// **Feature flag design:** `cfg!(feature = "serde")` checks the *proc-macro
+/// crate's own* Cargo feature, **not** the downstream user's. It is
+/// intentionally empty in `Cargo.toml` — it carries no dependency of its own.
+/// Instead, it acts as a code-generation toggle: when a user enables `serde`
+/// on `md-tmpl-macros`, the proc-macro emits `#[derive(Serialize, Deserialize)]`
+/// into the generated code, relying on the user's own `serde` dependency to
+/// resolve the derive.
 pub(crate) fn struct_derive_attrs(has_tmpl_fields: bool) -> proc_macro2::TokenStream {
+    let cp = crate_path();
     let use_serde = cfg!(feature = "serde") && !has_tmpl_fields;
-    match (use_serde, cfg!(feature = "typed-builder")) {
-        (true, true) => quote! {
-            #[derive(Debug, Clone, PartialEq, ::serde::Serialize, ::serde::Deserialize, ::typed_builder::TypedBuilder)]
-        },
-        (true, false) => quote! {
-            #[derive(Debug, Clone, PartialEq, ::serde::Serialize, ::serde::Deserialize)]
-        },
-        (false, true) => quote! {
-            #[derive(Debug, Clone, PartialEq, ::typed_builder::TypedBuilder)]
-        },
-        (false, false) => quote! {
-            #[derive(Debug, Clone, PartialEq)]
-        },
+    if use_serde {
+        quote! {
+            #[derive(Debug, Clone, PartialEq, ::serde::Serialize, ::serde::Deserialize, #cp::__private::TypedBuilder)]
+            #[builder(crate_module_path = #cp::__private::typed_builder)]
+        }
+    } else {
+        quote! {
+            #[derive(Debug, Clone, PartialEq, #cp::__private::TypedBuilder)]
+            #[builder(crate_module_path = #cp::__private::typed_builder)]
+        }
     }
 }
 
@@ -306,9 +307,6 @@ pub(crate) fn struct_derive_attrs(has_tmpl_fields: bool) -> proc_macro2::TokenSt
 /// - All other fields have no special builder attributes.
 pub(crate) fn builder_field_attrs(var_type: &md_tmpl_core::VarType) -> proc_macro2::TokenStream {
     use md_tmpl_core::VarType;
-    if !cfg!(feature = "typed-builder") {
-        return quote! {};
-    }
     match var_type {
         VarType::Str => quote! { #[builder(setter(into))] },
         VarType::List(_) => quote! { #[builder(default, setter(into))] },

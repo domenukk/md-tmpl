@@ -16,16 +16,15 @@ describe("Tier 5 Phase 2 White-box Adversarial Coverage — WASM", () => {
         "function",
         "WasmTemplate should have setMaxIncludeDepth method",
       );
+      // The snake_case alias was intentionally removed; only camelCase remains.
       assert.strictEqual(
         // NOLINT: testing WASM binding name variants requires dynamic property access
         typeof (tmpl as any).set_max_include_depth,
-        "function",
-        "WasmTemplate should have set_max_include_depth method",
+        "undefined",
+        "WasmTemplate should NOT expose the snake_case set_max_include_depth alias",
       );
       // NOLINT: testing WASM binding name variants requires dynamic property access
       (tmpl as any).setMaxIncludeDepth(10);
-      // NOLINT: testing WASM binding name variants requires dynamic property access
-      (tmpl as any).set_max_include_depth(5);
     });
   });
 

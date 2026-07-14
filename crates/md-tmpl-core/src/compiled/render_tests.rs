@@ -1,6 +1,9 @@
 use core::cmp::Ordering;
 
-use super::*;
+use super::{
+    condition::{cmp_int_float, decompose_f64},
+    float::write_fixed_float,
+};
 
 // -- cmp_int_float: NaN --
 

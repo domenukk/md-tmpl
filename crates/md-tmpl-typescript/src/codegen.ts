@@ -466,12 +466,6 @@ class CodegenContext {
       lines.push(
         `${exp}const ${upperSnake}_ALL: readonly ${name}[] = [${items}] as const;`,
       );
-      lines.push(
-        `${exp}const ALL_${upperSnake}S: readonly ${name}[] = [${items}] as const;`,
-      );
-      lines.push(
-        `${exp}const ${upperSnake}S: readonly ${name}[] = [${items}] as const;`,
-      );
       this.auxiliaryTypes.push(lines.join("\n"));
     }
   }

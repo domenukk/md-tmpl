@@ -139,12 +139,10 @@ assert_eq!(output, "Hello World!\n");
 
 ## `TypedBuilder` Integration
 
-Enable `typed-builder` for ergonomic builder patterns:
-
-```bash
-cargo add md-tmpl --features typed-builder
-# (typed-builder is a default feature of md-tmpl)
-```
+Every generated param struct derives `TypedBuilder` for ergonomic,
+compile-time-checked construction. This is **always available** — no feature
+flag to enable and no `typed-builder` dependency to add yourself (the derive is
+re-exported by `md-tmpl`):
 
 ```rust
 # md_tmpl::include_template!("prompts/greeting.tmpl.md");

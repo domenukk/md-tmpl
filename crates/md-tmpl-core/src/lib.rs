@@ -37,6 +37,13 @@ mod value;
 pub mod __private {
     pub use alloc::{borrow::Cow, boxed::Box, format, string::String, sync::Arc, vec, vec::Vec};
 
+    /// Re-export of the `typed_builder` crate and its derive so generated param
+    /// structs get a builder without the downstream crate depending on it
+    /// directly. Generated structs derive `#crate::__private::TypedBuilder` and
+    /// set `#[builder(crate_module_path = #crate::__private::typed_builder)]` so
+    /// the derive's internal references resolve through this re-export.
+    pub use ::typed_builder;
+    pub use ::typed_builder::TypedBuilder;
     pub use hashbrown::HashMap;
 
     pub use crate::{compat::LazyLock, template::analysis::inject_enum_type_constants};
@@ -61,7 +68,7 @@ pub mod __private {
 #[cfg(feature = "std")]
 pub use cache::TemplateCache;
 pub use context::Context;
-pub use error::{SyntaxError, TemplateError};
+pub use error::{ErrorKind, SyntaxError, TemplateError};
 #[doc(hidden)]
 #[cfg(feature = "std")]
 pub use frontmatter::parse_frontmatter_with_base_dir;

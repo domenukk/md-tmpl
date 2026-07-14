@@ -1,6 +1,6 @@
 [package]
 name = "md-tmpl-benchmarks"
-version = "0.5.3"
+version = "0.7.0"
 edition = "2024"
 publish = false
 
@@ -16,7 +16,6 @@ handlebars = "6"
 criterion = { version = "0.8", features = ["html_reports"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-typed-builder = "0.23"
 
 [[bench]]
 name = "comparison"

@@ -107,8 +107,8 @@ test-no-std:
     @echo "── no_std target build (thumbv7em-none-eabihf) ──"
     cargo build -p md-tmpl --no-default-features --target thumbv7em-none-eabihf
     cargo build -p md-tmpl --no-default-features --features serde --target thumbv7em-none-eabihf
-    cargo build -p md-tmpl --no-default-features --features typed-builder --target thumbv7em-none-eabihf
-    cargo build -p md-tmpl --no-default-features --features serde,typed-builder --target thumbv7em-none-eabihf
+    cargo build -p md-tmpl --no-default-features --features macros --target thumbv7em-none-eabihf
+    cargo build -p md-tmpl --no-default-features --features serde,macros --target thumbv7em-none-eabihf
     @echo "All no_std checks pass ✓"
 
 # Build and test Python bindings

@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
-    compiled::CompiledInlineTemplate,
+    compiled::{CompiledInclude, CompiledInlineTemplate, Segment},
+    scope::{CompiledExpr, CompiledPath},
     types::{VarDecl, VarType, VariantDecl},
 };
 
@@ -1778,7 +1779,9 @@ fn include_inside_if_false_branch_still_checked() {
     let parent_decls = vec![str_decl("flag")];
     let segments = vec![Segment::If {
         branches: vec![(
-            super::Condition::Truthy(crate::scope::ConditionOperand::compile("flag").unwrap()),
+            crate::compiled::Condition::Truthy(
+                crate::scope::ConditionOperand::compile("flag").unwrap(),
+            ),
             vec![Segment::Include(inc)],
         )],
         else_body: vec![],

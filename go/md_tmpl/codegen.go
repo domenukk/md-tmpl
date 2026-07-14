@@ -62,7 +62,7 @@ func GenerateTypes(source string, opts ...GenOption) (string, error) {
 		o.paramsName = "Params"
 	}
 
-	tmpl, err := FromSourceAllowingUnused(source)
+	tmpl, err := FromSource(source, WithAllowUnused())
 	if err != nil {
 		return "", fmt.Errorf("parsing template source: %w", err)
 	}
@@ -93,7 +93,7 @@ func GenerateTypesFromFile(path string, opts ...GenOption) (string, error) {
 		return "", fmt.Errorf("reading template file: %w", err)
 	}
 
-	tmpl, err := FromSourceAllowingUnused(string(source))
+	tmpl, err := FromSource(string(source), WithAllowUnused())
 	if err != nil {
 		return "", fmt.Errorf("parsing template file: %w", err)
 	}

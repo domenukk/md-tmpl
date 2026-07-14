@@ -43,6 +43,15 @@ import {
   ExtraParamsError,
   UndefinedVariableError,
   UnknownFilterError,
+  TemplatePanicError,
+  IncludeNotFoundError,
+  DeclarationsMutatedError,
+  structVal,
+  StructValue,
+  dict,
+  DictValue,
+  str,
+  int,
 } from "../index.js";
 import { fromJs, display, isTruthy } from "../value.js";
 import {
@@ -810,14 +819,14 @@ params:
 describe("Variant helpers", () => {
   it("unitVariant creates sentinel", () => {
     const v = unitVariant("Rejected");
-    assert.strictEqual(v._md_tmpl_tag, "Rejected");
-    assert.deepStrictEqual(v._md_tmpl_fields, {});
+    assert.strictEqual(v.__kind__, "Rejected");
+    assert.deepStrictEqual({ ...v }, { __kind__: "Rejected" });
   });
 
   it("variant() creates constructor with fields", () => {
     const NeedsChanges = variant("NeedsChanges", ["reason"] as const);
     const v = NeedsChanges({ reason: "fix tests" });
-    assert.strictEqual(v._md_tmpl_tag, "NeedsChanges");
+    assert.strictEqual(v.__kind__, "NeedsChanges");
     assert.strictEqual(v["reason"], "fix tests");
   });
 
@@ -847,9 +856,9 @@ describe("Variant helpers", () => {
       Rejected: null,
       NeedsChanges: ["reason"],
     });
-    assert.strictEqual(Status.Approved._md_tmpl_tag, "Approved");
+    assert.strictEqual(Status.Approved.__kind__, "Approved");
     const nc = Status.NeedsChanges({ reason: "fix" });
-    assert.strictEqual(nc._md_tmpl_tag, "NeedsChanges");
+    assert.strictEqual(nc.__kind__, "NeedsChanges");
     assert.strictEqual(nc["reason"], "fix");
   });
 
@@ -1032,7 +1041,9 @@ params: [name = str]
     );
     assert.throws(
       () => tmpl.validateDeclarationsAgainst([["different", "int"]]),
-      (err: Error) => err.message.includes("declarations changed"),
+      (err: Error) =>
+        err instanceof DeclarationsMutatedError &&
+        err.message.includes("declarations were modified"),
     );
   });
 
@@ -2451,7 +2462,9 @@ params: [title = str]
       assert.throws(
         () => tmpl.render({ title: "Hello" }),
         (err: Error) =>
-          err.message.includes("include") || err.message.includes("load"),
+          err instanceof IncludeNotFoundError &&
+          err.include.includes("does_not_exist.tmpl.md") &&
+          err.message.includes("include not found"),
       );
     } finally {
       fs.rmSync(dir, { recursive: true });
@@ -3028,9 +3041,10 @@ describe("Error type properties", () => {
     assert.strictEqual(err.name, "UnknownFilterError");
   });
 
-  it("TemplateSyntaxError has line and snippet", () => {
-    const err = new TemplateSyntaxError("bad syntax", 5, "{{ unclosed");
+  it("TemplateSyntaxError has line, column and snippet", () => {
+    const err = new TemplateSyntaxError("bad syntax", 5, 3, "{{ unclosed");
     assert.strictEqual(err.line, 5);
+    assert.strictEqual(err.column, 3);
     assert.strictEqual(err.snippet, "{{ unclosed");
     assert.ok(err instanceof TemplateError);
     assert.strictEqual(err.name, "TemplateSyntaxError");
@@ -5501,7 +5515,7 @@ Hello {{ name }}!`,
 describe("Variant edge cases", () => {
   it("unitVariant has correct tag", () => {
     const v = unitVariant("Active");
-    assert.strictEqual(v._md_tmpl_tag, "Active");
+    assert.strictEqual(v.__kind__, "Active");
   });
 
   it("variant with missing field throws", () => {
@@ -5531,11 +5545,11 @@ describe("Variant edge cases", () => {
       Inactive: null,
     });
     assert.strictEqual(
-      (Active as unknown as { _md_tmpl_tag: string })._md_tmpl_tag,
+      (Active as unknown as { __kind__: string }).__kind__,
       "Active",
     );
     assert.strictEqual(
-      (Inactive as unknown as { _md_tmpl_tag: string })._md_tmpl_tag,
+      (Inactive as unknown as { __kind__: string }).__kind__,
       "Inactive",
     );
   });
@@ -5569,17 +5583,18 @@ describe("defineVariants — construction", () => {
     });
 
     // Unit sentinels
-    assert.strictEqual(Status.Approved._md_tmpl_tag, "Approved");
-    assert.strictEqual(Status.Rejected._md_tmpl_tag, "Rejected");
-    assert.deepStrictEqual(Status.Approved._md_tmpl_fields, {});
+    assert.strictEqual(Status.Approved.__kind__, "Approved");
+    assert.strictEqual(Status.Rejected.__kind__, "Rejected");
+    assert.deepStrictEqual({ ...Status.Approved }, { __kind__: "Approved" });
 
     // Struct constructor
     const nc = Status.NeedsChanges({ reason: "fix tests" });
-    assert.strictEqual(nc._md_tmpl_tag, "NeedsChanges");
+    assert.strictEqual(nc.__kind__, "NeedsChanges");
     assert.strictEqual(nc["reason"], "fix tests");
-    assert.deepStrictEqual(nc._md_tmpl_fields, {
-      reason: "fix tests",
-    });
+    assert.deepStrictEqual(
+      { ...nc },
+      { __kind__: "NeedsChanges", reason: "fix tests" },
+    );
   });
 
   it("struct variant with multiple fields preserves all fields", () => {
@@ -5590,7 +5605,7 @@ describe("defineVariants — construction", () => {
     const click = Event.Click({ x: 10, y: 20 });
     assert.strictEqual(click["x"], 10);
     assert.strictEqual(click["y"], 20);
-    assert.deepStrictEqual(click._md_tmpl_fields, { x: 10, y: 20 });
+    assert.deepStrictEqual({ ...click }, { __kind__: "Click", x: 10, y: 20 });
   });
 
   it("unit variant toString returns tag name", () => {
@@ -12314,5 +12329,231 @@ params:
       result.includes("Widget: Test"),
       `expected 'Widget: Test' in: ${result}`,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// API review findings — behavior-change coverage
+// ---------------------------------------------------------------------------
+
+describe("API review: public exports", () => {
+  it("exposes the preferred struct value constructor structVal", () => {
+    const v = structVal([
+      ["a", str("x")],
+      ["n", int(1)],
+    ]);
+    assert.strictEqual(v.type, "struct");
+    assert.strictEqual(v.fields.get("a")?.type, "str");
+    assert.strictEqual(v.fields.get("n")?.type, "int");
+  });
+
+  it("keeps the deprecated dict alias pointing at structVal", () => {
+    assert.strictEqual(dict, structVal);
+    // DictValue is a deprecated alias of StructValue — assignable both ways.
+    const asDict: DictValue = dict([["k", str("v")]]);
+    const asStruct: StructValue = asDict;
+    assert.strictEqual(asStruct.fields.get("k")?.type, "str");
+  });
+
+  it("exposes the full error hierarchy as constructors", () => {
+    assert.strictEqual(typeof TemplatePanicError, "function");
+    assert.strictEqual(typeof IncludeNotFoundError, "function");
+    assert.strictEqual(typeof DeclarationsMutatedError, "function");
+    assert.ok(new TemplatePanicError("x") instanceof TemplateError);
+    assert.ok(new IncludeNotFoundError("x") instanceof TemplateError);
+    assert.ok(new DeclarationsMutatedError("x") instanceof TemplateError);
+  });
+});
+
+describe("API review: typed error classes", () => {
+  it("IncludeNotFoundError carries the unresolved include path", () => {
+    const err = new IncludeNotFoundError("./missing.tmpl.md");
+    assert.strictEqual(err.name, "IncludeNotFoundError");
+    assert.strictEqual(err.include, "./missing.tmpl.md");
+    assert.ok(err.message.includes("include not found"));
+    assert.ok(err.message.includes("./missing.tmpl.md"));
+  });
+
+  it("DeclarationsMutatedError carries details and clear message", () => {
+    const err = new DeclarationsMutatedError("param 'x' retyped");
+    assert.strictEqual(err.name, "DeclarationsMutatedError");
+    assert.strictEqual(err.details, "param 'x' retyped");
+    assert.ok(err.message.includes("declarations were modified"));
+    assert.ok(err.message.includes("param 'x' retyped"));
+  });
+
+  it("TemplatePanicError is thrown when {% panic %} executes", () => {
+    const tmpl = Template.fromSource(`---
+params: [trigger = bool]
+---
+> {% if trigger %}{% panic("boom") %}{% /if %}
+SAFE`);
+    assert.strictEqual(tmpl.render({ trigger: false }).trim(), "SAFE");
+    assert.throws(
+      () => tmpl.render({ trigger: true }),
+      (err: Error) =>
+        err instanceof TemplatePanicError && err.message.includes("boom"),
+    );
+  });
+});
+
+describe("API review: renderEmpty typed error", () => {
+  it("throws MissingParamsError listing every required param", () => {
+    const tmpl = Template.fromSource(`---
+params: [name = str, age = int]
+---
+{{ name }} {{ age }}`);
+    assert.throws(
+      () => tmpl.renderEmpty(),
+      (err: Error) =>
+        err instanceof MissingParamsError &&
+        err.missing.includes("name") &&
+        err.missing.includes("age"),
+    );
+  });
+
+  it("renders successfully when all params have defaults", () => {
+    const tmpl = Template.fromSource(`---
+params:
+  - greeting = str := "Hi"
+---
+{{ greeting }}!`);
+    assert.strictEqual(tmpl.renderEmpty().trim(), "Hi!");
+  });
+});
+
+describe("API review: variant __kind__ convergence", () => {
+  it("round-trips through match and isVariant", () => {
+    const Status = defineVariants({
+      Approved: null,
+      NeedsChanges: ["reason"],
+    });
+    const nc = Status.NeedsChanges({ reason: "fix" });
+    assert.strictEqual(nc.__kind__, "NeedsChanges");
+    assert.ok(isVariant(nc, "NeedsChanges"));
+    assert.ok(!isVariant(nc, "Approved"));
+    assert.strictEqual(
+      match(nc, {
+        Approved: () => "ok",
+        NeedsChanges: (v) => `changes: ${v.reason}`,
+      }),
+      "changes: fix",
+    );
+  });
+
+  it("plain { __kind__ } objects (codegen shape) also match", () => {
+    const plain = { __kind__: "Approved" };
+    assert.ok(isVariant(plain, "Approved"));
+    assert.strictEqual(
+      match(plain, { Approved: () => "a", _: () => "?" }),
+      "a",
+    );
+  });
+
+  it("renders a __kind__ struct passed as a param", () => {
+    const tmpl = Template.fromSource(
+      [
+        `---`,
+        "params:",
+        "  - outcome = enum(Approved, NeedsChanges(reason = str))",
+        `---`,
+        "> {% match outcome %}",
+        "> {% case Approved %}",
+        "",
+        "Approved",
+        "",
+        "> {% case NeedsChanges %}",
+        "",
+        "Needs: {{ outcome.reason }}",
+        "",
+        "> {% /match %}",
+      ].join("\n"),
+    );
+    const out = tmpl.render({
+      outcome: { __kind__: "NeedsChanges", reason: "tests" },
+    });
+    assert.ok(out.includes("Needs: tests"), `got: ${out}`);
+  });
+});
+
+describe("API review: allowUnused compile option", () => {
+  const SRC = `---
+params: [used = str, unused = str]
+---
+{{ used }}`;
+
+  it("rejects unused declared params by default", () => {
+    assert.throws(
+      () => Template.fromSource(SRC),
+      (err: Error) =>
+        err instanceof TemplateSyntaxError && err.message.includes("unused"),
+    );
+  });
+
+  it("honors allowUnused: true via fromSourceWithOptions", () => {
+    const tmpl = Template.fromSourceWithOptions(SRC, { allowUnused: true });
+    assert.strictEqual(tmpl.render({ used: "x", unused: "y" }).trim(), "x");
+  });
+});
+
+describe("API review: fromSourceWithEnv flat signature", () => {
+  const SRC = `---
+env: [region = str]
+
+params: [name = str]
+---
+{{ name }} @ {{ region }}`;
+
+  it("accepts a flat env record (WASM-consistent signature)", () => {
+    const tmpl = Template.fromSourceWithEnv(SRC, { region: "us" });
+    assert.strictEqual(tmpl.render({ name: "svc" }).trim(), "svc @ us");
+  });
+
+  it("defaults env to an empty object", () => {
+    const tmpl = Template.fromSourceWithEnv(`---
+params: [name = str]
+---
+Hi {{ name }}`);
+    assert.strictEqual(tmpl.render({ name: "x" }).trim(), "Hi x");
+  });
+});
+
+describe("API review: Context render path", () => {
+  it("renderContext renders using a pre-built Context", () => {
+    const tmpl = Template.fromSource(`---
+params: [name = str]
+---
+Hello {{ name }}!`);
+    const ctx = Context.from({ name: "world" });
+    assert.strictEqual(tmpl.renderContext(ctx).trim(), "Hello world!");
+  });
+
+  it("renderContext reuses raw Values set via setRaw", () => {
+    const tmpl = Template.fromSource(`---
+params: [count = int]
+---
+Count: {{ count }}`);
+    const ctx = new Context();
+    ctx.setRaw("count", int(42));
+    assert.strictEqual(tmpl.renderContext(ctx).trim(), "Count: 42");
+  });
+});
+
+describe("API review: codegen single canonical all-variants constant", () => {
+  const SRC = `---
+params: [stage = enum(Design, Build, Ship)]
+---
+{{ stage }}`;
+
+  it("emits exactly one X_ALL constant and no ALL_XS / XS aliases", () => {
+    const code = generateTypes(SRC);
+    const allMatches = code.match(/\bSTAGE_ALL\b/g) ?? [];
+    assert.strictEqual(
+      allMatches.length,
+      1,
+      `expected exactly one STAGE_ALL in:\n${code}`,
+    );
+    assert.ok(!/\bALL_STAGES\b/.test(code), "ALL_STAGES alias should be gone");
+    assert.ok(!/\bconst\s+STAGES\b/.test(code), "STAGES alias should be gone");
   });
 });

@@ -41,10 +41,9 @@ extern void pt_free_string(char *ptr);
 
 // Template lifecycle.
 extern char *pt_template_from_source(const char *source, void **out);
-extern char *pt_template_from_source_allowing_unused(const char *source, void **out);
-extern char *pt_template_from_source_with_base_dir(const char *source, const char *base_dir, void **out);
-extern char *pt_template_from_source_with_env(const char *source, const char *env_json, void **out);
+extern char *pt_template_from_source_with_options(const char *source, const char *base_dir, const char *env_json, _Bool allow_unused, void **out);
 extern char *pt_template_from_file(const char *path, void **out);
+extern char *pt_template_from_file_with_options(const char *path, const char *base_dir, const char *env_json, _Bool allow_unused, void **out);
 extern void pt_template_free(void *tmpl);
 
 // Context lifecycle.
@@ -64,11 +63,16 @@ extern char *pt_context_merge_flexbuffers(void *ctx, const uint8_t *data, size_t
 // Rendering.
 extern char *pt_template_render(const void *tmpl, const void *ctx, char **out_err);
 extern char *pt_template_render_allowing_extra(const void *tmpl, const void *ctx, char **out_err);
+extern char *pt_template_render_empty(const void *tmpl, char **out_err);
+extern char *pt_template_render_unchecked(const void *tmpl, const void *ctx, char **out_err);
+extern char *pt_template_render_cached(const void *tmpl, const void *ctx, const void *cache, char **out_err);
 extern char *pt_template_render_json(const void *tmpl, const char *json, _Bool allow_extra, char **out_err);
 extern char *pt_template_render_flexbuffers(const void *tmpl, const uint8_t *data, size_t len, _Bool allow_extra, char **out_err);
 
 // Template metadata.
 extern uint64_t pt_template_source_hash(const void *tmpl);
+extern char *pt_template_name(const void *tmpl);
+extern char *pt_template_description(const void *tmpl);
 extern char *pt_template_body(const void *tmpl);
 extern char *pt_template_declarations(const void *tmpl);
 extern void pt_template_set_max_include_depth(void *tmpl, size_t depth);
@@ -96,6 +100,7 @@ import (
 	"io"
 	"log"
 	"runtime"
+	"strings"
 	"sync"
 	"unsafe"
 )
@@ -121,6 +126,67 @@ var (
 	// ErrNilContext is returned when a nil or closed Context is passed to Render.
 	ErrNilContext = errors.New("md_tmpl: context is nil or closed")
 )
+
+// ErrorKind is a stable, machine-readable classification of an engine error.
+//
+// The values mirror md_tmpl::ErrorKind on the Rust side and are stable across
+// releases, so they are safe to switch on or compare against.
+type ErrorKind string
+
+// Known error kinds. These match the stable ids emitted by the core engine.
+const (
+	KindIO                  ErrorKind = "io"
+	KindUndefinedVariable   ErrorKind = "undefined_variable"
+	KindSyntax              ErrorKind = "syntax"
+	KindMissingParams       ErrorKind = "missing_params"
+	KindTypeMismatch        ErrorKind = "type_mismatch"
+	KindUnknownFilter       ErrorKind = "unknown_filter"
+	KindIncludeNotFound     ErrorKind = "include_not_found"
+	KindDeclarationsMutated ErrorKind = "declarations_mutated"
+	KindExtraParams         ErrorKind = "extra_params"
+	KindPanic               ErrorKind = "panic"
+	// KindUnknown is used when the engine returns an error without a
+	// recognizable kind prefix (e.g. errors originating in the FFI shim).
+	KindUnknown ErrorKind = ""
+)
+
+// TemplateError is a structured error returned by the template engine.
+//
+// It carries a machine-readable [ErrorKind] alongside the human-readable
+// message. Match specific kinds with [errors.Is] against the package
+// sentinels (e.g. [ErrMissingParams]) or inspect Kind directly.
+type TemplateError struct {
+	Kind    ErrorKind
+	Message string
+}
+
+// Error implements the error interface.
+func (e *TemplateError) Error() string { return e.Message }
+
+// Is reports whether target is a *TemplateError of the same kind, enabling
+// errors.Is(err, ErrMissingParams) style matching.
+func (e *TemplateError) Is(target error) bool {
+	t, ok := target.(*TemplateError)
+	return ok && t.Kind == e.Kind
+}
+
+// Per-kind sentinels for use with errors.Is.
+var (
+	ErrIO                  = &TemplateError{Kind: KindIO}
+	ErrUndefinedVariable   = &TemplateError{Kind: KindUndefinedVariable}
+	ErrSyntax              = &TemplateError{Kind: KindSyntax}
+	ErrMissingParams       = &TemplateError{Kind: KindMissingParams}
+	ErrTypeMismatch        = &TemplateError{Kind: KindTypeMismatch}
+	ErrUnknownFilter       = &TemplateError{Kind: KindUnknownFilter}
+	ErrIncludeNotFound     = &TemplateError{Kind: KindIncludeNotFound}
+	ErrDeclarationsMutated = &TemplateError{Kind: KindDeclarationsMutated}
+	ErrExtraParams         = &TemplateError{Kind: KindExtraParams}
+	ErrPanic               = &TemplateError{Kind: KindPanic}
+)
+
+// errKindSep is the ASCII Unit Separator (U+001F) the FFI uses to delimit the
+// stable error kind from the human-readable message: "<kind>\x1f<message>".
+const errKindSep = "\x1f"
 
 // Template is a parsed, validated template ready for rendering.
 //
@@ -235,109 +301,174 @@ func (v Variant) MarshalJSON() ([]byte, error) {
 
 // freeError converts a C error string to a Go error and frees the C string.
 // Returns nil if errPtr is nil (no error).
+//
+// The FFI encodes errors as "<kind>\x1f<message>". When the separator is
+// present the result is a [*TemplateError] carrying the stable [ErrorKind];
+// otherwise a plain error with the raw message is returned.
 func freeError(errPtr *C.char) error {
 	if errPtr == nil {
 		return nil
 	}
 	msg := C.GoString(errPtr)
 	C.pt_free_string(errPtr)
-	return errors.New(msg)
+	return parseError(msg)
+}
+
+// parseError splits a transported error string into a typed error.
+func parseError(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	if kind, message, found := strings.Cut(raw, errKindSep); found {
+		return &TemplateError{Kind: ErrorKind(kind), Message: message}
+	}
+	// No kind prefix (e.g. an error from the FFI shim itself).
+	return errors.New(raw)
 }
 
 // ---------------------------------------------------------------------------
 // Template constructors
 // ---------------------------------------------------------------------------
 
+// Option configures how a template is compiled by [FromSource] and [FromFile].
+//
+// Options compose freely, e.g.:
+//
+//	tmpl, err := md_tmpl.FromSource(src,
+//	    md_tmpl.WithBaseDir("/prompts"),
+//	    md_tmpl.WithEnv(map[string]any{"MAX_RETRIES": 5}),
+//	    md_tmpl.WithAllowUnused(),
+//	)
+type Option func(*compileOptions)
+
+// compileOptions accumulates the effect of the applied [Option] values.
+type compileOptions struct {
+	baseDir     string
+	env         map[string]any
+	hasEnv      bool
+	allowUnused bool
+}
+
+// WithBaseDir resolves {% include %} and imports: directives relative to dir.
+func WithBaseDir(dir string) Option {
+	return func(o *compileOptions) { o.baseDir = dir }
+}
+
+// WithEnv supplies compile-time environment variables.
+//
+// Values are resolved against `env:` declarations in the frontmatter, typed,
+// and serialized as JSON to the engine. Passing WithEnv(nil) is valid and
+// means "no environment values", which still satisfies env declarations that
+// provide defaults.
+func WithEnv(env map[string]any) Option {
+	return func(o *compileOptions) {
+		o.env = env
+		o.hasEnv = true
+	}
+}
+
+// WithAllowUnused permits declared parameters that are not referenced in the
+// template body (rejected by default).
+func WithAllowUnused() Option {
+	return func(o *compileOptions) { o.allowUnused = true }
+}
+
+// applyOptions folds opts into a compileOptions value.
+func applyOptions(opts []Option) compileOptions {
+	var co compileOptions
+	for _, opt := range opts {
+		opt(&co)
+	}
+	return co
+}
+
+// cBaseDir returns a C string for the base dir (or nil), plus a cleanup func.
+// The cleanup func must always be called.
+func (co compileOptions) cBaseDir() (*C.char, func()) {
+	if co.baseDir == "" {
+		return nil, func() {}
+	}
+	c := C.CString(co.baseDir)
+	return c, func() { C.free(unsafe.Pointer(c)) }
+}
+
+// cEnvJSON marshals the env map to a C JSON string (or nil), plus a cleanup
+// func. The cleanup func must always be called. A nil env map is encoded as an
+// empty JSON object ("{}") rather than "null", so WithEnv(nil) resolves env
+// declarations purely from their defaults.
+func (co compileOptions) cEnvJSON() (*C.char, func(), error) {
+	if !co.hasEnv {
+		return nil, func() {}, nil
+	}
+	env := co.env
+	if env == nil {
+		env = map[string]any{}
+	}
+	envJSON, err := json.Marshal(env)
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("cannot marshal env: %w", err)
+	}
+	c := C.CString(string(envJSON))
+	return c, func() { C.free(unsafe.Pointer(c)) }, nil
+}
+
+// newTemplate wraps a raw FFI pointer in a finalized *Template.
+func newTemplate(ptr unsafe.Pointer) *Template {
+	t := &Template{ptr: ptr}
+	runtime.SetFinalizer(t, func(t *Template) { t.Close() })
+	return t
+}
+
 // FromSource parses a template from an in-memory source string.
 //
 // The source must include YAML frontmatter with parameter declarations.
 // Unused declared parameters (present in frontmatter but not in the body)
-// are rejected; use [FromSourceAllowingUnused] to suppress this check.
-func FromSource(source string) (*Template, error) {
+// are rejected unless [WithAllowUnused] is supplied. Includes are resolved
+// relative to the directory given by [WithBaseDir], and compile-time
+// environment values may be supplied with [WithEnv].
+func FromSource(source string, opts ...Option) (*Template, error) {
+	co := applyOptions(opts)
+
 	cSource := C.CString(source)
 	defer C.free(unsafe.Pointer(cSource))
 
+	cDir, freeDir := co.cBaseDir()
+	defer freeDir()
+	cEnv, freeEnv, err := co.cEnvJSON()
+	if err != nil {
+		return nil, err
+	}
+	defer freeEnv()
+
 	var ptr unsafe.Pointer
-	errPtr := C.pt_template_from_source(cSource, &ptr)
+	errPtr := C.pt_template_from_source_with_options(cSource, cDir, cEnv, C._Bool(co.allowUnused), &ptr)
 	if err := freeError(errPtr); err != nil {
 		return nil, err
 	}
-
-	t := &Template{ptr: ptr}
-	runtime.SetFinalizer(t, func(t *Template) { t.Close() })
-	return t, nil
+	return newTemplate(ptr), nil
 }
 
 // FromSourceAllowingUnused parses a template, allowing declared parameters
 // that aren't referenced in the body.
+//
+// It is shorthand for FromSource(source, WithAllowUnused()).
 func FromSourceAllowingUnused(source string) (*Template, error) {
-	cSource := C.CString(source)
-	defer C.free(unsafe.Pointer(cSource))
-
-	var ptr unsafe.Pointer
-	errPtr := C.pt_template_from_source_allowing_unused(cSource, &ptr)
-	if err := freeError(errPtr); err != nil {
-		return nil, err
-	}
-
-	t := &Template{ptr: ptr}
-	runtime.SetFinalizer(t, func(t *Template) { t.Close() })
-	return t, nil
+	return FromSource(source, WithAllowUnused())
 }
 
 // FromSourceWithBaseDir parses a template from source, resolving includes
 // relative to the given base directory.
 //
-// Use this when parsing templates with {% include %} or imports: directives
-// that reference other template files.
+// It is shorthand for FromSource(source, WithBaseDir(baseDir)).
 func FromSourceWithBaseDir(source, baseDir string) (*Template, error) {
-	cSource := C.CString(source)
-	defer C.free(unsafe.Pointer(cSource))
-	cDir := C.CString(baseDir)
-	defer C.free(unsafe.Pointer(cDir))
-
-	var ptr unsafe.Pointer
-	errPtr := C.pt_template_from_source_with_base_dir(cSource, cDir, &ptr)
-	if err := freeError(errPtr); err != nil {
-		return nil, err
-	}
-
-	t := &Template{ptr: ptr}
-	runtime.SetFinalizer(t, func(t *Template) { t.Close() })
-	return t, nil
+	return FromSource(source, WithBaseDir(baseDir))
 }
 
 // FromSourceWithEnv parses a template with compile-time environment variables.
 //
-// Env vars are resolved at compile time against `env:` declarations in the
-// frontmatter. Values are typed and serialized as JSON to the engine.
-//
-// Example:
-//
-//	tmpl, err := md_tmpl.FromSourceWithEnv(source, map[string]any{
-//	    "PROMPTS_DIR": "/path/to/prompts",
-//	    "MAX_RETRIES": 5,
-//	})
+// It is shorthand for FromSource(source, WithEnv(env)).
 func FromSourceWithEnv(source string, env map[string]any) (*Template, error) {
-	cSource := C.CString(source)
-	defer C.free(unsafe.Pointer(cSource))
-
-	envJSON, err := json.Marshal(env)
-	if err != nil {
-		return nil, fmt.Errorf("cannot marshal env: %w", err)
-	}
-	cEnv := C.CString(string(envJSON))
-	defer C.free(unsafe.Pointer(cEnv))
-
-	var ptr unsafe.Pointer
-	errPtr := C.pt_template_from_source_with_env(cSource, cEnv, &ptr)
-	if err := freeError(errPtr); err != nil {
-		return nil, err
-	}
-
-	t := &Template{ptr: ptr}
-	runtime.SetFinalizer(t, func(t *Template) { t.Close() })
-	return t, nil
+	return FromSource(source, WithEnv(env))
 }
 
 // FromSourceWithFrontmatter parses a template and returns both the compiled
@@ -385,19 +516,30 @@ func FromSourceWithFrontmatter(source string) (*Template, *Frontmatter, error) {
 }
 
 // FromFile loads a template from a .tmpl.md file.
-func FromFile(path string) (*Template, error) {
+//
+// The same compile [Option] values accepted by [FromSource] apply here. When
+// [WithBaseDir] is omitted, includes are resolved relative to the file's own
+// parent directory.
+func FromFile(path string, opts ...Option) (*Template, error) {
+	co := applyOptions(opts)
+
 	cPath := C.CString(path)
 	defer C.free(unsafe.Pointer(cPath))
 
+	cDir, freeDir := co.cBaseDir()
+	defer freeDir()
+	cEnv, freeEnv, err := co.cEnvJSON()
+	if err != nil {
+		return nil, err
+	}
+	defer freeEnv()
+
 	var ptr unsafe.Pointer
-	errPtr := C.pt_template_from_file(cPath, &ptr)
+	errPtr := C.pt_template_from_file_with_options(cPath, cDir, cEnv, C._Bool(co.allowUnused), &ptr)
 	if err := freeError(errPtr); err != nil {
 		return nil, err
 	}
-
-	t := &Template{ptr: ptr}
-	runtime.SetFinalizer(t, func(t *Template) { t.Close() })
-	return t, nil
+	return newTemplate(ptr), nil
 }
 
 // Close frees the template resources. Safe to call multiple times and
@@ -416,14 +558,44 @@ func (t *Template) Close() error {
 // Rendering
 // ---------------------------------------------------------------------------
 
-// Render renders the template with the given context (strict mode).
+// RenderOption configures a single render call.
 //
-// All parameters are validated against frontmatter declarations.
-// Missing parameters, type mismatches, and extra undeclared parameters
-// produce clear error messages.
+// Options are applied left-to-right; the empty set renders in strict mode.
+// The same options apply to every render form ([Template.Render],
+// [Template.RenderMap], [Template.RenderJSON], [Template.RenderStruct]).
+type RenderOption func(*renderConfig)
+
+// renderConfig holds the resolved settings for a single render call.
+type renderConfig struct {
+	allowExtra bool
+}
+
+// resolveRenderConfig folds the supplied options into a renderConfig.
+func resolveRenderConfig(opts []RenderOption) renderConfig {
+	var cfg renderConfig
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	return cfg
+}
+
+// AllowExtra permits context keys that are not declared in the template
+// frontmatter.
 //
-// Use [RenderAllowingExtra] to permit undeclared parameters.
-func (t *Template) Render(ctx *Context) (string, error) {
+// Without it, rendering is strict: an undeclared parameter yields an
+// ExtraParams [TemplateError]. This single option replaces the former
+// family of dedicated *AllowingExtra render methods.
+func AllowExtra() RenderOption {
+	return func(c *renderConfig) { c.allowExtra = true }
+}
+
+// Render renders the template with the given context (strict mode by default).
+//
+// All parameters are validated against frontmatter declarations. Missing
+// parameters, type mismatches, and extra undeclared parameters produce typed
+// errors (see [TemplateError]). Pass [AllowExtra] to permit undeclared
+// parameters instead of erroring.
+func (t *Template) Render(ctx *Context, opts ...RenderOption) (string, error) {
 	if t.ptr == nil {
 		return "", ErrClosed
 	}
@@ -432,13 +604,17 @@ func (t *Template) Render(ctx *Context) (string, error) {
 	}
 
 	var errPtr *C.char
-	result := C.pt_template_render(t.ptr, ctx.ptr, &errPtr)
+	var result *C.char
+	if resolveRenderConfig(opts).allowExtra {
+		result = C.pt_template_render_allowing_extra(t.ptr, ctx.ptr, &errPtr)
+	} else {
+		result = C.pt_template_render(t.ptr, ctx.ptr, &errPtr)
+	}
 	if errPtr != nil {
-		err := freeError(errPtr)
-		return "", err
+		return "", freeError(errPtr)
 	}
 	if result == nil {
-		return "", fmt.Errorf("render returned nil without error")
+		return "", errors.New("md_tmpl: render returned nil without error")
 	}
 
 	output := C.GoString(result)
@@ -446,11 +622,38 @@ func (t *Template) Render(ctx *Context) (string, error) {
 	return output, nil
 }
 
-// RenderAllowingExtra renders the template, allowing extra (undeclared) parameters.
+// RenderEmpty renders the template with an empty context.
 //
-// Like [Render], but extra context keys that aren't declared in frontmatter
-// are silently ignored instead of producing an error.
-func (t *Template) RenderAllowingExtra(ctx *Context) (string, error) {
+// This is a convenience for templates whose parameters all have defaults (or
+// that declare no parameters). Any parameter without a default still produces
+// a missing-parameter error.
+func (t *Template) RenderEmpty() (string, error) {
+	if t.ptr == nil {
+		return "", ErrClosed
+	}
+
+	var errPtr *C.char
+	result := C.pt_template_render_empty(t.ptr, &errPtr)
+	if errPtr != nil {
+		return "", freeError(errPtr)
+	}
+	if result == nil {
+		return "", errors.New("md_tmpl: render returned nil without error")
+	}
+
+	output := C.GoString(result)
+	C.pt_free_string(result)
+	return output, nil
+}
+
+// RenderUnchecked renders the template without validating the context against
+// the frontmatter declarations.
+//
+// This skips the type- and presence-checks performed by [Render], trading
+// safety for speed. Only use it when the context is known to be valid (for
+// example, when it was produced by a previous validated render). Undefined
+// variables referenced by the body still error during rendering.
+func (t *Template) RenderUnchecked(ctx *Context) (string, error) {
 	if t.ptr == nil {
 		return "", ErrClosed
 	}
@@ -459,13 +662,43 @@ func (t *Template) RenderAllowingExtra(ctx *Context) (string, error) {
 	}
 
 	var errPtr *C.char
-	result := C.pt_template_render_allowing_extra(t.ptr, ctx.ptr, &errPtr)
+	result := C.pt_template_render_unchecked(t.ptr, ctx.ptr, &errPtr)
 	if errPtr != nil {
-		err := freeError(errPtr)
-		return "", err
+		return "", freeError(errPtr)
 	}
 	if result == nil {
-		return "", fmt.Errorf("render returned nil without error")
+		return "", errors.New("md_tmpl: render returned nil without error")
+	}
+
+	output := C.GoString(result)
+	C.pt_free_string(result)
+	return output, nil
+}
+
+// RenderCached renders the template, resolving {% include %} directives through
+// the given [Cache].
+//
+// Nested includes that were previously compiled are reused instead of being
+// re-parsed, which speeds up rendering of templates with a shared include set.
+// The cache must not be closed for the duration of the call.
+func (t *Template) RenderCached(ctx *Context, cache *Cache) (string, error) {
+	if t.ptr == nil {
+		return "", ErrClosed
+	}
+	if ctx == nil || ctx.ptr == nil {
+		return "", ErrNilContext
+	}
+	if cache == nil || cache.ptr == nil {
+		return "", ErrClosed
+	}
+
+	var errPtr *C.char
+	result := C.pt_template_render_cached(t.ptr, ctx.ptr, cache.ptr, &errPtr)
+	if errPtr != nil {
+		return "", freeError(errPtr)
+	}
+	if result == nil {
+		return "", errors.New("md_tmpl: render returned nil without error")
 	}
 
 	output := C.GoString(result)
@@ -482,8 +715,8 @@ func (t *Template) RenderAllowingExtra(ctx *Context) (string, error) {
 //   - float64 → float
 //   - bool → bool
 //   - anything else → JSON-encoded and set via SetJSON
-func (t *Template) RenderMap(params map[string]any) (string, error) {
-	return t.renderMapWith(params, false)
+func (t *Template) RenderMap(params map[string]any, opts ...RenderOption) (string, error) {
+	return t.renderMapWith(params, resolveRenderConfig(opts).allowExtra)
 }
 
 // RenderJSON renders the template using a JSON string as the parameter source.
@@ -495,17 +728,13 @@ func (t *Template) RenderMap(params map[string]any) (string, error) {
 // Example:
 //
 //	result, err := tmpl.RenderJSON(`{"name": "Alice", "count": 42}`)
-func (t *Template) RenderJSON(jsonStr string) (string, error) {
-	return t.renderJSONWith(jsonStr, false)
+//
+// Pass [AllowExtra] to permit undeclared parameters.
+func (t *Template) RenderJSON(jsonStr string, opts ...RenderOption) (string, error) {
+	return t.renderJSONWith(jsonStr, resolveRenderConfig(opts).allowExtra)
 }
 
-// RenderJSONAllowingExtra is like [RenderJSON] but allows extra parameters
-// that aren't declared in frontmatter.
-func (t *Template) RenderJSONAllowingExtra(jsonStr string) (string, error) {
-	return t.renderJSONWith(jsonStr, true)
-}
-
-// renderJSONWith is the shared implementation for RenderJSON and RenderJSONAllowingExtra.
+// renderJSONWith is the shared implementation backing RenderJSON.
 //
 // Uses a single-shot FFI call (pt_template_render_json) that parses JSON,
 // builds the context, and renders entirely on the Rust side — avoiding the
@@ -524,7 +753,7 @@ func (t *Template) renderJSONWith(jsonStr string, allowExtra bool) (string, erro
 		return "", freeError(errPtr)
 	}
 	if result == nil {
-		return "", fmt.Errorf("render returned nil without error")
+		return "", errors.New("md_tmpl: render returned nil without error")
 	}
 
 	output := C.GoString(result)
@@ -547,23 +776,13 @@ func (t *Template) renderJSONWith(jsonStr string, allowExtra bool) (string, erro
 //	    Count int64  `json:"count"`
 //	}
 //	result, err := tmpl.RenderStruct(Params{Name: "Alice", Count: 42})
-func (t *Template) RenderStruct(v any) (string, error) {
-	return t.renderFlexbuffersWith(v, false)
+//
+// Pass [AllowExtra] to permit undeclared parameters.
+func (t *Template) RenderStruct(v any, opts ...RenderOption) (string, error) {
+	return t.renderFlexbuffersWith(v, resolveRenderConfig(opts).allowExtra)
 }
 
-// RenderStructAllowingExtra is like [RenderStruct] but allows extra parameters
-// that aren't declared in frontmatter.
-func (t *Template) RenderStructAllowingExtra(v any) (string, error) {
-	return t.renderFlexbuffersWith(v, true)
-}
-
-// RenderMapAllowingExtra is like [RenderMap] but allows extra parameters
-// that aren't declared in frontmatter.
-func (t *Template) RenderMapAllowingExtra(params map[string]any) (string, error) {
-	return t.renderMapWith(params, true)
-}
-
-// renderMapWith is the shared implementation for RenderMap and RenderMapAllowingExtra.
+// renderMapWith is the shared implementation backing RenderMap.
 //
 // Marshals the map to FlexBuffers and uses the single-shot FFI path, replacing
 // the per-key Set() calls that each crossed the FFI boundary.
@@ -582,7 +801,7 @@ func (t *Template) renderFlexbuffersWith(v any, allowExtra bool) (string, error)
 		return "", fmt.Errorf("renderFlexbuffersWith: cannot marshal to flexbuffers: %w", err)
 	}
 	if len(data) == 0 {
-		return "", fmt.Errorf("renderFlexbuffersWith: empty flexbuffers data")
+		return "", errors.New("md_tmpl: renderFlexbuffersWith: empty flexbuffers data")
 	}
 
 	var errPtr *C.char
@@ -591,7 +810,7 @@ func (t *Template) renderFlexbuffersWith(v any, allowExtra bool) (string, error)
 		return "", freeError(errPtr)
 	}
 	if result == nil {
-		return "", fmt.Errorf("render returned nil without error")
+		return "", errors.New("md_tmpl: render returned nil without error")
 	}
 
 	output := C.GoString(result)
@@ -624,6 +843,36 @@ func (t *Template) Body() string {
 	return body
 }
 
+// Name returns the template name declared in frontmatter and whether one was
+// present. An absent name yields ("", false), distinct from an empty name.
+func (t *Template) Name() (string, bool) {
+	if t.ptr == nil {
+		return "", false
+	}
+	c := C.pt_template_name(t.ptr)
+	if c == nil {
+		return "", false
+	}
+	name := C.GoString(c)
+	C.pt_free_string(c)
+	return name, true
+}
+
+// Description returns the template description declared in frontmatter and
+// whether one was present. An absent description yields ("", false).
+func (t *Template) Description() (string, bool) {
+	if t.ptr == nil {
+		return "", false
+	}
+	c := C.pt_template_description(t.ptr)
+	if c == nil {
+		return "", false
+	}
+	desc := C.GoString(c)
+	C.pt_free_string(c)
+	return desc, true
+}
+
 // Declarations returns the declared parameter names, types, and defaults.
 func (t *Template) Declarations() []Declaration {
 	if t.ptr == nil {
@@ -638,7 +887,12 @@ func (t *Template) Declarations() []Declaration {
 		debugLog.Printf("Declarations: failed to parse JSON: %v", err)
 		return nil
 	}
+	if len(raw) == 0 {
+		return nil
+	}
 
+	// Only cross the FFI boundary for defaults once we know there are
+	// declarations to attach them to.
 	defaults := t.Defaults()
 
 	decls := make([]Declaration, 0, len(raw))
@@ -908,7 +1162,7 @@ func (c *Context) MergeStruct(v any) error {
 		return fmt.Errorf("MergeStruct: cannot marshal to flexbuffers: %w", err)
 	}
 	if len(data) == 0 {
-		return fmt.Errorf("MergeStruct: empty flexbuffers data")
+		return errors.New("md_tmpl: MergeStruct: empty flexbuffers data")
 	}
 
 	errPtr := C.pt_context_merge_flexbuffers(c.ptr, (*C.uint8_t)(&data[0]), C.size_t(len(data)))
@@ -925,7 +1179,7 @@ func (c *Context) MergeMap(params map[string]any) error {
 		return fmt.Errorf("MergeMap: cannot marshal to flexbuffers: %w", err)
 	}
 	if len(data) == 0 {
-		return fmt.Errorf("MergeMap: empty flexbuffers data")
+		return errors.New("md_tmpl: MergeMap: empty flexbuffers data")
 	}
 
 	errPtr := C.pt_context_merge_flexbuffers(c.ptr, (*C.uint8_t)(&data[0]), C.size_t(len(data)))

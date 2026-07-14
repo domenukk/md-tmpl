@@ -58,9 +58,9 @@ Hello {{ name }}!`)
 	}
 	defer tmpl.Close()
 
-	result, err := tmpl.RenderStructAllowingExtra(Params{Name: "Alice"})
+	result, err := tmpl.RenderStruct(Params{Name: "Alice"}, AllowExtra())
 	if err != nil {
-		t.Fatalf("RenderStructAllowingExtra failed: %v", err)
+		t.Fatalf("RenderStruct(AllowExtra) failed: %v", err)
 	}
 	expected := "Hello Alice!"
 	if result != expected {
