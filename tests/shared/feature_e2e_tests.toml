@@ -3268,3 +3268,57 @@ archived
 expected_output = "🔴 deploy fix\n"
 [tests.params]
 t = { "__kind__" = "Active", "priority" = "Urgent", "label" = "deploy fix" }
+
+# ============================================================================
+# REGRESSION: frontmatter const block parsing (blank lines, comments, quotes)
+# ============================================================================
+# These fixtures lock in fixes for real-world `consts:` blocks (see the ARTIST
+# SEVERITY_LADDER const): blank lines and `#` comments between block-list
+# entries must not drop subsequent entries, and commas inside quoted string
+# values must not be misread as struct/list field separators.
+
+[[tests]]
+name = "regression_const_quoted_comma_in_struct_list"
+description = "REGRESSION: commas inside quoted strings in a list-of-struct const value must not be treated as field separators"
+template = '''
+---
+consts:
+  - ROWS = list(msg = str, n = int) := [{msg = "a, b", n = 1}, {msg = "c, d, e", n = 2}]
+
+params: []
+---
+> {% for r in ROWS %}{{ r.msg }}={{ r.n }};{% /for %}'''
+expected_output = "a, b=1;c, d, e=2;"
+params = {}
+
+[[tests]]
+name = "regression_const_blank_line_between_entries"
+description = "REGRESSION: a blank line between block-list const entries must not drop subsequent entries"
+template = '''
+---
+consts:
+  - ALPHA = str := "one"
+
+  - BETA = str := "two"
+
+params: []
+---
+{{ ALPHA }}/{{ BETA }}'''
+expected_output = "one/two"
+params = {}
+
+[[tests]]
+name = "regression_const_comment_between_entries"
+description = "REGRESSION: a full-line # comment between block-list const entries is skipped and does not drop subsequent entries"
+template = '''
+---
+consts:
+  - GAMMA = int := 10
+  # a documenting comment between const entries
+  - DELTA = int := 20
+
+params: []
+---
+{{ GAMMA }}/{{ DELTA }}'''
+expected_output = "10/20"
+params = {}

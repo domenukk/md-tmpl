@@ -282,6 +282,12 @@ pub(crate) const FM_IMPORTS_PREFIX: &str = "imports:";
 pub(crate) const FM_CONSTS_PREFIX: &str = "consts:";
 /// Frontmatter key for compile-time environment variables: `env:`.
 pub(crate) const FM_ENV_PREFIX: &str = "env:";
+/// Frontmatter full-line comment prefix: `#`.
+///
+/// A line whose first non-whitespace character is `#` is treated as a
+/// documentation comment inside the frontmatter block. It is ignored during
+/// parsing and, crucially, does not terminate an in-progress block list.
+pub(crate) const FM_COMMENT_PREFIX: char = '#';
 
 // -- Type annotations ---------------------------------------------------------
 

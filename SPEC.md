@@ -1237,7 +1237,9 @@ If the content requires a double quote, use the variable indirection pattern
 ```
 
 `{% for x in y %}` requires `y` to be a `list` type — enforced at compile time.
-Iterating over an `option(list(...))` is a type error; use
+The iterable `y` may be a param, a local `consts:` list, or an imported constant
+list (e.g., `{% for row in lib.ITEMS %}`); element fields are type-checked in all
+cases. Iterating over an `option(list(...))` is a type error; use
 `{% if has(y) %}{% for x in y %}...{% /for %}{% /if %}` instead.
 
 #### `for...else`

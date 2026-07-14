@@ -35,6 +35,7 @@ The following table catalogs the core feature areas covered by the E2E test infr
 | 10  | For loop edge cases (`idx()` nested, empty list)               | SPEC §ForLoops       | 2      | —      | —      | —      |
 | 11  | Raw blocks and comments (`{% raw %}`, `{# ... #}`)             | SPEC §Raw/Comments   | 2      | —      | —      | —      |
 | 12  | Imports in included files (enum types, consts, `match`/`case`) | SPEC §Includes       | 9      | —      | ✓      | —      |
+| 13  | Imported const list iteration (`{% for x in stem.LIST %}`)     | SPEC §Constants      | 8      | 3      | ✓      | —      |
 
 ### Tier Definitions
 

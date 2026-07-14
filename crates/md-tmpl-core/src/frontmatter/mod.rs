@@ -69,6 +69,12 @@ pub struct ImportedNamespace {
     pub param_types: HashMap<String, VarType>,
     /// Constants exported by the imported template.
     pub consts: HashMap<String, crate::value::Value>,
+    /// Type declarations for each exported constant.
+    ///
+    /// Enables the type checker to resolve field accesses on imported
+    /// consts (e.g. `{% for row in lib.ITEMS %}{{ row.name }}{% /for %}`)
+    /// instead of treating the import stem as opaque.
+    pub const_types: HashMap<String, VarType>,
 }
 
 /// Parsed YAML frontmatter from a `.tmpl.md` file.
@@ -106,6 +112,74 @@ pub struct Frontmatter {
     /// (injected from imported enum type aliases). Used by the bare-enum-access
     /// check to distinguish enum namespaces from struct constants.
     pub imported_enum_type_keys: Vec<String>,
+    /// Type information for imported namespaces, keyed by import stem.
+    ///
+    /// Each entry maps a stem name (e.g. `"artist"`) to a `Struct` type
+    /// whose fields correspond to the imported template's typed consts.
+    /// Used by the type checker to validate field accesses and for-loop
+    /// iteration over imported consts.
+    pub imported_namespace_types: HashMap<String, VarType>,
+}
+
+impl Frontmatter {
+    /// Validate enum-variant names and field accesses across a template body,
+    /// using the full set of typed declarations derived from this frontmatter.
+    ///
+    /// This is the single source of truth for compile-time field-type checking,
+    /// shared by the `template!` proc-macro and the shared cross-backend test
+    /// runners, so their behavior can never drift apart.
+    ///
+    /// Declarations included (all receive full field-level validation):
+    /// - `params:` declarations,
+    /// - typed import stems (imports whose consts carry type info) — this is
+    ///   what enables `{% for row in stem.LIST_CONST %}{{ row.field }}{% /for %}`,
+    /// - local `consts:`,
+    /// - `env:` variables.
+    ///
+    /// Import stems lacking const type info remain opaque (valid but untyped).
+    ///
+    /// Returns a list of human-readable error strings (empty when valid).
+    #[must_use]
+    pub fn validate_field_types(&self, segments: &[crate::compiled::Segment]) -> Vec<String> {
+        let mut opaque_roots: crate::compat::HashSet<String> = crate::compat::HashSet::new();
+        let mut declarations: Vec<VarDecl> = self.declarations.clone();
+
+        for import in &self.imports {
+            // Always register the stem as an opaque root. Includes build their
+            // child `TypeEnv` from the included template's own declarations and
+            // inherit the parent's `opaque_roots` — but NOT the parent's typed
+            // namespace `vars`. Without the stem in `opaque_roots`, an included
+            // body referencing `stem.CONST` (e.g. `artist.SEVERITY_LADDER`)
+            // would be spuriously flagged as an undeclared variable.
+            opaque_roots.insert(import.stem.clone());
+            // When the import additionally carries typed const info, register a
+            // typed declaration so field access and for-loop element types
+            // resolve precisely at this level. `lookup()` (vars) takes
+            // precedence over `opaque_roots`, so top-level field/typo checking
+            // is unaffected; the opaque entry is only the fallback consulted
+            // inside includes (where the typed `vars` are not in scope).
+            if let Some(ns_type) = self.imported_namespace_types.get(&import.stem) {
+                declarations.push(VarDecl {
+                    name: import.stem.clone(),
+                    var_type: ns_type.clone(),
+                    default_value: None,
+                });
+            }
+        }
+        for c in &self.consts {
+            declarations.push(c.clone());
+        }
+        for e in &self.env {
+            declarations.push(e.clone());
+        }
+
+        crate::compiled::validate_field_accesses_full(
+            segments,
+            &declarations,
+            &self.type_aliases,
+            &opaque_roots,
+        )
+    }
 }
 
 /// Strip YAML frontmatter delimited by `---` and return only the body text.
@@ -534,6 +608,40 @@ fn inject_imported_consts(
                 crate::value::Value::Struct(alloc::sync::Arc::new(variant_map)),
             );
             fm.imported_enum_type_keys.push(key);
+        }
+        // Build a typed namespace struct so the type checker can resolve paths
+        // through the import stem (e.g. `artist.SEVERITY_LADDER`) instead of
+        // treating it as opaque.
+        //
+        // The struct must model *every* name reachable via the stem — not just
+        // consts — otherwise typing the stem would break access to imported
+        // types/enums (e.g. `kinds(lib.Priority)` or `lib.Status.Paused`).
+        // We therefore include type aliases and implicit param types alongside
+        // const types. Const types take precedence on any name collision.
+        //
+        // Scoped to imports that actually export typed consts: type-only imports
+        // remain opaque, preserving their established resolution behavior.
+        if !ns.const_types.is_empty() {
+            let mut field_types: HashMap<String, VarType> = HashMap::new();
+            for (name, var_type) in &ns.param_types {
+                field_types.insert(name.clone(), var_type.clone());
+            }
+            for (name, var_type) in &ns.type_aliases {
+                field_types.insert(name.clone(), var_type.clone());
+            }
+            for (name, var_type) in &ns.const_types {
+                field_types.insert(name.clone(), var_type.clone());
+            }
+            let fields: Vec<VarDecl> = field_types
+                .into_iter()
+                .map(|(name, var_type)| VarDecl {
+                    name,
+                    var_type,
+                    default_value: None,
+                })
+                .collect();
+            fm.imported_namespace_types
+                .insert(stem.clone(), VarType::Struct(fields));
         }
     }
 }

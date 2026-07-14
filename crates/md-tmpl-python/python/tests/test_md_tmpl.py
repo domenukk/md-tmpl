@@ -1459,6 +1459,84 @@ class TestConstants:
 
 
 # ---------------------------------------------------------------------------
+# Imported const iteration (imports: block)
+# ---------------------------------------------------------------------------
+
+
+class TestImportedConstIteration:
+    """Iterating over a list const exported by an imported template.
+
+    Mirrors the real ARTIST `artist.SEVERITY_LADDER` usage, where a shared
+    template exposes a typed list const (optionally with enum-typed fields)
+    that consumers iterate over via `{% for row in stem.CONST %}`.
+    """
+
+    def _write_lib(self, tmp_path: Path) -> Path:
+        lib = tmp_path / "lib.tmpl.md"
+        lib.write_text(textwrap.dedent("""\
+            ---
+            types:
+              - Tier = enum(L0, L1, L2)
+
+            consts:
+              - LADDER = list(tier = Tier, desc = str) := [{tier = L0, desc = "theory"}, {tier = L1, desc = "trigger"}]
+
+            params: []
+            ---
+            (library)"""))
+        return lib
+
+    def test_iterate_imported_const_list(self, tmp_path: Path) -> None:
+        self._write_lib(tmp_path)
+        parent = tmp_path / "parent.tmpl.md"
+        parent.write_text(textwrap.dedent("""\
+            ---
+            imports:
+              - [lib](./lib.tmpl.md)
+
+            params: []
+            ---
+            > {% for row in lib.LADDER %}
+
+            {{ kind(row.tier) }}: {{ row.desc }}
+
+            > {% /for %}"""))
+        tmpl = Template.from_file(str(parent))
+        output = tmpl.render()
+        assert output == "L0: theory\nL1: trigger\n"
+
+    def test_iterate_imported_const_and_use_imported_enum(self, tmp_path: Path) -> None:
+        """Regression: the same stem exposes both a typed const and an enum type.
+
+        Typing the import stem as a struct of only-consts previously broke
+        access to the enum type via the stem (`kinds(lib.Tier)`). Both must
+        work simultaneously.
+        """
+        self._write_lib(tmp_path)
+        parent = tmp_path / "parent.tmpl.md"
+        parent.write_text(textwrap.dedent("""\
+            ---
+            imports:
+              - [lib](./lib.tmpl.md)
+
+            params: []
+            ---
+            > {% for t in kinds(lib.Tier) %}
+
+            - {{ t }}
+
+            > {% /for %}
+            > {% for row in lib.LADDER %}
+
+            {{ row.desc }}
+
+            > {% /for %}"""))
+        tmpl = Template.from_file(str(parent))
+        output = tmpl.render()
+        assert output == "- L0\n- L1\n- L2\ntheory\ntrigger\n"
+
+
+# ---------------------------------------------------------------------------
 # Whitespace control
 # ---------------------------------------------------------------------------
 

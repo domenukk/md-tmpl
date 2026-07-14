@@ -18,16 +18,30 @@ use crate::{
     value::Value,
 };
 
-/// Join YAML continuation lines: any line starting with whitespace is appended
-/// to the preceding logical line.
+/// Join YAML continuation lines into one logical line per top-level entry.
+///
+/// Any line starting with whitespace is appended to the preceding logical line.
+///
+/// Blank lines and full-line `#` comments are layout/documentation only: they
+/// are skipped entirely and, crucially, do **not** terminate an in-progress
+/// block list. This lets block entries be separated by blank lines or
+/// interleaved with comments for readability (e.g. a documented `consts:`
+/// block) while still joining every entry onto its section's logical line
+/// instead of orphaning entries after the first blank onto a stray line that
+/// no section prefix matches.
 pub(crate) fn join_continuation_lines(block: &str) -> Vec<String> {
     let mut logical: Vec<String> = Vec::new();
     for raw in block.lines() {
+        let trimmed = raw.trim();
+        // Skip blanks and full-line comments without breaking continuation.
+        if trimmed.is_empty() || trimmed.starts_with(crate::consts::FM_COMMENT_PREFIX) {
+            continue;
+        }
         if raw.starts_with(' ') || raw.starts_with('\t') {
             // Continuation of previous logical line.
             if let Some(prev) = logical.last_mut() {
                 prev.push(' ');
-                prev.push_str(raw.trim());
+                prev.push_str(trimmed);
             } else {
                 logical.push(raw.to_string());
             }
@@ -219,17 +233,34 @@ pub(crate) fn strip_type_brackets(s: &str) -> Option<&str> {
     }
 }
 
-/// Split a string on commas at bracket-depth 0.
+/// Split a string on commas at bracket-depth 0, ignoring commas inside quoted
+/// string literals.
+///
+/// Delimiters (brackets, braces, parens, angle brackets, and the separating
+/// comma) that appear inside a `"..."` or `'...'` string literal are treated as
+/// literal characters. This lets struct/list default values contain quoted
+/// strings with embedded commas or brackets (e.g. `{msg = "a, b", n = 1}`)
+/// without the field separator being misdetected.
 pub(crate) fn split_at_depth_zero(input: &str) -> Vec<&str> {
     use crate::consts::{
         ANGLE_CLOSE, ANGLE_OPEN, BRACE_CLOSE, BRACE_OPEN, BRACKET_CLOSE, BRACKET_OPEN, COMMA,
-        PAREN_CLOSE, PAREN_OPEN,
+        PAREN_CLOSE, PAREN_OPEN, QUOTE_DOUBLE, QUOTE_SINGLE,
     };
     let mut entries = Vec::new();
     let mut depth: u32 = 0;
     let mut start = 0;
+    // When inside a string literal, holds the opening quote char; delimiters are
+    // ignored until the matching closing quote is seen.
+    let mut in_quote: Option<char> = None;
     for (i, ch) in input.char_indices() {
+        if let Some(q) = in_quote {
+            if ch == q {
+                in_quote = None;
+            }
+            continue;
+        }
         match ch {
+            QUOTE_DOUBLE | QUOTE_SINGLE => in_quote = Some(ch),
             ANGLE_OPEN | BRACKET_OPEN | PAREN_OPEN | BRACE_OPEN => depth += 1,
             ANGLE_CLOSE | BRACKET_CLOSE | PAREN_CLOSE | BRACE_CLOSE => {
                 depth = depth.saturating_sub(1);

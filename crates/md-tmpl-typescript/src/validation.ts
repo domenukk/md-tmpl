@@ -930,6 +930,9 @@ function walkNodesWithNarrowing(
  *
  * @param nodes - Parsed AST nodes from the template body.
  * @param declarations - Parameter declarations from frontmatter.
+ * @param consts - Constant declarations from frontmatter.
+ * @param typeAliases - Type alias map from frontmatter.
+ * @param importedNamespaceTypes - Typed import namespace map (stem → struct type).
  * @throws {TemplateSyntaxError} If an expression resolves to a non-displayable type.
  */
 export function validateDisplayability(
@@ -937,8 +940,18 @@ export function validateDisplayability(
   declarations: readonly VarDecl[],
   consts?: readonly VarDecl[],
   typeAliases?: ReadonlyMap<string, VarType>,
+  importedNamespaceTypes?: ReadonlyMap<string, VarType>,
 ): void {
-  const allDecls = consts ? [...declarations, ...consts] : declarations;
+  const allDecls: VarDecl[] = consts
+    ? [...declarations, ...consts]
+    : [...declarations];
+  // Register typed import stems as declarations so the type checker can
+  // resolve field accesses on imported consts (e.g. `artist.SEVERITY_LADDER`).
+  if (importedNamespaceTypes) {
+    for (const [stem, nsType] of importedNamespaceTypes) {
+      allDecls.push({ name: stem, varType: nsType });
+    }
+  }
   const env = new TypeEnv(allDecls, undefined, typeAliases);
   const errors: ValidationError[] = [];
 

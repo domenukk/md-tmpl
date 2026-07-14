@@ -198,7 +198,7 @@ build-ts:
 
 # Build the WASM package (via wasm-pack)
 build-wasm:
-    cd crates/md-tmpl-wasm && wasm-pack build --target nodejs --out-dir pkg --release && npm run build
+    cd crates/md-tmpl-wasm && rm -rf pkg && wasm-pack build --target nodejs --out-dir pkg --release && npm run build
 
 # ── Other ─────────────────────────────────────────────────────────────
 

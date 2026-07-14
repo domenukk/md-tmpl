@@ -397,6 +397,11 @@ pub fn resolve_imports_with_consts<S: core::hash::BuildHasher>(
                 .iter()
                 .filter_map(|d| d.default_value.clone().map(|v| (d.name.clone(), v)))
                 .collect(),
+            const_types: imported_fm
+                .consts
+                .iter()
+                .map(|d| (d.name.clone(), d.var_type.clone()))
+                .collect(),
         };
 
         // Accumulate this import's consts so subsequent imports can reference them.

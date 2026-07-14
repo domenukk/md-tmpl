@@ -422,10 +422,43 @@ fn validate_for_loop(
             walk_segments(body, env, errors, visited);
         }
         None => {
-            walk_segments(body, env, errors, visited);
+            // The element type is unknown. If the iterable is rooted at an
+            // opaque root (e.g. an imported constant like
+            // `artist.SEVERITY_LADDER`, whose structure is resolved at runtime
+            // rather than statically typed), the loop binding is likewise
+            // opaque: skip field-level validation on it inside the body,
+            // consistent with how field access on the imported constant itself
+            // is skipped. Without this, every `binding.field` access in the
+            // body would be spuriously flagged as an undeclared variable.
+            let binding_is_opaque =
+                for_loop_iterable_root(list_expr).is_some_and(|root| env.is_opaque(root));
+            if binding_is_opaque {
+                let newly_inserted = env.opaque_roots.insert(binding.to_string());
+                walk_segments(body, env, errors, visited);
+                if newly_inserted {
+                    env.opaque_roots.remove(binding);
+                }
+            } else {
+                walk_segments(body, env, errors, visited);
+            }
         }
     }
     walk_segments(else_body, env, errors, visited);
+}
+
+/// Return the root variable name of a for-loop iterable expression when it is
+/// a plain path (or path-like builtin). Used to detect loops over opaque
+/// imported constants so the loop binding can inherit their opacity.
+fn for_loop_iterable_root(list_expr: &CompiledExpr) -> Option<&str> {
+    let path = match list_expr {
+        CompiledExpr::Path(p)
+        | CompiledExpr::Len(p)
+        | CompiledExpr::Kind(p)
+        | CompiledExpr::Kinds(p)
+        | CompiledExpr::Has(p) => p,
+        CompiledExpr::Idx(_) => return None,
+    };
+    path.parts().first().map(String::as_str)
 }
 
 fn validate_if_segment(
@@ -1459,6 +1492,16 @@ fn validate_include(
         child_env.opaque_roots.clone_from(&env.opaque_roots);
         for k in compiled.imported_consts.keys() {
             child_env.opaque_roots.insert(k.clone());
+            // Register the import stem (the segment before the first `.`) as
+            // an opaque root too. The parent may register a stem with typed
+            // const info as a (non-opaque) declaration, which — being a
+            // borrowed, lifetime-bound type — is not propagated across the
+            // include boundary. Without the bare stem, paths like
+            // `artist.SEVERITY_LADDER` (and for-loops over them) inside the
+            // inlined body would be flagged as undeclared.
+            if let Some((stem, _)) = k.split_once(crate::consts::PATH_SEP) {
+                child_env.opaque_roots.insert(stem.to_string());
+            }
         }
         for k in compiled.consts.keys() {
             child_env.opaque_roots.insert(k.clone());

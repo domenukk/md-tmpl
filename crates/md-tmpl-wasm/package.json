@@ -1,11 +1,11 @@
 {
   "name": "md-tmpl-wasm-tests",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "tsc && tsc -p benchmarks",
-    "test": "node dist/correctness.js && node --test dist/wasm.test.js",
+    "test": "node dist/correctness.js && node --test dist/*.test.js",
     "bench": "node dist/bench.js"
   },
   "devDependencies": {

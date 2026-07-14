@@ -88,6 +88,50 @@ fn join_no_continuations() {
     assert_eq!(result, vec!["a", "b", "c"]);
 }
 
+#[test]
+fn join_blank_line_between_entries_not_dropped() {
+    // REGRESSION: a blank line between two top-level entries must not create an
+    // empty logical line nor drop the second entry. Previously the blank line
+    // was emitted as its own logical line, orphaning everything after it.
+    let block = "- FIRST\n\n- SECOND";
+    let result = join_continuation_lines(block);
+    assert_eq!(result, vec!["- FIRST", "- SECOND"]);
+}
+
+#[test]
+fn join_skips_full_line_comments() {
+    // REGRESSION: full-line `#` comments are documentation only and must be
+    // skipped without terminating an in-progress block list.
+    let block = "- A\n# a comment\n- B";
+    let result = join_continuation_lines(block);
+    assert_eq!(result, vec!["- A", "- B"]);
+}
+
+#[test]
+fn join_skips_blank_lines_within_continuation() {
+    // A blank line inside a multi-line value continuation is skipped, and the
+    // following indented line still appends to the same logical line.
+    let block = "key: val\n  cont1\n\n  cont2";
+    let result = join_continuation_lines(block);
+    assert_eq!(result.len(), 1);
+    assert_eq!(result[0], "key: val cont1 cont2");
+}
+
+#[test]
+fn join_multiline_value_with_blank_and_comment() {
+    // REGRESSION: mirrors the ARTIST SEVERITY_LADDER const — a section whose
+    // entry value spans multiple indented lines, with a blank line and a `#`
+    // comment interleaved between entries. All entries must survive and the
+    // multi-line value must be joined onto a single logical line.
+    let block = "consts:\n  - A = str := \"x\"\n\n  # doc comment\n  - B = list(n = int) :=\n    [{n = 1},\n    {n = 2}]";
+    let result = join_continuation_lines(block);
+    assert_eq!(result.len(), 1);
+    assert_eq!(
+        result[0],
+        "consts: - A = str := \"x\" - B = list(n = int) := [{n = 1}, {n = 2}]"
+    );
+}
+
 // =========================================================================
 // split_at_depth_zero
 // =========================================================================
@@ -140,6 +184,33 @@ fn split_deeply_nested() {
     assert_eq!(result.len(), 2);
     assert_eq!(result[0], "list<list<a = str, b = list<c = int>>>");
     assert_eq!(result[1], " x = bool");
+}
+
+#[test]
+fn split_ignores_comma_inside_double_quotes() {
+    // REGRESSION: commas inside a double-quoted string must not be treated as
+    // field separators (e.g. `mem_example = "Crash, panic, sanitizer report"`).
+    let result = split_at_depth_zero("msg = \"a, b, c\", n = 1");
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0], "msg = \"a, b, c\"");
+    assert_eq!(result[1], " n = 1");
+}
+
+#[test]
+fn split_ignores_comma_inside_single_quotes() {
+    let result = split_at_depth_zero("a = 'x, y', b = 2");
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0], "a = 'x, y'");
+    assert_eq!(result[1], " b = 2");
+}
+
+#[test]
+fn split_ignores_brackets_inside_quotes() {
+    // Brackets/braces inside a quoted string must not affect depth tracking.
+    let result = split_at_depth_zero("a = \"x [y, z] {q}\", b = 2");
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0], "a = \"x [y, z] {q}\"");
+    assert_eq!(result[1], " b = 2");
 }
 
 // =========================================================================

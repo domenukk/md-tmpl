@@ -1411,3 +1411,164 @@ expected_error = "kind()"
 
 [tests.params]
 c = "Red"
+
+# ---------------------------------------------------------------------------
+# Local const-list iteration — runs on ALL backends (Rust, TS, WASM).
+# Exercises the "consts are typed, not opaque" type-checker fix inline,
+# without needing filesystem-based imports (which WASM cannot do).
+# ---------------------------------------------------------------------------
+
+[[tests]]
+name = "for_loop_over_local_const_list"
+description = "Iterating over a local list const with field access resolves element type"
+template = '''
+---
+consts:
+  - ITEMS = list(name = str, score = int) := [{name = "Alice", score = 100}, {name = "Bob", score = 95}]
+
+params: []
+---
+> {% for item in ITEMS %}
+
+- {{ item.name }}: {{ item.score }}
+
+> {% /for %}'''
+expected_output = '''
+- Alice: 100
+- Bob: 95
+'''
+params = {}
+
+[[tests]]
+name = "for_loop_over_local_const_scalar_list"
+description = "Iterating over a local scalar list const binds element as scalar"
+template = '''
+---
+consts:
+  - TAGS = list(str) := ["rust", "ts", "wasm"]
+
+params: []
+---
+> {% for tag in TAGS %}
+
+- {{ tag }}
+
+> {% /for %}'''
+expected_output = '''
+- rust
+- ts
+- wasm
+'''
+params = {}
+
+[[tests]]
+name = "for_loop_over_local_const_enum_field"
+description = "Local const list element with enum-typed field resolves alias and kind()"
+template = '''
+---
+types:
+  - Tier = enum(L0, L1, L2)
+
+consts:
+  - LADDER = list(tier = Tier, desc = str) := [{tier = L0, desc = "theory"}, {tier = L1, desc = "trigger"}]
+
+params: []
+---
+> {% for row in LADDER %}
+
+{{ kind(row.tier) }}: {{ row.desc }}
+
+> {% /for %}'''
+expected_output = '''L0: theory
+L1: trigger
+'''
+params = {}
+
+[[tests]]
+name = "for_loop_over_local_const_match_enum_field"
+description = "match on enum field of a local const list element with exhaustiveness"
+template = '''
+---
+types:
+  - Tier = enum(L0, L1)
+
+consts:
+  - LADDER = list(tier = Tier, desc = str) := [{tier = L0, desc = "theory"}, {tier = L1, desc = "trigger"}]
+
+params: []
+---
+> {% for row in LADDER %}
+> {% match row.tier %}
+> {% case L0 %}
+
+low: {{ row.desc }}
+
+> {% case L1 %}
+
+high: {{ row.desc }}
+
+> {% /match %}
+> {% /for %}'''
+expected_output = '''low: theory
+high: trigger
+'''
+params = {}
+
+[[tests]]
+name = "for_loop_over_local_const_idx"
+description = "idx() works inside a for-loop over a local const list"
+template = '''
+---
+consts:
+  - ITEMS = list(name = str) := [{name = "a"}, {name = "b"}, {name = "c"}]
+
+params: []
+---
+> {% for item in ITEMS %}
+
+{{ idx(item) }}: {{ item.name }}
+
+> {% /for %}'''
+expected_output = '''0: a
+1: b
+2: c
+'''
+params = {}
+
+[[tests]]
+name = "for_loop_over_local_const_undeclared_field_is_error"
+description = "Accessing an undeclared field on a local const list loop var is a compile error"
+template = '''
+---
+consts:
+  - ITEMS = list(name = str) := [{name = "a"}]
+
+params: []
+---
+> {% for item in ITEMS %}
+
+{{ item.nonexistent }}
+
+> {% /for %}'''
+expected_error = "nonexistent"
+params = {}
+
+[[tests]]
+name = "for_loop_over_local_const_nested_struct_field"
+description = "Nested struct field access on a local const list element resolves at compile time"
+template = '''
+---
+consts:
+  - ITEMS = list(meta = struct(label = str)) := [{meta = {label = "hello"}}, {meta = {label = "world"}}]
+
+params: []
+---
+> {% for item in ITEMS %}
+
+{{ item.meta.label }}
+
+> {% /for %}'''
+expected_output = '''hello
+world
+'''
+params = {}

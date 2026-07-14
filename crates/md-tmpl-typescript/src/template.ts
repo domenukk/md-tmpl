@@ -328,7 +328,13 @@ export class Template implements ITemplate, TmplRef {
       collectInlineTemplateNames(nodes),
       collectForBindings(nodes),
     );
-    validateDisplayability(nodes, fm.params, fm.consts, fm.typeAliases);
+    validateDisplayability(
+      nodes,
+      fm.params,
+      fm.consts,
+      fm.typeAliases,
+      fm.importedNamespaceTypes,
+    );
     return tmpl;
   }
 
@@ -374,6 +380,7 @@ export class Template implements ITemplate, TmplRef {
       resolvedFm.params,
       resolvedFm.consts,
       resolvedFm.typeAliases,
+      resolvedFm.importedNamespaceTypes,
     );
     return tmpl;
   }
@@ -387,7 +394,13 @@ export class Template implements ITemplate, TmplRef {
     const tmpl = new Template(fm, body, nodes, source);
     tmpl.checkBareEnumAccess();
     tmpl.checkMatchTypeSafety();
-    validateDisplayability(nodes, fm.params, fm.consts, fm.typeAliases);
+    validateDisplayability(
+      nodes,
+      fm.params,
+      fm.consts,
+      fm.typeAliases,
+      fm.importedNamespaceTypes,
+    );
     return tmpl;
   }
 
@@ -415,6 +428,7 @@ export class Template implements ITemplate, TmplRef {
       resolvedFm.params,
       resolvedFm.consts,
       resolvedFm.typeAliases,
+      resolvedFm.importedNamespaceTypes,
     );
     return tmpl;
   }
@@ -481,6 +495,7 @@ export class Template implements ITemplate, TmplRef {
       resolvedFm.params,
       resolvedFm.consts,
       resolvedFm.typeAliases,
+      resolvedFm.importedNamespaceTypes,
     );
     return tmpl;
   }
@@ -2266,6 +2281,9 @@ function resolveImportedConsts(fm: Frontmatter, baseDir: string): Frontmatter {
   const fsModule = getFs();
   const pathModule = getPath();
   const mergedTypeAliases = new Map(fm.typeAliases);
+  // Collect const type declarations per import stem, so we can build
+  // typed namespace structs for the type checker.
+  const constTypesPerStem = new Map<string, VarDecl[]>();
 
   for (const imp of fm.imports) {
     let impPath = imp.path;
@@ -2290,6 +2308,7 @@ function resolveImportedConsts(fm: Frontmatter, baseDir: string): Frontmatter {
 
     const [importedFm] = parseFrontmatter(importSource);
 
+    const stemConstFields: VarDecl[] = [];
     for (const decl of importedFm.consts) {
       if (decl.defaultValue !== undefined) {
         imported[`${imp.stem}.${decl.name}`] = valueToJs(decl.defaultValue);
@@ -2297,6 +2316,11 @@ function resolveImportedConsts(fm: Frontmatter, baseDir: string): Frontmatter {
         // can reference this const via {{ stem.NAME }} in their paths.
         availableConsts.set(`${imp.stem}.${decl.name}`, decl.defaultValue);
       }
+      // Record the const's declared type for namespace type construction.
+      stemConstFields.push({ name: decl.name, varType: decl.varType });
+    }
+    if (stemConstFields.length > 0) {
+      constTypesPerStem.set(imp.stem, stemConstFields);
     }
 
     // Inject enum type constants from the imported template's type aliases.
@@ -2322,14 +2346,25 @@ function resolveImportedConsts(fm: Frontmatter, baseDir: string): Frontmatter {
     }
   }
 
+  // Build typed namespace structs from the collected const type declarations.
+  // Each import stem with typed consts becomes a struct VarType whose fields
+  // are the imported const names and their declared types.
+  const importedNamespaceTypes = new Map<string, VarType>();
+  for (const [stem, fields] of constTypesPerStem) {
+    importedNamespaceTypes.set(stem, { kind: TYPE_STRUCT, fields });
+  }
+
   // Merge imported type aliases into fm.typeAliases so they're available
   // for resolving alias types (e.g., types.Role → enum(admin, editor, viewer)).
   // The mergedTypeAliases map was populated during the import loop above.
 
   if (Object.keys(imported).length === 0) {
     // Even if no consts were imported, we may have imported type aliases.
-    if (mergedTypeAliases.size > fm.typeAliases.size) {
-      return { ...fm, typeAliases: mergedTypeAliases };
+    if (
+      mergedTypeAliases.size > fm.typeAliases.size ||
+      importedNamespaceTypes.size > 0
+    ) {
+      return { ...fm, typeAliases: mergedTypeAliases, importedNamespaceTypes };
     }
     return fm;
   }
@@ -2338,7 +2373,12 @@ function resolveImportedConsts(fm: Frontmatter, baseDir: string): Frontmatter {
   // During parseFrontmatter(), imported consts weren't available yet, so
   // param defaults like `stem.NAME` were deferred in unresolvedDefaults.
   if (fm.unresolvedDefaults.size === 0) {
-    return { ...fm, importedConsts: imported, typeAliases: mergedTypeAliases };
+    return {
+      ...fm,
+      importedConsts: imported,
+      typeAliases: mergedTypeAliases,
+      importedNamespaceTypes,
+    };
   }
 
   const importedValues = new Map<string, Value>();
@@ -2377,6 +2417,7 @@ function resolveImportedConsts(fm: Frontmatter, baseDir: string): Frontmatter {
     params: newParams,
     importedConsts: imported,
     typeAliases: mergedTypeAliases,
+    importedNamespaceTypes,
     unresolvedDefaults: new Map(),
   };
 }

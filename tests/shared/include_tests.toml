@@ -2136,3 +2136,403 @@ CHILD_GREETING
 > {% /tmpl %}
 
 > {% include greeting %}'''
+
+# ---------------------------------------------------------------------------
+# Imported constant iteration — regression tests for opaque-root fix
+# ---------------------------------------------------------------------------
+# Import stems with typed consts must be resolvable by the type checker,
+# enabling `{% for row in stem.LIST_CONST %}` to infer element fields.
+
+[[tests]]
+name = "import_for_loop_over_const_list"
+description = "Iterating over an imported list const with for-loop should render all rows"
+parent_template = '''
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+
+params: []
+---
+> {% for item in lib.ITEMS %}
+
+- {{ item.name }}: {{ item.score }}
+
+> {% /for %}'''
+expected_output = '''
+- Alice: 100
+- Bob: 95
+'''
+params = {}
+
+[tests.files]
+"lib.tmpl.md" = '''
+---
+name: lib
+consts:
+  - ITEMS = list(name = str, score = int) := [{name = "Alice", score = 100}, {name = "Bob", score = 95}]
+---
+'''
+
+[[tests]]
+name = "import_for_loop_field_access_all_fields"
+description = "All struct fields in imported list const should be accessible inside for-loop"
+parent_template = '''
+---
+imports:
+  - "[cfg](./cfg.tmpl.md)"
+
+params: []
+---
+> {% for row in cfg.LADDER %}
+
+{{ row.tier }}: {{ row.desc }} (report={{ row.report }})
+
+> {% /for %}'''
+expected_output = '''L0: Theory (report=false)
+L1: Trigger (report=true)
+'''
+params = {}
+
+[tests.files]
+"cfg.tmpl.md" = '''
+---
+name: cfg
+consts:
+  - LADDER = list(tier = str, desc = str, report = bool) := [{tier = "L0", desc = "Theory", report = false}, {tier = "L1", desc = "Trigger", report = true}]
+---
+'''
+
+[[tests]]
+name = "import_for_loop_with_conditional_on_field"
+description = "Conditional inside for-loop over imported const should filter rows"
+parent_template = '''
+---
+imports:
+  - "[cfg](./cfg.tmpl.md)"
+
+params: []
+---
+> {% for row in cfg.LADDER %}
+> {% if row.report %}
+
+{{ row.tier }}: {{ row.desc }}
+
+> {% /if %}
+> {% /for %}'''
+expected_output = '''L1: Trigger
+'''
+params = {}
+
+[tests.files]
+"cfg.tmpl.md" = '''
+---
+name: cfg
+consts:
+  - LADDER = list(tier = str, desc = str, report = bool) := [{tier = "L0", desc = "Theory", report = false}, {tier = "L1", desc = "Trigger", report = true}]
+---
+'''
+
+[[tests]]
+name = "import_const_scalar_access_still_works"
+description = "Scalar imported constants should still be accessible via dotted path"
+parent_template = '''
+---
+imports:
+  - "[env](./env.tmpl.md)"
+
+params: []
+---
+Version: {{ env.VERSION }}, Name: {{ env.APP_NAME }}'''
+expected_output = "Version: 2.0, Name: TestApp"
+params = {}
+
+[tests.files]
+"env.tmpl.md" = '''
+---
+name: env
+consts:
+  - VERSION = str := "2.0"
+  - APP_NAME = str := "TestApp"
+---
+'''
+
+[[tests]]
+name = "import_for_loop_with_idx"
+description = "idx() should work inside for-loop over imported const list"
+parent_template = '''
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+
+params: []
+---
+> {% for item in lib.ITEMS %}
+
+{{ idx(item) }}: {{ item.name }}
+
+> {% /for %}'''
+expected_output = '''0: Alice
+1: Bob
+'''
+params = {}
+
+[tests.files]
+"lib.tmpl.md" = '''
+---
+name: lib
+consts:
+  - ITEMS = list(name = str) := [{name = "Alice"}, {name = "Bob"}]
+---
+'''
+
+[[tests]]
+name = "import_for_loop_empty_const_list"
+description = "For-loop over empty imported const list should produce no output"
+parent_template = '''
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+
+params: []
+---
+> {% for item in lib.EMPTY %}
+
+{{ item.name }}
+
+> {% /for %}'''
+expected_output = ""
+params = {}
+
+[tests.files]
+"lib.tmpl.md" = '''
+---
+name: lib
+consts:
+  - EMPTY = list(name = str) := []
+---
+'''
+
+[[tests]]
+name = "import_for_loop_with_join_filter"
+description = "Filters should work on imported const lists"
+parent_template = '''
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+
+params: []
+---
+{{ lib.TAGS | join(", ") }}'''
+expected_output = "rust, ts, python"
+params = {}
+
+[tests.files]
+"lib.tmpl.md" = '''
+---
+name: lib
+consts:
+  - TAGS = list(str) := ["rust", "ts", "python"]
+---
+'''
+
+[[tests]]
+name = "import_for_loop_multiple_imports_same_template"
+description = "For-loops from multiple imports should work independently"
+parent_template = '''
+---
+imports:
+  - "[a](./a.tmpl.md)"
+  - "[b](./b.tmpl.md)"
+
+params: []
+---
+> {% for x in a.LIST %}
+
+A:{{ x.v }}
+
+> {% /for %}
+> {% for y in b.LIST %}
+
+B:{{ y.v }}
+
+> {% /for %}'''
+expected_output = '''A:1
+A:2
+B:3
+'''
+params = {}
+
+[tests.files]
+"a.tmpl.md" = '''
+---
+name: a
+consts:
+  - LIST = list(v = int) := [{v = 1}, {v = 2}]
+---
+'''
+"b.tmpl.md" = '''
+---
+name: b
+consts:
+  - LIST = list(v = int) := [{v = 3}]
+---
+'''
+
+[[tests]]
+name = "import_for_loop_over_scalar_const_list"
+description = "Iterating over an imported scalar list const (list(str)) binds element as scalar"
+parent_template = '''
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+
+params: []
+---
+> {% for tag in lib.TAGS %}
+
+- {{ tag }}
+
+> {% /for %}'''
+expected_output = '''
+- rust
+- ts
+'''
+params = {}
+
+[tests.files]
+"lib.tmpl.md" = '''
+---
+name: lib
+consts:
+  - TAGS = list(str) := ["rust", "ts"]
+---
+'''
+
+[[tests]]
+name = "import_for_loop_enum_field_in_const_list"
+description = "Element struct with an enum-typed field (alias defined in imported template) resolves across import boundary"
+parent_template = '''
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+
+params: []
+---
+> {% for row in lib.LADDER %}
+
+{{ kind(row.tier) }}: {{ row.desc }}
+
+> {% /for %}'''
+expected_output = '''L0: theory
+L1: trigger
+'''
+params = {}
+
+[tests.files]
+"lib.tmpl.md" = '''
+---
+name: lib
+allow_unused: true
+types:
+  - Tier = enum(L0, L1, L2)
+
+consts:
+  - LADDER = list(tier = Tier, desc = str) := [{tier = L0, desc = "theory"}, {tier = L1, desc = "trigger"}]
+---
+'''
+
+[[tests]]
+name = "import_for_loop_match_on_enum_field"
+description = "match on an enum field of an imported const list element works with exhaustiveness"
+parent_template = '''
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+
+params: []
+---
+> {% for row in lib.LADDER %}
+> {% match row.tier %}
+> {% case L0 %}
+
+low: {{ row.desc }}
+
+> {% case L1 %}
+
+high: {{ row.desc }}
+
+> {% /match %}
+> {% /for %}'''
+expected_output = '''low: theory
+high: trigger
+'''
+params = {}
+
+[tests.files]
+"lib.tmpl.md" = '''
+---
+name: lib
+allow_unused: true
+types:
+  - Tier = enum(L0, L1)
+
+consts:
+  - LADDER = list(tier = Tier, desc = str) := [{tier = L0, desc = "theory"}, {tier = L1, desc = "trigger"}]
+---
+'''
+
+[[tests]]
+name = "import_for_loop_undeclared_field_is_error"
+description = "Accessing an undeclared field on a loop var over an imported const list is a compile-time error"
+parent_template = '''
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+
+params: []
+---
+> {% for row in lib.ITEMS %}
+
+{{ row.nonexistent }}
+
+> {% /for %}'''
+expected_error = "nonexistent"
+params = {}
+
+[tests.files]
+"lib.tmpl.md" = '''
+---
+name: lib
+consts:
+  - ITEMS = list(name = str) := [{name = "a"}]
+---
+'''
+
+[[tests]]
+name = "import_for_loop_nested_struct_field"
+description = "Nested struct field access on an imported const list element resolves at compile time"
+parent_template = '''
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+
+params: []
+---
+> {% for row in lib.ITEMS %}
+
+{{ row.meta.label }}
+
+> {% /for %}'''
+expected_output = '''hello
+world
+'''
+params = {}
+
+[tests.files]
+"lib.tmpl.md" = '''
+---
+name: lib
+consts:
+  - ITEMS = list(meta = struct(label = str)) := [{meta = {label = "hello"}}, {meta = {label = "world"}}]
+---
+'''

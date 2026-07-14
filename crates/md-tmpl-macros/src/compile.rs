@@ -153,34 +153,14 @@ fn resolve_compile_time_includes(
 
 /// Flow-sensitive type check: validate variant names and field access
 /// using the full type alias map.
+///
+/// Delegates to [`md_tmpl_core::Frontmatter::validate_field_types`], the single
+/// source of truth shared with the runtime and cross-backend test runners.
 fn validate_types(
     fm: &md_tmpl_core::Frontmatter,
     segments: &[md_tmpl_core::compiled::Segment],
 ) -> Result<(), String> {
-    // Import stems and const names are opaque to field-level type checking —
-    // their structure is resolved at runtime, not at compile time.
-    let mut opaque_roots: HashSet<String> = HashSet::new();
-    for import in &fm.imports {
-        opaque_roots.insert(import.stem.clone());
-    }
-    for c in &fm.consts {
-        opaque_roots.insert(c.name.clone());
-    }
-    for e in &fm.env {
-        opaque_roots.insert(e.name.clone());
-    }
-
-    let type_aliases: HashMap<String, md_tmpl_core::VarType> = fm
-        .type_aliases
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    let type_errors = md_tmpl_core::compiled::validate_field_accesses_full(
-        segments,
-        &fm.declarations,
-        &type_aliases,
-        &opaque_roots,
-    );
+    let type_errors = fm.validate_field_types(segments);
     if !type_errors.is_empty() {
         return Err(type_errors.join("\n"));
     }

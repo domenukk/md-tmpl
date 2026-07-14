@@ -143,6 +143,15 @@ export interface Frontmatter {
   /** Resolved constants from imports, keyed by `stem.NAME`. */
   readonly importedConsts: Readonly<Record<string, unknown>>;
   /**
+   * Type information for imported namespaces, keyed by import stem.
+   *
+   * Each entry maps a stem name (e.g. `"artist"`) to a `Struct` type
+   * whose fields correspond to the imported template's typed consts.
+   * Used by the type checker to validate field accesses and for-loop
+   * iteration over imported consts.
+   */
+  readonly importedNamespaceTypes: ReadonlyMap<string, VarType>;
+  /**
    * Param defaults that couldn't be resolved during frontmatter parsing
    * (e.g., references to imported consts like `stem.NAME`).
    * Maps param name → raw default text.
@@ -557,6 +566,7 @@ function parseFrontmatterYaml(lines: string[], startLineNo = 2): Frontmatter {
     env,
     imports,
     importedConsts: {},
+    importedNamespaceTypes: new Map(),
     unresolvedDefaults,
   };
 }
@@ -1014,16 +1024,31 @@ function parseVariantList(inner: string): VariantDecl[] {
 }
 
 /**
- * Split a string by a delimiter, respecting nested angle brackets, curly braces, and parens.
+ * Split `s` on `delimiter` at bracket-depth 0, ignoring delimiters that appear
+ * inside quoted string literals (`"..."` or `'...'`).
+ *
+ * Brackets, braces, parens, angle brackets, and the delimiter itself are treated
+ * as literal characters while inside a string literal. This lets struct/list
+ * default values contain quoted strings with embedded commas or brackets
+ * (e.g. `{msg = "a, b", n = 1}`) without the field separator being misdetected.
  */
 function splitTopLevel(s: string, delimiter: string): string[] {
   const result: string[] = [];
   let depth = 0;
   let current = "";
+  // When inside a string literal, holds the opening quote char; delimiters are
+  // ignored until the matching closing quote is seen.
+  let inQuote: string | undefined;
 
   for (let i = 0; i < s.length; i++) {
     const ch = s[i]!;
-    if (
+    if (inQuote !== undefined) {
+      if (ch === inQuote) inQuote = undefined;
+      current += ch;
+    } else if (ch === QUOTE_DOUBLE || ch === QUOTE_SINGLE) {
+      inQuote = ch;
+      current += ch;
+    } else if (
       ch === ANGLE_OPEN ||
       ch === PAREN_OPEN ||
       ch === BRACE_OPEN ||

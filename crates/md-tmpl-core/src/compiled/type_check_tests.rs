@@ -599,6 +599,59 @@ params:
     );
 }
 
+// -- Loop over opaque imported constant --------------------------------
+
+#[test]
+fn for_loop_over_opaque_import_binding_is_opaque() {
+    // Iterating an imported constant (an opaque root whose element type is
+    // not statically known) must not flag `row.field` accesses in the body
+    // as undeclared variables. Regression test for loops over
+    // `<import>.CONST` such as `artist.SEVERITY_LADDER`.
+    let tmpl = r"---
+name: t
+params:
+---
+> {% for row in cfg.LADDER %}
+
+{{ row.short }}: {{ row.name }}
+
+> {% /for %}";
+    let (_fm, body) = crate::parse_frontmatter(tmpl).expect("parse");
+    let empty_aliases = crate::compat::HashMap::new();
+    let (segments, _) = crate::compiled::compile(body, &empty_aliases).expect("compile");
+    let mut opaque = crate::compat::HashSet::new();
+    opaque.insert("cfg".to_string());
+    let errors = validate_field_accesses_with_opaque(&segments, &[], &opaque);
+    assert!(
+        errors.is_empty(),
+        "loop over opaque import should type-check: {errors:?}"
+    );
+}
+
+#[test]
+fn for_loop_over_undeclared_non_opaque_still_errors() {
+    // Guard: the opacity relaxation is scoped to opaque roots only. A loop
+    // over a genuinely undeclared (non-opaque) iterable must still surface an
+    // undeclared-variable error.
+    let tmpl = r"---
+name: t
+params:
+---
+> {% for row in ghost %}
+
+{{ row.short }}
+
+> {% /for %}";
+    let (_fm, body) = crate::parse_frontmatter(tmpl).expect("parse");
+    let empty_aliases = crate::compat::HashMap::new();
+    let (segments, _) = crate::compiled::compile(body, &empty_aliases).expect("compile");
+    let errors = validate_field_accesses(&segments, &[]);
+    assert!(
+        errors.iter().any(|e| e.contains("undeclared")),
+        "undeclared iterable should still error: {errors:?}"
+    );
+}
+
 #[test]
 fn undeclared_variable_in_match_is_error() {
     let decls = vec![];
