@@ -100,10 +100,62 @@ export function stripFrontmatter(source: string): string {
 // Internal YAML-subset parser
 // ---------------------------------------------------------------------------
 
+/**
+ * Join YAML continuation lines so a single logical declaration may span
+ * multiple physical lines — e.g. a multi-line `:=` default value or a
+ * multi-line compound type declaration.
+ *
+ * Mirrors the Rust reference implementation's `join_continuation_lines`: a
+ * physical line that does not begin a new top-level section and is not a new
+ * `- ` block-list item is appended (space-joined) to the preceding logical
+ * line. Blank lines and full-line `#` comments are layout/documentation only:
+ * they are preserved in place (so block-list termination validation still
+ * sees them) and do NOT break an in-progress continuation.
+ *
+ * Note: md-tmpl values use flow style (`[...]`, `{...}`), so continuation
+ * lines never begin with `- `; a `- ` prefix therefore unambiguously marks a
+ * new block-list item rather than a value continuation.
+ */
+export function joinContinuationLines(lines: string[]): string[] {
+  const out: string[] = [];
+  // Index in `out` of the logical line that continuations attach to, or -1.
+  let currentIdx = -1;
+  for (const raw of lines) {
+    const trimmed = raw.trim();
+    if (trimmed === "" || trimmed.startsWith("#")) {
+      // Layout/comment line: keep it, but do not break an in-progress
+      // continuation and do not become a continuation target.
+      out.push(raw);
+      continue;
+    }
+    const isSection =
+      trimmed.startsWith(FM_NAME_PREFIX) ||
+      trimmed.startsWith(FM_DESC_PREFIX) ||
+      trimmed.startsWith(FM_TYPES_PREFIX) ||
+      trimmed.startsWith(FM_IMPORTS_PREFIX) ||
+      trimmed.startsWith(FM_PARAMS_PREFIX) ||
+      trimmed.startsWith(FM_CONSTS_PREFIX) ||
+      trimmed.startsWith(FM_ENV_PREFIX) ||
+      trimmed.startsWith(FM_ALLOW_UNUSED_PREFIX);
+    const isNewItem = trimmed.startsWith("- ");
+    if (!isSection && !isNewItem && currentIdx !== -1) {
+      // Continuation of the current logical line.
+      out[currentIdx] = `${out[currentIdx]} ${trimmed}`;
+      continue;
+    }
+    out.push(raw);
+    currentIdx = out.length - 1;
+  }
+  return out;
+}
+
 export function parseFrontmatterYaml(
-  lines: string[],
+  rawLines: string[],
   startLineNo = 2,
 ): Frontmatter {
+  // Fold multi-line declarations onto single logical lines before parsing.
+  const lines = joinContinuationLines(rawLines);
+
   // Validate Frontmatter List Termination Rule:
   // A blank line is strictly required after a block list before starting a new top-level
   // section keyword, so raw markdown renders correctly.

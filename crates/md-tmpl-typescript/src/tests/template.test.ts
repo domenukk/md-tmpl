@@ -59,7 +59,9 @@ import {
   parseVarType,
   varTypeToString,
   stripFrontmatter,
+  TYPE_LIST,
 } from "../frontmatter.js";
+import { joinContinuationLines } from "../frontmatter/yaml.js";
 import { generateTypes, inferTypes } from "../codegen.js";
 import { toPascalCase } from "../validation.js";
 
@@ -981,6 +983,95 @@ params: [x = str, y = int]
     assert.strictEqual(fm.params.length, 2);
     assert.strictEqual(fm.params[0]!.name, "x");
     assert.strictEqual(fm.params[1]!.name, "y");
+  });
+
+  it("joins a multi-line := default value (list) onto one declaration", () => {
+    // Regression: a `:=` value whose list literal spans several physical
+    // lines must be captured in full, not truncated to an empty default.
+    const [fm] = parseFrontmatter(
+      `---
+consts:
+  - LADDER = list(tier = str, note = str) :=
+    [{tier = "L0", note = "analysis"},
+    {tier = "L1", note = "trigger"},
+    {tier = "L2", note = "control"}]
+
+params: []
+---
+body`,
+    );
+    assert.strictEqual(fm.consts.length, 1);
+    const ladder = fm.consts[0]!;
+    assert.strictEqual(ladder.name, "LADDER");
+    assert.ok(ladder.defaultValue !== undefined, "default must be parsed");
+    assert.strictEqual(ladder.defaultValue!.type, TYPE_LIST);
+    assert.strictEqual(
+      (ladder.defaultValue as { items: readonly unknown[] }).items.length,
+      3,
+    );
+  });
+
+  it("does not let comments/blank lines break a continuation", () => {
+    // Mirrors the ARTIST template layout: a documented const whose multi-line
+    // value follows `:=` on subsequent indented lines.
+    const [fm] = parseFrontmatter(
+      `---
+consts:
+  - FIRST = str := "one"
+
+  # A documented, canonical list.
+  # Spanning several comment lines.
+  - SECOND = list(k = str) :=
+    [{k = "a"},
+    {k = "b"}]
+
+params: []
+---
+body`,
+    );
+    assert.strictEqual(fm.consts.length, 2);
+    assert.strictEqual(fm.consts[0]!.name, "FIRST");
+    const second = fm.consts[1]!;
+    assert.strictEqual(second.name, "SECOND");
+    assert.strictEqual(second.defaultValue!.type, TYPE_LIST);
+    assert.strictEqual(
+      (second.defaultValue as { items: readonly unknown[] }).items.length,
+      2,
+    );
+  });
+
+  it("joins a multi-line compound type declaration", () => {
+    const [fm] = parseFrontmatter(
+      `---
+params:
+  - rows = list(tier = str,
+    short = str,
+    note = str)
+---
+body`,
+    );
+    assert.strictEqual(fm.params.length, 1);
+    assert.strictEqual(fm.params[0]!.name, "rows");
+    const ty = varTypeToString(fm.params[0]!.varType);
+    assert.ok(ty.startsWith("list("), `expected a list type, got: ${ty}`);
+    assert.ok(ty.includes("tier = str"));
+    assert.ok(ty.includes("short = str"));
+    assert.ok(ty.includes("note = str"));
+  });
+
+  it("joinContinuationLines merges only non-item, non-section lines", () => {
+    const joined = joinContinuationLines([
+      "consts:",
+      '  - A = str := "x"',
+      "  - B = list(k = str) :=",
+      '    [{k = "a"},',
+      '    {k = "b"}]',
+    ]);
+    assert.deepStrictEqual(joined, [
+      "consts:",
+      '  - A = str := "x"',
+      '  - B = list(k = str) := [{k = "a"}, {k = "b"}]',
+    ]);
   });
 });
 
