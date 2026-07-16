@@ -807,21 +807,30 @@ each import _stem_ (as declared in the template's `imports:` block) to the Rust
 module path where that imported template's generated types live:
 
 ```rust
-// Generates `mod work_roles` with `work_roles::WorkRole`.
-include_template!("prompts/work_roles.tmpl.md");
+// Generates `mod roles_lib` with `roles_lib::WorkRole`.
+md_tmpl::include_template!("prompts/roles_lib.tmpl.md");
 
-// The consumer's `role` param is `role = work_roles.WorkRole`. Mapping the
-// `work_roles` stem makes the generated field type an alias of the imported
+// `role_consumer`'s `role` param is `role = roles_lib.WorkRole`. Mapping the
+// `roles_lib` stem makes the generated field type an alias of the imported
 // enum instead of a duplicate.
-include_template!(
+md_tmpl::include_template!(
     "prompts/role_consumer.tmpl.md",
-    imports = { work_roles = crate::work_roles }
+    imports = { roles_lib = crate::roles_lib }
 );
+
+fn main() {
+    // `role_consumer::ParamsRole` is a `pub type` alias for `roles_lib::WorkRole`,
+    // so the same nominal type crosses the boundary with no conversion.
+    let params = role_consumer::Params {
+        role: roles_lib::WorkRole::Judge,
+    };
+    assert_eq!(params.render().unwrap(), "\nRole: Judge\n");
+}
 ```
 
 With the mapping, the generated `role` field has type
 `role_consumer::ParamsRole`, which is a `pub type` **alias** for
-`crate::work_roles::WorkRole`. Because they are the same nominal type, no
+`crate::roles_lib::WorkRole`. Because they are the same nominal type, no
 conversion is needed at the boundary.
 
 Rules and notes:
