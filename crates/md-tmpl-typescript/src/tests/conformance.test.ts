@@ -1,15 +1,14 @@
 /**
  * Cross-language conformance harness (TypeScript side).
  *
- * Replays the shared JSON corpus in `<repo>/conformance` through the
+ * Replays the shared TOML corpus in `<repo>/tests/conformance` through the
  * TypeScript `md-tmpl` engine and asserts that every case matches the recorded
- * expectation. The exact same corpus is replayed by the Rust harness
- * (`crates/md-tmpl-core/tests/conformance.rs`); if both pass, the two backends
- * are behaviourally identical on the covered surface.
+ * expectation. The exact same corpus is replayed by the Rust, Go, and Python
+ * harnesses; if all pass, the four backends are behaviourally identical on the
+ * covered surface.
  *
- * The corpus expectations were originally derived by executing this reference
- * implementation, so the TypeScript side is expected to be an exact match on
- * every case (including phase for error cases).
+ * TOML has no `null`, so option-`None` is encoded in the corpus as the sentinel
+ * inline table `{ __none__ = true }` and decoded back to `null` on load.
  */
 
 import { describe, it } from "node:test";
@@ -17,22 +16,24 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { parse as parseToml } from "smol-toml";
 
 import { Template } from "../index.js";
 
 // Compiled location is dist/tests/, so the repo root is four levels up.
 const HERE = dirname(fileURLToPath(import.meta.url));
-const CORPUS_DIR = resolve(HERE, "../../../../conformance");
+const CORPUS_DIR = resolve(HERE, "../../../../tests/conformance");
 
 // Every corpus file holds a flat list of cases whose `expect.kind` selects how
 // the case is checked.
 const CORPUS_FILES = [
-  "render.json",
-  "interpolation.json",
-  "frontmatter.json",
-  "errors.json",
-  "escapes.json",
-  "comments.json",
+  "render.toml",
+  "interpolation.toml",
+  "frontmatter.toml",
+  "errors.toml",
+  "escapes.toml",
+  "comments.toml",
+  "literals.toml",
 ] as const;
 
 interface Expect {
@@ -51,9 +52,31 @@ interface Case {
   expect: Expect;
 }
 
+// Recursively decode the corpus's `{ __none__ = true }` option-None sentinel
+// back into `null` (TOML has no null of its own).
+function denull(x: unknown): unknown {
+  if (Array.isArray(x)) {
+    return x.map(denull);
+  }
+  if (x !== null && typeof x === "object") {
+    const obj = x as Record<string, unknown>;
+    const keys = Object.keys(obj);
+    if (keys.length === 1 && obj.__none__ === true) {
+      return null;
+    }
+    const out: Record<string, unknown> = {};
+    for (const k of keys) {
+      out[k] = denull(obj[k]);
+    }
+    return out;
+  }
+  return x;
+}
+
 function loadCases(file: string): Case[] {
   const text = readFileSync(resolve(CORPUS_DIR, file), "utf8");
-  return JSON.parse(text) as Case[];
+  const root = parseToml(text) as { cases: unknown[] };
+  return denull(root.cases) as Case[];
 }
 
 function compile(c: Case): Template {

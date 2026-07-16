@@ -1,9 +1,12 @@
-use quote::quote;
+use quote::{format_ident, quote};
 
 use crate::{
     codegen::{codegen_value_as_rust_literal, is_scalar},
     crate_path,
-    type_gen::{typed_dict_codegen, typed_enum_codegen, typed_list_codegen, typed_option_codegen},
+    type_gen::{
+        enum_value_setter, typed_dict_codegen, typed_enum_codegen, typed_list_codegen,
+        typed_option_codegen,
+    },
 };
 
 /// A closure that generates a context-setter statement from a value expression.
@@ -61,10 +64,18 @@ fn render_method_tokens() -> proc_macro2::TokenStream {
 }
 
 /// Generate the struct definition and impl block from frontmatter declarations.
+///
+/// `imported_type_paths` maps a param name to the fully-qualified Rust path of
+/// an imported enum type (see [`build_imported_type_paths`]). Such fields
+/// reference the imported type directly (via a `pub type` alias for backward
+/// compatibility) instead of emitting a duplicate per-template enum.
+///
+/// [`build_imported_type_paths`]: crate::build_imported_type_paths
 pub(crate) fn generate_struct_tokens(
     frontmatter: &md_tmpl_core::Frontmatter,
     struct_name: &syn::Ident,
     source: &StructGenSource<'_>,
+    imported_type_paths: &std::collections::HashMap<String, proc_macro2::TokenStream>,
 ) -> proc_macro2::TokenStream {
     let struct_name_str = struct_name.to_string();
     let mut sub_structs = Vec::new();
@@ -75,12 +86,27 @@ pub(crate) fn generate_struct_tokens(
     for decl in &frontmatter.declarations {
         let field_name = crate::make_ident(&decl.name);
         let var_name_str = &decl.name;
-        let (field_type, field_set) = var_type_to_rust(
-            &decl.var_type,
-            &struct_name_str,
-            &decl.name,
-            &mut sub_structs,
-        );
+        let (field_type, field_set) = if let Some(path) = imported_type_paths.get(&decl.name) {
+            // Reference the imported enum directly. Emit a `pub type` alias named
+            // like the enum this template would otherwise have generated, so any
+            // external references (and generated docs) keep working.
+            let alias_ident = format_ident!(
+                "{struct_name_str}{}",
+                md_tmpl_core::to_pascal_case(&decl.name)
+            );
+            sub_structs.push(quote! {
+                /// Alias to an imported enum type (shared across templates).
+                pub type #alias_ident = #path;
+            });
+            (quote! { #alias_ident }, enum_value_setter())
+        } else {
+            var_type_to_rust(
+                &decl.var_type,
+                &struct_name_str,
+                &decl.name,
+                &mut sub_structs,
+            )
+        };
 
         let builder_attrs = builder_field_attrs(&decl.var_type);
         let rename_attr = crate::serde_rename_attr(&decl.name);
@@ -116,6 +142,7 @@ pub(crate) fn generate_struct_tokens(
 
         #(#doc_attrs)*
         #derive_attrs
+        // NOLINT: emitted into generated structs; fields mangled from un-escapable keywords (self/Self/super) become pub `__self` etc. and must stay pub.
         #[allow(clippy::pub_underscore_fields)]
         pub struct #struct_name {
             #(#fields),*

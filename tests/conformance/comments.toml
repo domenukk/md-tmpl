@@ -1,0 +1,34 @@
+# Cross-backend conformance corpus — comments
+# AUTO-CONVERTED from JSON. Language-neutral: replayed by Rust, TypeScript,
+# Go, and Python harnesses. `null` option-None is encoded as the sentinel
+# inline table `{ __none__ = true }` (TOML has no null).
+
+[[cases]]
+name = "comment_space_hash_after_closing_quote"
+note = "C1: ` #` after the closing quote is a trailing comment"
+source = "---\nallow_unused: true\n\nparams:\n  - s = str := \"hi\" # trailing comment\n---\nx"
+expect = { kind = "default", defaults = { s = "hi" } }
+
+[[cases]]
+name = "comment_nospace_hash_is_literal"
+note = "C2: a `#` with no preceding whitespace is a literal character"
+source = "---\nallow_unused: true\n\nparams:\n  - s = str := \"a#b\"\n---\nx"
+expect = { kind = "default", defaults = { s = "a#b" } }
+
+[[cases]]
+name = "comment_space_hash_splits_unquoted"
+note = "C3: ` #` inside an unquoted scalar truncates the default (not string-aware)"
+source = "---\nallow_unused: true\n\nparams:\n  - s = str := \"a # b\"\n---\nx"
+expect = { kind = "error", phase = "compile", error_contains = "must be quoted" }
+
+[[cases]]
+name = "comment_space_hash_after_number"
+note = "C4: ` #` after a numeric default is a trailing comment"
+source = "---\nallow_unused: true\n\nparams:\n  - n = int := 5 # five\n---\nx"
+expect = { kind = "default", defaults = { n = 5 } }
+
+[[cases]]
+name = "comment_full_line_ignored"
+note = "C5: a full-line `#` comment inside a block is ignored"
+source = "---\nallow_unused: true\n\nparams:\n  # a documentation comment\n  - s = str := \"ok\"\n---\nx"
+expect = { kind = "default", defaults = { s = "ok" } }

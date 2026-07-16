@@ -46,6 +46,7 @@ pub(super) fn render_for_loop(
             | CompiledExpr::Kind(p)
             | CompiledExpr::Kinds(p)
             | CompiledExpr::Has(p) => p.as_str(),
+            CompiledExpr::Literal(_) => "literal",
             CompiledExpr::Idx(b) => b.as_ref(),
         };
         return Err(TemplateError::syntax(alloc::format!(
@@ -87,6 +88,7 @@ pub(super) fn render_for_loop_no_std(
             | CompiledExpr::Kind(p)
             | CompiledExpr::Kinds(p)
             | CompiledExpr::Has(p) => p.as_str(),
+            CompiledExpr::Literal(_) => "literal",
             CompiledExpr::Idx(b) => b.as_ref(),
         };
         return Err(TemplateError::syntax(alloc::format!(

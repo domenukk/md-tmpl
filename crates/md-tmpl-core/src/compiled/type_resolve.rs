@@ -4,6 +4,7 @@ use super::type_check::{FieldResult, TypeEnv, resolve_field, validate_compiled_p
 use crate::{
     scope::{CompiledExpr, CompiledPath, ConditionOperand},
     types::{VarDecl, VarType},
+    value::Value,
 };
 
 // ---------------------------------------------------------------------------
@@ -60,6 +61,15 @@ pub(super) fn resolve_compiled_expr_type(
             resolve_compiled_path_type(path, env).cloned()
         }
         CompiledExpr::Idx(_) => Some(VarType::Int),
+        CompiledExpr::Literal(value) => Some(match value {
+            Value::Str(_) => VarType::Str,
+            Value::Int(_) => VarType::Int,
+            Value::Float(_) => VarType::Float,
+            Value::Bool(_) => VarType::Bool,
+            // `CompiledExpr::compile` only ever produces scalar literals; other
+            // variants cannot occur here, so treat them as untyped.
+            _ => return None,
+        }),
         CompiledExpr::Len(path) => {
             validate_compiled_path(path, env, errors);
             Some(VarType::Int)

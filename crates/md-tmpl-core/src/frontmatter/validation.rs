@@ -243,6 +243,7 @@ mod tests {
             imported_consts: HashMap::new(),
             imported_enum_type_keys: vec![],
             imported_namespace_types: HashMap::new(),
+            imported_type_params: HashMap::new(),
         }
     }
 

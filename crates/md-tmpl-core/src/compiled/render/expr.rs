@@ -115,6 +115,7 @@ pub(super) fn eval_compiled_expr_val<'a>(
 ) -> Result<Cow<'a, Value>, TemplateError> {
     match expr {
         CompiledExpr::Path(path) => scope.resolve_path(path).map(Cow::Borrowed),
+        CompiledExpr::Literal(value) => Ok(Cow::Borrowed(value)),
         CompiledExpr::Idx(binding) => {
             let meta = scope.get_loop_meta(binding).ok_or_else(|| {
                 TemplateError::syntax(alloc::format!(

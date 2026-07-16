@@ -223,6 +223,44 @@ function throwErr(
 }
 
 /**
+ * Recursively check that no nested struct/list/enum field name is reserved.
+ * This prevents collision guard names like `__self` from appearing in codegen.
+ */
+function checkNestedFieldNames(vt: VarType): void {
+  switch (vt.kind) {
+    case "list":
+    case "struct":
+    case "tmpl":
+      for (const f of vt.fields) {
+        if (f.name && RESERVED_NAMES.has(f.name)) {
+          throw new TemplateSyntaxError(
+            `reserved keyword used as name: '${f.name}'`,
+          );
+        }
+        checkNestedFieldNames(f.varType);
+      }
+      break;
+    case "enum":
+      for (const v of vt.variants) {
+        for (const f of v.fields) {
+          if (f.name && RESERVED_NAMES.has(f.name)) {
+            throw new TemplateSyntaxError(
+              `reserved keyword used as name: '${f.name}'`,
+            );
+          }
+          checkNestedFieldNames(f.varType);
+        }
+      }
+      break;
+    case "option":
+      checkNestedFieldNames(vt.innerType);
+      break;
+    default:
+      break;
+  }
+}
+
+/**
  * Validate frontmatter collision and naming rules.
  *
  * Throws `TemplateSyntaxError` for any violation.
@@ -236,11 +274,13 @@ export function validateFrontmatter(fm: Frontmatter): void {
     if (RESERVED_NAMES.has(decl.name)) {
       throwErr(`reserved keyword used as name: '${decl.name}'`, decl.loc);
     }
+    checkNestedFieldNames(decl.varType);
   }
   for (const decl of fm.consts) {
     if (RESERVED_NAMES.has(decl.name)) {
       throwErr(`reserved keyword used as name: '${decl.name}'`, decl.loc);
     }
+    checkNestedFieldNames(decl.varType);
   }
   for (const decl of fm.env) {
     if (RESERVED_NAMES.has(decl.name)) {

@@ -251,12 +251,11 @@ pub(super) fn check_undeclared_variables(
     for inline_name in inline_templates.keys() {
         declared.insert(inline_name.clone());
     }
-    // The wildcard `_` in `{% case _ %}` / `{% match x case _ %}` and the
-    // boolean literals `true`/`false` in `{% case true %}` are pattern syntax,
-    // not variable references. Mark them as known so they are never flagged.
+    // The wildcard `_` in `{% case _ %}` / `{% match x case _ %}` is pattern
+    // syntax, not a variable reference. Mark it as known so it is never flagged.
+    // Boolean literals `true`/`false` no longer need whitelisting: they are
+    // parsed as literal values (never variable references) in every position.
     declared.insert("_".into());
-    declared.insert("true".into());
-    declared.insert("false".into());
     // `Some` and `None` are option-type sentinels used in `{% case Some %}`
     // and `{% case None %}` arms.
     declared.insert(crate::consts::OPTION_SOME.into());
@@ -472,7 +471,8 @@ fn check_internal_key_in_expr(expr: &crate::scope::CompiledExpr) -> Result<(), T
         | crate::scope::CompiledExpr::Kind(p)
         | crate::scope::CompiledExpr::Kinds(p)
         | crate::scope::CompiledExpr::Has(p) => check_internal_key_in_path(p),
-        crate::scope::CompiledExpr::Idx(_) => Ok(()),
+        // Literals and loop indices carry no path, so no internal key access.
+        crate::scope::CompiledExpr::Literal(_) | crate::scope::CompiledExpr::Idx(_) => Ok(()),
     }
 }
 

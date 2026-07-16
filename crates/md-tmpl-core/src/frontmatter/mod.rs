@@ -119,6 +119,14 @@ pub struct Frontmatter {
     /// Used by the type checker to validate field accesses and for-loop
     /// iteration over imported consts.
     pub imported_namespace_types: HashMap<String, VarType>,
+    /// For params whose top-level type is a dotted import reference resolving
+    /// to an enum (`stem.TypeName`), maps the param name to
+    /// `(import_stem, imported_type_name)`.
+    ///
+    /// Lets codegen backends (currently the Rust proc-macro) reference the
+    /// imported, already-generated type directly instead of emitting a
+    /// duplicate per-template copy. Empty when no such params exist.
+    pub imported_type_params: HashMap<String, (String, String)>,
 }
 
 impl Frontmatter {
@@ -411,7 +419,7 @@ fn resolve_fm_consts_and_imports(
 
     // Resolve env declarations first so they're available for import path interpolation.
     if let Some(raw) = env_raw {
-        let mut env_decls =
+        let (mut env_decls, _) =
             parse_declarations(raw, &merged_aliases, &empty_imports, false, &empty_consts)?;
         for decl in &mut env_decls {
             // Look up in provided env_values.
@@ -433,7 +441,7 @@ fn resolve_fm_consts_and_imports(
 
     if let Some(raw) = consts_raw {
         // NOLINT: const parsing failure here is non-fatal — full validation catches errors later
-        if let Ok(decls) =
+        if let Ok((decls, _)) =
             parse_declarations(raw, &merged_aliases, &empty_imports, true, &prelim_consts)
         {
             let const_map = build_available_consts(&decls, &HashMap::new());
@@ -476,7 +484,8 @@ fn resolve_fm_consts_and_imports(
             &resolved_imports,
             true,
             &prelim_consts,
-        )?;
+        )?
+        .0;
     }
 
     let mut available_consts = build_available_consts(&fm.consts, &fm.imported_consts);
@@ -543,7 +552,7 @@ fn parse_frontmatter_impl<'a>(
     )?;
 
     if let Some(raw) = params_raw {
-        let decls = parse_declarations(
+        let (decls, import_refs) = parse_declarations(
             &raw,
             &merged_aliases,
             &resolved_imports,
@@ -553,6 +562,7 @@ fn parse_frontmatter_impl<'a>(
         fm.params = decls.iter().map(|d| d.name.clone()).collect();
         fm.declarations = decls;
         fm.has_params = true;
+        fm.imported_type_params = import_refs;
     }
 
     validate_collision_rules(&fm)?;

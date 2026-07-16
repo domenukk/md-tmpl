@@ -647,7 +647,8 @@ fn extract_expr_variables(
                 vars.insert(root);
             }
         }
-        CompiledExpr::Idx(_) => {}
+        // Loop indices and literals reference no variables.
+        CompiledExpr::Idx(_) | CompiledExpr::Literal(_) => {}
     }
 }
 

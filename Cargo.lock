@@ -385,6 +385,7 @@ dependencies = [
  "serde",
  "serde_yaml",
  "tempfile",
+ "toml",
 ]
 
 [[package]]

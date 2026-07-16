@@ -2465,3 +2465,115 @@ fn for_else_estimate_capacity_includes_else() {
         "capacity should account for else_body, got {cap}"
     );
 }
+
+// -- D5: literal expressions in general positions ----------------------------
+//
+// A literal must be valid wherever a variable of the same type is valid
+// (output, filter input, ...), and must parse identically in every position.
+// `CompiledExpr::compile` and `ConditionOperand::compile` share
+// `parse_number_literal`, so these tests lock the behavior against drift.
+
+#[test]
+fn literal_string_renders_in_output_position() {
+    let ctx = Context::new();
+    assert_eq!(compiled_render("{{ \"hi\" }}", &ctx).unwrap(), "hi");
+}
+
+#[test]
+fn literal_bool_renders_in_output_position() {
+    let ctx = Context::new();
+    assert_eq!(compiled_render("{{ true }}", &ctx).unwrap(), "true");
+    assert_eq!(compiled_render("{{ false }}", &ctx).unwrap(), "false");
+}
+
+#[test]
+fn literal_int_renders_in_output_position() {
+    let ctx = Context::new();
+    assert_eq!(compiled_render("{{ 42 }}", &ctx).unwrap(), "42");
+    assert_eq!(compiled_render("{{ -7 }}", &ctx).unwrap(), "-7");
+}
+
+#[test]
+fn literal_float_renders_in_output_position() {
+    let ctx = Context::new();
+    assert_eq!(compiled_render("{{ 3.14 }}", &ctx).unwrap(), "3.14");
+    // Whole-valued floats render without a trailing `.0`, matching the TS backend.
+    assert_eq!(compiled_render("{{ 3.0 }}", &ctx).unwrap(), "3");
+}
+
+#[test]
+fn literal_compiles_to_literal_expr() {
+    let (segs, _) = compile("{{ 42 }}").unwrap();
+    assert!(
+        matches!(
+            &segs[0],
+            Segment::Expr {
+                expr: CompiledExpr::Literal(Value::Int(42)),
+                filters,
+            } if filters.is_empty()
+        ),
+        "expected a literal int expr, got {:?}",
+        segs[0]
+    );
+}
+
+#[test]
+fn literal_string_is_valid_filter_input() {
+    let ctx = Context::new();
+    assert_eq!(compiled_render("{{ \"hi\" | upper }}", &ctx).unwrap(), "HI");
+}
+
+#[test]
+fn literal_parses_consistently_in_condition_and_output() {
+    // The same integer literal drives a comparison (ConditionOperand) and an
+    // output position (CompiledExpr); both must accept it identically.
+    let ctx = Context::new();
+    assert_eq!(
+        compiled_render("> {% if 1 == 1 %}{{ 1 }}{% /if %}", &ctx).unwrap(),
+        "1"
+    );
+}
+
+// -- D5: numeric-literal normalization (leading / negative zero) -------------
+
+#[test]
+fn numeric_literal_leading_zeros_normalized() {
+    let ctx = Context::new();
+    assert_eq!(compiled_render("{{ 007 }}", &ctx).unwrap(), "7");
+    assert_eq!(compiled_render("{{ 00 }}", &ctx).unwrap(), "0");
+}
+
+#[test]
+fn numeric_literal_negative_zero_normalized() {
+    let ctx = Context::new();
+    assert_eq!(compiled_render("{{ -0 }}", &ctx).unwrap(), "0");
+    assert_eq!(compiled_render("{{ -0.0 }}", &ctx).unwrap(), "0");
+}
+
+// -- D5: strict numeric grammar rejects malformed numerics -------------------
+//
+// Tokens outside the shared grammar `^-?[0-9]+(?:\.[0-9]+)?$` are not literals:
+// they fall through to a path lookup and error (undefined variable) rather than
+// being silently accepted. This matches the TS backend's error-vs-ok
+// classification (the exact phase — compile vs render — may differ, which is
+// acceptable; the requirement is that they never succeed and never panic).
+
+#[test]
+fn malformed_numeric_literals_error() {
+    let ctx = Context::new();
+    for garbage in [
+        "{{ 3. }}",
+        "{{ .5 }}",
+        "{{ 3.1.4 }}",
+        "{{ 1e3 }}",
+        "{{ 0x10 }}",
+        "{{ +5 }}",
+    ] {
+        // Each malformed literal must error (at compile or render); `expect_err`
+        // both asserts that and consumes the error value, so nothing is silently
+        // discarded while the per-input diagnostic is preserved.
+        compiled_render(garbage, &ctx).expect_err(&format!(
+            "expected `{garbage}` to error (not a valid literal), but it rendered"
+        ));
+    }
+}

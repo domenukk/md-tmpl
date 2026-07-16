@@ -161,21 +161,41 @@ fn closing_single_quote_end(s: &str) -> Option<usize> {
     None
 }
 
+/// Map of param name → `(import_stem, imported_type_name)` for params whose
+/// top-level type is a dotted import reference resolving to an **enum**.
+///
+/// Enables codegen backends (currently the Rust proc-macro) to reference the
+/// imported, already-generated type directly instead of emitting a duplicate
+/// per-template copy.
+pub(crate) type ImportedTypeRefs = HashMap<String, ImportedTypeRef>;
+
+/// A single imported-enum reference: `(import_stem, type_name)`.
+///
+/// E.g. a param typed `role = artist.WorkRole` yields `("artist", "WorkRole")`.
+pub(crate) type ImportedTypeRef = (String, String);
+
+/// A parsed declaration paired with the optional imported-enum reference for
+/// its top-level type (see [`imported_enum_type_ref`]).
+type ParsedDeclaration = (VarDecl, Option<ImportedTypeRef>);
+
 /// Parse the value part after `params:` or `consts:`.
 ///
 /// Supports both inline and block list formats:
 /// - Inline: `[name = str, count = int]`
+///
+/// Returns the parsed declarations plus a map of any params whose top-level
+/// type is a dotted import reference to an enum (see [`ImportedTypeRefs`]).
 pub(crate) fn parse_declarations(
     rest: &str,
     type_aliases: &HashMap<String, VarType>,
     resolved_imports: &HashMap<String, ImportedNamespace>,
     is_constant: bool,
     available_consts: &HashMap<String, Value>,
-) -> Result<Vec<VarDecl>, TemplateError> {
+) -> Result<(Vec<VarDecl>, ImportedTypeRefs), TemplateError> {
     let rest = rest.trim();
     if rest.is_empty() {
         // `params:` with no value and no continuation lines → empty params.
-        return Ok(vec![]);
+        return Ok((vec![], HashMap::new()));
     }
 
     // Strip only the outermost `[` and `]` (inline YAML flow sequence).
@@ -206,6 +226,7 @@ pub(crate) fn parse_declarations(
     };
 
     let mut decls = Vec::new();
+    let mut import_refs = ImportedTypeRefs::new();
     let mut seen_names = crate::compat::HashSet::new();
     let mut current_consts = available_consts.clone();
     for entry in &entries {
@@ -217,7 +238,7 @@ pub(crate) fn parse_declarations(
         let unescaped =
             crate::consts::strip_string_literal(e).map(crate::consts::unescape_string_literal);
         let trimmed = unescaped.as_deref().map_or(e, str::trim);
-        if let Some(decl) = parse_single_declaration(
+        if let Some((decl, import_ref)) = parse_single_declaration(
             trimmed,
             type_aliases,
             resolved_imports,
@@ -225,14 +246,43 @@ pub(crate) fn parse_declarations(
             &mut current_consts,
             &mut seen_names,
         )? {
+            if let Some(r) = import_ref {
+                import_refs.insert(decl.name.clone(), r);
+            }
             decls.push(decl);
         }
     }
 
-    Ok(decls)
+    Ok((decls, import_refs))
 }
 
-/// Parse a single declaration entry (e.g. `name = str := "default"`) into a [`VarDecl`].
+/// If `type_str` is a bare dotted import reference (`stem.TypeName`) resolving
+/// to an **enum** in `resolved_imports`, return `(stem, type_name)`.
+///
+/// Only whole-annotation plain enum references qualify — not nested positions,
+/// options, lists, or structs. Mirrors the dotted-path resolution in
+/// [`parse_type_annotation`].
+fn imported_enum_type_ref(
+    type_str: &str,
+    resolved_imports: &HashMap<String, ImportedNamespace>,
+) -> Option<ImportedTypeRef> {
+    let s = crate::consts::strip_string_literal(type_str.trim())
+        .unwrap_or(type_str.trim())
+        .trim();
+    let dot = s.find(crate::consts::PATH_SEP)?;
+    let stem = &s[..dot];
+    let type_name = &s[dot + crate::consts::PATH_SEP.len_utf8()..];
+    let ns = resolved_imports.get(stem)?;
+    let var_type = ns
+        .type_aliases
+        .get(type_name)
+        .or_else(|| ns.param_types.get(type_name))?;
+    matches!(var_type, VarType::Enum(_)).then(|| (stem.to_string(), type_name.to_string()))
+}
+
+/// Parse a single declaration entry (e.g. `name = str := "default"`) into a
+/// [`VarDecl`], plus the optional imported-enum reference for its top-level
+/// type (see [`imported_enum_type_ref`]).
 fn parse_single_declaration(
     trimmed: &str,
     type_aliases: &HashMap<String, VarType>,
@@ -240,7 +290,7 @@ fn parse_single_declaration(
     is_constant: bool,
     current_consts: &mut HashMap<String, Value>,
     seen_names: &mut crate::compat::HashSet<String>,
-) -> Result<Option<VarDecl>, TemplateError> {
+) -> Result<Option<ParsedDeclaration>, TemplateError> {
     if trimmed.is_empty() {
         return Ok(None);
     }
@@ -342,11 +392,21 @@ fn parse_single_declaration(
         )));
     }
 
-    Ok(Some(VarDecl {
-        name,
-        var_type,
-        default_value,
-    }))
+    // Only params (not consts) benefit from imported-type reuse in codegen.
+    let import_ref = if is_constant {
+        None
+    } else {
+        imported_enum_type_ref(type_str, resolved_imports)
+    };
+
+    Ok(Some((
+        VarDecl {
+            name,
+            var_type,
+            default_value,
+        },
+        import_ref,
+    )))
 }
 
 // Compatibility wrapper for `params:` removed as it is now unused.
@@ -736,6 +796,10 @@ fn parse_field_declarations(
                 (String::new(), f)
             };
         let var_type = parse_type_annotation(type_str, type_aliases, resolved_imports)?;
+        // Reject reserved names (incl. codegen collision guards like __self).
+        if !name.is_empty() && crate::consts::RESERVED_NAMES.contains(&name.as_str()) {
+            return Err(format!("{}: '{name}'", crate::consts::ERR_RESERVED_KEYWORD));
+        }
         decls.push(VarDecl {
             name,
             var_type,

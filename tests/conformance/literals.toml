@@ -1,0 +1,233 @@
+# Shared conformance corpus — D5: literals & variables are consistent across
+# every general expression position (output, filter, panic, interpolation) and
+# behave identically to a variable of the same type. Also pins exact numeric
+# formatting (incl. -0.0 -> 0) and phase-agnostic errors for malformed literals.
+#
+# Every value below was derived by executing the current Rust and TypeScript
+# builds; the two backends agreed on all render outputs. Malformed-numeric and
+# value-type-check cases use phase = "any" because the error legitimately trips
+# at compile in Rust but at render in TS.
+
+[[cases]]
+name = "lit_out_int_42"
+note = "int literal in output position renders like an int value"
+source = "---\nparams: []\n---\n{{ 42 }}"
+params = {}
+expect = { kind = "render", output = "42" }
+
+[[cases]]
+name = "lit_out_int_neg7"
+note = "negative int literal"
+source = "---\nparams: []\n---\n{{ -7 }}"
+params = {}
+expect = { kind = "render", output = "-7" }
+
+[[cases]]
+name = "lit_out_int_0"
+note = "zero int literal"
+source = "---\nparams: []\n---\n{{ 0 }}"
+params = {}
+expect = { kind = "render", output = "0" }
+
+[[cases]]
+name = "lit_out_float_3_14"
+note = "float literal with fraction"
+source = "---\nparams: []\n---\n{{ 3.14 }}"
+params = {}
+expect = { kind = "render", output = "3.14" }
+
+[[cases]]
+name = "lit_out_float_3_0"
+note = "integer-valued float drops the trailing .0"
+source = "---\nparams: []\n---\n{{ 3.0 }}"
+params = {}
+expect = { kind = "render", output = "3" }
+
+[[cases]]
+name = "lit_out_float_neg0_0"
+note = "negative zero float normalizes to 0 (float parity fix)"
+source = "---\nparams: []\n---\n{{ -0.0 }}"
+params = {}
+expect = { kind = "render", output = "0" }
+
+[[cases]]
+name = "lit_out_int_neg0"
+note = "negative zero int normalizes to 0"
+source = "---\nparams: []\n---\n{{ -0 }}"
+params = {}
+expect = { kind = "render", output = "0" }
+
+[[cases]]
+name = "lit_out_int_007"
+note = "leading zeros are insignificant in an int literal"
+source = "---\nparams: []\n---\n{{ 007 }}"
+params = {}
+expect = { kind = "render", output = "7" }
+
+[[cases]]
+name = "lit_out_int_00"
+note = "all-zero int literal"
+source = "---\nparams: []\n---\n{{ 00 }}"
+params = {}
+expect = { kind = "render", output = "0" }
+
+[[cases]]
+name = "lit_out_bool_true"
+note = "bool literal true"
+source = "---\nparams: []\n---\n{{ true }}"
+params = {}
+expect = { kind = "render", output = "true" }
+
+[[cases]]
+name = "lit_out_bool_false"
+note = "bool literal false"
+source = "---\nparams: []\n---\n{{ false }}"
+params = {}
+expect = { kind = "render", output = "false" }
+
+[[cases]]
+name = "lit_out_str_dq"
+note = "double-quoted string literal"
+source = "---\nparams: []\n---\n{{ \"hi\" }}"
+params = {}
+expect = { kind = "render", output = "hi" }
+
+[[cases]]
+name = "lit_out_str_sq"
+note = "single-quoted string literal"
+source = "---\nparams: []\n---\n{{ 'hi' }}"
+params = {}
+expect = { kind = "render", output = "hi" }
+
+[[cases]]
+name = "lit_out_str_escquote"
+note = "escaped quote inside a string literal"
+source = "---\nparams: []\n---\n{{ \"a\\\"b\" }}"
+params = {}
+expect = { kind = "render", output = "a\"b" }
+
+[[cases]]
+name = "lit_filter_str_upper"
+note = "string literal piped through upper"
+source = "---\nparams: []\n---\n{{ \"hi\" | upper }}"
+params = {}
+expect = { kind = "render", output = "HI" }
+
+[[cases]]
+name = "lit_filter_float_fixed2"
+note = "float literal piped through fixed(2)"
+source = "---\nparams: []\n---\n{{ 3.0 | fixed(2) }}"
+params = {}
+expect = { kind = "render", output = "3.00" }
+
+[[cases]]
+name = "lit_filter_int_fixed0"
+note = "int literal piped through fixed(0)"
+source = "---\nparams: []\n---\n{{ 42 | fixed(0) }}"
+params = {}
+expect = { kind = "render", output = "42" }
+
+[[cases]]
+name = "lit_panic_str_interp"
+note = "panic string interpolates an int literal"
+source = "---\nparams: []\n---\n> {% panic(\"boom {{ 42 }}\") %}\n"
+params = {}
+expect = { kind = "error", phase = "render", error_contains = "template panic: boom 42" }
+
+[[cases]]
+name = "lit_panic_int"
+note = "panic accepts a bare int literal"
+source = "---\nparams: []\n---\n> {% panic(42) %}\n"
+params = {}
+expect = { kind = "error", phase = "render", error_contains = "template panic: 42" }
+
+[[cases]]
+name = "lit_panic_bool"
+note = "panic accepts a bare bool literal"
+source = "---\nparams: []\n---\n> {% panic(true) %}\n"
+params = {}
+expect = { kind = "error", phase = "render", error_contains = "template panic: true" }
+
+[[cases]]
+name = "lit_if_int_truthy"
+note = "non-zero int literal is truthy in an if condition"
+source = "---\nparams: []\n---\n> {% if 42 %}\n\nYES\n\n> {% else %}\n\nNO\n\n> {% /if %}\n"
+params = {}
+expect = { kind = "render", output = "YES\n" }
+
+[[cases]]
+name = "lit_if_int_zero_falsey"
+note = "zero int literal is falsey in an if condition"
+source = "---\nparams: []\n---\n> {% if 0 %}\n\nYES\n\n> {% else %}\n\nNO\n\n> {% /if %}\n"
+params = {}
+expect = { kind = "render", output = "NO\n" }
+
+[[cases]]
+name = "lit_cmp_rhs_int"
+note = "int literal on the RHS of == matches its output value"
+source = "---\nparams:\n  - n = int\n---\n> {% if n == 42 %}\n\nEQ\n\n> {% else %}\n\nNE\n\n> {% /if %}\n"
+params = { n = 42 }
+expect = { kind = "render", output = "EQ\n" }
+
+[[cases]]
+name = "lit_cmp_lhs_int"
+note = "int literal on the LHS of == matches its output value"
+source = "---\nparams:\n  - n = int\n---\n> {% if 42 == n %}\n\nEQ\n\n> {% else %}\n\nNE\n\n> {% /if %}\n"
+params = { n = 42 }
+expect = { kind = "render", output = "EQ\n" }
+
+[[cases]]
+name = "lit_err_num_trailing_dot"
+note = "'3.' is not a valid number -> error in both backends"
+source = "---\nparams: []\n---\n{{ 3. }}"
+params = {}
+expect = { kind = "error", phase = "any" }
+
+[[cases]]
+name = "lit_err_num_leading_dot"
+note = "'.5' is not a valid number -> error in both backends"
+source = "---\nparams: []\n---\n{{ .5 }}"
+params = {}
+expect = { kind = "error", phase = "any" }
+
+[[cases]]
+name = "lit_err_num_double_dot"
+note = "'3.1.4' is not a valid number -> error in both backends"
+source = "---\nparams: []\n---\n{{ 3.1.4 }}"
+params = {}
+expect = { kind = "error", phase = "any" }
+
+[[cases]]
+name = "lit_err_num_exp"
+note = "scientific notation is unsupported -> error in both backends"
+source = "---\nparams: []\n---\n{{ 1e3 }}"
+params = {}
+expect = { kind = "error", phase = "any" }
+
+[[cases]]
+name = "lit_err_num_hex"
+note = "hex literals are unsupported -> error in both backends"
+source = "---\nparams: []\n---\n{{ 0x10 }}"
+params = {}
+expect = { kind = "error", phase = "any" }
+
+[[cases]]
+name = "lit_err_num_plus"
+note = "leading '+' is unsupported -> error in both backends"
+source = "---\nparams: []\n---\n{{ +5 }}"
+params = {}
+expect = { kind = "error", phase = "any" }
+
+[[cases]]
+name = "lit_err_int_upper"
+note = "upper requires a string value; an int literal is rejected"
+source = "---\nparams: []\n---\n{{ 42 | upper }}"
+params = {}
+expect = { kind = "error", phase = "any", error_contains = "requires a string" }
+
+[[cases]]
+name = "lit_err_undeclared"
+note = "an undeclared variable is still an error (not a literal)"
+source = "---\nparams: []\n---\n{{ undeclared_var }}"
+params = {}
+expect = { kind = "error", phase = "any", error_contains = "undeclared variable" }

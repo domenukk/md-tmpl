@@ -85,7 +85,9 @@ fn walk_segment(
             CompiledExpr::Kinds(_) => {
                 resolve_compiled_expr_type(expr, env, errors);
             }
-            CompiledExpr::Idx(_) => {}
+            // Literals are always displayable scalars and loop indices are
+            // always ints — neither needs validation.
+            CompiledExpr::Literal(_) | CompiledExpr::Idx(_) => {}
         },
 
         Segment::ForLoop {
@@ -149,6 +151,7 @@ fn validate_for_loop(
                 | CompiledExpr::Kind(p)
                 | CompiledExpr::Kinds(p)
                 | CompiledExpr::Has(p) => p.as_str(),
+                CompiledExpr::Literal(_) => "literal",
                 CompiledExpr::Idx(b) => b.as_ref(),
             };
             if matches!(other, VarType::Enum(_)) {
@@ -197,7 +200,7 @@ fn for_loop_iterable_root(list_expr: &CompiledExpr) -> Option<&str> {
         | CompiledExpr::Kind(p)
         | CompiledExpr::Kinds(p)
         | CompiledExpr::Has(p) => p,
-        CompiledExpr::Idx(_) => return None,
+        CompiledExpr::Literal(_) | CompiledExpr::Idx(_) => return None,
     };
     path.parts().first().map(String::as_str)
 }

@@ -47,7 +47,11 @@ import { parseInlineList } from "./var_type.js";
  * closing `---` delimiter.
  */
 export function parseFrontmatter(source: string): [Frontmatter, string] {
-  const lines = source.split("\n");
+  // Normalize CRLF → LF for cross-platform consistency.
+  const normalized = source.includes("\r")
+    ? source.replace(/\r\n/g, "\n")
+    : source;
+  const lines = normalized.split("\n");
 
   // Find opening ---
   let startIdx = -1;

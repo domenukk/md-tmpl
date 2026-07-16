@@ -137,12 +137,16 @@ test-ts: build-ts
 test-wasm: build-wasm
     cd crates/md-tmpl-wasm && npm test
 
-# Replay the shared cross-language conformance corpus against BOTH backends
-test-conformance: build-ts
+# Replay the shared cross-language conformance corpus against ALL FOUR backends
+test-conformance: build-ts build-go-ffi
     @echo "── Rust conformance harness ──"
     cargo test -p md-tmpl-core --test conformance --all-features
     @echo "── TypeScript conformance harness ──"
     cd crates/md-tmpl-typescript && node --test dist/tests/conformance.test.js
+    @echo "── Go conformance harness ──"
+    cd go/md_tmpl && go test -run TestConformance -count=1 ./...
+    @echo "── Python conformance harness ──"
+    cd crates/md-tmpl-python && .venv/bin/maturin develop && .venv/bin/pytest python/tests/test_conformance.py -q
 
 # ── Docs ──────────────────────────────────────────────────────────────
 
@@ -178,6 +182,10 @@ bench-wasm: build-wasm
 # Run Python benchmarks (vs Jinja2, Mako, Chevron, Django)
 bench-python:
     {{ pyvenv }}python benchmarks/python/bench_templates.py
+
+# Micro-benchmark: validation overhead (render_ctx_allowing_extra vs render_ctx_unchecked)
+bench-perf:
+    cd benchmarks && cargo run --release --example perf_test
 
 # Run all benchmarks and update README.md + RESULTS.md tables
 bench-update:

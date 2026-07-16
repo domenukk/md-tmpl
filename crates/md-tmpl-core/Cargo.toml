@@ -43,5 +43,9 @@ serde_yaml = "0.9"
 toml = "0.8"
 flexbuffers = "25.12"
 
+[[test]]
+name = "conformance"
+required-features = ["std", "serde"]
+
 [lints]
 workspace = true

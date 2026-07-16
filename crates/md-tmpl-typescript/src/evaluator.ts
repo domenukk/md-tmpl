@@ -51,6 +51,7 @@ import {
   EXPR_END,
   unescapeStringLiteral,
   LIT_TRUE,
+  LIT_FALSE,
 } from "./consts.js";
 
 export function evaluateExpression(expr: string, scope: Scope): Value {
@@ -87,6 +88,26 @@ export function evaluateExpression(expr: string, scope: Scope): Value {
 /** Pre-compiled regex for function calls. */
 const FUNC_CALL_RE = /^(\w+)\((.+)\)$/;
 
+/**
+ * Strict numeric-literal shape: optional leading `-`, digits, optional
+ * fractional part with digits on both sides of the dot. Requiring digits
+ * around the dot ensures variable names and malformed tokens (`.5`, `3.`,
+ * `3.1.4`) never parse as numbers — they fall through to path resolution.
+ */
+const NUM_LITERAL_RE = /^-?[0-9]+(?:\.[0-9]+)?$/;
+
+/**
+ * Construct a `Value` from a numeric-literal token: integer-valued numbers
+ * become ints, everything else becomes a float. Single source of truth for
+ * numeric-literal parsing, shared by `resolveExpr` (output / filter-input /
+ * panic / string-interpolation positions) and `evaluateOperandValue`
+ * (condition / comparison positions).
+ */
+function numericLiteralToValue(token: string): Value {
+  const num = Number(token);
+  return Number.isInteger(num) ? int(num) : { type: TYPE_FLOAT, value: num };
+}
+
 /** Resolve a single expression (path, function call, or literal). */
 function resolveExpr(expr: string, scope: Scope): Value {
   // String literal: "..." or '...' — with optional {{ expr }} interpolation.
@@ -100,6 +121,18 @@ function resolveExpr(expr: string, scope: Scope): Value {
       return str(interpolateString(inner, scope));
     }
     return str(inner);
+  }
+
+  // Bare bool literal — usable in every expression position (option B), so
+  // `{{ true }}` / `{{ false }}` render like a bool variable would.
+  if (expr === LIT_TRUE) return { type: TYPE_BOOL, value: true };
+  if (expr === LIT_FALSE) return { type: TYPE_BOOL, value: false };
+
+  // Bare numeric literal (int or float). The strict shape check keeps
+  // variable names and malformed tokens out of the literal path, letting
+  // them fall through to path resolution (reported as undefined variables).
+  if (NUM_LITERAL_RE.test(expr)) {
+    return numericLiteralToValue(expr);
   }
 
   // Fast path: if expr doesn't end with ')' it can't be a function call
@@ -421,12 +454,8 @@ function evaluateOperandValue(operand: OperandToken, scope: Scope): Value {
     }
     case TokKind.BoolLit:
       return { type: TYPE_BOOL, value: operand.value === LIT_TRUE };
-    case TokKind.NumLit: {
-      const num = Number(operand.value);
-      return Number.isInteger(num)
-        ? int(num)
-        : { type: TYPE_FLOAT, value: num };
-    }
+    case TokKind.NumLit:
+      return numericLiteralToValue(operand.value);
     case TokKind.Ident:
       return evaluateExpression(operand.value, scope);
     default:

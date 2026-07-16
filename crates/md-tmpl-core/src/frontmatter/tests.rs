@@ -14,6 +14,7 @@ fn parse_params_value(rest: &str) -> Result<Vec<VarDecl>, TemplateError> {
     let empty_imports = HashMap::new();
     let empty_consts = HashMap::new();
     super::parse_declarations(rest, &empty_aliases, &empty_imports, false, &empty_consts)
+        .map(|(decls, _)| decls)
 }
 
 #[test]

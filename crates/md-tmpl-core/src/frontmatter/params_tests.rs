@@ -17,7 +17,7 @@ fn parse_decls(rest: &str) -> Result<Vec<VarDecl>, crate::error::TemplateError> 
     let aliases = HashMap::new();
     let imports = HashMap::new();
     let consts = HashMap::new();
-    parse_declarations(rest, &aliases, &imports, false, &consts)
+    parse_declarations(rest, &aliases, &imports, false, &consts).map(|(decls, _)| decls)
 }
 
 /// Helper: parse constant declarations with empty aliases/imports.
@@ -25,7 +25,7 @@ fn parse_consts(rest: &str) -> Result<Vec<VarDecl>, crate::error::TemplateError>
     let aliases = HashMap::new();
     let imports = HashMap::new();
     let consts = HashMap::new();
-    parse_declarations(rest, &aliases, &imports, true, &consts)
+    parse_declarations(rest, &aliases, &imports, true, &consts).map(|(decls, _)| decls)
 }
 
 // =========================================================================
@@ -811,7 +811,7 @@ fn decls_with_kinds_default() {
             },
         ]),
     );
-    let decls = parse_declarations(
+    let (decls, _) = parse_declarations(
         "[tags = list(str) := kinds(ForumTag)]",
         &aliases,
         &HashMap::new(),
@@ -1153,7 +1153,7 @@ fn parse_decls_stage(rest: &str) -> Result<Vec<VarDecl>, crate::error::TemplateE
     let aliases = stage_aliases();
     let imports = HashMap::new();
     let consts = HashMap::new();
-    parse_declarations(rest, &aliases, &imports, false, &consts)
+    parse_declarations(rest, &aliases, &imports, false, &consts).map(|(decls, _)| decls)
 }
 
 #[test]
@@ -1350,7 +1350,7 @@ fn list_of_enum_with_default_values() {
             },
         ]),
     );
-    let decls = parse_declarations(
+    let (decls, _) = parse_declarations(
         "[statuses = list(Status) := [UnitVal, StructVal(blubb = \"test\")]]",
         &aliases,
         &HashMap::new(),

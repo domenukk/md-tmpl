@@ -216,7 +216,14 @@ fn generate_test_module(
     // Each module also contains its test function.
     writeln!(
         output,
-        r#"#[allow(non_snake_case)]
+        // Emitted into generated test modules:
+        // - `non_snake_case`: module names come from fixture keys and may contain
+        //   uppercase (e.g. Self).
+        // - `clippy::approx_constant`: float test data like `{{ 3.14 }}` expands to a
+        //   `3.14f64` literal, which clippy misreads as an approximation of PI —
+        //   a false positive on deliberate fixture values.
+        // NOLINT: generated test-only allow(...), justified above.
+        r#"#[allow(non_snake_case, clippy::approx_constant)]
 mod test_{name} {{
     use super::*;
 

@@ -14,6 +14,16 @@ use md_tmpl_macros::include_template;
 include_template!("prompts/cross_crate_complex.tmpl.md");
 include_template!("prompts/task_report.tmpl.md");
 
+// Imported-type reuse: the consumer's `role` param references an enum imported
+// from `roles_lib`. The `imports = { ... }` mapping tells codegen to reference
+// the already-generated `roles_lib::WorkRole` directly instead of emitting a
+// duplicate per-template enum.
+include_template!("prompts/roles_lib.tmpl.md");
+include_template!(
+    "prompts/role_consumer.tmpl.md",
+    imports = { roles_lib = crate::roles_lib }
+);
+
 // ── Test 1: include_template with complex types ─────────────────────────
 
 #[test]
@@ -290,4 +300,30 @@ fn test_render_reloaded_hot_reload() {
         output,
         "\nUser: hot_reload\nRole: Admin\nScore: 50\nActive: true\n\nTags:\n"
     );
+}
+
+// ── Test 12: imported enum type is reused, not duplicated ───────────────
+
+#[test]
+fn test_imported_enum_type_reuse() {
+    // Accepts the library enum directly; proves the consumer's param type is a
+    // nominal alias of `roles_lib::WorkRole` (declared first per clippy pedantic
+    // `items_after_statements`).
+    fn takes_lib_role(_r: roles_lib::WorkRole) {}
+
+    // The consumer's `role` param type is a direct alias of the library enum,
+    // so it renders identically to a locally-generated enum.
+    let params = role_consumer::Params {
+        role: roles_lib::WorkRole::Judge,
+    };
+    assert_eq!(params.render().unwrap(), "\nRole: Judge\n");
+
+    // Nominal type identity: `role_consumer::ParamsRole` IS `roles_lib::WorkRole`
+    // (a `pub type` alias), so no conversion is needed at the boundary. This is
+    // the whole point of the feature — downstream code can pass the shared type
+    // directly instead of matching on a duplicated per-template enum.
+    takes_lib_role(role_consumer::ParamsRole::Researcher);
+
+    let alias_value: role_consumer::ParamsRole = roles_lib::WorkRole::Orchestrator;
+    assert_eq!(alias_value, roles_lib::WorkRole::Orchestrator);
 }

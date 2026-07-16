@@ -4034,3 +4034,238 @@ params: [__crate = str]
 ---
 {{ __crate }}'''
 expected_error = "reserved keyword used as name: '__crate'"
+
+[[tests]]
+name = "collision_guard_dunder_self_nested_struct"
+description = "struct field named '__self' is rejected — nested codegen collision guard"
+template = '''
+---
+params: [item = struct(__self = str)]
+---
+{{ item.__self }}'''
+expected_error = "reserved keyword used as name: '__self'"
+
+# ============================================================================
+# F13: Literal Expressions — bare literals valid in all expression positions
+# ============================================================================
+
+[[tests]]
+name = "literal_int_output"
+description = "Bare integer literal renders as its stringified value"
+template = '''
+---
+params: []
+---
+{{ 42 }}'''
+expected_output = "42"
+params = {}
+
+[[tests]]
+name = "literal_int_negative"
+description = "Negative integer literal renders correctly"
+template = '''
+---
+params: []
+---
+{{ -7 }}'''
+expected_output = "-7"
+params = {}
+
+[[tests]]
+name = "literal_int_zero"
+description = "Zero integer literal renders as 0"
+template = '''
+---
+params: []
+---
+{{ 0 }}'''
+expected_output = "0"
+params = {}
+
+[[tests]]
+name = "literal_float_output"
+description = "Bare float literal renders as its stringified value"
+template = '''
+---
+params: []
+---
+{{ 3.14 }}'''
+expected_output = "3.14"
+params = {}
+
+[[tests]]
+name = "literal_float_whole_drops_fractional"
+description = "Whole-valued float 3.0 renders as 3 (drops .0)"
+template = '''
+---
+params: []
+---
+{{ 3.0 }}'''
+expected_output = "3"
+params = {}
+
+[[tests]]
+name = "literal_float_negative_zero"
+description = "Negative zero float renders as 0"
+template = '''
+---
+params: []
+---
+{{ -0.0 }}'''
+expected_output = "0"
+params = {}
+
+[[tests]]
+name = "literal_bool_true"
+description = "Bare true literal renders as 'true'"
+template = '''
+---
+params: []
+---
+{{ true }}'''
+expected_output = "true"
+params = {}
+
+[[tests]]
+name = "literal_bool_false"
+description = "Bare false literal renders as 'false'"
+template = '''
+---
+params: []
+---
+{{ false }}'''
+expected_output = "false"
+params = {}
+
+[[tests]]
+name = "literal_string_double_quoted"
+description = "String literal in output position renders its contents"
+template = '''
+---
+params: []
+---
+{{ "hello" }}'''
+expected_output = "hello"
+params = {}
+
+[[tests]]
+name = "literal_string_single_quoted"
+description = "Single-quoted string literal renders its contents"
+template = '''
+---
+params: []
+---
+{{ 'world' }}'''
+expected_output = "world"
+params = {}
+
+[[tests]]
+name = "literal_int_in_condition"
+description = "Non-zero integer literal is truthy in conditions"
+template = '''
+---
+params: []
+---
+> {% if 42 %}Y{% /if %}'''
+expected_output = "Y"
+params = {}
+
+[[tests]]
+name = "literal_zero_in_condition"
+description = "Zero integer literal is falsy in conditions"
+template = '''
+---
+params: []
+---
+> {% if 0 %}Y{% else %}N{% /if %}'''
+expected_output = "N"
+params = {}
+
+[[tests]]
+name = "literal_bool_in_condition"
+description = "Bool literals work directly in conditions"
+template = '''
+---
+params: []
+---
+> {% if true %}T{% /if %}{% if false %}F{% /if %}'''
+expected_output = "T"
+params = {}
+
+[[tests]]
+name = "literal_int_comparison"
+description = "Integer literal used in equality comparison"
+template = '''
+---
+params: [x = int]
+---
+> {% if x == 42 %}match{% else %}no{% /if %}'''
+expected_output = "match"
+[tests.params]
+x = 42
+
+[[tests]]
+name = "literal_string_filter"
+description = "String literal passed through upper filter"
+template = '''
+---
+params: []
+---
+{{ "hello" | upper }}'''
+expected_output = "HELLO"
+params = {}
+
+[[tests]]
+name = "literal_float_fixed_filter"
+description = "Float literal passed through fixed(2) filter"
+template = '''
+---
+params: []
+---
+{{ 3.0 | fixed(2) }}'''
+expected_output = "3.00"
+params = {}
+
+[[tests]]
+name = "literal_mixed_with_vars"
+description = "Literal and variable in same template"
+template = '''
+---
+params: [name = str]
+---
+{{ "Hello" }} {{ name }}! {{ 42 }}'''
+expected_output = "Hello world! 42"
+[tests.params]
+name = "world"
+
+[[tests]]
+name = "literal_in_interpolation"
+description = "Literal inside string interpolation"
+template = '''
+---
+params: [x = str]
+---
+> {% if x == "v{{ 42 }}" %}Y{% else %}N{% /if %}'''
+expected_output = "Y"
+[tests.params]
+x = "v42"
+
+[[tests]]
+name = "literal_leading_zeros_normalized"
+description = "Leading zeros on integer literals are normalized"
+template = '''
+---
+params: []
+---
+{{ 007 }}'''
+expected_output = "7"
+params = {}
+
+# ============================================================================
+# F14: CRLF Normalization — Windows line endings produce identical output
+# ============================================================================
+# NOTE: CRLF tests cannot be expressed in the shared TOML format because
+# TOML files themselves normalize line endings.  Backend-specific CRLF unit
+# tests live in:
+#   Rust — template/tests.rs (crlf_from_source_produces_lf_output, etc.)
+#   TS   — crlf.test.ts

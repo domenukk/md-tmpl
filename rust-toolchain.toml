@@ -1,0 +1,5 @@
+[toolchain]
+# Pinned because the workspace uses edition 2024, which requires Rust >= 1.85.
+# 1.95.0 is the version validated against the full test + conformance suite.
+channel = "1.95.0"
+components = ["clippy", "rustfmt"]

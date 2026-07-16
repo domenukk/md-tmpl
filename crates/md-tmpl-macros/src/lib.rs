@@ -57,6 +57,7 @@ struct IncludeTemplateInput {
     custom_name: Option<Ident>,
     crate_path: Option<syn::Path>,
     env: Vec<(String, syn::Expr)>,
+    import_paths: Vec<(String, syn::Path)>,
 }
 
 impl Parse for IncludeTemplateInput {
@@ -79,9 +80,11 @@ impl Parse for IncludeTemplateInput {
             None
         };
 
-        // Optional trailing arguments: `, crate = ...` or `, env = { ... }`
+        // Optional trailing arguments: `, crate = ...`, `, env = { ... }`, or
+        // `, imports = { stem = ::rust::path, ... }`.
         let mut crate_path = None;
         let mut env = Vec::new();
+        let mut import_paths = Vec::new();
         while input.peek(Token![,]) {
             let _comma: Token![,] = input.parse()?;
             if input.is_empty() {
@@ -96,10 +99,13 @@ impl Parse for IncludeTemplateInput {
                 if kw == "env" {
                     let _eq: Token![=] = input.parse()?;
                     env = parse_env_block(input)?;
+                } else if kw == "imports" {
+                    let _eq: Token![=] = input.parse()?;
+                    import_paths = parse_imports_block(input)?;
                 } else {
                     return Err(syn::Error::new(
                         kw.span(),
-                        format!("unknown option '{kw}', expected 'crate' or 'env'"),
+                        format!("unknown option '{kw}', expected 'crate', 'env', or 'imports'"),
                     ));
                 }
             }
@@ -111,6 +117,7 @@ impl Parse for IncludeTemplateInput {
             custom_name,
             crate_path,
             env,
+            import_paths,
         })
     }
 }
@@ -125,6 +132,7 @@ struct InlineTemplateInput {
     name: Ident,
     crate_path: Option<syn::Path>,
     env: Vec<(String, syn::Expr)>,
+    import_paths: Vec<(String, syn::Path)>,
 }
 
 impl Parse for InlineTemplateInput {
@@ -140,6 +148,7 @@ impl Parse for InlineTemplateInput {
         let name: Ident = input.parse()?;
         let mut crate_path = None;
         let mut env = Vec::new();
+        let mut import_paths = Vec::new();
         while input.peek(Token![,]) {
             let _comma: Token![,] = input.parse()?;
             if input.is_empty() {
@@ -154,10 +163,13 @@ impl Parse for InlineTemplateInput {
                 if kw == "env" {
                     let _eq: Token![=] = input.parse()?;
                     env = parse_env_block(input)?;
+                } else if kw == "imports" {
+                    let _eq: Token![=] = input.parse()?;
+                    import_paths = parse_imports_block(input)?;
                 } else {
                     return Err(syn::Error::new(
                         kw.span(),
-                        format!("unknown option '{kw}', expected 'crate' or 'env'"),
+                        format!("unknown option '{kw}', expected 'crate', 'env', or 'imports'"),
                     ));
                 }
             }
@@ -168,6 +180,7 @@ impl Parse for InlineTemplateInput {
             name,
             crate_path,
             env,
+            import_paths,
         })
     }
 }
@@ -234,6 +247,50 @@ fn parse_env_block(input: ParseStream) -> syn::Result<Vec<(String, syn::Expr)>> 
         }
     }
     Ok(entries)
+}
+
+/// Parse an imports block: `{ stem = ::rust::path, stem2 = crate::mod }`.
+///
+/// Maps each import stem (as declared in the template's `imports:` block) to
+/// the Rust module path where that imported template's generated types live.
+/// Used to reference imported enum types directly instead of emitting a
+/// duplicate per-template copy.
+fn parse_imports_block(input: ParseStream) -> syn::Result<Vec<(String, syn::Path)>> {
+    let content;
+    syn::braced!(content in input);
+    let mut entries = Vec::new();
+    while !content.is_empty() {
+        let stem: Ident = content.parse()?;
+        let _eq: Token![=] = content.parse()?;
+        let path: syn::Path = content.parse()?;
+        entries.push((stem.to_string(), path));
+        if content.peek(Token![,]) {
+            let _comma: Token![,] = content.parse()?;
+        }
+    }
+    Ok(entries)
+}
+
+/// Resolve each imported-enum param to the full Rust path of its imported type.
+///
+/// Intersects the frontmatter's [`imported_type_params`] (param → `(stem,
+/// type_name)`) with the caller-provided `imports = { stem = path }` mapping,
+/// yielding `param_name → tokens(path::TypeName)`. Params whose import stem was
+/// not mapped are omitted, so codegen falls back to emitting a fresh type.
+///
+/// [`imported_type_params`]: md_tmpl_core::Frontmatter::imported_type_params
+fn build_imported_type_paths(
+    fm: &md_tmpl_core::Frontmatter,
+    import_paths: &[(String, syn::Path)],
+) -> std::collections::HashMap<String, proc_macro2::TokenStream> {
+    let mut out = std::collections::HashMap::new();
+    for (param, (stem, type_name)) in &fm.imported_type_params {
+        if let Some((_, base)) = import_paths.iter().find(|(s, _)| s == stem) {
+            let ty = format_ident!("{}", type_name);
+            out.insert(param.clone(), quote! { #base::#ty });
+        }
+    }
+    out
 }
 
 /// Evaluate an env expression at proc-macro expansion time.
@@ -402,7 +459,9 @@ pub fn include_template(input: TokenStream) -> TokenStream {
         let source = StructGenSource::Module {
             doc_path: &rel_path,
         };
-        let struct_tokens = generate_struct_tokens(&fm, &struct_name, &source);
+        let imported_type_paths = build_imported_type_paths(&fm, &parsed.import_paths);
+        let struct_tokens =
+            generate_struct_tokens(&fm, &struct_name, &source, &imported_type_paths);
 
         // Type alias codegen.
         let type_alias_tokens = generate_type_alias_tokens(&fm.type_aliases);
@@ -556,7 +615,9 @@ pub fn template(input: TokenStream) -> TokenStream {
         let source = StructGenSource::Module {
             doc_path: "<inline>",
         };
-        let struct_tokens = generate_struct_tokens(&fm, &struct_name, &source);
+        let imported_type_paths = build_imported_type_paths(&fm, &parsed.import_paths);
+        let struct_tokens =
+            generate_struct_tokens(&fm, &struct_name, &source, &imported_type_paths);
 
         // Type alias codegen.
         let type_alias_tokens = generate_type_alias_tokens(&fm.type_aliases);

@@ -1,15 +1,15 @@
 // Cross-language conformance harness (Rust side).
 //
-// Replays the shared JSON corpus in `<repo>/conformance` through the Rust
+// Replays the shared TOML corpus in `<repo>/tests/conformance` through the Rust
 // `md-tmpl-core` engine and asserts that every case matches the recorded
-// expectation. Those expectations were derived by executing the TypeScript
-// reference implementation, and the exact same corpus is replayed by the
-// TypeScript harness (`crates/md-tmpl-typescript/src/tests/conformance.test.ts`).
-// If both harnesses pass, the two backends are behaviourally identical on the
-// covered surface.
+// expectation. The exact same corpus is replayed by the TypeScript, Go, and
+// Python harnesses; if all pass, the four backends are behaviourally identical
+// on the covered surface.
 //
-// The corpus is parsed with `serde_yaml` (already a dev-dependency). JSON is a
-// strict subset of YAML, so no additional dependency is needed.
+// The corpus is parsed with the `toml` crate, then projected into a
+// `serde_yaml::Value` so the comparison layer can stay format-agnostic. TOML
+// has no `null`, so option-`None` is encoded in the corpus as the sentinel
+// inline table `{ __none__ = true }` and decoded back to YAML null on load.
 
 use std::path::{Path, PathBuf};
 
@@ -20,12 +20,13 @@ use serde_yaml::Value as Yaml;
 // Every corpus file, regardless of category, holds a flat list of `Case`s whose
 // `expect.kind` selects how they are checked.
 const CORPUS_FILES: &[&str] = &[
-    "render.json",
-    "interpolation.json",
-    "frontmatter.json",
-    "errors.json",
-    "escapes.json",
-    "comments.json",
+    "render.toml",
+    "interpolation.toml",
+    "frontmatter.toml",
+    "errors.toml",
+    "escapes.toml",
+    "comments.toml",
+    "literals.toml",
 ];
 
 #[derive(Deserialize)]
@@ -53,15 +54,54 @@ struct Expect {
 }
 
 fn corpus_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../conformance")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/conformance")
 }
 
 fn load(file: &str) -> Vec<Case> {
+    #[derive(Deserialize)]
+    struct Corpus {
+        cases: Vec<Case>,
+    }
+
     let path = corpus_dir().join(file);
     let txt = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("read corpus file {}: {e}", path.display()));
-    serde_yaml::from_str(&txt)
-        .unwrap_or_else(|e| panic!("parse corpus file {}: {e}", path.display()))
+    let root: toml::Value = toml::from_str(&txt)
+        .unwrap_or_else(|e| panic!("parse corpus file {}: {e}", path.display()));
+    // Project TOML -> YAML (decoding the option-None sentinel) so the typed
+    // `Case`/`Expect` structs can be deserialized by the format-agnostic layer.
+    let yaml = toml_to_yaml(&root);
+    let corpus: Corpus = serde_yaml::from_value(yaml)
+        .unwrap_or_else(|e| panic!("decode corpus file {}: {e}", path.display()));
+    corpus.cases
+}
+
+// Recognise the corpus's `{ __none__ = true }` option-None sentinel.
+fn is_none_sentinel(tbl: &toml::Table) -> bool {
+    tbl.len() == 1 && matches!(tbl.get("__none__"), Some(toml::Value::Boolean(true)))
+}
+
+// Convert a `toml::Value` into a `serde_yaml::Value`, mapping the option-None
+// sentinel table back to YAML `null`.
+fn toml_to_yaml(v: &toml::Value) -> Yaml {
+    match v {
+        toml::Value::String(s) => Yaml::String(s.clone()),
+        toml::Value::Integer(i) => Yaml::Number((*i).into()),
+        toml::Value::Float(f) => Yaml::Number(serde_yaml::Number::from(*f)),
+        toml::Value::Boolean(b) => Yaml::Bool(*b),
+        toml::Value::Datetime(dt) => Yaml::String(dt.to_string()),
+        toml::Value::Array(arr) => Yaml::Sequence(arr.iter().map(toml_to_yaml).collect()),
+        toml::Value::Table(tbl) => {
+            if is_none_sentinel(tbl) {
+                return Yaml::Null;
+            }
+            let mut m = serde_yaml::Mapping::new();
+            for (k, val) in tbl {
+                m.insert(Yaml::String(k.clone()), toml_to_yaml(val));
+            }
+            Yaml::Mapping(m)
+        }
+    }
 }
 
 // Compile a case, threading through the optional string-only environment used by

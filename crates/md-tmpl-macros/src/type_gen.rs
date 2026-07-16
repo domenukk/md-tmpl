@@ -277,25 +277,32 @@ pub(crate) fn typed_enum_codegen(
     });
 
     let enum_type = enum_name.clone();
+    (quote! { #enum_type }, enum_value_setter())
+}
+
+/// Setter that serializes an enum field into a `Value` via `to_value`.
+///
+/// Shared by locally-generated enums ([`typed_enum_codegen`]) and imported enum
+/// fields (whose type is aliased to another template's generated enum). Because
+/// all generated enums share the same serde representation, the same setter
+/// works for both.
+pub(crate) fn enum_value_setter() -> crate::struct_gen::SetterFn {
     let cp = crate_path();
-    (
-        quote! { #enum_type },
-        Box::new(move |val, name| {
-            let name_lit = name.to_string();
-            let cp = &cp;
-            quote! {
-                ctx.set(
-                    #name_lit,
-                    match #cp::to_value(&#val) {
-                        ::core::result::Result::Ok(v) => v,
-                        ::core::result::Result::Err(e) => {
-                            unreachable!("generated enum type should always be serializable: {}", e)
-                        }
-                    },
-                );
-            }
-        }),
-    )
+    Box::new(move |val, name| {
+        let name_lit = name.to_string();
+        let cp = &cp;
+        quote! {
+            ctx.set(
+                #name_lit,
+                match #cp::to_value(&#val) {
+                    ::core::result::Result::Ok(v) => v,
+                    ::core::result::Result::Err(e) => {
+                        unreachable!("generated enum type should always be serializable: {}", e)
+                    }
+                },
+            );
+        }
+    })
 }
 
 /// Generate `Option<T>` and a setter for option-typed variables (`option(T)`).

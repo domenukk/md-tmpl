@@ -2790,3 +2790,55 @@ params:
     with_ctx.set("name", "Ada");
     assert_eq!(with_tmpl.render_ctx(&with_ctx).unwrap(), "hello Ada");
 }
+
+// -- CRLF normalization ────────────────────────────────────────────────────
+
+#[test]
+fn crlf_from_source_produces_lf_output() {
+    // Simulate a template read on Windows — the body has \r\n line endings.
+    let source = "---\r\nparams: [name = str]\r\n---\r\nHello {{ name }}!\r\nGoodbye\r\n";
+    let tmpl = Template::from_source(source).unwrap();
+    let mut ctx = Context::new();
+    ctx.set("name", "world");
+    let output = tmpl.render_ctx(&ctx).unwrap();
+    assert!(
+        !output.contains('\r'),
+        "output must not contain \\r: {output:?}"
+    );
+    assert_eq!(output, "Hello world!\nGoodbye\n");
+}
+
+#[test]
+fn crlf_compile_produces_lf_output() {
+    let source = "---\r\nparams: [x = str]\r\n---\r\nLine1 {{ x }}\r\nLine2\r\n";
+    let (tmpl, _fm) = Template::compile(source, CompileOptions::default()).unwrap();
+    let mut ctx = Context::new();
+    ctx.set("x", "val");
+    let output = tmpl.render_ctx(&ctx).unwrap();
+    assert!(
+        !output.contains('\r'),
+        "output must not contain \\r: {output:?}"
+    );
+    assert_eq!(output, "Line1 val\nLine2\n");
+}
+
+#[test]
+fn crlf_from_file_produces_lf_output() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("crlf.tmpl.md");
+    // Write raw CRLF bytes.
+    std::fs::write(
+        &path,
+        b"---\r\nparams: [msg = str]\r\n---\r\n{{ msg }}\r\nend\r\n",
+    )
+    .unwrap();
+    let tmpl = Template::from_file(&path).unwrap();
+    let mut ctx = Context::new();
+    ctx.set("msg", "hi");
+    let output = tmpl.render_ctx(&ctx).unwrap();
+    assert!(
+        !output.contains('\r'),
+        "output must not contain \\r: {output:?}"
+    );
+    assert_eq!(output, "hi\nend\n");
+}

@@ -22,9 +22,17 @@ pub(super) fn render_value_into(val: &Value, output: &mut String) -> Result<(), 
         // than ryu+strip_suffix for whole numbers (the common case).
         Value::Float(f) => {
             use core::fmt::Write;
-            // SAFETY: `fmt::Write for String` is infallible — it only
-            // forwards to `String::push_str` which cannot fail.
-            write!(output, "{f}").expect("fmt::Write for String is infallible");
+            // Normalize negative zero: std formats `-0.0` as "-0", but the TS
+            // backend (and `String(-0)`) render "0". Emit "0" for both zeros so
+            // the two engines stay byte-for-byte identical. `-0.0 == 0.0` is
+            // true under IEEE-754, so this catches both signs.
+            if *f == 0.0 {
+                output.push('0');
+            } else {
+                // SAFETY: `fmt::Write for String` is infallible — it only
+                // forwards to `String::push_str` which cannot fail.
+                write!(output, "{f}").expect("fmt::Write for String is infallible");
+            }
         }
         Value::None => { /* Absent value renders as empty. */ }
         Value::List(_) | Value::Struct(_) | Value::Tmpl(_) => {

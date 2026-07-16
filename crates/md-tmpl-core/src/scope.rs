@@ -88,6 +88,8 @@ impl CompiledPath {
 pub enum CompiledExpr {
     /// A dotted variable path lookup.
     Path(CompiledPath),
+    /// A literal scalar value (string, int, float, or bool).
+    Literal(Value),
     /// Loop index lookup `idx(binding)`.
     Idx(Cow<'static, str>),
     /// Length lookup `len(path)`.
@@ -111,6 +113,36 @@ impl CompiledExpr {
         let raw = raw.trim();
         if raw.is_empty() {
             return Err(TemplateError::syntax("empty token in expression"));
+        }
+
+        // Literals mirror `ConditionOperand::compile` branches 1-4 so that a
+        // literal is a valid expression in every general position (output,
+        // filter input, panic, interpolation), exactly like a variable of that
+        // type. Conditions/compare/case already accept literals via
+        // `ConditionOperand`; this keeps `{{ }}`-style positions consistent.
+        //
+        // 1. String literals. A display-position string literal never carries
+        //    `{{ expr }}` interpolation (the tag parser splits on the first
+        //    `}}`, so an interpolating literal cannot arrive here intact), so
+        //    it is always a plain string value.
+        if let Some(inner) = crate::consts::strip_string_literal(raw) {
+            return Ok(Self::Literal(Value::Str(
+                crate::consts::unescape_string_literal(inner),
+            )));
+        }
+        // 2. Boolean literals.
+        if raw == crate::consts::LIT_TRUE {
+            return Ok(Self::Literal(Value::Bool(true)));
+        }
+        if raw == crate::consts::LIT_FALSE {
+            return Ok(Self::Literal(Value::Bool(false)));
+        }
+        // 3. Numeric literals, using the strict grammar shared with the TS
+        //    backend (see `parse_number_literal`). Malformed numerics (`3.`,
+        //    `.5`, `1e3`, `0x10`, ...) are rejected here and fall through to a
+        //    path lookup, which then errors — matching the reference engine.
+        if let Some(num) = parse_number_literal(raw) {
+            return Ok(Self::Literal(num));
         }
 
         if let Some((func_name, arg)) = parse_function_call(raw) {
@@ -187,14 +219,11 @@ impl ConditionOperand {
             return Ok(Self::Literal(Value::Bool(false)));
         }
 
-        // 3. Integer literals
-        if let Ok(val) = token.parse::<i64>() {
-            return Ok(Self::Literal(Value::Int(val)));
-        }
-
-        // 4. Float literals
-        if let Ok(val) = token.parse::<f64>() {
-            return Ok(Self::Literal(Value::Float(val)));
+        // 3. Numeric literals (strict grammar shared with the TS backend and
+        //    with `CompiledExpr::compile`, so a literal parses identically in
+        //    every position).
+        if let Some(num) = parse_number_literal(token) {
+            return Ok(Self::Literal(num));
         }
 
         // 5. Function calls: idx(binding), len(list), kind(enum)
@@ -1095,4 +1124,40 @@ fn parse_function_call(expr: &str) -> Option<(&str, &str)> {
         return None;
     }
     Some((func_name, arg))
+}
+
+/// Parse a numeric literal using the strict grammar `^-?[0-9]+(?:\.[0-9]+)?$`.
+///
+/// This deliberately rejects everything Rust's `str::parse` would otherwise
+/// accept but the TypeScript backend does not — scientific notation (`1e3`),
+/// hex (`0x10`), unary plus (`+5`), infinities/NaN, and bare leading/trailing
+/// dots (`.5`, `3.`). Digits are required on both sides of the decimal point,
+/// and at most one dot is allowed (so `3.1.4` is rejected). Leading zeros are
+/// permitted and normalized by the numeric parse (`007` → `7`), matching
+/// JavaScript's `Number()` semantics.
+///
+/// Returns [`Value::Int`] for integer literals and [`Value::Float`] for
+/// decimals, or `None` when `raw` is not a valid numeric literal.
+fn parse_number_literal(raw: &str) -> Option<Value> {
+    let digits = raw.strip_prefix('-').unwrap_or(raw);
+    if digits.is_empty() {
+        return None;
+    }
+    if let Some((int_part, frac_part)) = digits.split_once('.') {
+        // Float: exactly one dot, with digits required on both sides.
+        let both_sides_are_digits = !int_part.is_empty()
+            && !frac_part.is_empty()
+            && int_part.bytes().all(|b| b.is_ascii_digit())
+            && frac_part.bytes().all(|b| b.is_ascii_digit());
+        if !both_sides_are_digits {
+            return None;
+        }
+        raw.parse::<f64>().ok().map(Value::Float)
+    } else {
+        // Integer: digits only.
+        if !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        raw.parse::<i64>().ok().map(Value::Int)
+    }
 }

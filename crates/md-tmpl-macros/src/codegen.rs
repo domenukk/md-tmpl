@@ -288,6 +288,10 @@ fn codegen_compiled_expr(expr: &md_tmpl_core::compiled::CompiledExpr) -> proc_ma
             let path_tokens = codegen_compiled_path(path);
             quote! { #cp::compiled::CompiledExpr::Has(#path_tokens) }
         }
+        CompiledExpr::Literal(val) => {
+            let val_tokens = codegen_value(val);
+            quote! { #cp::compiled::CompiledExpr::Literal(#val_tokens) }
+        }
     }
 }
 
@@ -505,7 +509,7 @@ pub(crate) fn codegen_list_literal(
         let item_tokens = items.iter().map(|item| {
             if let Value::Struct(d) = item {
                 let field_tokens = fields.iter().map(|f_decl| {
-                    let f_name = format_ident!("{}", f_decl.name);
+                    let f_name = crate::make_ident(&f_decl.name);
                     let f_tokens = if let Some(f_val) = d.get(&f_decl.name) {
                         codegen_value_as_rust_literal(
                             f_val,
@@ -603,7 +607,7 @@ fn codegen_struct_literal(
     let capitalized = md_tmpl_core::to_pascal_case(field_name);
     let struct_name = format_ident!("{parent_struct}{capitalized}");
     let field_tokens = fields.iter().map(|f_decl| {
-        let f_name = format_ident!("{}", f_decl.name);
+        let f_name = crate::make_ident(&f_decl.name);
         let f_tokens = if let Some(f_val) = d.get(&f_decl.name) {
             codegen_value_as_rust_literal(
                 f_val,
@@ -650,7 +654,7 @@ fn codegen_data_enum_literal(
         quote! { #enum_name::#var_ident }
     } else {
         let field_tokens = variant.fields.iter().map(|f_decl| {
-            let f_name = format_ident!("{}", f_decl.name);
+            let f_name = crate::make_ident(&f_decl.name);
             let f_tokens = if let Some(f_val) = d.get(&f_decl.name) {
                 codegen_value_as_rust_literal(
                     f_val,

@@ -1,0 +1,54 @@
+# Cross-backend conformance corpus — escapes
+# AUTO-CONVERTED from JSON. Language-neutral: replayed by Rust, TypeScript,
+# Go, and Python harnesses. `null` option-None is encoded as the sentinel
+# inline table `{ __none__ = true }` (TOML has no null).
+
+[[cases]]
+name = "esc_backslash_backslash"
+note = "S1: \\\\ collapses to a single backslash"
+source = "---\nallow_unused: true\n\nparams:\n  - s = str := \"a\\\\b\"\n---\nx"
+expect = { kind = "default", defaults = { s = "a\\b" } }
+
+[[cases]]
+name = "esc_escaped_double_quote"
+note = "S2: \\\" is a literal double quote inside a double-quoted string"
+source = "---\nallow_unused: true\n\nparams:\n  - s = str := \"a\\\"b\"\n---\nx"
+expect = { kind = "default", defaults = { s = "a\"b" } }
+
+[[cases]]
+name = "esc_escaped_single_quote"
+note = "S3: \\' is a literal single quote"
+source = "---\nallow_unused: true\n\nparams:\n  - s = str := \"a\\'b\"\n---\nx"
+expect = { kind = "default", defaults = { s = "a'b" } }
+
+[[cases]]
+name = "esc_verbatim_backslash_sequences"
+note = "S4: unrecognised \\X sequences are kept verbatim (backslash preserved)"
+source = "---\nallow_unused: true\n\nparams:\n  - s = str := \"c:\\\\path\\\\n\"\n---\nx"
+expect = { kind = "default", defaults = { s = "c:\\path\\n" } }
+
+[[cases]]
+name = "esc_verbatim_single_backslash"
+note = "S4b: a single backslash before a letter is verbatim"
+source = "---\nallow_unused: true\n\nparams:\n  - s = str := \"c:\\path\"\n---\nx"
+expect = { kind = "default", defaults = { s = "c:\\path" } }
+
+[[cases]]
+name = "esc_escaped_quote_no_list_split"
+note = "S5: an escaped quote does NOT split a list literal (2 items)"
+source = "---\nallow_unused: true\n\nparams:\n  - xs = list(str) := [\"a\\\", b\", \"c\"]\n---\nx"
+expect = { kind = "default", defaults = { xs = ["a\", b", "c"] } }
+
+[[cases]]
+name = "esc_composes_with_interpolation_match"
+note = "escaped quotes + {{ }} interpolation compose inside a condition string (match)"
+source = "---\nparams:\n  - label = str\n  - name = str\n---\n\n> {% if label == \"he said \\\"{{ name }}\\\"\" %}\n\nMATCH\n\n> {% else %}\n\nNO\n\n> {% /if %}\n"
+params = { label = "he said \"Bob\"", name = "Bob" }
+expect = { kind = "render", output = "MATCH\n" }
+
+[[cases]]
+name = "esc_composes_with_interpolation_nomatch"
+note = "escaped quotes + {{ }} interpolation compose inside a condition string (no match)"
+source = "---\nparams:\n  - label = str\n  - name = str\n---\n\n> {% if label == \"he said \\\"{{ name }}\\\"\" %}\n\nMATCH\n\n> {% else %}\n\nNO\n\n> {% /if %}\n"
+params = { label = "he said \"Alice\"", name = "Bob" }
+expect = { kind = "render", output = "NO\n" }
