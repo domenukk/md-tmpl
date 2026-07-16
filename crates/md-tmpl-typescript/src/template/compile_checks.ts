@@ -8,6 +8,54 @@
 import { TemplateSyntaxError } from "../errors.js";
 import { type Node } from "../parser.js";
 import { EXPR_START } from "../consts.js";
+import { validateConditionSyntax } from "../evaluator.js";
+
+/**
+ * Walk AST nodes and validate the SYNTAX of every `{% if %}`/`{% elif %}`
+ * condition and every `{% case ... && guard %}` guard at construction time.
+ *
+ * This mirrors the Rust core, which parses conditions during compilation
+ * (before semantic analysis such as unused/undeclared checks). Validating
+ * here ensures malformed conditions surface as syntax errors first, matching
+ * the Rust backend byte-for-byte.
+ *
+ * @throws {TemplateSyntaxError} On the first syntactically-invalid condition.
+ */
+export function walkNodesForConditionSyntax(nodes: readonly Node[]): void {
+  for (const node of nodes) {
+    switch (node.kind) {
+      case "if":
+        for (const branch of node.branches) {
+          validateConditionSyntax(branch.condition);
+          walkNodesForConditionSyntax(branch.body);
+        }
+        if (node.elseBody) {
+          walkNodesForConditionSyntax(node.elseBody);
+        }
+        break;
+      case "match":
+        for (const arm of node.arms) {
+          if (arm.guard !== undefined) {
+            validateConditionSyntax(arm.guard);
+          }
+          walkNodesForConditionSyntax(arm.body);
+        }
+        if (node.elseArm) {
+          walkNodesForConditionSyntax(node.elseArm);
+        }
+        if (node.inlineGuard) {
+          walkNodesForConditionSyntax(node.inlineGuard.body);
+        }
+        break;
+      case "for":
+        walkNodesForConditionSyntax(node.body);
+        if (node.elseBody) {
+          walkNodesForConditionSyntax(node.elseBody);
+        }
+        break;
+    }
+  }
+}
 
 /**
  * Walk AST nodes and reject bare enum literal expressions.
@@ -103,8 +151,8 @@ export function walkNodesForMatchTypeSafety(
         const allLabels = collectMatchLabels(node);
         const isQuoted = (l: string) =>
           l.length >= 2 &&
-          ((l[0] === '"' && l[l.length - 1] === '"') ||
-            (l[0] === "'" && l[l.length - 1] === "'"));
+          ((l.startsWith('"') && l.endsWith('"')) ||
+            (l.startsWith("'") && l.endsWith("'")));
 
         if (typeKind === "enum") {
           // Quoted labels on enum types are an error.
@@ -166,8 +214,8 @@ type LabelKind = "quoted" | "interpolated" | "bool" | "int" | "float" | "ident";
 function classifyLabel(label: string): LabelKind {
   if (
     label.length >= 2 &&
-    ((label[0] === '"' && label[label.length - 1] === '"') ||
-      (label[0] === "'" && label[label.length - 1] === "'"))
+    ((label.startsWith('"') && label.endsWith('"')) ||
+      (label.startsWith("'") && label.endsWith("'")))
   ) {
     const inner = label.slice(1, -1);
     if (inner.includes(EXPR_START)) return "interpolated";

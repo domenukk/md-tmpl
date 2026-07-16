@@ -652,6 +652,19 @@ params: [name = str]
 // -- validate_declarations: type change detection --------------------------
 
 #[test]
+fn empty_frontmatter_block_compiles_and_renders() {
+    // A present-but-empty frontmatter block declares no params (it does not
+    // set `has_params`); it used to be misreported as an unclosed block.
+    let source = r"---
+---
+# Plain
+";
+    let (tmpl, fm) = Template::compile(source, CompileOptions::default()).unwrap();
+    assert!(fm.declarations.is_empty());
+    assert_eq!(tmpl.render_empty().unwrap().trim(), "# Plain");
+}
+
+#[test]
 fn validate_declarations_detects_type_change() {
     // Template declares [a: str], but expected has [a: int] → type changed.
     let tmpl = Template::from_source(
@@ -970,6 +983,20 @@ params: [name = str, count = int]
         // Under mandatory validation, parsing without frontmatter or with undeclared variables errors out.
         Template::from_source("{{ name }} has {{ count }}")
             .expect_err("template without frontmatter should fail");
+    }
+
+    /// D3: referencing a name that is not a declared param/const/enum/import is a
+    /// compile-time error carrying the shared `undeclared variable` substring.
+    #[test]
+    fn d3_undeclared_variable_is_compile_error() {
+        let err = Template::from_source(
+            "---\nparams: [declared = str]\n---\n{{ declared }} {{ missing }}",
+        )
+        .expect_err("undeclared variable must be rejected at compile time");
+        assert!(
+            err.to_string().contains("undeclared variable"),
+            "expected 'undeclared variable' substring, got: {err}"
+        );
     }
 
     #[derive(serde::Serialize)]
@@ -2580,4 +2607,186 @@ Hello!",
     let mut buf = String::from("prefix: ");
     tmpl.render_empty_into(&mut buf).unwrap();
     assert_eq!(buf, "prefix: Hello!");
+}
+
+// =========================================================================
+// Escape-sequence render matrix (S6–S7) and interpolation-composition (I1–I5).
+// These lock in that `{{ }}` interpolation still composes with backslash
+// escapes inside statement/expression string literals after unescaping lands.
+// Frontmatter default strings remain literal (no interpolation) — that is
+// covered by the frontmatter suite; here we only exercise `{% %}`/`{{ }}`.
+// See scratch/md_tmpl_escapes_spec.md and the maintainer follow-up (I1–I5).
+// =========================================================================
+
+/// Compile a parent template whose body is `parent_body`, alongside a
+/// `child.tmpl.md` file with the given contents, sharing a temp base dir.
+fn compile_parent_with_child(
+    parent_params: &str,
+    parent_body: &str,
+    child: &str,
+) -> (Template, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("child.tmpl.md"), child).unwrap();
+    let src = format!("---\nparams: {parent_params}\n---\n{parent_body}");
+    let (tmpl, _) =
+        Template::compile(&src, CompileOptions::default().base_dir(dir.path())).unwrap();
+    (tmpl, dir)
+}
+
+#[test]
+fn s6_escaped_quote_in_condition_literal() {
+    // S6: a statement string literal `"a\"b"` parses; its value is `a"b`.
+    let tmpl = Template::from_source(
+        r#"---
+params: [x = str]
+---
+> {% if x == "a\"b" %}yes{% /if %}"#,
+    )
+    .unwrap();
+    let mut ctx = Context::new();
+    ctx.set("x", "a\"b");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "yes");
+}
+
+#[test]
+fn s7_escape_and_interpolation_compose_in_condition() {
+    // S7: `"x \" {{ v }}"` unescapes to `x " ` then interpolates `v`.
+    let tmpl = Template::from_source(
+        r#"---
+params:
+  - v = str
+  - expected = str
+---
+> {% if "x \" {{ v }}" == expected %}ok{% /if %}"#,
+    )
+    .unwrap();
+    let mut ctx = Context::new();
+    ctx.set("v", "Z");
+    ctx.set("expected", "x \" Z");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "ok");
+}
+
+#[test]
+fn i1_escaped_quote_plus_interpolation_in_if() {
+    // I1: escaped quotes AND an interpolation together in an `if` literal.
+    let tmpl = Template::from_source(
+        r#"---
+params:
+  - a = str
+  - b = str
+---
+> {% if a == "say \"hi\" to {{ b }}" %}match{% /if %}"#,
+    )
+    .unwrap();
+    let mut ctx = Context::new();
+    ctx.set("a", "say \"hi\" to Z");
+    ctx.set("b", "Z");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "match");
+}
+
+#[test]
+fn i2_include_with_escaped_quote_and_interpolation() {
+    // I2: an include `with` override that mixes interpolation and escaped
+    // quotes renders the composed string.
+    let (tmpl, _dir) = compile_parent_with_child(
+        "[name = str]",
+        r#"> {% include [child](./child.tmpl.md) with title="{{ name }}: \"quoted\"" %}"#,
+        "---\nparams: [title = str]\n---\n{{ title }}",
+    );
+    let mut ctx = Context::new();
+    ctx.set("name", "Ada");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), r#"Ada: "quoted""#);
+}
+
+#[test]
+fn i3_in_operator_with_escape_and_interpolation() {
+    // I3: the `in` operator's left literal composes an escaped quote with an
+    // interpolation, matching an element whose value contains a quote.
+    let tmpl = Template::from_source(
+        r#"---
+params:
+  - key = str
+  - items = list(str)
+---
+> {% if "k_\"{{ key }}\"" in items %}found{% /if %}"#,
+    )
+    .unwrap();
+    let mut ctx = Context::new();
+    ctx.set("key", "a");
+    ctx.set(
+        "items",
+        Value::List(Arc::new(vec![Value::Str("k_\"a\"".into())])),
+    );
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "found");
+}
+
+#[test]
+fn i4_interpolation_boundary_after_escaped_quote() {
+    // I4: a leading escaped quote must not swallow the following `{{ x }}`
+    // interpolation boundary — the literal is `"` + value of `x`.
+    let tmpl = Template::from_source(
+        r#"---
+params:
+  - x = str
+  - expected = str
+---
+> {% if expected == "\"{{ x }}" %}ok{% /if %}"#,
+    )
+    .unwrap();
+    let mut ctx = Context::new();
+    ctx.set("x", "Z");
+    ctx.set("expected", "\"Z");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "ok");
+}
+
+#[test]
+fn i5_plain_interpolation_still_works_without_escapes() {
+    // I5: guard against scanner regressions — plain interpolation (no escapes)
+    // must still work in `if`, `in`, and include `with`.
+
+    // if
+    let if_tmpl = Template::from_source(
+        r#"---
+params:
+  - s = str
+  - n = str
+---
+> {% if s == "hi {{ n }}" %}ok{% /if %}"#,
+    )
+    .unwrap();
+    let mut if_ctx = Context::new();
+    if_ctx.set("s", "hi Bob");
+    if_ctx.set("n", "Bob");
+    assert_eq!(if_tmpl.render_ctx(&if_ctx).unwrap(), "ok");
+
+    // in
+    let membership_tmpl = Template::from_source(
+        r#"---
+params:
+  - k = str
+  - items = list(str)
+---
+> {% if "v{{ k }}" in items %}found{% /if %}"#,
+    )
+    .unwrap();
+    let mut membership_ctx = Context::new();
+    membership_ctx.set("k", "A");
+    membership_ctx.set(
+        "items",
+        Value::List(Arc::new(vec![Value::Str("vA".into())])),
+    );
+    assert_eq!(
+        membership_tmpl.render_ctx(&membership_ctx).unwrap(),
+        "found"
+    );
+
+    // include with
+    let (with_tmpl, _dir) = compile_parent_with_child(
+        "[name = str]",
+        r#"> {% include [child](./child.tmpl.md) with title="hello {{ name }}" %}"#,
+        "---\nparams: [title = str]\n---\n{{ title }}",
+    );
+    let mut with_ctx = Context::new();
+    with_ctx.set("name", "Ada");
+    assert_eq!(with_tmpl.render_ctx(&with_ctx).unwrap(), "hello Ada");
 }

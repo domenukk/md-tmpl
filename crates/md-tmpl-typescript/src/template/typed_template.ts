@@ -163,6 +163,7 @@ export class TypedTemplate<P extends object> {
   }
 
   toString(): string {
-    return `TypedTemplate(${this.inner})`;
+    const inner = (this.inner as { toString(): string }).toString();
+    return `TypedTemplate(${inner})`;
   }
 }

@@ -37,19 +37,128 @@ pub(crate) fn join_continuation_lines(block: &str) -> Vec<String> {
         if trimmed.is_empty() || trimmed.starts_with(crate::consts::FM_COMMENT_PREFIX) {
             continue;
         }
+        // For block list items, strip a YAML-consistent inline `#` comment from
+        // the item scalar before joining (see `strip_list_item_comment`). Other
+        // lines keep their original form so existing layout behavior is intact.
+        let cleaned: Option<String> = match trimmed.strip_prefix(crate::consts::LIST_ITEM_PREFIX) {
+            Some(scalar) => {
+                let kept = strip_list_item_comment(scalar.trim_start());
+                if kept.is_empty() {
+                    // `- # comment` → empty list item; skip like a comment line.
+                    continue;
+                }
+                Some(alloc::format!("{}{kept}", crate::consts::LIST_ITEM_PREFIX))
+            }
+            None => None,
+        };
         if raw.starts_with(' ') || raw.starts_with('\t') {
             // Continuation of previous logical line.
             if let Some(prev) = logical.last_mut() {
                 prev.push(' ');
-                prev.push_str(trimmed);
+                prev.push_str(cleaned.as_deref().unwrap_or(trimmed));
             } else {
-                logical.push(raw.to_string());
+                logical.push(cleaned.unwrap_or_else(|| raw.to_string()));
             }
         } else {
-            logical.push(raw.to_string());
+            logical.push(cleaned.unwrap_or_else(|| raw.to_string()));
         }
     }
     logical
+}
+
+/// Strip a YAML-consistent inline `#` comment from a block list-item scalar.
+///
+/// `scalar` is the text following the `- ` block-sequence marker. Matches real
+/// YAML plain-scalar comment semantics: a `#` that begins the scalar or is
+/// preceded by whitespace starts a comment running to end of line.
+///
+/// A scalar wholly wrapped in a YAML quote (`"..."` / `'...'`) protects any `#`
+/// inside the quotes — only a `#` appearing after the closing quote is treated
+/// as a comment. This is intentionally NOT md-tmpl-string-aware: the `"` inside
+/// an unquoted (plain) scalar such as `x = str := "a # b"` are ordinary
+/// characters, so ` #` still starts a comment, mirroring real YAML.
+///
+/// The returned slice has trailing whitespace trimmed when a comment was
+/// removed.
+pub(crate) fn strip_list_item_comment(scalar: &str) -> &str {
+    match scalar.chars().next() {
+        Some(crate::consts::QUOTE_DOUBLE) => {
+            match closing_double_quote_end(scalar) {
+                Some(end) => match find_yaml_comment(&scalar[end..], false) {
+                    Some(pos) => scalar[..end + pos].trim_end(),
+                    None => scalar,
+                },
+                // Unterminated quote — leave untouched; downstream reports it.
+                None => scalar,
+            }
+        }
+        Some(crate::consts::QUOTE_SINGLE) => match closing_single_quote_end(scalar) {
+            Some(end) => match find_yaml_comment(&scalar[end..], false) {
+                Some(pos) => scalar[..end + pos].trim_end(),
+                None => scalar,
+            },
+            None => scalar,
+        },
+        _ => match find_yaml_comment(scalar, true) {
+            Some(pos) => scalar[..pos].trim_end(),
+            None => scalar,
+        },
+    }
+}
+
+/// Find the byte index of a `#` that begins a YAML comment.
+///
+/// A `#` starts a comment when preceded by ASCII whitespace, or — when
+/// `start_is_comment` is `true` — when it is the first character of the string.
+fn find_yaml_comment(s: &str, start_is_comment: bool) -> Option<usize> {
+    let mut prev: Option<char> = None;
+    for (i, c) in s.char_indices() {
+        if c == crate::consts::FM_COMMENT_PREFIX {
+            let is_comment = match prev {
+                None => start_is_comment,
+                Some(p) => p == ' ' || p == '\t',
+            };
+            if is_comment {
+                return Some(i);
+            }
+        }
+        prev = Some(c);
+    }
+    None
+}
+
+/// Return the byte index just past the closing `"` of a YAML double-quoted
+/// scalar that starts at index 0, honoring `\`-escapes. Returns `None` if the
+/// quote is never closed.
+fn closing_double_quote_end(s: &str) -> Option<usize> {
+    let mut escaped = false;
+    for (i, c) in s.char_indices().skip(1) {
+        if escaped {
+            escaped = false;
+        } else if c == crate::consts::BACKSLASH {
+            escaped = true;
+        } else if c == crate::consts::QUOTE_DOUBLE {
+            return Some(i + c.len_utf8());
+        }
+    }
+    None
+}
+
+/// Return the byte index just past the closing `'` of a YAML single-quoted
+/// scalar that starts at index 0. In YAML single-quoted scalars, `''` is an
+/// escaped literal quote. Returns `None` if the quote is never closed.
+fn closing_single_quote_end(s: &str) -> Option<usize> {
+    let mut it = s.char_indices().skip(1).peekable();
+    while let Some((i, c)) = it.next() {
+        if c == crate::consts::QUOTE_SINGLE {
+            if it.peek().map(|&(_, c2)| c2) == Some(crate::consts::QUOTE_SINGLE) {
+                it.next(); // consume the second quote of an escaped `''`
+                continue;
+            }
+            return Some(i + c.len_utf8());
+        }
+    }
+    None
 }
 
 /// Parse the value part after `params:` or `consts:`.
@@ -101,7 +210,13 @@ pub(crate) fn parse_declarations(
     let mut current_consts = available_consts.clone();
     for entry in &entries {
         let e = entry.trim();
-        let trimmed = crate::consts::strip_string_literal(e).unwrap_or(e).trim();
+        // A decl may be wrapped in an outer YAML quoted scalar
+        // (e.g. `"name = str := \"a # b\""`). Strip those quotes and apply YAML
+        // double-quote unescaping so the inner md-tmpl declaration is recovered
+        // (this protects `#` inside the outer quotes from comment stripping).
+        let unescaped =
+            crate::consts::strip_string_literal(e).map(crate::consts::unescape_string_literal);
+        let trimmed = unescaped.as_deref().map_or(e, str::trim);
         if let Some(decl) = parse_single_declaration(
             trimmed,
             type_aliases,
@@ -140,6 +255,16 @@ fn parse_single_declaration(
 
     let name = trimmed[..eq_pos].trim().to_string();
     let type_and_default = trimmed[eq_pos + 1..].trim();
+
+    // If the matched `=` is actually the `=` of a `:=` operator, the declaration
+    // supplies a default but no explicit type (e.g. `x := "hello"`).
+    if eq_pos > 0 && trimmed.as_bytes()[eq_pos - 1] == crate::consts::COLON_BYTE {
+        let label = if is_constant { "constant" } else { "param" };
+        let bare_name = trimmed[..eq_pos - 1].trim();
+        return Err(TemplateError::syntax(format!(
+            "{label} '{bare_name}' must have an explicit type (expected 'name = type := value')"
+        )));
+    }
 
     // Check duplicate names.
     if !seen_names.insert(name.clone()) {
@@ -184,6 +309,11 @@ fn parse_single_declaration(
         .or_else(|| resolve_const_default(dp, current_consts))
         .or_else(|| resolve_kinds_default(dp, type_aliases, resolved_imports))
         .ok_or_else(|| {
+            // A qualified `Type.Variant` reference is only valid in expression
+            // position; in a default it must be the bare variant name.
+            if let Some(msg) = qualified_variant_default_error(dp, &var_type) {
+                return TemplateError::syntax(format!("declaration '{name}': {msg}"));
+            }
             TemplateError::syntax(format!(
                 "invalid default value '{dp}' for declaration '{name}' (strings must be quoted)"
             ))
@@ -252,9 +382,16 @@ pub(crate) fn split_at_depth_zero(input: &str) -> Vec<&str> {
     // When inside a string literal, holds the opening quote char; delimiters are
     // ignored until the matching closing quote is seen.
     let mut in_quote: Option<char> = None;
+    // When inside a quote, tracks whether the previous char was an unescaped
+    // backslash (which escapes the current char, e.g. `\"` does not close).
+    let mut escaped = false;
     for (i, ch) in input.char_indices() {
         if let Some(q) = in_quote {
-            if ch == q {
+            if escaped {
+                escaped = false;
+            } else if ch == crate::consts::BACKSLASH {
+                escaped = true;
+            } else if ch == q {
                 in_quote = None;
             }
             continue;
@@ -790,7 +927,7 @@ pub(crate) fn parse_default_value_full(
 
     // Quoted string
     if let Some(inner) = crate::consts::strip_string_literal(s) {
-        return Some(Value::Str(inner.to_string()));
+        return Some(Value::Str(crate::consts::unescape_string_literal(inner)));
     }
 
     // Boolean
@@ -847,6 +984,39 @@ pub(crate) fn parse_default_value_full(
     // Intentional removal of fallback: unquoted strings are no longer allowed
     // as default values. All string defaults must be explicitly quoted.
     None
+}
+
+/// Return the enum variants for `var_type`, transparently unwrapping
+/// `option(T)` so `option(Stage)` is treated like `Stage`. Returns `None` for
+/// non-enum types.
+fn enum_variants_of(var_type: &VarType) -> Option<&[crate::types::VariantDecl]> {
+    match var_type {
+        VarType::Enum(variants) => Some(variants),
+        VarType::Option(inner) => enum_variants_of(inner),
+        _ => None,
+    }
+}
+
+/// If `default` is a qualified `Type.Variant` reference for an enum-typed (or
+/// `option(enum)`) declaration whose suffix names a real variant, return a
+/// helpful error message. Qualified references are only valid in expression
+/// position; defaults must use the bare variant name.
+///
+/// Returns `None` when the type is not an enum or the default is not a
+/// qualified reference to one of its variants, so const/other fallbacks keep
+/// their generic error.
+fn qualified_variant_default_error(default: &str, var_type: &VarType) -> Option<String> {
+    let variants = enum_variants_of(var_type)?;
+    let (_, suffix) = default.rsplit_once(crate::consts::PATH_SEP)?;
+    let suffix = suffix.trim();
+    if variants.iter().any(|v| v.name == suffix) {
+        Some(alloc::format!(
+            "invalid enum default '{default}': use the bare variant name '{suffix}' \
+             (a qualified 'Type.Variant' is only valid in expressions)"
+        ))
+    } else {
+        None
+    }
 }
 
 /// Parse a default value for an enum variant — either a unit variant name

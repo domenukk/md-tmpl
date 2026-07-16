@@ -14,11 +14,21 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
-const TOML = require("smol-toml") as {
-  parse: (s: string) => Record<string, unknown>;
-};
+import { parse as parseToml } from "smol-toml";
 
 import { Template } from "../index.js";
+
+/**
+ * Check if an error message matches an expected_error pattern.
+ * Supports `|` as OR separator: "reserved keyword|shadows built-in"
+ * means the error must contain at least one of the alternatives.
+ */
+function matchesExpectedError(message: string, pattern: string): boolean {
+  const alternatives = pattern.split("|");
+  return alternatives.some((alt) =>
+    message.toLowerCase().includes(alt.toLowerCase()),
+  );
+}
 
 // ---------------------------------------------------------------------------
 // TOML option-convention helpers
@@ -61,7 +71,10 @@ function transformValue(value: unknown): unknown {
 // Fixture paths
 // ---------------------------------------------------------------------------
 
-const FIXTURES_DIR = path.resolve(__dirname, "../../../../tests/shared");
+const FIXTURES_DIR = path.resolve(
+  import.meta.dirname,
+  "../../../../tests/shared",
+);
 
 const INLINE_TMPL_FIXTURES = path.join(FIXTURES_DIR, "inline_tmpl_tests.toml");
 const INCLUDE_FIXTURES = path.join(FIXTURES_DIR, "include_tests.toml");
@@ -82,7 +95,7 @@ interface InlineTmplTestCase {
   description: string;
   template_lines?: string[];
   template?: string;
-  params: Record<string, unknown>;
+  params?: Record<string, unknown>;
   expected_output?: string;
   expected_error?: string;
 }
@@ -101,10 +114,10 @@ interface EnvTestCase {
 interface IncludeTestCase {
   name: string;
   description: string;
-  files: Record<string, string[] | string>;
+  files?: Record<string, string[] | string>;
   parent_template_lines?: string[];
   parent_template?: string;
-  params: Record<string, unknown>;
+  params?: Record<string, unknown>;
   env?: Record<string, string>;
   expected_output?: string;
   expected_error?: string;
@@ -125,7 +138,7 @@ function getTemplateSrc(tc: InlineTmplTestCase): string {
     }
     return tc.template;
   }
-  return joinLines(tc.template_lines || []);
+  return joinLines(tc.template_lines ?? []);
 }
 
 // ---------------------------------------------------------------------------
@@ -134,7 +147,7 @@ function getTemplateSrc(tc: InlineTmplTestCase): string {
 
 describe("Shared: Inline template tests", () => {
   const raw = fs.readFileSync(INLINE_TMPL_FIXTURES, "utf-8");
-  const { tests } = TOML.parse(raw) as unknown as {
+  const { tests } = parseToml(raw) as unknown as {
     tests: InlineTmplTestCase[];
   };
 
@@ -144,27 +157,24 @@ describe("Shared: Inline template tests", () => {
 
       if (tc.expected_output !== undefined) {
         const tmpl = Template.fromSource(src);
-        const output = tmpl.render(transformOptionValues(tc.params || {}));
+        const output = tmpl.render(transformOptionValues(tc.params ?? {}));
         assert.strictEqual(
           output,
           tc.expected_output,
           `${tc.description}: output mismatch`,
         );
       } else if (tc.expected_error !== undefined) {
+        const expectedError = tc.expected_error;
         assert.throws(
           () => {
             const tmpl = Template.fromSource(src);
-            tmpl.render(transformOptionValues(tc.params || {}));
+            tmpl.render(transformOptionValues(tc.params ?? {}));
           },
           (err: unknown) => {
             if (!(err instanceof Error)) return false;
             return (
-              err.message
-                .toLowerCase()
-                .includes(tc.expected_error!.toLowerCase()) ||
-              err.constructor.name
-                .toLowerCase()
-                .includes(tc.expected_error!.toLowerCase())
+              matchesExpectedError(err.message, expectedError) ||
+              matchesExpectedError(err.constructor.name, expectedError)
             );
           },
           `${tc.description}: expected error containing '${tc.expected_error}'`,
@@ -180,14 +190,14 @@ describe("Shared: Inline template tests", () => {
 
 describe("Shared: File-based include tests", () => {
   const raw = fs.readFileSync(INCLUDE_FIXTURES, "utf-8");
-  const { tests } = TOML.parse(raw) as unknown as { tests: IncludeTestCase[] };
+  const { tests } = parseToml(raw) as unknown as { tests: IncludeTestCase[] };
 
   for (const tc of tests) {
     it(tc.name, () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pt-shared-"));
       try {
         // Write all include files to the temp directory.
-        for (const [filename, content] of Object.entries(tc.files || {})) {
+        for (const [filename, content] of Object.entries(tc.files ?? {})) {
           let contentStr =
             typeof content === "string" ? content : joinLines(content);
           if (contentStr.endsWith(".tmpl.md")) {
@@ -201,9 +211,10 @@ describe("Shared: File-based include tests", () => {
           fs.writeFileSync(filePath, contentStr);
         }
 
-        let parentSrc =
-          tc.parent_template ||
-          (tc.parent_template_lines ? joinLines(tc.parent_template_lines) : "");
+        let parentSrc = tc.parent_template ?? "";
+        if (parentSrc === "" && tc.parent_template_lines) {
+          parentSrc = joinLines(tc.parent_template_lines);
+        }
         if (parentSrc.endsWith(".tmpl.md")) {
           const fullPath = path.resolve(FIXTURES_DIR, parentSrc);
           if (fs.existsSync(fullPath)) {
@@ -218,7 +229,7 @@ describe("Shared: File-based include tests", () => {
                 baseDir: dir,
               })
             : Template.fromSourceWithBaseDir(parentSrc, dir);
-          const output = tmpl.render(transformOptionValues(tc.params || {}));
+          const output = tmpl.render(transformOptionValues(tc.params ?? {}));
           assert.strictEqual(
             output,
             tc.expected_output,
@@ -234,7 +245,7 @@ describe("Shared: File-based include tests", () => {
                     baseDir: dir,
                   })
                 : Template.fromSourceWithBaseDir(parentSrc, dir);
-              tmpl.render(transformOptionValues(tc.params || {}));
+              tmpl.render(transformOptionValues(tc.params ?? {}));
             },
             (err: Error) => {
               assert.ok(
@@ -261,7 +272,7 @@ describe("Shared: File-based include tests", () => {
 
 describe("Shared: Inline control flow tests", () => {
   const raw = fs.readFileSync(INLINE_CONTROL_FIXTURES, "utf-8");
-  const { tests } = TOML.parse(raw) as unknown as {
+  const { tests } = parseToml(raw) as unknown as {
     tests: InlineTmplTestCase[];
   };
 
@@ -271,7 +282,7 @@ describe("Shared: Inline control flow tests", () => {
 
       if (tc.expected_output !== undefined) {
         const tmpl = Template.fromSource(templateSrc);
-        const output = tmpl.render(transformOptionValues(tc.params || {}));
+        const output = tmpl.render(transformOptionValues(tc.params ?? {}));
         assert.strictEqual(
           output,
           tc.expected_output,
@@ -282,13 +293,11 @@ describe("Shared: Inline control flow tests", () => {
         assert.throws(
           () => {
             const tmpl = Template.fromSource(templateSrc);
-            tmpl.render(transformOptionValues(tc.params || {}));
+            tmpl.render(transformOptionValues(tc.params ?? {}));
           },
           (err: Error) => {
             assert.ok(
-              err.message
-                .toLowerCase()
-                .includes(expectedSubstring.toLowerCase()),
+              matchesExpectedError(err.message, expectedSubstring),
               `expected error containing "${expectedSubstring}", got: "${err.message}"`,
             );
             return true;
@@ -306,7 +315,7 @@ describe("Shared: Inline control flow tests", () => {
 
 describe("Shared: tmpl() parameter tests", () => {
   const raw = fs.readFileSync(TMPL_PARAM_FIXTURES, "utf-8");
-  const { tests } = TOML.parse(raw) as unknown as {
+  const { tests } = parseToml(raw) as unknown as {
     tests: InlineTmplTestCase[];
   };
 
@@ -316,7 +325,7 @@ describe("Shared: tmpl() parameter tests", () => {
 
       if (tc.expected_output !== undefined) {
         const tmpl = Template.fromSource(templateSrc);
-        const output = tmpl.render(transformOptionValues(tc.params || {}));
+        const output = tmpl.render(transformOptionValues(tc.params ?? {}));
         assert.strictEqual(
           output,
           tc.expected_output,
@@ -327,13 +336,11 @@ describe("Shared: tmpl() parameter tests", () => {
         assert.throws(
           () => {
             const tmpl = Template.fromSource(templateSrc);
-            tmpl.render(transformOptionValues(tc.params || {}));
+            tmpl.render(transformOptionValues(tc.params ?? {}));
           },
           (err: Error) => {
             assert.ok(
-              err.message
-                .toLowerCase()
-                .includes(expectedSubstring.toLowerCase()),
+              matchesExpectedError(err.message, expectedSubstring),
               `expected error containing "${expectedSubstring}", got: "${err.message}"`,
             );
             return true;
@@ -351,7 +358,7 @@ describe("Shared: tmpl() parameter tests", () => {
 
 describe("Shared: Feature E2E tests (Milestone E2E.2)", () => {
   const raw = fs.readFileSync(FEATURE_E2E_FIXTURES, "utf-8");
-  const { tests } = TOML.parse(raw) as unknown as {
+  const { tests } = parseToml(raw) as unknown as {
     tests: InlineTmplTestCase[];
   };
 
@@ -361,7 +368,7 @@ describe("Shared: Feature E2E tests (Milestone E2E.2)", () => {
 
       if (tc.expected_output !== undefined) {
         const tmpl = Template.fromSource(templateSrc);
-        const output = tmpl.render(transformOptionValues(tc.params || {}));
+        const output = tmpl.render(transformOptionValues(tc.params ?? {}));
         assert.strictEqual(
           output,
           tc.expected_output,
@@ -372,13 +379,11 @@ describe("Shared: Feature E2E tests (Milestone E2E.2)", () => {
         assert.throws(
           () => {
             const tmpl = Template.fromSource(templateSrc);
-            tmpl.render(transformOptionValues(tc.params || {}));
+            tmpl.render(transformOptionValues(tc.params ?? {}));
           },
           (err: Error) => {
             assert.ok(
-              err.message
-                .toLowerCase()
-                .includes(expectedSubstring.toLowerCase()),
+              matchesExpectedError(err.message, expectedSubstring),
               `expected error containing "${expectedSubstring}", got: "${err.message}"`,
             );
             return true;
@@ -396,7 +401,7 @@ describe("Shared: Feature E2E tests (Milestone E2E.2)", () => {
 
 describe("Shared: Env tests", () => {
   const raw = fs.readFileSync(ENV_FIXTURES, "utf-8");
-  const { tests } = TOML.parse(raw) as unknown as {
+  const { tests } = parseToml(raw) as unknown as {
     tests: EnvTestCase[];
   };
 
@@ -410,7 +415,7 @@ describe("Shared: Env tests", () => {
       }
       return tc.template;
     }
-    return joinLines(tc.template_lines || []);
+    return joinLines(tc.template_lines ?? []);
   }
 
   for (const tc of tests) {
@@ -426,6 +431,7 @@ describe("Shared: Env tests", () => {
           `${tc.description}: output mismatch`,
         );
       } else if (tc.expected_error !== undefined) {
+        const expectedError = tc.expected_error;
         assert.throws(
           () => {
             const tmpl = Template.fromSourceWithEnv(src, tc.env ?? {});
@@ -434,12 +440,8 @@ describe("Shared: Env tests", () => {
           (err: unknown) => {
             if (!(err instanceof Error)) return false;
             return (
-              err.message
-                .toLowerCase()
-                .includes(tc.expected_error!.toLowerCase()) ||
-              err.constructor.name
-                .toLowerCase()
-                .includes(tc.expected_error!.toLowerCase())
+              matchesExpectedError(err.message, expectedError) ||
+              matchesExpectedError(err.constructor.name, expectedError)
             );
           },
           `${tc.description}: expected error containing '${tc.expected_error}'`,

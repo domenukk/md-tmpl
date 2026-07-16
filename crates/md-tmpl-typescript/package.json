@@ -1,13 +1,18 @@
 {
   "name": "md-tmpl",
-  "version": "0.7.1",
+  "version": "0.9.0",
   "description": "Strongly-typed template engine for LLM prompts, designed for markdown",
+  "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./browser": {
+      "types": "./dist/browser/index.d.ts",
+      "default": "./dist/browser/index.js"
     }
   },
   "files": [
@@ -23,6 +28,7 @@
     "test": "node --test dist/tests/*.test.js",
     "bench": "node dist/benchmarks/bench.js",
     "lint": "tsc --noEmit",
+    "lint:eslint": "eslint .",
     "clean": "rm -rf dist"
   },
   "keywords": [
@@ -44,14 +50,18 @@
     "url": "https://github.com/domenukk/md-tmpl/issues"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.16.0"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/mustache": "^4.2.6",
     "@types/node": "^25.9.3",
+    "eslint": "^10.7.0",
+    "globals": "^17.7.0",
     "handlebars": "^4.7.9",
     "mustache": "^4.2.0",
     "smol-toml": "^1.7.0",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.64.0"
   }
 }

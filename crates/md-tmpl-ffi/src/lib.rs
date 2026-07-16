@@ -15,12 +15,6 @@
 //! means success. The caller owns the error string and must free it with
 //! `pt_free_string`.
 
-// Panic paths in FFI are only reachable via CString::new on controlled strings.
-#![expect(
-    clippy::missing_panics_doc,
-    reason = "C FFI functions; panics documented in # Safety sections"
-)]
-
 use std::{
     ffi::{CStr, CString, c_char},
     sync::Arc,

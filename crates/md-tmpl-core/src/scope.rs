@@ -171,11 +171,12 @@ impl ConditionOperand {
 
         // 1. String literals (with optional {{ expr }} interpolation)
         if let Some(inner) = crate::consts::strip_string_literal(token) {
+            let inner = crate::consts::unescape_string_literal(inner);
             if inner.contains(crate::consts::EXPR_START) {
-                let segments = crate::compiled::compile_body(inner)?;
+                let segments = crate::compiled::compile_body(&inner)?;
                 return Ok(Self::InterpolatedStr(segments));
             }
-            return Ok(Self::Literal(Value::Str(inner.to_string())));
+            return Ok(Self::Literal(Value::Str(inner)));
         }
 
         // 2. Boolean literals
@@ -376,6 +377,11 @@ pub struct Scope<'a> {
     imported_consts_stack: Vec<Arc<HashMap<String, Value>>>,
     /// Stack of parameter declarations (used to check option types).
     declarations_stack: Vec<Arc<[crate::types::VarDecl]>>,
+    /// Option params that have been narrowed to Some (unwrapped) in an
+    /// enclosing match/if-has arm.  `is_option_path` returns `false` for
+    /// narrowed params so that `kind()` and inner `match` blocks see the
+    /// unwrapped enum value.
+    narrowed_options: Vec<String>,
     /// Compile-time environment values for propagation to included files.
     #[cfg(feature = "std")]
     env_values: Arc<[(String, Value)]>,
@@ -401,6 +407,7 @@ impl<'a> Scope<'a> {
             consts_stack: Vec::new(),
             imported_consts_stack: Vec::new(),
             declarations_stack: Vec::new(),
+            narrowed_options: Vec::new(),
             #[cfg(feature = "std")]
             env_values: Arc::from([]),
         }
@@ -427,6 +434,7 @@ impl<'a> Scope<'a> {
             consts_stack: Vec::new(),
             imported_consts_stack: Vec::new(),
             declarations_stack: Vec::new(),
+            narrowed_options: Vec::new(),
             env_values: Arc::from([]),
         }
     }
@@ -623,6 +631,11 @@ impl<'a> Scope<'a> {
 
     /// Check if a dotted variable path resolves to an option type in declared parameters.
     pub(crate) fn is_option_path(&self, arg: &str) -> bool {
+        // If this path has been narrowed (unwrapped via case Some / if has()),
+        // it is no longer an option for kind()/match purposes.
+        if self.narrowed_options.iter().any(|s| s == arg) {
+            return false;
+        }
         let root = arg.split(crate::consts::PATH_SEP).next().unwrap_or(arg);
         for decls in self.declarations_stack.iter().rev() {
             if let Some(decl) = decls.iter().find(|d| d.name == root) {
@@ -650,6 +663,24 @@ impl<'a> Scope<'a> {
             }
         }
         false
+    }
+
+    /// Mark an option param as narrowed (unwrapped) in the current scope.
+    ///
+    /// After narrowing, `is_option_path(name)` returns `false` so inner match
+    /// blocks and `kind()` see the unwrapped enum value.
+    pub(crate) fn narrow_option(&mut self, name: &str) {
+        self.narrowed_options.push(name.to_string());
+    }
+
+    /// Remove the most recent narrowing for `name`.
+    ///
+    /// Call when leaving the scope where the narrowing was applied (e.g.
+    /// after rendering a `{% case Some %}` arm body).
+    pub(crate) fn unnarrow_option(&mut self, name: &str) {
+        if let Some(pos) = self.narrowed_options.iter().rposition(|s| s == name) {
+            self.narrowed_options.remove(pos);
+        }
     }
 
     /// Push an included file's own inline templates onto the scope stack.
@@ -780,9 +811,12 @@ impl<'a> Scope<'a> {
 
     /// Check if a value represents a `Some` variant of an option.
     ///
-    /// An option value is `Some` if it is:
-    /// - A `Struct` with `__kind__ = "Some"` (struct variant representation), or
-    /// - Any value that is NOT `Str("None")` (unit variant representation).
+    /// An option is absent (`None`) only when represented by [`Value::None`].
+    /// Every other value counts as present (`Some`), including:
+    /// - A `Struct` tagged `__kind__ = "Some"` (struct variant representation).
+    /// - The literal string `"None"`, which is the `Some(None)` escape used by
+    ///   the shared conformance convention (a present option whose inner string
+    ///   value happens to be `"None"`).
     ///
     /// This means a non-option enum `Str("Active")` would also return `true`,
     /// which is acceptable since `has()` should only be used on `option(T)` types.

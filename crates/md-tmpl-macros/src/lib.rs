@@ -185,13 +185,34 @@ const RUST_KEYWORDS: &[&str] = &[
     "union",
 ];
 
-/// Create a module identifier, using raw syntax (`r#name`) only when `stem`
-/// is a Rust keyword.
-fn make_module_ident(stem: &str) -> Ident {
-    if RUST_KEYWORDS.contains(&stem) {
-        format_ident!("r#{}", stem)
+/// Keywords that cannot be used as raw identifiers (`r#self` is a compile
+/// error).  For these we prefix with `__` and emit `#[serde(rename = "…")]`.
+const UNESCAPABLE_KEYWORDS: &[&str] = &["self", "Self", "super", "crate"];
+
+/// Create an identifier, using raw syntax (`r#name`) when `name` is a Rust
+/// keyword.  For the four keywords that cannot be raw identifiers (`self`,
+/// `Self`, `super`, `crate`), we prefix with `__` instead (e.g. `__self`).
+///
+/// Works for module names, field names, and any user-provided identifier that
+/// might collide with a keyword.
+pub(crate) fn make_ident(name: &str) -> Ident {
+    if UNESCAPABLE_KEYWORDS.contains(&name) {
+        format_ident!("__{}", name)
+    } else if RUST_KEYWORDS.contains(&name) {
+        format_ident!("r#{}", name)
     } else {
-        Ident::new(stem, proc_macro2::Span::call_site())
+        Ident::new(name, proc_macro2::Span::call_site())
+    }
+}
+
+/// Returns a `#[serde(rename = "original")]` attribute token stream when the
+/// name was mangled by [`make_ident`] (i.e., one of the un-escapable keywords).
+/// Returns an empty token stream otherwise — safe to interpolate unconditionally.
+pub(crate) fn serde_rename_attr(name: &str) -> proc_macro2::TokenStream {
+    if UNESCAPABLE_KEYWORDS.contains(&name) {
+        quote! { #[serde(rename = #name)] }
+    } else {
+        quote! {}
     }
 }
 
@@ -346,7 +367,7 @@ pub fn include_template(input: TokenStream) -> TokenStream {
     // Module name: custom or derived from file stem.
     let mod_ident = match parsed.custom_name {
         Some(ident) => ident,
-        None => make_module_ident(&stem_from_path(&rel_path)),
+        None => make_ident(&stem_from_path(&rel_path)),
     };
 
     // Crate path: custom or default `::md_tmpl`.

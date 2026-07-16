@@ -26,7 +26,13 @@ export function directDisplay(value: unknown): string {
       "cannot display struct value directly — access individual fields (e.g. '{{ value.field }}') instead",
     );
   }
-  return String(value);
+  // Objects and arrays are handled (thrown) above, so at runtime `value` is a
+  // bigint, symbol, or function here. Each of these has a well-defined native
+  // `toString`, so we can coerce through it directly — this preserves the exact
+  // JS default string coercion while avoiding a base-to-string on `{}`.
+  return (
+    value as bigint | symbol | ((...args: unknown[]) => unknown)
+  ).toString();
 }
 
 /** Check if a JS value is truthy (template semantics). */

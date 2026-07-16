@@ -125,8 +125,11 @@ export function varTypeToString(vt: VarType): string {
     case TYPE_ENUM: {
       if (vt.isOption) {
         const someVariant = vt.variants.find((v) => v.name === OPTION_SOME);
-        if (someVariant && someVariant.fields.length === 1) {
-          return `option(${varTypeToString(someVariant.fields[0]!.varType)})`;
+        if (someVariant?.fields.length === 1) {
+          const firstField = someVariant.fields[0];
+          if (firstField) {
+            return `option(${varTypeToString(firstField.varType)})`;
+          }
         }
       }
       const parts = vt.variants.map((v) => {

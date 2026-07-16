@@ -7,6 +7,7 @@
 import { TemplateSyntaxError } from "../errors.js";
 import type { Value } from "../value.js";
 import {
+  BACKSLASH,
   FM_ALLOW_UNUSED_PREFIX,
   FM_CONSTS_PREFIX,
   FM_DELIMITER,
@@ -17,6 +18,8 @@ import {
   FM_PARAMS_PREFIX,
   FM_TYPES_PREFIX,
   LIT_TRUE,
+  QUOTE_DOUBLE,
+  QUOTE_SINGLE,
 } from "../consts.js";
 import {
   type Frontmatter,
@@ -48,8 +51,8 @@ export function parseFrontmatter(source: string): [Frontmatter, string] {
 
   // Find opening ---
   let startIdx = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (lines[i]!.trim() === FM_DELIMITER) {
+  for (const [i, line] of lines.entries()) {
+    if (line.trim() === FM_DELIMITER) {
       startIdx = i;
       break;
     }
@@ -65,8 +68,9 @@ export function parseFrontmatter(source: string): [Frontmatter, string] {
 
   // Find closing ---
   let endIdx = -1;
-  for (let i = startIdx + 1; i < lines.length; i++) {
-    if (lines[i]!.trim() === FM_DELIMITER) {
+  for (const [i, line] of lines.entries()) {
+    if (i <= startIdx) continue;
+    if (line.trim() === FM_DELIMITER) {
       endIdx = i;
       break;
     }
@@ -140,13 +144,119 @@ export function joinContinuationLines(lines: string[]): string[] {
     const isNewItem = trimmed.startsWith("- ");
     if (!isSection && !isNewItem && currentIdx !== -1) {
       // Continuation of the current logical line.
-      out[currentIdx] = `${out[currentIdx]} ${trimmed}`;
+      const currentLine = out[currentIdx] ?? "";
+      out[currentIdx] = `${currentLine} ${trimmed}`;
+      continue;
+    }
+    if (isNewItem) {
+      // Strip a YAML-consistent inline `#` comment from the block list-item
+      // scalar before joining (mirrors the Rust core's
+      // `strip_list_item_comment`). Leading indentation is preserved so
+      // downstream trimming and error snippets are unaffected.
+      const scalar = trimmed.slice(2).trimStart();
+      const kept = stripListItemComment(scalar);
+      if (kept === "") {
+        // `- # comment` → empty list item; skip like a full-line comment and
+        // do not break an in-progress continuation.
+        continue;
+      }
+      const indent = raw.slice(0, raw.length - raw.trimStart().length);
+      out.push(`${indent}- ${kept}`);
+      currentIdx = out.length - 1;
       continue;
     }
     out.push(raw);
     currentIdx = out.length - 1;
   }
   return out;
+}
+
+/**
+ * Strip a YAML-consistent inline `#` comment from a block list-item scalar.
+ *
+ * `scalar` is the text following the `- ` block-sequence marker. Mirrors real
+ * YAML plain-scalar comment semantics (and the Rust core's
+ * `strip_list_item_comment`): a `#` that begins the scalar or is preceded by
+ * whitespace starts a comment running to end of line.
+ *
+ * A scalar wholly wrapped in a YAML quote (`"..."` / `'...'`) protects any `#`
+ * inside the quotes — only a `#` after the closing quote is treated as a
+ * comment. This is intentionally NOT md-tmpl-string-aware: the `"` inside an
+ * unquoted (plain) scalar such as `x = str := "a # b"` are ordinary
+ * characters, so ` #` still starts a comment, mirroring real YAML. To keep a
+ * literal ` #`, wrap the whole declaration in an outer YAML quote.
+ *
+ * Trailing whitespace is trimmed when a comment is removed.
+ */
+export function stripListItemComment(scalar: string): string {
+  const first = scalar[0];
+  if (first === QUOTE_DOUBLE) {
+    const end = closingQuoteEnd(scalar, QUOTE_DOUBLE);
+    if (end === undefined) return scalar; // unterminated — reported downstream
+    const pos = findYamlComment(scalar.slice(end), false);
+    return pos === undefined ? scalar : scalar.slice(0, end + pos).trimEnd();
+  }
+  if (first === QUOTE_SINGLE) {
+    const end = closingQuoteEnd(scalar, QUOTE_SINGLE);
+    if (end === undefined) return scalar;
+    const pos = findYamlComment(scalar.slice(end), false);
+    return pos === undefined ? scalar : scalar.slice(0, end + pos).trimEnd();
+  }
+  const pos = findYamlComment(scalar, true);
+  return pos === undefined ? scalar : scalar.slice(0, pos).trimEnd();
+}
+
+/**
+ * Index of the `#` that begins a YAML comment in `s`, or `undefined`.
+ *
+ * A `#` starts a comment when preceded by ASCII whitespace, or — when
+ * `startIsComment` is true — when it is the first character of the string.
+ * Mirrors the Rust core's `find_yaml_comment`.
+ */
+function findYamlComment(
+  s: string,
+  startIsComment: boolean,
+): number | undefined {
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] !== "#") continue;
+    const isComment =
+      i === 0 ? startIsComment : s[i - 1] === " " || s[i - 1] === "\t";
+    if (isComment) return i;
+  }
+  return undefined;
+}
+
+/**
+ * Return the index just past the closing quote of a YAML quoted scalar that
+ * starts at index 0, or `undefined` if it is never closed.
+ *
+ * Double-quoted scalars honor `\`-escapes; single-quoted scalars use the YAML
+ * `''` escape for a literal quote.
+ */
+function closingQuoteEnd(s: string, quote: string): number | undefined {
+  if (quote === QUOTE_DOUBLE) {
+    let escaped = false;
+    for (let i = 1; i < s.length; i++) {
+      if (escaped) {
+        escaped = false;
+      } else if (s[i] === BACKSLASH) {
+        escaped = true;
+      } else if (s[i] === QUOTE_DOUBLE) {
+        return i + 1;
+      }
+    }
+    return undefined;
+  }
+  for (let i = 1; i < s.length; i++) {
+    if (s[i] === QUOTE_SINGLE) {
+      if (s[i + 1] === QUOTE_SINGLE) {
+        i++; // consume the second quote of an escaped `''`
+        continue;
+      }
+      return i + 1;
+    }
+  }
+  return undefined;
 }
 
 export function parseFrontmatterYaml(
@@ -161,8 +271,7 @@ export function parseFrontmatterYaml(
   // section keyword, so raw markdown renders correctly.
   let inBlockList = false;
   let hadBlankLine = true;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
+  for (const [i, line] of lines.entries()) {
     const trimmed = line.trim();
     if (trimmed === "" || trimmed.startsWith("#")) {
       hadBlankLine = true;
@@ -215,8 +324,7 @@ export function parseFrontmatterYaml(
   let currentBlock: "none" | "params" | "types" | "consts" | "env" | "imports" =
     "none";
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
+  for (const [i, line] of lines.entries()) {
     const trimmed = line.trim();
     if (trimmed === "" || trimmed.startsWith("#")) continue;
     const loc = { line: startLineNo + i, column: 1, snippet: line };

@@ -34,6 +34,58 @@ pub fn collect_referenced_params(segments: &[Segment]) -> HashSet<String> {
     vars
 }
 
+/// Collect all unquoted case labels from match arms.
+///
+/// Used by the unused-param checker: if a declared param name appears as an
+/// unquoted case label (e.g. `{% case expected %}`), the runtime reads that
+/// param's value for comparison, so it counts as "used". The reference
+/// collector already picks these up as variable references (correctly), but
+/// the unused-param checker needs an explicit set to distinguish genuine
+/// usage from false positives.
+#[must_use]
+pub fn collect_unquoted_case_labels(segments: &[Segment]) -> HashSet<String> {
+    let mut labels = HashSet::new();
+    collect_labels_inner(segments, &mut labels);
+    labels
+}
+
+/// Recursive walker for unquoted case labels.
+fn collect_labels_inner(segments: &[Segment], labels: &mut HashSet<String>) {
+    for seg in segments {
+        match seg {
+            Segment::Match { arms, .. } => {
+                for arm in arms {
+                    for variant in &arm.variants {
+                        if crate::consts::strip_string_literal(variant.as_ref()).is_none() {
+                            labels.insert(variant.to_string());
+                        }
+                    }
+                    collect_labels_inner(&arm.body, labels);
+                }
+            }
+            Segment::ForLoop {
+                body, else_body, ..
+            } => {
+                collect_labels_inner(body, labels);
+                collect_labels_inner(else_body, labels);
+            }
+            Segment::If {
+                branches,
+                else_body,
+            } => {
+                for (_, branch_body) in branches {
+                    collect_labels_inner(branch_body, labels);
+                }
+                collect_labels_inner(else_body, labels);
+            }
+            Segment::Panic(body) => {
+                collect_labels_inner(body, labels);
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Recursive inner walker.
 fn collect_refs_inner(
     segments: &[Segment],
@@ -97,7 +149,15 @@ fn collect_refs_inner(
                 }
 
                 for (_, val_expr) in &inc.with_vars {
-                    if let Some(root) = extract_root_variable(val_expr.as_ref(), loop_bindings) {
+                    // A quoted `with` value is a string literal that may embed
+                    // `{{ expr }}` interpolation (see `include_core::build_overrides`);
+                    // collect those references the same way body expressions are.
+                    // An unquoted value is a plain expression (path/function/filter).
+                    if let Some(inner) = crate::consts::strip_string_literal(val_expr.as_ref()) {
+                        extract_interpolation_refs(inner, vars, loop_bindings);
+                    } else if let Some(root) =
+                        extract_root_variable(val_expr.as_ref(), loop_bindings)
+                    {
                         vars.insert(root);
                     }
                 }
@@ -113,7 +173,11 @@ fn collect_refs_inner(
                     vars.insert(root);
                 }
                 for arm in arms {
-                    // Scan case labels for {{ expr }} interpolation references.
+                    // Scan quoted case labels for {{ expr }} interpolation refs.
+                    // Unquoted labels are either enum variant names or param-ref
+                    // matches — the collector cannot distinguish them without
+                    // type context, so param-ref labels are handled separately
+                    // by the unused-param checker (which has the declared param set).
                     for variant in &arm.variants {
                         if let Some(inner) = crate::consts::strip_string_literal(variant.as_ref()) {
                             extract_interpolation_refs(inner, vars, loop_bindings);
@@ -168,7 +232,7 @@ fn extract_root_variable(expr: &str, loop_bindings: &HashSet<String>) -> Option<
                 .next()
                 .unwrap_or(arg)
                 .trim();
-            if !root.is_empty() && !loop_bindings.contains(root) && !is_literal(root) {
+            if !loop_bindings.contains(root) && !is_literal(root) && is_valid_identifier(root) {
                 return Some(root.to_string());
             }
             return None;
@@ -199,7 +263,7 @@ fn extract_root_variable(expr: &str, loop_bindings: &HashSet<String>) -> Option<
         .unwrap_or(base)
         .trim();
 
-    if root.is_empty() || is_literal(root) || loop_bindings.contains(root) {
+    if is_literal(root) || loop_bindings.contains(root) || !is_valid_identifier(root) {
         return None;
     }
 
@@ -213,6 +277,22 @@ fn is_literal(token: &str) -> bool {
         || token == LIT_FALSE
         || token.parse::<i64>().is_ok()
         || token.parse::<f64>().is_ok()
+}
+
+/// Returns `true` if `token` is a syntactically valid identifier
+/// (`[A-Za-z_][A-Za-z0-9_]*`).
+///
+/// Mirrors the TypeScript reference implementation so both engines agree on
+/// which tokens can name a variable. This rejects malformed roots such as a
+/// fragment of a quoted path (`"web/about`) that results from splitting a
+/// string literal on `.`, preventing spurious "undeclared variable" errors.
+fn is_valid_identifier(token: &str) -> bool {
+    let mut chars = token.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Extract variable references from `{{ expr }}` interpolations inside a string.
@@ -414,11 +494,17 @@ fn split_top_level<'a>(s: &'a str, delim: &str) -> Result<Vec<&'a str>, Template
                 i += 1;
             }
             b'\'' | b'"' => {
-                // Skip over string literals
+                // Skip over string literals. A backslash escapes the next byte
+                // so an escaped quote (`\"`/`\'`) does not close the literal,
+                // matching `split_at_depth_zero`'s escape handling.
                 let quote = bytes[i];
                 i += 1;
                 while i < bytes.len() && bytes[i] != quote {
-                    i += 1;
+                    if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
                 }
                 if i < bytes.len() {
                     i += 1; // skip closing quote
@@ -504,10 +590,16 @@ fn find_top_level_op(s: &str, op: &str) -> Option<usize> {
                 i += 1;
             }
             b'\'' | b'"' => {
+                // A backslash escapes the next byte so an escaped quote does
+                // not close the literal (consistent with `split_at_depth_zero`).
                 let quote = bytes[i];
                 i += 1;
                 while i < bytes.len() && bytes[i] != quote {
-                    i += 1;
+                    if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
                 }
                 if i < bytes.len() {
                     i += 1;
@@ -608,5 +700,137 @@ fn extract_condition_variables(
                 vars.insert(root);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bindings(names: &[&str]) -> HashSet<String> {
+        names.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    // -- is_valid_identifier --------------------------------------------------
+
+    #[test]
+    fn valid_identifiers_accepted() {
+        assert!(is_valid_identifier("name"));
+        assert!(is_valid_identifier("_private"));
+        assert!(is_valid_identifier("item2"));
+        assert!(is_valid_identifier("CamelCase"));
+    }
+
+    #[test]
+    fn invalid_identifiers_rejected() {
+        assert!(!is_valid_identifier(""));
+        assert!(!is_valid_identifier("2cool"));
+        assert!(!is_valid_identifier("has space"));
+        assert!(!is_valid_identifier("a.b"));
+        assert!(!is_valid_identifier("web/about"));
+        // A quoted-path fragment produced by splitting a literal on `.`.
+        assert!(!is_valid_identifier("\"web/about"));
+    }
+
+    // -- extract_root_variable ------------------------------------------------
+
+    #[test]
+    fn plain_variable_returns_root() {
+        let lb = bindings(&[]);
+        assert_eq!(extract_root_variable("name", &lb).as_deref(), Some("name"));
+    }
+
+    #[test]
+    fn dotted_path_returns_first_segment() {
+        let lb = bindings(&[]);
+        assert_eq!(
+            extract_root_variable("item.label", &lb).as_deref(),
+            Some("item")
+        );
+    }
+
+    #[test]
+    fn prefixed_path_strips_prefix() {
+        let lb = bindings(&[]);
+        assert_eq!(
+            extract_root_variable("consts.API_URL", &lb).as_deref(),
+            Some("API_URL")
+        );
+        assert_eq!(
+            extract_root_variable("params.count", &lb).as_deref(),
+            Some("count")
+        );
+    }
+
+    #[test]
+    fn pipe_expression_uses_base() {
+        let lb = bindings(&[]);
+        assert_eq!(
+            extract_root_variable("name | upper", &lb).as_deref(),
+            Some("name")
+        );
+    }
+
+    #[test]
+    fn function_call_extracts_argument() {
+        let lb = bindings(&[]);
+        assert_eq!(
+            extract_root_variable("idx(item)", &lb).as_deref(),
+            Some("item")
+        );
+        assert_eq!(
+            extract_root_variable("len(items)", &lb).as_deref(),
+            Some("items")
+        );
+    }
+
+    #[test]
+    fn loop_binding_excluded() {
+        let lb = bindings(&["item"]);
+        assert_eq!(extract_root_variable("item.label", &lb), None);
+        assert_eq!(extract_root_variable("idx(item)", &lb), None);
+    }
+
+    #[test]
+    fn literals_return_none() {
+        let lb = bindings(&[]);
+        assert_eq!(extract_root_variable("\"literal\"", &lb), None);
+        assert_eq!(extract_root_variable("'literal'", &lb), None);
+        assert_eq!(extract_root_variable("42", &lb), None);
+        assert_eq!(extract_root_variable("3.14", &lb), None);
+        assert_eq!(extract_root_variable("true", &lb), None);
+        assert_eq!(extract_root_variable("false", &lb), None);
+    }
+
+    #[test]
+    fn string_literal_with_dots_is_not_a_variable() {
+        // The core regression: a quoted path with dots must not be split at
+        // the dot and reported as a variable named `"web/about`.
+        let lb = bindings(&[]);
+        assert_eq!(extract_root_variable("\"web/about.tmpl.md\"", &lb), None);
+        assert_eq!(extract_root_variable("'a.b.c'", &lb), None);
+        // Same guard inside a function argument.
+        assert_eq!(extract_root_variable("len(\"a.b\")", &lb), None);
+    }
+
+    // -- extract_interpolation_refs -------------------------------------------
+
+    #[test]
+    fn interpolation_refs_collected_from_string() {
+        let lb = bindings(&[]);
+        let mut vars: HashSet<String> = HashSet::new();
+        extract_interpolation_refs("{{ dir }}/about.md", &mut vars, &lb);
+        assert!(vars.contains("dir"));
+        assert_eq!(vars.len(), 1);
+    }
+
+    #[test]
+    fn interpolation_refs_skip_loop_bindings_and_literals() {
+        let lb = bindings(&["row"]);
+        let mut vars: HashSet<String> = HashSet::new();
+        extract_interpolation_refs("{{ row.name }}-{{ \"x.y\" }}-{{ total }}", &mut vars, &lb);
+        assert!(vars.contains("total"));
+        assert!(!vars.contains("row"));
+        assert_eq!(vars.len(), 1);
     }
 }

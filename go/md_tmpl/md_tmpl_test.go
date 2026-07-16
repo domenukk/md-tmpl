@@ -270,6 +270,38 @@ Hello {{ name }}!`)
 	}
 }
 
+func TestFromSourceUndeclaredVariableInBodyRejected(t *testing.T) {
+	// Referencing a variable declared nowhere is a compile-time error,
+	// mirroring the Rust core's check_undeclared_variables.
+	_, err := FromSource(`---
+params:
+  - x = str
+---
+{{ x }} {{ y }}`)
+	if err == nil {
+		t.Fatal("expected error for undeclared variable, got nil")
+	}
+	if !strings.Contains(err.Error(), "undeclared variable") {
+		t.Errorf("error should mention 'undeclared variable': %v", err)
+	}
+}
+
+func TestFromSourceUndeclaredVariableInConditionRejected(t *testing.T) {
+	// Undeclared variables inside an if condition are also rejected at
+	// construction time.
+	_, err := FromSource(`---
+params:
+  - x = int
+---
+> {% if y > 0 %}{{ x }}{% /if %}`)
+	if err == nil {
+		t.Fatal("expected error for undeclared variable in condition, got nil")
+	}
+	if !strings.Contains(err.Error(), "undeclared variable") {
+		t.Errorf("error should mention 'undeclared variable': %v", err)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Strict validation — extra params
 // ---------------------------------------------------------------------------

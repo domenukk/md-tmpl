@@ -10,7 +10,7 @@ use alloc::{
 };
 
 use super::{
-    conditions::{extract_all_has_narrowings, validate_condition},
+    conditions::{extract_all_has_narrowings, extract_not_has_narrowing, validate_condition},
     environment::TypeEnv,
     includes::validate_include,
     matching::validate_match,
@@ -209,33 +209,59 @@ fn validate_if_segment(
     errors: &mut Vec<String>,
     visited: &mut HashSet<String>,
 ) {
+    // Narrowings carried into fall-through positions. When an earlier branch
+    // condition is `!has(o)`, the option `o` is guaranteed present in every
+    // later branch and in the final `{% else %}`, so it can be used as a value
+    // there. Positive `has()` narrowings, by contrast, apply only to their own
+    // branch body and are never carried.
+    let mut carry: Vec<(String, VarType)> = Vec::new();
+
     for (condition, branch_body) in branches {
         validate_condition(condition, env, errors);
 
-        // Collect all has()-based narrowings from the condition.
-        // For `&&` chains, each sub-condition can contribute a narrowing.
-        let narrowings = extract_all_has_narrowings(condition, env);
-        if narrowings.is_empty() {
-            walk_segments(branch_body, env, errors, visited);
-        } else {
-            // Apply all narrowings, walk body, then restore.
-            let mut prev_types: Vec<(String, Option<VarType>)> = Vec::new();
-            for (path_str, narrowed_type) in &narrowings {
-                let prev = env.narrow(path_str, narrowed_type.clone());
-                prev_types.push((path_str.clone(), prev));
+        // Positive narrowings from `has()` in this condition (incl. `&&` chains)
+        // plus any carried negative narrowings from earlier branches.
+        let positive = extract_all_has_narrowings(condition, env);
+        let applied = apply_narrowings(env, carry.iter().chain(positive.iter()));
+        walk_segments(branch_body, env, errors, visited);
+        restore_narrowings(env, applied);
+
+        // If this branch is `!has(o)`, then once it is skipped we know `o` is
+        // present — carry that into subsequent branches and the else body.
+        if let Some(neg) = extract_not_has_narrowing(condition, env) {
+            carry.push(neg);
+        }
+    }
+
+    let applied = apply_narrowings(env, carry.iter());
+    walk_segments(else_body, env, errors, visited);
+    restore_narrowings(env, applied);
+}
+
+/// Apply a sequence of `(path, narrowed_type)` overrides to `env`, returning
+/// the previous bindings so they can be restored in reverse order.
+fn apply_narrowings<'a, I>(env: &mut TypeEnv<'_>, narrowings: I) -> Vec<(String, Option<VarType>)>
+where
+    I: IntoIterator<Item = &'a (String, VarType)>,
+{
+    let mut applied = Vec::new();
+    for (path_str, narrowed_type) in narrowings {
+        let prev = env.narrow(path_str, narrowed_type.clone());
+        applied.push((path_str.clone(), prev));
+    }
+    applied
+}
+
+/// Restore bindings captured by [`apply_narrowings`], in reverse order.
+fn restore_narrowings(env: &mut TypeEnv<'_>, applied: Vec<(String, Option<VarType>)>) {
+    for (path_str, prev) in applied.into_iter().rev() {
+        match prev {
+            Some(t) => {
+                env.narrow(&path_str, t);
             }
-            walk_segments(branch_body, env, errors, visited);
-            for (path_str, prev) in prev_types.into_iter().rev() {
-                match prev {
-                    Some(t) => {
-                        env.narrow(&path_str, t);
-                    }
-                    None => {
-                        env.unnarrow(&path_str);
-                    }
-                }
+            None => {
+                env.unnarrow(&path_str);
             }
         }
     }
-    walk_segments(else_body, env, errors, visited);
 }

@@ -187,7 +187,7 @@ pub(crate) fn interpolate_path_str(
         }
 
         let mut val_opt = if let Some(lit) = crate::consts::strip_string_literal(expr) {
-            Some(Value::Str(lit.into()))
+            Some(Value::Str(crate::consts::unescape_string_literal(lit)))
         } else {
             available_consts.get(expr).cloned()
         };

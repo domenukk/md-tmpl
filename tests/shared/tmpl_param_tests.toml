@@ -435,3 +435,13 @@ expected_output = '''
 [tests.params.pos]
 x = 10
 y = 20
+
+[[tests]]
+name = "empty_frontmatter_block"
+description = "A present but empty frontmatter block declares an empty interface"
+template = '''
+---
+---
+# Plain body'''
+expected_output = "# Plain body"
+params = {}

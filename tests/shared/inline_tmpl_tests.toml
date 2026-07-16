@@ -371,3 +371,24 @@ End'''
 
 [tests.params]
 x = "mid"
+
+[[tests]]
+name = "include_with_var_escaped_quote"
+description = "A string with-value passed to an include unescapes escaped quotes, mirroring Rust include with-var handling"
+template = '''
+---
+params: []
+---
+> {% tmpl greeting %}
+---
+params: [msg = str]
+---
+{{ msg }}
+
+> {% /tmpl %}
+
+> {% include greeting with msg="a\"b" %}'''
+expected_output = '''
+a"b
+'''
+params = {}

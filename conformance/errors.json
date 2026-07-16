@@ -1,0 +1,159 @@
+[
+  {
+    "name": "err_unused_param",
+    "note": "a declared param that is never referenced is a compile error",
+    "source": "---\nparams:\n  - x = str\n---\nno ref",
+    "expect": {
+      "kind": "error",
+      "phase": "compile",
+      "error_contains": "unused"
+    }
+  },
+  {
+    "name": "err_unclosed_expr",
+    "note": "an unterminated {{ is a compile error",
+    "source": "---\nparams:\n  - x = str\n---\n{{ x ",
+    "expect": {
+      "kind": "error",
+      "phase": "compile",
+      "error_contains": "unclosed"
+    }
+  },
+  {
+    "name": "err_list_of_struct_redundant",
+    "note": "list(struct(...)) is rejected in favour of the field shorthand",
+    "source": "---\nallow_unused: true\n\nparams:\n  - x = list(struct(name = str))\n---\nbody",
+    "expect": {
+      "kind": "error",
+      "phase": "compile",
+      "error_contains": "list(struct("
+    }
+  },
+  {
+    "name": "err_type_mismatch",
+    "note": "passing the wrong type for a param fails validation at render",
+    "source": "---\nparams:\n  - n = int\n---\n{{ n }}",
+    "params": {
+      "n": "notint"
+    },
+    "expect": {
+      "kind": "error",
+      "phase": "render",
+      "error_contains": "int"
+    }
+  },
+  {
+    "name": "err_missing_required_param",
+    "note": "omitting a required param fails validation at render",
+    "source": "---\nparams:\n  - n = int\n---\n{{ n }}",
+    "params": {},
+    "expect": {
+      "kind": "error",
+      "phase": "render",
+      "error_contains": "missing"
+    }
+  },
+  {
+    "name": "err_extra_param",
+    "note": "passing an undeclared param fails validation at render",
+    "source": "---\nparams:\n  - n = int\n---\n{{ n }}",
+    "params": {
+      "n": 1,
+      "extra": 2
+    },
+    "expect": {
+      "kind": "error",
+      "phase": "render",
+      "error_contains": "extra"
+    }
+  },
+  {
+    "name": "err_unknown_filter",
+    "note": "an unknown filter name is rejected at compile",
+    "source": "---\nparams:\n  - x = str\n---\n{{ x | bogus }}",
+    "expect": {
+      "kind": "error",
+      "phase": "compile",
+      "error_contains": "bogus"
+    }
+  },
+  {
+    "name": "err_qualified_enum_default",
+    "note": "a qualified Type.Variant in default position is rejected [D2]",
+    "source": "---\ntypes:\n  - Stage = enum(Design, Build)\n\nallow_unused: true\n\nparams:\n  - s = Stage := Stage.Build\n---\nbody",
+    "expect": {
+      "kind": "error",
+      "phase": "compile",
+      "error_contains": "use the bare variant name"
+    }
+  },
+  {
+    "name": "err_undeclared_variable",
+    "note": "referencing an undeclared variable is a COMPILE error in both backends [D3]",
+    "source": "---\nparams: []\n---\n{{ missing }}",
+    "expect": {
+      "kind": "error",
+      "phase": "compile",
+      "error_contains": "undeclared variable"
+    }
+  },
+  {
+    "name": "err_implicit_type_rejected",
+    "note": "a param with a default but no explicit type is rejected [D4]",
+    "source": "---\nallow_unused: true\n\nparams:\n  - x := \"hello\"\n---\nbody",
+    "expect": {
+      "kind": "error",
+      "phase": "compile",
+      "error_contains": "must have an explicit type"
+    }
+  },
+  {
+    "name": "err_missing_type_annotation",
+    "note": "a param with neither a type nor a default is rejected [D4]",
+    "source": "---\nallow_unused: true\n\nparams:\n  - x\n---\nbody",
+    "expect": {
+      "kind": "error",
+      "phase": "compile",
+      "error_contains": "is missing a type annotation"
+    }
+  },
+  {
+    "name": "leak_if_else_uses_value",
+    "note": "using an option value in the else of `if has(o)` errors in BOTH backends (phase differs) [D1]",
+    "source": "---\nparams:\n  - o = option(struct(v = str))\n---\n\n> {% if has(o) %}\n\nin {{ o.v }}\n\n> {% else %}\n\nout {{ o.v }}\n\n> {% /if %}\n",
+    "params": {
+      "o": null
+    },
+    "expect": {
+      "kind": "error",
+      "phase": "any",
+      "observed_ts_phase": "render"
+    }
+  },
+  {
+    "name": "leak_negated_true_uses_value",
+    "note": "using an option value inside `if !has(o)` errors in BOTH backends (phase differs) [D1]",
+    "source": "---\nparams:\n  - o = option(struct(v = str))\n---\n\n> {% if !has(o) %}\n\nleak {{ o.v }}\n\n> {% else %}\n\npresent\n\n> {% /if %}\n",
+    "params": {
+      "o": null
+    },
+    "expect": {
+      "kind": "error",
+      "phase": "any",
+      "observed_ts_phase": "render"
+    }
+  },
+  {
+    "name": "leak_match_none_arm_uses_value",
+    "note": "using an option value in the None arm of a match errors in BOTH backends (phase differs) [D1]",
+    "source": "---\nparams:\n  - o = option(struct(v = str))\n---\n\n> {% match o %}\n> {% case Some %}\n\ngot {{ o.v }}\n\n> {% case None %}\n\nleak {{ o.v }}\n\n> {% /match %}\n",
+    "params": {
+      "o": null
+    },
+    "expect": {
+      "kind": "error",
+      "phase": "any",
+      "observed_ts_phase": "render"
+    }
+  }
+]

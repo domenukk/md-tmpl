@@ -28,7 +28,7 @@ Hello`;
       } catch (err) {
         assert.ok(
           err instanceof TemplateSyntaxError,
-          `expected TemplateSyntaxError, got ${err}`,
+          `expected TemplateSyntaxError, got ${String(err)}`,
         );
         assert.strictEqual(
           err.line,
@@ -42,7 +42,7 @@ Hello`;
         );
         assert.ok(
           err.snippet?.includes("invalid declaration"),
-          `unexpected snippet: ${err.snippet}`,
+          `unexpected snippet: ${String(err.snippet)}`,
         );
       }
     });
@@ -60,7 +60,7 @@ Hello {{ foo }}`;
       } catch (err) {
         assert.ok(
           err instanceof TemplateSyntaxError,
-          `expected TemplateSyntaxError, got ${err}`,
+          `expected TemplateSyntaxError, got ${String(err)}`,
         );
         assert.strictEqual(
           err.line,
@@ -96,7 +96,7 @@ Line 8`;
       } catch (err) {
         assert.ok(
           err instanceof TemplateSyntaxError,
-          `expected TemplateSyntaxError, got ${err}`,
+          `expected TemplateSyntaxError, got ${String(err)}`,
         );
         assert.strictEqual(
           err.line,
@@ -110,7 +110,7 @@ Line 8`;
         );
         assert.ok(
           err.snippet?.includes("if flag"),
-          `unexpected snippet: ${err.snippet}`,
+          `unexpected snippet: ${String(err.snippet)}`,
         );
       }
     });
@@ -132,7 +132,7 @@ Line 10`;
       } catch (err) {
         assert.ok(
           err instanceof TemplateSyntaxError,
-          `expected TemplateSyntaxError, got ${err}`,
+          `expected TemplateSyntaxError, got ${String(err)}`,
         );
         assert.strictEqual(
           err.line,
@@ -146,7 +146,7 @@ Line 10`;
         );
         assert.ok(
           err.snippet?.includes("if flag"),
-          `unexpected snippet: ${err.snippet}`,
+          `unexpected snippet: ${String(err.snippet)}`,
         );
         assert.ok(
           err.message.includes("unclosed '{% if %}' block"),
@@ -169,7 +169,7 @@ World`;
       } catch (err) {
         assert.ok(
           err instanceof TemplateSyntaxError,
-          `expected TemplateSyntaxError, got ${err}`,
+          `expected TemplateSyntaxError, got ${String(err)}`,
         );
         assert.strictEqual(
           err.line,
@@ -183,7 +183,7 @@ World`;
         );
         assert.ok(
           err.snippet?.includes("foobar"),
-          `unexpected snippet: ${err.snippet}`,
+          `unexpected snippet: ${String(err.snippet)}`,
         );
       }
     });
@@ -203,7 +203,7 @@ Line 7
       } catch (err) {
         assert.ok(
           err instanceof TemplateSyntaxError,
-          `expected TemplateSyntaxError, got ${err}`,
+          `expected TemplateSyntaxError, got ${String(err)}`,
         );
         assert.strictEqual(
           err.line,
@@ -217,7 +217,7 @@ Line 7
         );
         assert.ok(
           err.snippet?.includes("for item items"),
-          `unexpected snippet: ${err.snippet}`,
+          `unexpected snippet: ${String(err.snippet)}`,
         );
       }
     });
@@ -238,7 +238,7 @@ End of template`;
       } catch (err) {
         assert.ok(
           err instanceof TemplateSyntaxError,
-          `expected TemplateSyntaxError, got ${err}`,
+          `expected TemplateSyntaxError, got ${String(err)}`,
         );
         assert.strictEqual(
           err.line,
@@ -252,7 +252,7 @@ End of template`;
         );
         assert.ok(
           err.snippet?.includes("{{ user }}"),
-          `unexpected snippet: ${err.snippet}`,
+          `unexpected snippet: ${String(err.snippet)}`,
         );
       }
     });
@@ -272,7 +272,7 @@ Hello {{ used_param }}`;
       } catch (err) {
         assert.ok(
           err instanceof TemplateSyntaxError,
-          `expected TemplateSyntaxError, got ${err}`,
+          `expected TemplateSyntaxError, got ${String(err)}`,
         );
         assert.strictEqual(
           err.line,
@@ -286,7 +286,7 @@ Hello {{ used_param }}`;
         );
         assert.ok(
           err.snippet?.includes("unused_param"),
-          `unexpected snippet: ${err.snippet}`,
+          `unexpected snippet: ${String(err.snippet)}`,
         );
       }
     });
@@ -324,9 +324,7 @@ params:
         () => Template.fromSource(src),
         (err: unknown) => {
           assert.ok(err instanceof TemplateSyntaxError);
-          assert.ok(
-            (err as TemplateSyntaxError).message.includes("empty variant name"),
-          );
+          assert.ok(err.message.includes("empty variant name"));
           return true;
         },
       );
@@ -342,11 +340,7 @@ params:
         () => Template.fromSource(src),
         (err: unknown) => {
           assert.ok(err instanceof TemplateSyntaxError);
-          assert.ok(
-            (err as TemplateSyntaxError).message.includes(
-              "no {% case %} arms found",
-            ),
-          );
+          assert.ok(err.message.includes("no {% case %} arms found"));
           return true;
         },
       );
@@ -365,11 +359,7 @@ World`;
         () => Template.fromSource(src),
         (err: unknown) => {
           assert.ok(err instanceof TemplateSyntaxError);
-          assert.ok(
-            (err as TemplateSyntaxError).message.includes(
-              "unexpected '{% /if %}'",
-            ),
-          );
+          assert.ok(err.message.includes("unexpected '{% /if %}'"));
           return true;
         },
       );
@@ -390,7 +380,7 @@ Hello {{ name | nonexistent_filter }}`;
     } catch (err) {
       assert.ok(
         err instanceof TemplateError,
-        `expected TemplateError, got ${err}`,
+        `expected TemplateError, got ${String(err)}`,
       );
       // Unknown filter surfaces as an UnknownFilterError at compile time.
       assert.strictEqual(err.kind, "unknown_filter");
@@ -410,7 +400,7 @@ Hello`;
     } catch (err) {
       assert.ok(
         err instanceof TemplateSyntaxError,
-        `expected TemplateSyntaxError, got ${err}`,
+        `expected TemplateSyntaxError, got ${String(err)}`,
       );
       assert.strictEqual(err.kind, "syntax");
       assert.strictEqual(err.name, "TemplateSyntaxError");
@@ -431,7 +421,7 @@ Hello {{ name }}!`);
     } catch (err) {
       assert.ok(
         err instanceof MissingParamsError,
-        `expected MissingParamsError, got ${err}`,
+        `expected MissingParamsError, got ${String(err)}`,
       );
       assert.strictEqual(err.kind, "missing_params");
       assert.strictEqual(err.name, "MissingParamsError");
@@ -452,7 +442,7 @@ params:
     } catch (err) {
       assert.ok(
         err instanceof TypeMismatchError,
-        `expected TypeMismatchError, got ${err}`,
+        `expected TypeMismatchError, got ${String(err)}`,
       );
       assert.strictEqual(err.kind, "type_mismatch");
       assert.strictEqual(err.name, "TypeMismatchError");

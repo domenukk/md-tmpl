@@ -13,6 +13,7 @@ import {
   LIT_TRUE,
   OPTION_NONE,
   OPTION_SOME,
+  unescapeStringLiteral,
 } from "../consts.js";
 import { DirectScope } from "./scope.js";
 import { directDisplay, directIsTruthy } from "./display.js";
@@ -39,8 +40,8 @@ export function evaluateDirectCondition(
   const tokens = tokenizeDirectCondition(trimmed);
   const ctx: DirectParseCtx = { tokens, pos: 0, scope };
   const result = parseDirectOrExpr(ctx);
-  if (ctx.pos < ctx.tokens.length) {
-    const remaining = ctx.tokens[ctx.pos]!;
+  const remaining = ctx.tokens[ctx.pos];
+  if (remaining !== undefined) {
     throw new TemplateSyntaxError(
       `unexpected token '${remaining.value}' in condition`,
     );
@@ -171,14 +172,14 @@ export function parseDirectMatchCondition(ctx: DirectParseCtx): boolean {
 
   const variants: string[] = [];
   const firstVar = peekDirect(ctx);
-  if (!firstVar || firstVar.kind !== DirectTokKind.Ident) {
+  if (firstVar?.kind !== DirectTokKind.Ident) {
     throw new TemplateSyntaxError("expected variant name after 'case'");
   }
   variants.push(advanceDirect(ctx).value);
   while (peekDirect(ctx)?.kind === DirectTokKind.Pipe) {
     advanceDirect(ctx);
     const nextVar = peekDirect(ctx);
-    if (!nextVar || nextVar.kind !== DirectTokKind.Ident) {
+    if (nextVar?.kind !== DirectTokKind.Ident) {
       throw new TemplateSyntaxError("expected variant name after '|'");
     }
     variants.push(advanceDirect(ctx).value);
@@ -212,7 +213,7 @@ export function resolveDirectOperandValue(
 ): unknown {
   switch (operand.kind) {
     case DirectTokKind.StrLit: {
-      const inner = operand.value.slice(1, -1);
+      const inner = unescapeStringLiteral(operand.value.slice(1, -1));
       if (inner.includes(EXPR_START)) {
         return interpolateDirectString(inner, scope);
       }
@@ -238,9 +239,8 @@ export function interpolateDirectString(
 ): string {
   let result = "";
   let remaining = input;
-  while (true) {
-    const startIdx = remaining.indexOf(EXPR_START);
-    if (startIdx === -1) break;
+  let startIdx = remaining.indexOf(EXPR_START);
+  while (startIdx !== -1) {
     result += remaining.slice(0, startIdx);
     const afterStart = remaining.slice(startIdx + EXPR_START.length);
     const endIdx = afterStart.indexOf(EXPR_END);
@@ -258,6 +258,7 @@ export function interpolateDirectString(
     const val = evaluateDirectExpr(expr, scope);
     result += directDisplay(val);
     remaining = afterStart.slice(endIdx + EXPR_END.length);
+    startIdx = remaining.indexOf(EXPR_START);
   }
   result += remaining;
   return result;
@@ -395,11 +396,10 @@ export function getDirectVariantName(
   if (value === null || value === undefined) return OPTION_NONE;
   if (isOption) return OPTION_SOME;
   if (typeof value === "string") return value;
-  if (value !== null && typeof value === "object") {
+  if (typeof value === "object") {
     // Check __kind__ discriminant
     const obj = value as Record<string, unknown>;
-    if (typeof obj[ENUM_TAG_KEY] === "string")
-      return obj[ENUM_TAG_KEY] as string;
+    if (typeof obj[ENUM_TAG_KEY] === "string") return obj[ENUM_TAG_KEY];
   }
   // Scalar types: convert to string for label comparison.
   if (typeof value === "number" || typeof value === "boolean") {
@@ -409,18 +409,4 @@ export function getDirectVariantName(
   return OPTION_SOME;
 }
 
-/** Returns true if the match arms/guard use option-style variant names. */
-export function isOptionMatch(node: {
-  arms: { variants: string[] }[];
-  inlineGuard?: { variant: string };
-}): boolean {
-  if (node.inlineGuard) {
-    return (
-      node.inlineGuard.variant === OPTION_SOME ||
-      node.inlineGuard.variant === OPTION_NONE
-    );
-  }
-  return node.arms.some((arm) =>
-    arm.variants.some((v) => v === OPTION_SOME || v === OPTION_NONE),
-  );
-}
+export { isOptionMatchNode as isOptionMatch } from "../consts.js";

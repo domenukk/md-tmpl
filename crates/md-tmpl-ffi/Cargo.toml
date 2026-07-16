@@ -1,6 +1,6 @@
 [package]
 name = "md-tmpl-ffi"
-version = "0.7.1"
+version = "0.9.0"
 edition = "2024"
 rust-version = "1.85"
 description = "C FFI bindings for md-tmpl, used by Go (and other) language bindings"
@@ -11,9 +11,10 @@ publish = false
 crate-type = ["staticlib"]
 
 [dependencies]
-md-tmpl = { version = "0.7.1", path = "../md-tmpl", features = [
+md-tmpl = { version = "0.9.0", path = "../md-tmpl", default-features = false, features = [
   "std",
   "serde",
+  "flexbuffers",
 ] }
 
 [lints]

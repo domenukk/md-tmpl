@@ -26,8 +26,8 @@ export class DirectScope {
   resolve(name: string): unknown {
     // Check layers top-down
     for (let i = this.layers.length - 1; i >= 0; i--) {
-      const layer = this.layers[i]!;
-      if (layer.has(name)) return layer.get(name);
+      const layer = this.layers[i];
+      if (layer?.has(name)) return layer.get(name);
     }
     // Check consts — return raw value (display conversion happens at render)
     if (this.consts.has(name)) {

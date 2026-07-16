@@ -1,0 +1,554 @@
+[
+  {
+    "name": "interp_single",
+    "note": "single {{ }} interpolation",
+    "source": "---\nparams:\n  - name = str\n---\nHello {{ name }}!",
+    "params": {
+      "name": "World"
+    },
+    "expect": {
+      "kind": "render",
+      "output": "Hello World!"
+    }
+  },
+  {
+    "name": "interp_multiple",
+    "note": "multiple interpolations on one line",
+    "source": "---\nparams:\n  - a = str\n  - b = str\n---\n{{ a }} and {{ b }}",
+    "params": {
+      "a": "x",
+      "b": "y"
+    },
+    "expect": {
+      "kind": "render",
+      "output": "x and y"
+    }
+  },
+  {
+    "name": "interp_trailing_newline_preserved",
+    "note": "a trailing newline in the body is preserved verbatim",
+    "source": "---\nparams:\n  - name = str\n---\nHi {{ name }}\n",
+    "params": {
+      "name": "z"
+    },
+    "expect": {
+      "kind": "render",
+      "output": "Hi z\n"
+    }
+  },
+  {
+    "name": "dotted_path_one_level",
+    "note": "field access on a struct param",
+    "source": "---\nparams:\n  - u = struct(name = str)\n---\n{{ u.name }}",
+    "params": {
+      "u": {
+        "name": "Ada"
+      }
+    },
+    "expect": {
+      "kind": "render",
+      "output": "Ada"
+    }
+  },
+  {
+    "name": "dotted_path_two_levels",
+    "note": "nested struct field access",
+    "source": "---\nparams:\n  - u = struct(profile = struct(city = str))\n---\n{{ u.profile.city }}",
+    "params": {
+      "u": {
+        "profile": {
+          "city": "NYC"
+        }
+      }
+    },
+    "expect": {
+      "kind": "render",
+      "output": "NYC"
+    }
+  },
+  {
+    "name": "struct_duck_typing_extra_field_ignored",
+    "note": "extra fields on a struct value are ignored (structural typing)",
+    "source": "---\nparams:\n  - u = struct(name = str)\n---\n{{ u.name }}",
+    "params": {
+      "u": {
+        "name": "a",
+        "extra": "ignored"
+      }
+    },
+    "expect": {
+      "kind": "render",
+      "output": "a"
+    }
+  },
+  {
+    "name": "scalar_int_negative",
+    "note": "negative integer renders without formatting",
+    "source": "---\nparams:\n  - i = int\n---\n{{ i }}",
+    "params": {
+      "i": -7
+    },
+    "expect": {
+      "kind": "render",
+      "output": "-7"
+    }
+  },
+  {
+    "name": "scalar_float",
+    "note": "float renders with minimal representation",
+    "source": "---\nparams:\n  - f = float\n---\n{{ f }}",
+    "params": {
+      "f": 2.5
+    },
+    "expect": {
+      "kind": "render",
+      "output": "2.5"
+    }
+  },
+  {
+    "name": "scalar_bool_true",
+    "note": "boolean true renders as 'true'",
+    "source": "---\nparams:\n  - b = bool\n---\n{{ b }}",
+    "params": {
+      "b": true
+    },
+    "expect": {
+      "kind": "render",
+      "output": "true"
+    }
+  },
+  {
+    "name": "scalar_bool_false",
+    "note": "boolean false renders as 'false'",
+    "source": "---\nparams:\n  - b = bool\n---\n{{ b }}",
+    "params": {
+      "b": false
+    },
+    "expect": {
+      "kind": "render",
+      "output": "false"
+    }
+  },
+  {
+    "name": "filter_upper",
+    "note": "upper filter",
+    "source": "---\nparams:\n  - s = str\n---\n{{ s | upper }}",
+    "params": {
+      "s": "abc"
+    },
+    "expect": {
+      "kind": "render",
+      "output": "ABC"
+    }
+  },
+  {
+    "name": "filter_lower",
+    "note": "lower filter",
+    "source": "---\nparams:\n  - s = str\n---\n{{ s | lower }}",
+    "params": {
+      "s": "ABC"
+    },
+    "expect": {
+      "kind": "render",
+      "output": "abc"
+    }
+  },
+  {
+    "name": "filter_trim",
+    "note": "trim filter",
+    "source": "---\nparams:\n  - s = str\n---\n[{{ s | trim }}]",
+    "params": {
+      "s": "  hi  "
+    },
+    "expect": {
+      "kind": "render",
+      "output": "[hi]"
+    }
+  },
+  {
+    "name": "filter_chain_trim_lower",
+    "note": "chained filters apply left to right",
+    "source": "---\nparams:\n  - s = str\n---\n{{ s | trim | lower }}",
+    "params": {
+      "s": "  AB  "
+    },
+    "expect": {
+      "kind": "render",
+      "output": "ab"
+    }
+  },
+  {
+    "name": "filter_fixed",
+    "note": "fixed(n) formats a float to n decimals",
+    "source": "---\nparams:\n  - f = float\n---\n{{ f | fixed(2) }}",
+    "params": {
+      "f": 3.14159
+    },
+    "expect": {
+      "kind": "render",
+      "output": "3.14"
+    }
+  },
+  {
+    "name": "filter_join",
+    "note": "join(sep) joins a list of strings",
+    "source": "---\nparams:\n  - xs = list(str)\n---\n{{ xs | join(\", \") }}",
+    "params": {
+      "xs": [
+        "a",
+        "b",
+        "c"
+      ]
+    },
+    "expect": {
+      "kind": "render",
+      "output": "a, b, c"
+    }
+  },
+  {
+    "name": "filter_limit",
+    "note": "limit(n) truncates a list",
+    "source": "---\nparams:\n  - xs = list(str)\n---\n{{ xs | limit(2) | join(\",\") }}",
+    "params": {
+      "xs": [
+        "a",
+        "b",
+        "c",
+        "d"
+      ]
+    },
+    "expect": {
+      "kind": "render",
+      "output": "a,b"
+    }
+  },
+  {
+    "name": "filter_add",
+    "note": "add(n) numeric filter",
+    "source": "---\nparams:\n  - n = int\n---\n{{ n | add(3) }}",
+    "params": {
+      "n": 10
+    },
+    "expect": {
+      "kind": "render",
+      "output": "13"
+    }
+  },
+  {
+    "name": "filter_sub",
+    "note": "sub(n) numeric filter",
+    "source": "---\nparams:\n  - n = int\n---\n{{ n | sub(4) }}",
+    "params": {
+      "n": 10
+    },
+    "expect": {
+      "kind": "render",
+      "output": "6"
+    }
+  },
+  {
+    "name": "if_true",
+    "note": "if branch taken when condition truthy",
+    "source": "---\nparams:\n  - b = bool\n---\n\n> {% if b %}\n\nyes\n\n> {% else %}\n\nno\n\n> {% /if %}\n",
+    "params": {
+      "b": true
+    },
+    "expect": {
+      "kind": "render",
+      "output": "yes\n"
+    }
+  },
+  {
+    "name": "if_false_else",
+    "note": "else branch taken when condition falsy",
+    "source": "---\nparams:\n  - b = bool\n---\n\n> {% if b %}\n\nyes\n\n> {% else %}\n\nno\n\n> {% /if %}\n",
+    "params": {
+      "b": false
+    },
+    "expect": {
+      "kind": "render",
+      "output": "no\n"
+    }
+  },
+  {
+    "name": "if_string_equality",
+    "note": "equality comparison in condition",
+    "source": "---\nparams:\n  - role = str\n---\n\n> {% if role == \"admin\" %}\n\nA\n\n> {% else %}\n\nB\n\n> {% /if %}\n",
+    "params": {
+      "role": "admin"
+    },
+    "expect": {
+      "kind": "render",
+      "output": "A\n"
+    }
+  },
+  {
+    "name": "for_list_str",
+    "note": "for over a list of strings",
+    "source": "---\nparams:\n  - xs = list(str)\n---\n\n> {% for x in xs %}\n\n- {{ x }}\n\n> {% /for %}\n",
+    "params": {
+      "xs": [
+        "a",
+        "b"
+      ]
+    },
+    "expect": {
+      "kind": "render",
+      "output": "- a\n- b\n"
+    }
+  },
+  {
+    "name": "for_list_struct",
+    "note": "for over a list of structs (shorthand element type)",
+    "source": "---\nparams:\n  - tasks = list(title = str)\n---\n\n> {% for t in tasks %}\n\n- {{ t.title }}\n\n> {% /for %}\n",
+    "params": {
+      "tasks": [
+        {
+          "title": "A"
+        },
+        {
+          "title": "B"
+        }
+      ]
+    },
+    "expect": {
+      "kind": "render",
+      "output": "- A\n- B\n"
+    }
+  },
+  {
+    "name": "for_nested",
+    "note": "nested for loops",
+    "source": "---\nparams:\n  - groups = list(items = list(str))\n---\n\n> {% for g in groups %}\n\n> {% for it in g.items %}\n\n{{ it }}\n\n> {% /for %}\n\n> {% /for %}\n",
+    "params": {
+      "groups": [
+        {
+          "items": [
+            "a",
+            "b"
+          ]
+        },
+        {
+          "items": [
+            "c"
+          ]
+        }
+      ]
+    },
+    "expect": {
+      "kind": "render",
+      "output": "a\nb\nc\n"
+    }
+  },
+  {
+    "name": "for_else_empty",
+    "note": "for/else renders else body when the list is empty",
+    "source": "---\nparams:\n  - xs = list(str)\n---\n\n> {% for x in xs %}\n\n{{ x }}\n\n> {% else %}\n\nempty\n\n> {% /for %}\n",
+    "params": {
+      "xs": []
+    },
+    "expect": {
+      "kind": "render",
+      "output": "empty\n"
+    }
+  },
+  {
+    "name": "match_unit_variant",
+    "note": "match on a unit enum, string-encoded value",
+    "source": "---\nparams:\n  - s = enum(Active, Paused)\n---\n\n> {% match s %}\n> {% case Active %}\n\nA\n\n> {% case Paused %}\n\nP\n\n> {% /match %}\n",
+    "params": {
+      "s": "Active"
+    },
+    "expect": {
+      "kind": "render",
+      "output": "A\n"
+    }
+  },
+  {
+    "name": "match_struct_variant_field",
+    "note": "match on an enum with a struct variant and read a field",
+    "source": "---\nparams:\n  - o = enum(Confirmed(evidence = str), Rejected)\n---\n\n> {% match o %}\n> {% case Confirmed %}\n\nyes {{ o.evidence }}\n\n> {% case Rejected %}\n\nno\n\n> {% /match %}\n",
+    "params": {
+      "o": {
+        "__kind__": "Confirmed",
+        "evidence": "E"
+      }
+    },
+    "expect": {
+      "kind": "render",
+      "output": "yes E\n"
+    }
+  },
+  {
+    "name": "match_via_type_alias",
+    "note": "match on a param typed by an enum alias",
+    "source": "---\ntypes:\n  - Stage = enum(Design, Build)\n\nparams:\n  - s = Stage\n---\n\n> {% match s %}\n> {% case Design %}\n\nD\n\n> {% case Build %}\n\nB\n\n> {% /match %}\n",
+    "params": {
+      "s": "Build"
+    },
+    "expect": {
+      "kind": "render",
+      "output": "B\n"
+    }
+  },
+  {
+    "name": "enum_literal_in_condition",
+    "note": "compare an enum param against a namespaced enum literal",
+    "source": "---\ntypes:\n  - Stage = enum(Design, Build)\n\nparams:\n  - s = Stage\n---\n\n> {% if s == Stage.Build %}\n\nbuilding\n\n> {% else %}\n\nother\n\n> {% /if %}\n",
+    "params": {
+      "s": "Build"
+    },
+    "expect": {
+      "kind": "render",
+      "output": "building\n"
+    }
+  },
+  {
+    "name": "option_has_some",
+    "note": "has() is true for a present option",
+    "source": "---\nparams:\n  - name = option(str)\n---\n\n> {% if has(name) %}\n\nH {{ name }}\n\n> {% else %}\n\nnone\n\n> {% /if %}\n",
+    "params": {
+      "name": "Bob"
+    },
+    "expect": {
+      "kind": "render",
+      "output": "H Bob\n"
+    }
+  },
+  {
+    "name": "option_has_present_string_none",
+    "note": "a present option holding the literal string 'None' is present -> has() true [D1]",
+    "source": "---\nparams:\n  - name = option(str)\n---\n\n> {% if has(name) %}\n\nH {{ name }}\n\n> {% else %}\n\nnone\n\n> {% /if %}\n",
+    "params": {
+      "name": "None"
+    },
+    "expect": {
+      "kind": "render",
+      "output": "H None\n"
+    }
+  },
+  {
+    "name": "option_has_absent_default_none",
+    "note": "has() is false for an option defaulted to None -> else branch (formerly D1; Rust and TS now agree)",
+    "source": "---\nparams:\n  - name = option(str) := None\n---\n\n> {% if has(name) %}\n\nH {{ name }}\n\n> {% else %}\n\nnone\n\n> {% /if %}\n",
+    "params": {},
+    "expect": {
+      "kind": "render",
+      "output": "none\n"
+    }
+  },
+  {
+    "name": "narrow_if_true_unwraps_value",
+    "note": "inside `if has(o)` the option is unwrapped to its inner value [D1]",
+    "source": "---\nparams:\n  - o = option(struct(v = str))\n---\n\n> {% if has(o) %}\n\nin {{ o.v }}\n\n> {% else %}\n\nabsent\n\n> {% /if %}\n",
+    "params": {
+      "o": {
+        "v": "X"
+      }
+    },
+    "expect": {
+      "kind": "render",
+      "output": "in X\n"
+    }
+  },
+  {
+    "name": "narrow_negated_else_unwraps_value",
+    "note": "in the else of `if !has(o)` the option is present and unwrapped [D1]",
+    "source": "---\nparams:\n  - o = option(struct(v = str))\n---\n\n> {% if !has(o) %}\n\nabsent\n\n> {% else %}\n\npresent {{ o.v }}\n\n> {% /if %}\n",
+    "params": {
+      "o": {
+        "v": "Y"
+      }
+    },
+    "expect": {
+      "kind": "render",
+      "output": "present Y\n"
+    }
+  },
+  {
+    "name": "narrow_match_some_arm_unwraps_value",
+    "note": "the Some arm of a match on an option unwraps the inner value [D1]",
+    "source": "---\nparams:\n  - o = option(struct(v = str))\n---\n\n> {% match o %}\n> {% case Some %}\n\ngot {{ o.v }}\n\n> {% case None %}\n\nnothing\n\n> {% /match %}\n",
+    "params": {
+      "o": {
+        "v": "Z"
+      }
+    },
+    "expect": {
+      "kind": "render",
+      "output": "got Z\n"
+    }
+  },
+  {
+    "name": "fn_len_list_and_str",
+    "note": "len() on a list and on a string",
+    "source": "---\nparams:\n  - xs = list(str)\n  - s = str\n---\n{{ len(xs) }} {{ len(s) }}",
+    "params": {
+      "xs": [
+        "a",
+        "b",
+        "c"
+      ],
+      "s": "hello"
+    },
+    "expect": {
+      "kind": "render",
+      "output": "3 5"
+    }
+  },
+  {
+    "name": "fn_kinds_and_kind",
+    "note": "kinds(Enum) lists variants; kind(Enum.Variant) names one",
+    "source": "---\ntypes:\n  - Stage = enum(Design, Build, Deploy)\n\nparams: []\n---\n{{ kinds(Stage) | join(\",\") }} {{ kind(Stage.Build) }}",
+    "params": {},
+    "expect": {
+      "kind": "render",
+      "output": "Design,Build,Deploy Build"
+    }
+  },
+  {
+    "name": "consts_rendered",
+    "note": "a const is available during rendering",
+    "source": "---\nconsts:\n  - MAX = int := 3\n\nparams: []\n---\n{{ MAX }}",
+    "params": {},
+    "expect": {
+      "kind": "render",
+      "output": "3"
+    }
+  },
+  {
+    "name": "env_rendered",
+    "note": "a compile-time env value is available during rendering",
+    "source": "---\nenv:\n  - REGION = str\n\nparams: []\n---\n{{ REGION }}",
+    "params": {},
+    "env": {
+      "REGION": "eu"
+    },
+    "expect": {
+      "kind": "render",
+      "output": "eu"
+    }
+  },
+  {
+    "name": "default_used_when_param_omitted",
+    "note": "a param default is injected when the value is not supplied",
+    "source": "---\nparams:\n  - greeting = str := \"Hi\"\n---\n{{ greeting }}!",
+    "params": {},
+    "expect": {
+      "kind": "render",
+      "output": "Hi!"
+    }
+  },
+  {
+    "name": "default_overridden_by_param",
+    "note": "an explicit param overrides its default",
+    "source": "---\nparams:\n  - greeting = str := \"Hi\"\n---\n{{ greeting }}!",
+    "params": {
+      "greeting": "Yo"
+    },
+    "expect": {
+      "kind": "render",
+      "output": "Yo!"
+    }
+  }
+]

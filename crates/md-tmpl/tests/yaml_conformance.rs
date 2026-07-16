@@ -881,9 +881,10 @@ params: [x = str]
 ---
 body";
     let err = parse_frontmatter(source).expect_err("type named 'str' should fail");
+    let msg = err.to_string();
     assert!(
-        err.to_string().contains("shadows built-in"),
-        "should mention builtin shadow: {err}"
+        msg.contains("reserved keyword") || msg.contains("shadows built-in"),
+        "should mention reserved keyword or builtin shadow: {msg}"
     );
 }
 

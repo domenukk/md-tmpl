@@ -51,18 +51,20 @@ import {
   PREFIX_OPTS_DOT,
   PREFIX_OPTIONS_DOT,
   PREFIX_PARAMS_DOT,
+  unescapeStringLiteral,
 } from "./consts.js";
 
 /**
- * Strip surrounding quotes from a case label if present.
- * `"foo"` or `'foo'` → `foo`; `Active` → `Active`.
+ * Strip surrounding quotes from a case label if present and unescape it.
+ * `"foo"` or `'foo'` → `foo`; `Active` → `Active`. Escaped quotes inside the
+ * literal are unescaped to mirror Rust's matching label handling.
  */
 function stripQuotes(s: string): string {
   if (s.length >= 2) {
     const first = s[0];
     const last = s[s.length - 1];
     if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
-      return s.slice(1, -1);
+      return unescapeStringLiteral(s.slice(1, -1));
     }
   }
   return s;
@@ -72,9 +74,26 @@ function stripQuotes(s: string): string {
 function isQuotedLabel(s: string): boolean {
   if (s.length < 2) return false;
   return (
-    (s[0] === '"' && s[s.length - 1] === '"') ||
-    (s[0] === "'" && s[s.length - 1] === "'")
+    (s.startsWith('"') && s.endsWith('"')) ||
+    (s.startsWith("'") && s.endsWith("'"))
   );
+}
+
+/**
+ * Extract the argument from a simple `has(x)` condition.
+ * Returns the trimmed argument name or undefined if the condition is not
+ * a bare `has(...)` call (e.g. contains `&&`, `||`, or `!`).
+ */
+function extractHasArg(condition: string): string | undefined {
+  const trimmed = condition.trim();
+  if (trimmed.startsWith("has(") && trimmed.endsWith(")")) {
+    const inner = trimmed.slice(4, -1).trim();
+    // Only simple identifiers/dotted paths — reject compound conditions
+    if (inner.length > 0 && !inner.includes(" ")) {
+      return inner;
+    }
+  }
+  return undefined;
 }
 
 /**
@@ -114,7 +133,7 @@ function armLabelMatches(
   try {
     const resolved = scope.resolvePath(label);
     if (resolved.type === TYPE_STR) {
-      return (resolved.value as string) === variant;
+      return resolved.value === variant;
     }
   } catch {
     // Label is not a resolvable variable — no match.
@@ -156,7 +175,8 @@ export function renderNodes(
   const parts: string[] = [];
 
   for (let i = 0; i < nodes.length; i++) {
-    const node = nodes[i]!;
+    const node = nodes[i];
+    if (node === undefined) continue;
     switch (node.kind) {
       case NODE_TEXT:
         parts.push(node.text);
@@ -164,8 +184,10 @@ export function renderNodes(
 
       case NODE_EXPR: {
         if (node.trimBefore && parts.length > 0) {
-          const last = parts[parts.length - 1]!;
-          parts[parts.length - 1] = last.replace(/\s+$/, "");
+          const last = parts[parts.length - 1];
+          if (last !== undefined) {
+            parts[parts.length - 1] = last.replace(/\s+$/, "");
+          }
         }
         const val = evaluateExpression(node.expr, scope);
         if (node.expr.includes(PIPE)) {
@@ -182,9 +204,9 @@ export function renderNodes(
           parts.push(display(val));
         }
         if (node.trimAfter) {
-          if (i + 1 < nodes.length && nodes[i + 1]!.kind === "text") {
-            const next = nodes[i + 1]! as { kind: "text"; text: string };
-            parts.push(next.text.replace(/^\s+/, ""));
+          const nextNode = nodes[i + 1];
+          if (nextNode?.kind === "text") {
+            parts.push(nextNode.text.replace(/^\s+/, ""));
             i++;
           }
         }
@@ -209,7 +231,8 @@ export function renderNodes(
           const layer = scope.pushLayer();
           try {
             for (let idx = 0; idx < listVal.items.length; idx++) {
-              const item = listVal.items[idx]!;
+              const item = listVal.items[idx];
+              if (item === undefined) continue;
               layer.set(node.binding, item);
               scope.setLoopMeta(node.binding, { index: idx });
               parts.push(renderNodes(node.body, scope, options));
@@ -225,7 +248,20 @@ export function renderNodes(
         let matched = false;
         for (const branch of node.branches) {
           if (evaluateCondition(branch.condition, scope)) {
-            parts.push(renderNodes(branch.body, scope, options));
+            // If the condition is a simple `has(x)` guard, narrow the option
+            // param so inner match blocks see the unwrapped value.
+            const hasArg = extractHasArg(branch.condition);
+            if (hasArg && scope.isOptionParam(hasArg)) {
+              scope.pushLayer();
+              try {
+                scope.narrowOption(hasArg);
+                parts.push(renderNodes(branch.body, scope, options));
+              } finally {
+                scope.popLayer();
+              }
+            } else {
+              parts.push(renderNodes(branch.body, scope, options));
+            }
             matched = true;
             break;
           }
@@ -249,6 +285,7 @@ export function renderNodes(
             try {
               if (variant === OPTION_SOME && val.type !== TYPE_NONE) {
                 layer.set(node.expr, val);
+                scope.narrowOption(node.expr);
               }
               parts.push(renderNodes(node.inlineGuard.body, scope, options));
             } finally {
@@ -270,6 +307,7 @@ export function renderNodes(
             try {
               if (variant === OPTION_SOME && val.type !== TYPE_NONE) {
                 layer.set(node.expr, val);
+                scope.narrowOption(node.expr);
               }
               // If the arm has a guard, evaluate it
               if (arm.guard && !evaluateCondition(arm.guard, scope)) {
@@ -298,7 +336,7 @@ export function renderNodes(
         let includedNodes: readonly Node[];
         let decls: readonly VarDecl[];
         let consts: ReadonlyMap<string, Value>;
-        let fileChildOpts: RenderOptions | undefined = options;
+        let fileChildOpts: RenderOptions | undefined;
 
         if (node.path !== undefined) {
           const resolvedPath = interpolateIncludePath(node.path, scope);
@@ -334,7 +372,7 @@ export function renderNodes(
           let tmplRef: TmplRef | undefined;
           try {
             const resolved = scope.resolvePath(node.name);
-            if (resolved && resolved.type === TYPE_TMPL) {
+            if (resolved.type === TYPE_TMPL) {
               tmplRef = resolved.ref;
             }
           } catch {
@@ -573,9 +611,8 @@ function interpolateIncludePath(path: string, scope: Scope): string {
   if (!path.includes(EXPR_START)) return path;
   let result = "";
   let remaining = path;
-  while (true) {
-    const startIdx = remaining.indexOf(EXPR_START);
-    if (startIdx === -1) break;
+  let startIdx = remaining.indexOf(EXPR_START);
+  while (startIdx !== -1) {
     result += remaining.slice(0, startIdx);
     const afterStart = remaining.slice(startIdx + EXPR_START.length);
     const endIdx = afterStart.indexOf(EXPR_END);
@@ -637,6 +674,7 @@ function interpolateIncludePath(path: string, scope: Scope): string {
     }
     result += valStr;
     remaining = afterStart.slice(endIdx + EXPR_END.length);
+    startIdx = remaining.indexOf(EXPR_START);
   }
   result += remaining;
   if (!isValidResolvedPath(result) || result.includes(EXPR_START)) {

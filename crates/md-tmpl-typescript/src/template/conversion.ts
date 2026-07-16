@@ -36,7 +36,7 @@ export function jsToValue(
   value: unknown,
   varType: VarType,
   typeAliases?: ReadonlyMap<string, VarType>,
-  seen: WeakSet<object> = new WeakSet(),
+  seen = new WeakSet(),
   depth = 0,
 ): Value {
   if (depth > 256) {
@@ -67,14 +67,9 @@ export function jsToValue(
       return NONE;
     }
     const someVariant = varType.variants.find((v) => v.name === OPTION_SOME);
-    if (someVariant && someVariant.fields.length === 1) {
-      return jsToValue(
-        value,
-        someVariant.fields[0]!.varType,
-        typeAliases,
-        seen,
-        depth,
-      );
+    const someField = someVariant?.fields[0];
+    if (someVariant?.fields.length === 1 && someField) {
+      return jsToValue(value, someField.varType, typeAliases, seen, depth);
     }
     return fromJs(value, seen, depth + 1);
   }
@@ -89,8 +84,8 @@ export function jsToValue(
   ) {
     const obj = value as Record<string, unknown>;
     const keys = Object.keys(obj);
-    if (keys.length === 1) {
-      const variantName = keys[0]!;
+    const variantName = keys[0];
+    if (keys.length === 1 && variantName !== undefined) {
       const variant = varType.variants.find((v) => v.name === variantName);
       if (variant && variant.fields.length > 0) {
         // This is a struct variant: { VariantName: { field1: val1, ... } }
@@ -129,7 +124,7 @@ export function jsToValue(
     value !== null &&
     !Array.isArray(value)
   ) {
-    seen.add(value as object);
+    seen.add(value);
     try {
       const obj = value as Record<string, unknown>;
       const entries: [string, Value][] = [];
@@ -155,7 +150,7 @@ export function jsToValue(
       }
       return structVal(entries);
     } finally {
-      seen.delete(value as object);
+      seen.delete(value);
     }
   }
 

@@ -213,6 +213,98 @@ fn split_ignores_brackets_inside_quotes() {
     assert_eq!(result[1], " b = 2");
 }
 
+#[test]
+fn split_two_quoted_strings_each_with_commas() {
+    // T1 low-level: two quoted list elements, each containing a comma. Only the
+    // top-level comma between the two literals is a separator.
+    let result = split_at_depth_zero("\"a, b\", \"c, d\"");
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0], "\"a, b\"");
+    assert_eq!(result[1], " \"c, d\"");
+}
+
+#[test]
+fn split_ignores_parens_inside_quotes() {
+    // Parentheses inside a quoted string must not affect depth tracking.
+    let result = split_at_depth_zero("a = \"g(h)i\", b = 2");
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0], "a = \"g(h)i\"");
+    assert_eq!(result[1], " b = 2");
+}
+
+#[test]
+fn split_ignores_multiple_embedded_delimiters_in_one_string() {
+    // A single quoted string containing many commas and every bracket family
+    // must remain one logical field; only the trailing top-level comma splits.
+    let result = split_at_depth_zero("note = \"p, q, [r], {s}, (t), <u>\", n = 1");
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0], "note = \"p, q, [r], {s}, (t), <u>\"");
+    assert_eq!(result[1], " n = 1");
+}
+
+#[test]
+fn split_single_quoted_strings_each_with_commas() {
+    // T5 low-level: single-quoted elements, each containing a comma.
+    let result = split_at_depth_zero("'a, b', 'c'");
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0], "'a, b'");
+    assert_eq!(result[1], " 'c'");
+}
+
+#[test]
+fn split_unterminated_quote_never_splits_midquote() {
+    // Edge case: once a quote opens and is never closed, the remainder of the
+    // input stays a single (unsplit) segment — commas after the opening quote
+    // must NOT create new fields.
+    let result = split_at_depth_zero("a = \"x, y, z");
+    assert_eq!(result, vec!["a = \"x, y, z"]);
+}
+
+#[test]
+fn split_no_quotes_control_still_splits_on_commas() {
+    // Control: without quotes the same commas DO split into separate fields.
+    let result = split_at_depth_zero("x, y, z");
+    assert_eq!(result, vec!["x", " y", " z"]);
+}
+
+#[test]
+fn split_single_quote_inside_double_quoted_string() {
+    // E1 low-level: an apostrophe inside a double-quoted string does not open a
+    // new quote context, so the embedded comma is still protected.
+    let result = split_at_depth_zero("\"it's, fine\", \"ok\"");
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0], "\"it's, fine\"");
+    assert_eq!(result[1], " \"ok\"");
+}
+
+#[test]
+fn split_double_quotes_inside_single_quoted_string() {
+    // E2 low-level: double quotes inside a single-quoted string are literal, so
+    // the embedded comma inside the single-quoted field is protected.
+    let result = split_at_depth_zero("'say \"hi\", bye', \"z\"");
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0], "'say \"hi\", bye'");
+    assert_eq!(result[1], " \"z\"");
+}
+
+#[test]
+fn split_nested_list_with_quoted_commas() {
+    // E3 low-level: only the top-level comma between the two inner lists splits;
+    // commas inside the quoted elements of each inner list are protected.
+    let result = split_at_depth_zero("[\"a, b\"], [\"c, d\", \"e\"]");
+    assert_eq!(result.len(), 2);
+    assert_eq!(result[0], "[\"a, b\"]");
+    assert_eq!(result[1], " [\"c, d\", \"e\"]");
+}
+
+#[test]
+fn split_preserves_whitespace_inside_quotes() {
+    // E4 low-level: leading/trailing spaces inside a quoted field are part of
+    // the field slice and are not consumed by the splitter.
+    let result = split_at_depth_zero("\" a, b \"");
+    assert_eq!(result, vec!["\" a, b \""]);
+}
+
 // =========================================================================
 // find_char_at_depth_zero
 // =========================================================================
@@ -256,6 +348,15 @@ fn find_after_brackets() {
 #[test]
 fn find_on_empty_input() {
     assert_eq!(find_char_at_depth_zero("", '='), None);
+}
+
+#[test]
+fn find_returns_key_separator_before_quoted_equals() {
+    // For a struct field entry like `msg = "a = b"`, the key/value separator is
+    // the first `=` at depth 0. Because the search returns the first match, the
+    // `=` embedded in the quoted value never becomes the split point.
+    let result = find_char_at_depth_zero("msg = \"a = b\"", '=');
+    assert_eq!(result, Some(4));
 }
 
 // =========================================================================
@@ -1017,6 +1118,173 @@ fn enum_unit_variant_with_fields_rejected() {
     assert!(
         err.to_string().contains("invalid default"),
         "unit variant with fields should be rejected, got: {err}"
+    );
+}
+
+// =========================================================================
+// D2 — enum-variant defaults (bare variant names, all forms)
+// =========================================================================
+
+/// A `Stage` enum alias used by the alias/nesting D2 cases.
+fn stage_aliases() -> HashMap<String, VarType> {
+    let mut aliases = HashMap::new();
+    aliases.insert(
+        "Stage".to_string(),
+        VarType::Enum(vec![
+            crate::types::VariantDecl {
+                name: "Design".into(),
+                fields: vec![],
+            },
+            crate::types::VariantDecl {
+                name: "Build".into(),
+                fields: vec![],
+            },
+            crate::types::VariantDecl {
+                name: "Deploy".into(),
+                fields: vec![],
+            },
+        ]),
+    );
+    aliases
+}
+
+/// Parse declarations with the `Stage` alias available.
+fn parse_decls_stage(rest: &str) -> Result<Vec<VarDecl>, crate::error::TemplateError> {
+    let aliases = stage_aliases();
+    let imports = HashMap::new();
+    let consts = HashMap::new();
+    parse_declarations(rest, &aliases, &imports, false, &consts)
+}
+
+#[test]
+fn d2_inline_unit_default() {
+    let decls = parse_decls("[s = enum(Design, Build) := Build]").unwrap();
+    assert_eq!(decls[0].default_value, Some(Value::Str("Build".into())));
+}
+
+#[test]
+fn d2_alias_unit_default() {
+    let decls = parse_decls_stage("[s = Stage := Build]").unwrap();
+    assert_eq!(decls[0].default_value, Some(Value::Str("Build".into())));
+}
+
+#[test]
+fn d2_struct_variant_default() {
+    let decls =
+        parse_decls("[o = enum(Confirmed(e = str), Rejected) := Confirmed(e = \"x\")]").unwrap();
+    match decls[0].default_value.as_ref().unwrap() {
+        Value::Struct(map) => {
+            assert_eq!(map.get("__kind__"), Some(&Value::Str("Confirmed".into())));
+            assert_eq!(map.get("e"), Some(&Value::Str("x".into())));
+        }
+        other => panic!("expected struct variant, got {other:?}"),
+    }
+}
+
+#[test]
+fn d2_enum_in_struct_default() {
+    let decls = parse_decls_stage("[x = struct(st = Stage) := {st = Build}]").unwrap();
+    match decls[0].default_value.as_ref().unwrap() {
+        Value::Struct(map) => {
+            assert_eq!(map.get("st"), Some(&Value::Str("Build".into())));
+        }
+        other => panic!("expected struct, got {other:?}"),
+    }
+}
+
+#[test]
+fn d2_enum_in_list_default() {
+    let decls = parse_decls_stage("[xs = list(Stage) := [Build, Deploy]]").unwrap();
+    match decls[0].default_value.as_ref().unwrap() {
+        Value::List(items) => {
+            assert_eq!(
+                **items,
+                vec![Value::Str("Build".into()), Value::Str("Deploy".into())]
+            );
+        }
+        other => panic!("expected list, got {other:?}"),
+    }
+}
+
+#[test]
+fn d2_option_of_enum_default_some() {
+    let decls = parse_decls_stage("[o = option(Stage) := Build]").unwrap();
+    assert_eq!(decls[0].default_value, Some(Value::Str("Build".into())));
+}
+
+#[test]
+fn d2_option_of_enum_default_none() {
+    let decls = parse_decls_stage("[o = option(Stage) := None]").unwrap();
+    assert_eq!(decls[0].default_value, Some(Value::None));
+}
+
+#[test]
+fn d2_enum_inside_struct_variant_field_default() {
+    let decls = parse_decls_stage("[w = enum(Wrap(s = Stage), Empty) := Wrap(s = Build)]").unwrap();
+    match decls[0].default_value.as_ref().unwrap() {
+        Value::Struct(map) => {
+            assert_eq!(map.get("__kind__"), Some(&Value::Str("Wrap".into())));
+            assert_eq!(map.get("s"), Some(&Value::Str("Build".into())));
+        }
+        other => panic!("expected struct variant, got {other:?}"),
+    }
+}
+
+#[test]
+fn d2_qualified_variant_default_rejected_alias() {
+    let err = parse_decls_stage("[s = Stage := Stage.Build]").unwrap_err();
+    assert!(
+        err.to_string().contains("use the bare variant name"),
+        "qualified variant default must be rejected with the shared message, got: {err}"
+    );
+}
+
+#[test]
+fn d2_qualified_variant_default_rejected_inline_enum() {
+    let err = parse_decls("[s = enum(Design, Build) := MyEnum.Build]").unwrap_err();
+    assert!(
+        err.to_string().contains("use the bare variant name"),
+        "qualified variant default must be rejected, got: {err}"
+    );
+}
+
+#[test]
+fn d2_qualified_variant_default_rejected_option_enum() {
+    let err = parse_decls_stage("[o = option(Stage) := Stage.Deploy]").unwrap_err();
+    assert!(
+        err.to_string().contains("use the bare variant name"),
+        "qualified variant default (option) must be rejected, got: {err}"
+    );
+}
+
+// =========================================================================
+// D4 — implicit-typed declaration with a default is a compile error
+// =========================================================================
+
+#[test]
+fn d4_implicit_typed_param_rejected() {
+    let err = parse_decls("[x := \"hello\"]").unwrap_err();
+    assert!(
+        err.to_string().contains("must have an explicit type"),
+        "implicit-typed param must be rejected with the shared message, got: {err}"
+    );
+}
+
+#[test]
+fn d4_implicit_typed_const_rejected() {
+    let err = parse_consts("[X := \"hello\"]").unwrap_err();
+    assert!(
+        err.to_string().contains("must have an explicit type"),
+        "implicit-typed constant must be rejected with the shared message, got: {err}"
+    );
+}
+
+#[test]
+fn d4_implicit_typed_param_no_spaces_rejected() {
+    let err = parse_decls("[x:=\"hello\"]").unwrap_err();
+    assert!(
+        err.to_string().contains("must have an explicit type"),
+        "implicit-typed param (no spaces) must be rejected, got: {err}"
     );
 }
 

@@ -6,6 +6,7 @@ members = [
   "crates/md-tmpl-python",
   "crates/md-tmpl-ffi",
   "crates/md-tmpl-wasm",
+  "crates/md-tmpl-compile-tests",
 ]
 resolver = "3"
 

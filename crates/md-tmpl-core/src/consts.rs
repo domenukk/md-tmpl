@@ -371,6 +371,46 @@ pub fn strip_string_literal(token: &str) -> Option<&str> {
     None
 }
 
+/// Unescape the inner content of a string literal (surrounding quotes already
+/// stripped) using md-tmpl's uniform escape rules.
+///
+/// Recognized escapes:
+/// - `\\` → `\`
+/// - `\"` → `"`
+/// - `\'` → `'`
+///
+/// Any other backslash sequence `\X` is preserved VERBATIM (both the backslash
+/// and `X` are kept), so pre-existing strings containing literal backslashes
+/// (e.g. `\n`, `c:\path`) are unaffected. A trailing lone backslash is kept.
+#[must_use]
+pub fn unescape_string_literal(inner: &str) -> alloc::string::String {
+    use alloc::string::{String, ToString};
+    // Fast path: no backslash means nothing to unescape.
+    if !inner.contains(BACKSLASH) {
+        return inner.to_string();
+    }
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars();
+    while let Some(c) = chars.next() {
+        if c == BACKSLASH {
+            match chars.next() {
+                Some(QUOTE_DOUBLE) => out.push(QUOTE_DOUBLE),
+                Some(QUOTE_SINGLE) => out.push(QUOTE_SINGLE),
+                // A `\\` escape, or a trailing lone backslash — keep one backslash.
+                Some(BACKSLASH) | None => out.push(BACKSLASH),
+                // Unknown escape — keep the backslash and the following char.
+                Some(other) => {
+                    out.push(BACKSLASH);
+                    out.push(other);
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 // -- Error messages -----------------------------------------------------------
 
 /// Error when frontmatter block is missing.
@@ -414,18 +454,45 @@ pub(crate) const ERR_BARE_STMT_TAG: &str =
 pub(crate) const ERR_COMPOUND_BRACKETS_PROHIBITED: &str =
     "must use parentheses (...); angle brackets <...> and square brackets [...] are prohibited";
 
-/// Built-in type names and keywords that cannot be used as user-defined names.
+/// Built-in type names, pattern-syntax keywords, and internal keys that cannot
+/// be used as user-defined names (params, consts, type aliases, import stems).
+///
+/// - Type names: `str`, `bool`, `int`, `float`, `list`, `struct`, `enum`, `tmpl`, `option`
+/// - Namespace: `params`
+/// - Pattern keywords: `true`, `false`, `Some`, `None`, `_` — used in `{% case %}` arms
+/// - Internal keys: `__kind__`, `__variants__` — used for enum variant tagging
+/// - Codegen collision guards: `__self`, `__Self`, `__super`, `__crate` — Rust
+///   codegen renames `self` → `__self` etc. because these cannot be raw
+///   identifiers; the mangled names are reserved to prevent collisions.
 pub(crate) const RESERVED_NAMES: &[&str] = &[
+    // Type names
     TYPE_LIST,
     TYPE_STRUCT,
     TYPE_ENUM,
     TYPE_TMPL,
     TYPE_OPTION,
-    "params",
     TYPE_STR,
     TYPE_INT,
     TYPE_FLOAT,
     TYPE_BOOL,
+    // Namespace
+    "params",
+    // Pattern-syntax keywords (match/case arm labels)
+    LIT_TRUE,
+    LIT_FALSE,
+    OPTION_SOME,
+    OPTION_NONE,
+    MATCH_DEFAULT,
+    // Internal enum keys
+    ENUM_TAG_KEY,
+    ENUM_VARIANTS_KEY,
+    // Codegen collision guards — Rust codegen renames `self` → `__self` etc.
+    // because these cannot be raw identifiers.  Reserve the mangled names so
+    // that a user-defined `__self` param doesn't collide with the rename.
+    "__self",
+    "__Self",
+    "__super",
+    "__crate",
 ];
 
 #[cfg(test)]
@@ -506,6 +573,26 @@ mod tests {
     #[test]
     fn reserved_names_contains_params() {
         assert!(RESERVED_NAMES.contains(&"params"));
+    }
+
+    #[test]
+    fn reserved_names_contains_pattern_keywords() {
+        for name in &["true", "false", "Some", "None", "_"] {
+            assert!(
+                RESERVED_NAMES.contains(name),
+                "{name} should be in RESERVED_NAMES"
+            );
+        }
+    }
+
+    #[test]
+    fn reserved_names_contains_internal_keys() {
+        for name in &[ENUM_TAG_KEY, ENUM_VARIANTS_KEY] {
+            assert!(
+                RESERVED_NAMES.contains(name),
+                "{name} should be in RESERVED_NAMES"
+            );
+        }
     }
 
     // -- BUILTIN_FUNCTIONS ----------------------------------------------------

@@ -1,0 +1,232 @@
+[
+  {
+    "name": "defaults_scalars",
+    "note": "defaults for every scalar type",
+    "source": "---\nallow_unused: true\n\nparams:\n  - a = str := \"W\"\n  - b = int := 42\n  - c = bool := true\n  - d = float := 0.5\n---\nbody",
+    "expect": {
+      "kind": "default",
+      "defaults": {
+        "a": "W",
+        "b": 42,
+        "c": true,
+        "d": 0.5
+      }
+    }
+  },
+  {
+    "name": "defaults_none_when_no_defaults",
+    "note": "params without defaults produce an empty defaults object",
+    "source": "---\nallow_unused: true\n\nparams:\n  - s = str\n  - n = int\n---\nbody",
+    "expect": {
+      "kind": "default",
+      "defaults": {}
+    }
+  },
+  {
+    "name": "default_enum_unit",
+    "note": "unit enum default projects to the bare variant name",
+    "source": "---\nallow_unused: true\n\nparams:\n  - s = enum(Active, Paused) := Active\n---\nbody",
+    "expect": {
+      "kind": "default",
+      "defaults": {
+        "s": "Active"
+      }
+    }
+  },
+  {
+    "name": "default_enum_struct_variant",
+    "note": "struct enum default projects to a __kind__-tagged object",
+    "source": "---\nallow_unused: true\n\nparams:\n  - o = enum(Confirmed(evidence = str), Rejected) := Confirmed(evidence = \"found\")\n---\nbody",
+    "expect": {
+      "kind": "default",
+      "defaults": {
+        "o": {
+          "__kind__": "Confirmed",
+          "evidence": "found"
+        }
+      }
+    }
+  },
+  {
+    "name": "default_option_none",
+    "note": "option default None projects to null",
+    "source": "---\nallow_unused: true\n\nparams:\n  - l = option(str) := None\n---\nbody",
+    "expect": {
+      "kind": "default",
+      "defaults": {
+        "l": null
+      }
+    }
+  },
+  {
+    "name": "default_option_some",
+    "note": "option Some default projects transparently to the inner value",
+    "source": "---\nallow_unused: true\n\nparams:\n  - o = option(int) := 7\n---\nbody",
+    "expect": {
+      "kind": "default",
+      "defaults": {
+        "o": 7
+      }
+    }
+  },
+  {
+    "name": "default_struct",
+    "note": "struct default",
+    "source": "---\nallow_unused: true\n\nparams:\n  - c = struct(timeout = int, label = str) := {timeout = 10, label = \"fast\"}\n---\nbody",
+    "expect": {
+      "kind": "default",
+      "defaults": {
+        "c": {
+          "timeout": 10,
+          "label": "fast"
+        }
+      }
+    }
+  },
+  {
+    "name": "default_struct_nested",
+    "note": "nested struct default",
+    "source": "---\nallow_unused: true\n\nparams:\n  - u = struct(name = str, meta = struct(age = int)) := {name = \"a\", meta = {age = 5}}\n---\nbody",
+    "expect": {
+      "kind": "default",
+      "defaults": {
+        "u": {
+          "name": "a",
+          "meta": {
+            "age": 5
+          }
+        }
+      }
+    }
+  },
+  {
+    "name": "default_list_str",
+    "note": "list(str) default",
+    "source": "---\nallow_unused: true\n\nparams:\n  - t = list(str) := [\"a\", \"b\"]\n---\nbody",
+    "expect": {
+      "kind": "default",
+      "defaults": {
+        "t": [
+          "a",
+          "b"
+        ]
+      }
+    }
+  },
+  {
+    "name": "default_list_struct",
+    "note": "list of struct (shorthand) default",
+    "source": "---\nallow_unused: true\n\nparams:\n  - t = list(name = str, score = int) := [{name = \"a\", score = 1}, {name = \"b\", score = 2}]\n---\nbody",
+    "expect": {
+      "kind": "default",
+      "defaults": {
+        "t": [
+          {
+            "name": "a",
+            "score": 1
+          },
+          {
+            "name": "b",
+            "score": 2
+          }
+        ]
+      }
+    }
+  },
+  {
+    "name": "default_const_ref",
+    "note": "a default that references a const resolves to the const value",
+    "source": "---\nconsts:\n  - MAX = int := 3\n\nallow_unused: true\n\nparams:\n  - r = int := MAX\n---\nbody",
+    "expect": {
+      "kind": "default",
+      "defaults": {
+        "r": 3
+      }
+    }
+  },
+  {
+    "name": "default_enum_alias_unit",
+    "note": "unit enum default via a named type alias [D2]",
+    "source": "---\ntypes:\n  - Stage = enum(Design, Build)\n\nallow_unused: true\n\nparams:\n  - s = Stage := Build\n---\nbody",
+    "expect": {
+      "kind": "default",
+      "defaults": {
+        "s": "Build"
+      }
+    }
+  },
+  {
+    "name": "default_enum_in_struct",
+    "note": "enum default nested inside a struct field [D2]",
+    "source": "---\ntypes:\n  - Stage = enum(Design, Build)\n\nallow_unused: true\n\nparams:\n  - x = struct(st = Stage) := {st = Build}\n---\nbody",
+    "expect": {
+      "kind": "default",
+      "defaults": {
+        "x": {
+          "st": "Build"
+        }
+      }
+    }
+  },
+  {
+    "name": "default_enum_in_list",
+    "note": "enum defaults nested inside a list literal [D2]",
+    "source": "---\ntypes:\n  - Stage = enum(Design, Build, Deploy)\n\nallow_unused: true\n\nparams:\n  - xs = list(Stage) := [Build, Deploy]\n---\nbody",
+    "expect": {
+      "kind": "default",
+      "defaults": {
+        "xs": [
+          "Build",
+          "Deploy"
+        ]
+      }
+    }
+  },
+  {
+    "name": "default_option_enum_some",
+    "note": "option(enum) with a bare-variant Some default [D2]",
+    "source": "---\ntypes:\n  - Stage = enum(Design, Build)\n\nallow_unused: true\n\nparams:\n  - o = option(Stage) := Build\n---\nbody",
+    "expect": {
+      "kind": "default",
+      "defaults": {
+        "o": "Build"
+      }
+    }
+  },
+  {
+    "name": "default_option_enum_none",
+    "note": "option(enum) with a None default projects to null [D2]",
+    "source": "---\ntypes:\n  - Stage = enum(Design, Build)\n\nallow_unused: true\n\nparams:\n  - o = option(Stage) := None\n---\nbody",
+    "expect": {
+      "kind": "default",
+      "defaults": {
+        "o": null
+      }
+    }
+  },
+  {
+    "name": "default_enum_in_struct_variant",
+    "note": "a bare-variant enum default inside a struct-variant field [D2]",
+    "source": "---\ntypes:\n  - Stage = enum(Design, Build)\n\nallow_unused: true\n\nparams:\n  - w = enum(Wrap(s = Stage), Empty) := Wrap(s = Build)\n---\nbody",
+    "expect": {
+      "kind": "default",
+      "defaults": {
+        "w": {
+          "__kind__": "Wrap",
+          "s": "Build"
+        }
+      }
+    }
+  },
+  {
+    "name": "allow_unused_permits_unreferenced_param",
+    "note": "allow_unused: true lets a declared-but-unreferenced param compile",
+    "source": "---\nallow_unused: true\n\nparams:\n  - unused = str := \"x\"\n---\nno reference here",
+    "expect": {
+      "kind": "default",
+      "defaults": {
+        "unused": "x"
+      }
+    }
+  }
+]

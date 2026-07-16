@@ -347,7 +347,9 @@ impl Template {
         value: &T,
     ) -> Result<String, crate::error::TemplateError> {
         let ctx = Context::from_serialize(value)?;
-        self.render_typed::<T>(&ctx)
+        let mut output = String::with_capacity(self.estimated_capacity);
+        self.render_into_checked(core::any::TypeId::of::<T>(), &ctx, &mut output)?;
+        Ok(output)
     }
 
     /// Like [`render`](Self::render), but appends output into an
@@ -363,53 +365,50 @@ impl Template {
         output: &mut String,
     ) -> Result<(), crate::error::TemplateError> {
         let ctx = Context::from_serialize(value)?;
-        self.render_into_typed::<T>(&ctx, output)
+        self.render_into_checked(core::any::TypeId::of::<T>(), &ctx, output)
     }
 
-    /// Render with TypeId-based validation caching.
+    /// Render-into with `TypeId`-based validation caching.
     ///
-    /// If `T` has been validated before (`TypeId` is cached), skips
-    /// `validate_context` and goes straight to `render_core`.
-    fn render_typed<T: 'static>(
+    /// If `type_id` has been validated before, skips `validate_context` and
+    /// goes straight to `render_core`. The cache itself requires `std` (it
+    /// uses a `Mutex`); `no_std` builds validate on every call.
+    #[cfg(feature = "std")]
+    fn render_into_checked(
         &self,
-        ctx: &Context,
-    ) -> Result<String, crate::error::TemplateError> {
-        let mut output = String::with_capacity(self.estimated_capacity);
-        self.render_into_typed::<T>(ctx, &mut output)?;
-        Ok(output)
-    }
-
-    /// Render-into with TypeId-based validation caching.
-    fn render_into_typed<T: 'static>(
-        &self,
+        type_id: core::any::TypeId,
         ctx: &Context,
         output: &mut String,
     ) -> Result<(), crate::error::TemplateError> {
-        #[cfg(feature = "std")]
-        {
-            let type_id = core::any::TypeId::of::<T>();
-            let already_checked = self
-                .checked_type_ids
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .contains(&type_id);
+        let already_checked = self
+            .checked_type_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(&type_id);
 
-            if already_checked {
-                // Type has been validated before — skip straight to render.
-                return self.render_core(ctx, output);
-            }
-            // First time seeing this type — validate, then cache on success.
-            self.validate_context(ctx, false)?;
-            self.checked_type_ids
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(type_id);
-            self.render_core(ctx, output)
+        if already_checked {
+            // Type has been validated before — skip straight to render.
+            return self.render_core(ctx, output);
         }
-        #[cfg(not(feature = "std"))]
-        {
-            self.validate_context(ctx, false)?;
-            self.render_core(ctx, output)
-        }
+        // First time seeing this type — validate, then cache on success.
+        self.validate_context(ctx, false)?;
+        self.checked_type_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(type_id);
+        self.render_core(ctx, output)
+    }
+
+    /// `no_std` variant: no cross-call cache (that needs a `Mutex`), so the
+    /// `type_id` is unused and the context is validated on every call.
+    #[cfg(not(feature = "std"))]
+    fn render_into_checked(
+        &self,
+        _type_id: core::any::TypeId,
+        ctx: &Context,
+        output: &mut String,
+    ) -> Result<(), crate::error::TemplateError> {
+        self.validate_context(ctx, false)?;
+        self.render_core(ctx, output)
     }
 }

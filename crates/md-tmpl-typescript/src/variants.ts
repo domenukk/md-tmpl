@@ -89,11 +89,11 @@ export function unitVariant(tag: string): VariantInstance {
 // ---------------------------------------------------------------------------
 
 /** A constructor function for a struct variant. */
-export type VariantConstructor<F extends string = string> = {
+export interface VariantConstructor<F extends string = string> {
   (fields: Record<F, unknown>): VariantInstance;
   readonly __kind__: string;
   readonly __match_args__: readonly F[];
-};
+}
 
 /**
  * Create a struct variant constructor.
@@ -276,13 +276,15 @@ export function match<R>(
     // Unit variant as string
     tag = value;
     fields = {};
-  } else if (typeof value === "object" && value !== null) {
+  } else if (typeof value === "object") {
     const obj = value as Record<string, unknown>;
     if (typeof obj[ENUM_TAG_KEY] === "string") {
       // __kind__ discriminated-union shape
-      tag = obj[ENUM_TAG_KEY] as string;
-      fields = { ...obj };
-      delete fields[ENUM_TAG_KEY];
+      tag = obj[ENUM_TAG_KEY];
+      fields = {};
+      for (const [k, v] of Object.entries(obj)) {
+        if (k !== ENUM_TAG_KEY) fields[k] = v;
+      }
     } else {
       throw new TypeError("match(): value is not a variant");
     }

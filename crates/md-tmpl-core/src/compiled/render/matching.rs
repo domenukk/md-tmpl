@@ -36,7 +36,16 @@ pub(super) fn render_match(
                     continue;
                 }
             }
-            return super::segments::render_segments_into(&arm.body, scope, base_dir, output);
+            // Narrow option so inner kind()/match see the unwrapped value.
+            let narrowed = is_option && active_variant == crate::consts::OPTION_SOME;
+            if narrowed {
+                scope.narrow_option(expr.as_str());
+            }
+            let result = super::segments::render_segments_into(&arm.body, scope, base_dir, output);
+            if narrowed {
+                scope.unnarrow_option(expr.as_str());
+            }
+            return result;
         }
     }
 
@@ -64,7 +73,15 @@ pub(super) fn render_match_no_std(
                     continue;
                 }
             }
-            return super::segments::render_segments_into_no_std(&arm.body, scope, output);
+            let narrowed = is_option && active_variant == crate::consts::OPTION_SOME;
+            if narrowed {
+                scope.narrow_option(expr.as_str());
+            }
+            let result = super::segments::render_segments_into_no_std(&arm.body, scope, output);
+            if narrowed {
+                scope.unnarrow_option(expr.as_str());
+            }
+            return result;
         }
     }
 
@@ -85,12 +102,14 @@ fn arm_matches(active_variant: &str, variants: &[Cow<'_, str>], scope: &Scope<'_
         if label == crate::consts::MATCH_DEFAULT {
             return true;
         }
-        // Quoted string literal: strip quotes, interpolate if needed, and compare.
+        // Quoted string literal: strip quotes, unescape, interpolate if needed,
+        // and compare.
         if let Some(inner) = crate::consts::strip_string_literal(label) {
+            let inner = crate::consts::unescape_string_literal(inner);
             if inner.contains(crate::consts::EXPR_START) {
                 // Contains {{ expr }} — compile and render the interpolated string.
                 // NOLINT: compile/render failure means the label doesn't match — fall through to literal comparison
-                if let Ok(segments) = crate::compiled::compile_body(inner) {
+                if let Ok(segments) = crate::compiled::compile_body(&inner) {
                     // NOLINT: render failure means the interpolated label is unresolvable — not a match
                     if let Ok(rendered) = render_interpolated_str(&segments, scope) {
                         if active_variant == rendered.as_str() {
@@ -98,7 +117,7 @@ fn arm_matches(active_variant: &str, variants: &[Cow<'_, str>], scope: &Scope<'_
                         }
                     }
                 }
-            } else if active_variant == inner {
+            } else if active_variant == inner.as_str() {
                 return true;
             }
             continue;

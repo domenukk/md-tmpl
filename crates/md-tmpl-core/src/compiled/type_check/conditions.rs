@@ -294,6 +294,24 @@ fn collect_and_narrowings(
     }
 }
 
+/// If a branch condition is exactly `!has(path)`, then in
+/// every fall-through position (any later branch and the final `{% else %}`)
+/// the option is guaranteed present. Return the same `(path_str, inner_type)`
+/// narrowing that a positive `has(path)` would produce.
+///
+/// Only the single, top-level negation form is handled: compound conditions
+/// like `!has(a) && !has(b)` cannot be soundly narrowed on fall-through, so
+/// they contribute nothing.
+pub(super) fn extract_not_has_narrowing(
+    condition: &Condition,
+    env: &TypeEnv<'_>,
+) -> Option<(String, VarType)> {
+    let Condition::Not(inner) = condition else {
+        return None;
+    };
+    extract_has_narrowing(inner, env)
+}
+
 /// Check if two types are compatible for include parameter passing.
 ///
 /// Types are compatible if they are structurally equal. Containers with

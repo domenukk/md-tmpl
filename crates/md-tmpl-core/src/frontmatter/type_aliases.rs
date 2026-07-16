@@ -53,11 +53,20 @@ pub(crate) fn parse_types_value(rest: &str) -> Result<HashMap<String, VarType>, 
         let type_name = trimmed[..eq_pos].trim().to_string();
         let type_expr = trimmed[eq_pos + 1..].trim();
 
-        // Validate: type name must not shadow builtins.
+        // Validate: type name must not shadow builtins (case-insensitive).
+        // Check this before reserved keywords — it's the more specific error.
         if crate::types::BUILTIN_TYPE_NAMES.contains(&type_name.to_lowercase().as_str()) {
             return Err(TemplateError::syntax(format!(
                 "{}: '{type_name}'",
                 crate::consts::ERR_BUILTIN_SHADOW
+            )));
+        }
+
+        // Validate: type name must not be a reserved keyword.
+        if crate::consts::RESERVED_NAMES.contains(&type_name.as_str()) {
+            return Err(TemplateError::syntax(format!(
+                "{}: '{type_name}'",
+                crate::consts::ERR_RESERVED_KEYWORD
             )));
         }
 
@@ -155,11 +164,12 @@ mod tests {
     }
 
     #[test]
-    fn str_type_alias_rejected_as_builtin_shadow() {
+    fn str_type_alias_rejected_as_reserved() {
         let err = parse_types_value("[str = enum(A, B)]").unwrap_err();
+        let msg = err.to_string();
         assert!(
-            err.to_string().contains("shadow") || err.to_string().contains("builtin"),
-            "shadowing builtin should error: {err}"
+            msg.contains("reserved keyword") || msg.contains("shadow") || msg.contains("builtin"),
+            "should error for builtin/reserved name: {err}"
         );
     }
 

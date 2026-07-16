@@ -116,10 +116,14 @@ function matchesError(err: unknown, expected: string): boolean {
   // defensive fallback for any legacy path.
   const msg = typeof err === "string" ? err : err instanceof Error ? err.message : String(err);
   const name = err instanceof Error ? err.name : "";
-  return (
-    msg.toLowerCase().includes(expected.toLowerCase()) ||
-    name.toLowerCase().includes(expected.toLowerCase())
-  );
+  const msgLower = msg.toLowerCase();
+  const nameLower = name.toLowerCase();
+  // Support pipe-separated alternatives: "foo|bar" means the error must
+  // contain at least one of the alternatives (matching Rust test runner).
+  return expected.split("|").some((alt) => {
+    const altLower = alt.toLowerCase();
+    return msgLower.includes(altLower) || nameLower.includes(altLower);
+  });
 }
 
 // ---------------------------------------------------------------------------

@@ -2536,3 +2536,85 @@ consts:
   - ITEMS = list(meta = struct(label = str)) := [{meta = {label = "hello"}}, {meta = {label = "world"}}]
 ---
 '''
+
+# ---------------------------------------------------------------------------
+# with-value analysis: string literals, interpolation, and dotted paths
+# ---------------------------------------------------------------------------
+# A quoted `with` value is a string literal (interpolated if it contains
+# `{{ }}`); an unquoted value is a plain expression. Static analysis must
+# match the renderer so a quoted path containing dots is not mistaken for a
+# dotted variable path and reported as an undeclared variable.
+
+[[tests]]
+name = "include_with_string_literal_containing_dots"
+description = "A quoted with-value containing dots is a string literal, not a dotted variable path — it must compile and render verbatim"
+parent_template = '''
+---
+params: []
+---
+> {% include [child](./child.tmpl.md) with label="web/about.tmpl.md" %}'''
+expected_output = "web/about.tmpl.md"
+params = {}
+
+[tests.files]
+"child.tmpl.md" = '''
+---
+params: [label = str]
+---
+{{ label }}'''
+
+[[tests]]
+name = "include_with_interpolated_arg_counts_param_used"
+description = "A quoted with-value with {{ }} interpolation references the interpolated param — it must count as used (no unused-param error) and render"
+parent_template = '''
+---
+params: [dir = str]
+---
+> {% include [child](./child.tmpl.md) with label="{{ dir }}/about.md" %}'''
+expected_output = "web/about.md"
+
+[tests.params]
+dir = "web"
+
+[tests.files]
+"child.tmpl.md" = '''
+---
+params: [label = str]
+---
+{{ label }}'''
+
+[[tests]]
+name = "include_with_interpolated_arg_undeclared_variable"
+description = "A quoted with-value interpolating an undeclared variable must be rejected"
+parent_template = '''
+---
+params: []
+---
+> {% include [child](./child.tmpl.md) with label="{{ missing }}/about.md" %}'''
+expected_error = "missing"
+params = {}
+
+[tests.files]
+"child.tmpl.md" = '''
+---
+params: [label = str]
+---
+{{ label }}'''
+
+[[tests]]
+name = "include_with_dotted_path_arg_rejected"
+description = "An unquoted dotted with-value is a real variable path; its undeclared root must still be rejected (guards against over-eager literal stripping)"
+parent_template = '''
+---
+params: []
+---
+> {% include [child](./child.tmpl.md) with label=web.about %}'''
+expected_error = "web"
+params = {}
+
+[tests.files]
+"child.tmpl.md" = '''
+---
+params: [label = str]
+---
+{{ label }}'''

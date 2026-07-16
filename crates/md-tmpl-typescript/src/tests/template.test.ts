@@ -53,7 +53,7 @@ import {
   str,
   int,
 } from "../index.js";
-import { fromJs, display, isTruthy } from "../value.js";
+import { fromJs, display, isTruthy, TYPE_NONE, type Value } from "../value.js";
 import {
   parseFrontmatter,
   parseVarType,
@@ -64,10 +64,32 @@ import {
 import { joinContinuationLines } from "../frontmatter/yaml.js";
 import { generateTypes, inferTypes } from "../codegen.js";
 import { toPascalCase } from "../validation.js";
+import { splitTopLevel } from "../frontmatter/var_type.js";
+import {
+  parseLiteral,
+  parseListLiteral,
+  parseStructLiteral,
+} from "../frontmatter/literals.js";
+import { TYPE_STR, TYPE_INT, TYPE_STRUCT } from "../consts.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Assert that an indexed or optional lookup produced a value and return it.
+ *
+ * Replaces non-null assertions (`x!`) in tests: it narrows away `undefined`
+ * at runtime via `assert`, yielding a clear failure message instead of a
+ * downstream `TypeError`.
+ */
+function defined<T>(
+  value: T | undefined,
+  message = "expected a defined value",
+): T {
+  assert.ok(value !== undefined, message);
+  return value;
+}
 
 function withTempFile(content: string, fn: (filepath: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pt-test-"));
@@ -627,8 +649,8 @@ params: [name = str, count = int]
     );
     const decls = tmpl.declarations();
     const typeMap = Object.fromEntries(decls);
-    assert.strictEqual(typeMap["name"], "str");
-    assert.strictEqual(typeMap["count"], "int");
+    assert.strictEqual(typeMap.name, "str");
+    assert.strictEqual(typeMap.count, "int");
   });
 
   it("sourceHash is stable", () => {
@@ -829,7 +851,7 @@ describe("Variant helpers", () => {
     const NeedsChanges = variant("NeedsChanges", ["reason"] as const);
     const v = NeedsChanges({ reason: "fix tests" });
     assert.strictEqual(v.__kind__, "NeedsChanges");
-    assert.strictEqual(v["reason"], "fix tests");
+    assert.strictEqual(v.reason, "fix tests");
   });
 
   it("variant() throws on missing field", () => {
@@ -861,7 +883,7 @@ describe("Variant helpers", () => {
     assert.strictEqual(Status.Approved.__kind__, "Approved");
     const nc = Status.NeedsChanges({ reason: "fix" });
     assert.strictEqual(nc.__kind__, "NeedsChanges");
-    assert.strictEqual(nc["reason"], "fix");
+    assert.strictEqual(nc.reason, "fix");
   });
 
   it("variant objects render correctly", () => {
@@ -962,7 +984,7 @@ params:
 Hello {{ name }}!`,
     );
     assert.strictEqual(fm.params.length, 1);
-    assert.strictEqual(fm.params[0]!.name, "name");
+    assert.strictEqual(defined(fm.params[0]).name, "name");
     assert.ok(body.includes("Hello"));
   });
 
@@ -981,8 +1003,8 @@ params: [x = str, y = int]
 {{ x }} {{ y }}`,
     );
     assert.strictEqual(fm.params.length, 2);
-    assert.strictEqual(fm.params[0]!.name, "x");
-    assert.strictEqual(fm.params[1]!.name, "y");
+    assert.strictEqual(defined(fm.params[0]).name, "x");
+    assert.strictEqual(defined(fm.params[1]).name, "y");
   });
 
   it("joins a multi-line := default value (list) onto one declaration", () => {
@@ -1001,10 +1023,10 @@ params: []
 body`,
     );
     assert.strictEqual(fm.consts.length, 1);
-    const ladder = fm.consts[0]!;
+    const ladder = defined(fm.consts[0]);
     assert.strictEqual(ladder.name, "LADDER");
     assert.ok(ladder.defaultValue !== undefined, "default must be parsed");
-    assert.strictEqual(ladder.defaultValue!.type, TYPE_LIST);
+    assert.strictEqual(ladder.defaultValue.type, TYPE_LIST);
     assert.strictEqual(
       (ladder.defaultValue as { items: readonly unknown[] }).items.length,
       3,
@@ -1030,10 +1052,10 @@ params: []
 body`,
     );
     assert.strictEqual(fm.consts.length, 2);
-    assert.strictEqual(fm.consts[0]!.name, "FIRST");
-    const second = fm.consts[1]!;
+    assert.strictEqual(defined(fm.consts[0]).name, "FIRST");
+    const second = defined(fm.consts[1]);
     assert.strictEqual(second.name, "SECOND");
-    assert.strictEqual(second.defaultValue!.type, TYPE_LIST);
+    assert.strictEqual(defined(second.defaultValue).type, TYPE_LIST);
     assert.strictEqual(
       (second.defaultValue as { items: readonly unknown[] }).items.length,
       2,
@@ -1051,8 +1073,8 @@ params:
 body`,
     );
     assert.strictEqual(fm.params.length, 1);
-    assert.strictEqual(fm.params[0]!.name, "rows");
-    const ty = varTypeToString(fm.params[0]!.varType);
+    assert.strictEqual(defined(fm.params[0]).name, "rows");
+    const ty = varTypeToString(defined(fm.params[0]).varType);
     assert.ok(ty.startsWith("list("), `expected a list type, got: ${ty}`);
     assert.ok(ty.includes("tier = str"));
     assert.ok(ty.includes("short = str"));
@@ -1072,6 +1094,299 @@ body`,
       '  - A = str := "x"',
       '  - B = list(k = str) := [{k = "a"}, {k = "b"}]',
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression: delimiters inside quoted strings in frontmatter defaults
+//
+// In frontmatter default values (`:= ...`), delimiters — commas and the
+// bracket family `()[]{}<>` — that appear INSIDE quoted string literals must
+// be treated as literal characters, NOT as field/element separators. This
+// holds for both double (`"..."`) and single (`'...'`) quotes.
+//
+// The quote-aware root parser is `splitTopLevel` (var_type.ts), consumed by
+// `parseLiteral` / `parseListLiteral` / `parseStructLiteral` (literals.ts).
+// These tests LOCK IN that behavior at the unit and end-to-end levels; they
+// mirror the canonical cross-language matrix (cases T1–T8) so the TypeScript
+// backend stays byte-for-byte aligned with the Rust core.
+// ---------------------------------------------------------------------------
+
+describe("Frontmatter: delimiters inside quoted strings (regression)", () => {
+  // Narrowing helpers: assert the Value shape and return the inner data so the
+  // individual assertions read clearly.
+  const asStr = (v: Value | undefined): string => {
+    const val = defined(v);
+    if (val.type !== TYPE_STR) {
+      assert.fail(`expected str, got '${val.type}'`);
+    }
+    return val.value;
+  };
+  const asInt = (v: Value | undefined): number => {
+    const val = defined(v);
+    if (val.type !== TYPE_INT) {
+      assert.fail(`expected int, got '${val.type}'`);
+    }
+    return val.value;
+  };
+  const asList = (v: Value | undefined): readonly Value[] => {
+    const val = defined(v);
+    if (val.type !== TYPE_LIST) {
+      assert.fail(`expected list, got '${val.type}'`);
+    }
+    return val.items;
+  };
+  const asStruct = (v: Value | undefined): ReadonlyMap<string, Value> => {
+    const val = defined(v);
+    if (val.type !== TYPE_STRUCT) {
+      assert.fail(`expected struct, got '${val.type}'`);
+    }
+    return val.fields;
+  };
+
+  // Parse a single-param frontmatter and return that param's parsed default.
+  const paramDefault = (decl: string): Value => {
+    const [fm] = parseFrontmatter(`---\nparams:\n  - ${decl}\n---\nbody`);
+    assert.strictEqual(fm.params.length, 1, "expected exactly one param");
+    return defined(
+      defined(fm.params[0]).defaultValue,
+      "param default must be parsed",
+    );
+  };
+
+  // -------------------------------------------------------------------------
+  // Low-level split unit tests (mirror the Rust `split_at_depth_zero` cases)
+  // -------------------------------------------------------------------------
+  describe("splitTopLevel ignores delimiters inside quoted strings", () => {
+    it("does not split on a comma inside a double-quoted string", () => {
+      assert.deepStrictEqual(splitTopLevel('a = "x, y", b = 1', ","), [
+        'a = "x, y"',
+        " b = 1",
+      ]);
+    });
+
+    it("does not split on a comma inside a single-quoted string", () => {
+      assert.deepStrictEqual(splitTopLevel("a = 'x, y', b = 2", ","), [
+        "a = 'x, y'",
+        " b = 2",
+      ]);
+    });
+
+    it("treats brackets inside a string as literal (no depth change)", () => {
+      // The `[` `]` `1` inside the quotes must not open bracket depth, so the
+      // following top-level comma still splits into exactly two parts.
+      assert.deepStrictEqual(splitTopLevel('a = "x[1],y", b = 3', ","), [
+        'a = "x[1],y"',
+        " b = 3",
+      ]);
+    });
+
+    it("never splits mid-quote even for many embedded delimiters", () => {
+      assert.deepStrictEqual(splitTopLevel('"a, b, c, d"', ","), [
+        '"a, b, c, d"',
+      ]);
+    });
+
+    it("keeps unbalanced brackets inside strings from corrupting depth", () => {
+      // A lone `[` in one string and a lone `]` in another are literal; the
+      // top-level comma between them still separates the two fields.
+      assert.deepStrictEqual(splitTopLevel('x = "[", y = "]"', ","), [
+        'x = "["',
+        ' y = "]"',
+      ]);
+    });
+
+    it("respects escaped quotes when scanning string literals", () => {
+      // The escaped `\"` does not close the string, so the enclosed comma is
+      // still literal and no top-level split happens inside it.
+      assert.deepStrictEqual(splitTopLevel('a = "x \\", y", b = 4', ","), [
+        'a = "x \\", y"',
+        " b = 4",
+      ]);
+    });
+
+    it("splits every brace family delimiter only at depth zero", () => {
+      // Commas inside the nested struct/list literals stay grouped; only the
+      // top-level comma separates the two outer fields.
+      assert.deepStrictEqual(
+        splitTopLevel('a = {p = "1, 2", q = 3}, b = [4, 5]', ","),
+        ['a = {p = "1, 2", q = 3}', " b = [4, 5]"],
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Literal parsers: parseLiteral / parseListLiteral / parseStructLiteral
+  // -------------------------------------------------------------------------
+  describe("parseLiteral keeps embedded delimiters intact", () => {
+    it("parses a scalar string containing commas verbatim", () => {
+      assert.strictEqual(
+        asStr(parseLiteral('"a, b, c"', parseVarType("str"))),
+        "a, b, c",
+      );
+    });
+
+    it("parseListLiteral splits elements, not commas inside strings (T1)", () => {
+      const items = asList(
+        parseListLiteral('["a, b", "c, d"]', parseVarType("list(str)")),
+      );
+      assert.strictEqual(items.length, 2);
+      assert.strictEqual(asStr(items[0]), "a, b");
+      assert.strictEqual(asStr(items[1]), "c, d");
+    });
+
+    it("parseListLiteral keeps bracket-family chars inside strings (T4)", () => {
+      const items = asList(
+        parseListLiteral(
+          '["a[b]c", "d{e}f", "g(h)i"]',
+          parseVarType("list(str)"),
+        ),
+      );
+      assert.deepStrictEqual(
+        items.map((i) => asStr(i)),
+        ["a[b]c", "d{e}f", "g(h)i"],
+      );
+    });
+
+    it("parseListLiteral handles single-quoted elements (T5)", () => {
+      const items = asList(
+        parseListLiteral("['a, b', 'c']", parseVarType("list(str)")),
+      );
+      assert.strictEqual(items.length, 2);
+      assert.strictEqual(asStr(items[0]), "a, b");
+      assert.strictEqual(asStr(items[1]), "c");
+    });
+
+    it("parseStructLiteral keeps commas inside a field's string (T2)", () => {
+      const structType = parseVarType("struct(msg = str, n = int)");
+      if (structType.kind !== TYPE_STRUCT) {
+        throw new Error(`expected a struct type, got '${structType.kind}'`);
+      }
+      const fields = asStruct(
+        parseStructLiteral('{msg = "a, b", n = 1}', structType),
+      );
+      assert.strictEqual(asStr(fields.get("msg")), "a, b");
+      assert.strictEqual(asInt(fields.get("n")), 1);
+    });
+
+    it("parseLiteral dispatches struct literals with embedded commas", () => {
+      const fields = asStruct(
+        parseLiteral(
+          '{msg = "hello, world", n = 7}',
+          parseVarType("struct(msg = str, n = int)"),
+        ),
+      );
+      assert.strictEqual(asStr(fields.get("msg")), "hello, world");
+      assert.strictEqual(asInt(fields.get("n")), 7);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // End-to-end frontmatter defaults (canonical matrix T1–T8)
+  // -------------------------------------------------------------------------
+  describe("end-to-end parseFrontmatter defaults (T1–T8)", () => {
+    it("T1: list(str) with comma-bearing string elements", () => {
+      const items = asList(paramDefault('x = list(str) := ["a, b", "c, d"]'));
+      assert.deepStrictEqual(
+        items.map((i) => asStr(i)),
+        ["a, b", "c, d"],
+      );
+    });
+
+    it("T2: struct with a comma-bearing string field", () => {
+      const fields = asStruct(
+        paramDefault('x = struct(msg = str, n = int) := {msg = "a, b", n = 1}'),
+      );
+      assert.strictEqual(asStr(fields.get("msg")), "a, b");
+      assert.strictEqual(asInt(fields.get("n")), 1);
+    });
+
+    it("T3: list of records; record note keeps its commas", () => {
+      const items = asList(
+        paramDefault(
+          "x = list(name = str, note = str) := " +
+            '[{name = "x", note = "p, q, r"}, {name = "y", note = "s"}]',
+        ),
+      );
+      assert.strictEqual(items.length, 2);
+      const rec0 = asStruct(items[0]);
+      assert.strictEqual(asStr(rec0.get("name")), "x");
+      assert.strictEqual(asStr(rec0.get("note")), "p, q, r");
+      const rec1 = asStruct(items[1]);
+      assert.strictEqual(asStr(rec1.get("name")), "y");
+      assert.strictEqual(asStr(rec1.get("note")), "s");
+    });
+
+    it("T4: list(str) with bracket-family chars inside strings", () => {
+      const items = asList(
+        paramDefault('x = list(str) := ["a[b]c", "d{e}f", "g(h)i"]'),
+      );
+      assert.deepStrictEqual(
+        items.map((i) => asStr(i)),
+        ["a[b]c", "d{e}f", "g(h)i"],
+      );
+    });
+
+    it("T5: list(str) with single-quoted, comma-bearing elements", () => {
+      const items = asList(paramDefault("x = list(str) := ['a, b', 'c']"));
+      assert.deepStrictEqual(
+        items.map((i) => asStr(i)),
+        ["a, b", "c"],
+      );
+    });
+
+    it("T6: list(str) preserves unicode (em-dash, emoji) and commas", () => {
+      const items = asList(
+        paramDefault(
+          'x = list(str) := ["Theory — not a finding", "✅ done, ok"]',
+        ),
+      );
+      assert.deepStrictEqual(
+        items.map((i) => asStr(i)),
+        ["Theory — not a finding", "✅ done, ok"],
+      );
+    });
+
+    it("T7: list of records tolerates empty strings and comma-bearing notes", () => {
+      const items = asList(
+        paramDefault(
+          "x = list(name = str, note = str) := " +
+            '[{name = "", note = ""}, {name = "a", note = "y, z"}]',
+        ),
+      );
+      assert.strictEqual(items.length, 2);
+      const rec0 = asStruct(items[0]);
+      assert.strictEqual(asStr(rec0.get("name")), "");
+      assert.strictEqual(asStr(rec0.get("note")), "");
+      const rec1 = asStruct(items[1]);
+      assert.strictEqual(asStr(rec1.get("name")), "a");
+      assert.strictEqual(asStr(rec1.get("note")), "y, z");
+    });
+
+    it("T8: real-world SEVERITY_LADDER shape with prose fields", () => {
+      // A list of records whose prose fields contain commas, an em-dash, and
+      // an emoji — the exact shape that originally exposed the bug.
+      const items = asList(
+        paramDefault(
+          "x = list(tier = str, short = str, proves = str) := " +
+            '[{tier = "L0", short = "static, dynamic", ' +
+            'proves = "Reachable — but not exploitable, yet ⚠️"}, ' +
+            '{tier = "L1", short = "trigger", ' +
+            'proves = "Crashes, reliably"}]',
+        ),
+      );
+      assert.strictEqual(items.length, 2);
+      const rec0 = asStruct(items[0]);
+      assert.strictEqual(asStr(rec0.get("tier")), "L0");
+      assert.strictEqual(asStr(rec0.get("short")), "static, dynamic");
+      assert.strictEqual(
+        asStr(rec0.get("proves")),
+        "Reachable — but not exploitable, yet ⚠️",
+      );
+      const rec1 = asStruct(items[1]);
+      assert.strictEqual(asStr(rec1.get("tier")), "L1");
+      assert.strictEqual(asStr(rec1.get("proves")), "Crashes, reliably");
+    });
   });
 });
 
@@ -1131,7 +1446,9 @@ params: [name = str]
 {{ name }}`,
     );
     assert.throws(
-      () => tmpl.validateDeclarationsAgainst([["different", "int"]]),
+      () => {
+        tmpl.validateDeclarationsAgainst([["different", "int"]]);
+      },
       (err: Error) =>
         err instanceof DeclarationsMutatedError &&
         err.message.includes("declarations were modified"),
@@ -1411,10 +1728,10 @@ params:
   it("inferTypes returns structured result", () => {
     const result = inferTypes(CODEGEN_SRC);
     assert.strictEqual(result.fields.length, 4);
-    assert.strictEqual(result.fields[0]!.name, "name");
-    assert.strictEqual(result.fields[0]!.tsType, "string");
-    assert.strictEqual(result.fields[1]!.name, "count");
-    assert.strictEqual(result.fields[1]!.tsType, "number");
+    assert.strictEqual(defined(result.fields[0]).name, "name");
+    assert.strictEqual(defined(result.fields[0]).tsType, "string");
+    assert.strictEqual(defined(result.fields[1]).name, "count");
+    assert.strictEqual(defined(result.fields[1]).tsType, "number");
   });
 
   it("inferTypes returns correct enum type", () => {
@@ -1494,11 +1811,11 @@ params:
     const result = inferTypes(src);
     assert.strictEqual(result.fields.length, 1);
     // inferTypes should resolve the alias inline
-    assert.ok(result.fields[0]!.tsType.includes('"High"'));
-    assert.ok(result.fields[0]!.tsType.includes('"Low"'));
+    assert.ok(defined(result.fields[0]).tsType.includes('"High"'));
+    assert.ok(defined(result.fields[0]).tsType.includes('"Low"'));
     // typeAliases should also be returned
     assert.strictEqual(result.typeAliases.length, 1);
-    assert.strictEqual(result.typeAliases[0]!.name, "Priority");
+    assert.strictEqual(defined(result.typeAliases[0]).name, "Priority");
   });
 });
 
@@ -1559,8 +1876,8 @@ params: []
 {{ MAX }} {{ LABEL }}`,
     );
     const c = tmpl.consts();
-    assert.strictEqual(c["MAX"], 100);
-    assert.strictEqual(c["LABEL"], "test");
+    assert.strictEqual(c.MAX, 100);
+    assert.strictEqual(c.LABEL, "test");
   });
 
   it("generateTypes emits CONSTANTS object", () => {
@@ -1617,9 +1934,9 @@ params: []
     ].join("\n");
     const result = inferTypes(src);
     assert.strictEqual(result.consts.length, 1);
-    assert.strictEqual(result.consts[0]!.name, "VERSION");
-    assert.strictEqual(result.consts[0]!.value, 42);
-    assert.strictEqual(result.consts[0]!.tsType, "number");
+    assert.strictEqual(defined(result.consts[0]).name, "VERSION");
+    assert.strictEqual(defined(result.consts[0]).value, 42);
+    assert.strictEqual(defined(result.consts[0]).tsType, "number");
   });
 
   it("inferTypes returns defaults", () => {
@@ -1633,10 +1950,10 @@ params: []
     ].join("\n");
     const result = inferTypes(src);
     assert.strictEqual(result.fields.length, 2);
-    const nameField = result.fields.find((f) => f.name === "name")!;
+    const nameField = defined(result.fields.find((f) => f.name === "name"));
     assert.ok(nameField.optional);
     assert.strictEqual(nameField.defaultValue, "World");
-    const countField = result.fields.find((f) => f.name === "count")!;
+    const countField = defined(result.fields.find((f) => f.name === "count"));
     assert.ok(!countField.optional);
     assert.strictEqual(countField.defaultValue, undefined);
   });
@@ -1652,7 +1969,7 @@ params: [name = str]
 {{ name }} v{{ VER }}`,
     );
     const c = tmpl.consts();
-    assert.strictEqual(c["VER"], 3);
+    assert.strictEqual(c.VER, 3);
     assert.strictEqual(tmpl.render({ name: "test" }), "test v3");
   });
 
@@ -1768,8 +2085,8 @@ describe("Type aliases", () => {
     const tmpl = Template.fromSource(src);
     const decls = tmpl.declarations();
     assert.strictEqual(decls.length, 1);
-    assert.strictEqual(decls[0]![0], "p");
-    assert.strictEqual(decls[0]![1], "Priority");
+    assert.strictEqual(defined(decls[0])[0], "p");
+    assert.strictEqual(defined(decls[0])[1], "Priority");
   });
 });
 
@@ -1957,9 +2274,7 @@ params: [x = bool]
 {{ x }}`,
     );
     // First call with wrong type should throw
-    assert.throws(() =>
-      tmpl.renderTrusted({ x: "not a bool" } as unknown as P),
-    );
+    assert.throws(() => tmpl.renderTrusted({ x: "not a bool" }));
   });
 });
 
@@ -2006,7 +2321,7 @@ params:
     );
     const data = {
       items: Array.from({ length: 10 }, (_, i) => ({
-        name: `item${i}`,
+        name: `item${String(i)}`,
         score: i * 10,
       })),
     };
@@ -2147,16 +2462,16 @@ describe("End-to-end type workflow", () => {
   it("inferTypes matches template structure", () => {
     const result = inferTypes(TEMPLATE_SRC);
     assert.strictEqual(result.fields.length, 4);
-    assert.strictEqual(result.fields[0]!.name, "title");
-    assert.strictEqual(result.fields[0]!.tsType, "string");
-    assert.strictEqual(result.fields[1]!.name, "count");
-    assert.strictEqual(result.fields[1]!.tsType, "number");
+    assert.strictEqual(defined(result.fields[0]).name, "title");
+    assert.strictEqual(defined(result.fields[0]).tsType, "string");
+    assert.strictEqual(defined(result.fields[1]).name, "count");
+    assert.strictEqual(defined(result.fields[1]).tsType, "number");
     // items should be an array type
-    assert.ok(result.fields[2]!.tsType.includes("label: string"));
-    assert.ok(result.fields[2]!.tsType.includes("done: boolean"));
+    assert.ok(defined(result.fields[2]).tsType.includes("label: string"));
+    assert.ok(defined(result.fields[2]).tsType.includes("done: boolean"));
     // outcome should be a union type
-    assert.ok(result.fields[3]!.tsType.includes('"Failure"'));
-    assert.ok(result.fields[3]!.tsType.includes('__kind__: "Success"'));
+    assert.ok(defined(result.fields[3]).tsType.includes('"Failure"'));
+    assert.ok(defined(result.fields[3]).tsType.includes('__kind__: "Success"'));
   });
 
   it("TypedTemplate works with inferred type structure", () => {
@@ -2223,17 +2538,25 @@ describe("End-to-end type workflow", () => {
     const tmpl = Template.fromSource(TEMPLATE_SRC);
     const fm = tmpl.frontmatter;
     assert.strictEqual(fm.params.length, 4);
-    assert.strictEqual(fm.params[0]!.name, "title");
-    assert.strictEqual(fm.params[0]!.varType.kind, "str");
-    assert.strictEqual(fm.params[2]!.name, "items");
-    assert.strictEqual(fm.params[2]!.varType.kind, "list");
-    assert.strictEqual(fm.params[3]!.name, "outcome");
-    assert.strictEqual(fm.params[3]!.varType.kind, "enum");
-    if (fm.params[3]!.varType.kind === "enum") {
-      assert.strictEqual(fm.params[3]!.varType.variants.length, 2);
-      assert.strictEqual(fm.params[3]!.varType.variants[0]!.name, "Success");
-      assert.strictEqual(fm.params[3]!.varType.variants[1]!.name, "Failure");
-    }
+    const titleParam = defined(fm.params[0]);
+    assert.strictEqual(titleParam.name, "title");
+    assert.strictEqual(titleParam.varType.kind, "str");
+    const itemsParam = defined(fm.params[2]);
+    assert.strictEqual(itemsParam.name, "items");
+    assert.strictEqual(itemsParam.varType.kind, "list");
+    const outcomeParam = defined(fm.params[3]);
+    assert.strictEqual(outcomeParam.name, "outcome");
+    // strictEqual narrows the discriminant, so `.variants` is accessible.
+    assert.strictEqual(outcomeParam.varType.kind, "enum");
+    assert.strictEqual(outcomeParam.varType.variants.length, 2);
+    assert.strictEqual(
+      defined(outcomeParam.varType.variants[0]).name,
+      "Success",
+    );
+    assert.strictEqual(
+      defined(outcomeParam.varType.variants[1]).name,
+      "Failure",
+    );
   });
 });
 
@@ -2316,7 +2639,7 @@ describe("match()", () => {
   it("matches struct variant with fields", () => {
     const v = Status.Done({ summary: "All tests pass" });
     const result = match(v, {
-      Done: (f) => `✅ ${f.summary}`,
+      Done: (f) => `✅ ${String(f.summary)}`,
       InProgress: () => "working",
       Blocked: () => "blocked",
     });
@@ -2341,14 +2664,14 @@ describe("match()", () => {
   it("works with __kind__ tagged objects", () => {
     const v = { __kind__: "Confirmed", evidence: "proof" };
     const result = match(v, {
-      Confirmed: (f) => `yes: ${f.evidence}`,
+      Confirmed: (f) => `yes: ${String(f.evidence)}`,
       _: () => "no",
     });
     assert.strictEqual(result, "yes: proof");
   });
 
   it("works with string unit variants", () => {
-    const result = match("Rejected" as unknown as Record<string, unknown>, {
+    const result = match("Rejected", {
       Confirmed: () => "yes",
       Rejected: () => "no",
     });
@@ -2428,9 +2751,9 @@ params: [x = str]
 {{ A }} {{ B }} {{ C }} {{ x }}`,
     );
     const c = tmpl.consts();
-    assert.strictEqual(c["A"], 1);
-    assert.strictEqual(c["B"], "two");
-    assert.strictEqual(c["C"], true);
+    assert.strictEqual(c.A, 1);
+    assert.strictEqual(c.B, "two");
+    assert.strictEqual(c.C, true);
     assert.strictEqual(tmpl.render({ x: "done" }), "1 two true done");
   });
 
@@ -2614,7 +2937,7 @@ params: [x = str]
       assert.strictEqual(cache.templateCount(), 0);
 
       for (let i = 0; i < 3; i++) {
-        const fp = path.join(dir, `t${i}.tmpl.md`);
+        const fp = path.join(dir, `t${String(i)}.tmpl.md`);
         fs.writeFileSync(
           fp,
           `---
@@ -2750,7 +3073,7 @@ params: [items = list(name = str)]
       const tmpl = cache.load(listPath);
 
       const items = Array.from({ length: 50 }, (_, i) => ({
-        name: `Item ${i}`,
+        name: `Item ${String(i)}`,
       }));
       const result = tmpl.render({ items });
       assert.ok(result.includes("Item: Item 0"));
@@ -2801,6 +3124,87 @@ Modified Include`,
       const res2 = tmpl.render();
       assert.ok(res2.includes("Modified Include"));
       assert.strictEqual(cache.includeCount(), 1);
+    } finally {
+      fs.rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("resolves include env: vars through the shared cache", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pt-env-"));
+    try {
+      // Child declares an env var with NO default — it can only resolve if
+      // the parent's compile env is threaded through the cached resolver.
+      fs.writeFileSync(
+        path.join(dir, "child.tmpl.md"),
+        `---
+env: [PROMPTS_DIR = str]
+params: []
+---
+dir={{ PROMPTS_DIR }}`,
+      );
+      const mainSrc = `---
+params: []
+---
+> {% include [child](./child.tmpl.md) %}`;
+      fs.writeFileSync(path.join(dir, "main.tmpl.md"), mainSrc);
+
+      const cache = new TemplateCache();
+      const tmpl = Template.fromSourceWithOptions(mainSrc, {
+        baseDir: dir,
+        env: { PROMPTS_DIR: "/prompts" },
+      });
+      tmpl._cache = cache;
+
+      // First render — compiles the include from disk with env threaded in.
+      const out1 = tmpl.render();
+      assert.ok(out1.includes("dir=/prompts"), out1);
+      assert.strictEqual(cache.includeCount(), 1);
+
+      // Second render — served from cache; env-injected const must persist.
+      const out2 = tmpl.render();
+      assert.strictEqual(out1, out2);
+      assert.strictEqual(cache.includeCount(), 1);
+    } finally {
+      fs.rmSync(dir, { recursive: true });
+    }
+  });
+
+  it("invalidates cached include when compile env changes", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pt-env-inval-"));
+    try {
+      fs.writeFileSync(
+        path.join(dir, "child.tmpl.md"),
+        `---
+env: [PROMPTS_DIR = str]
+params: []
+---
+dir={{ PROMPTS_DIR }}`,
+      );
+      const mainSrc = `---
+params: []
+---
+> {% include [child](./child.tmpl.md) %}`;
+      fs.writeFileSync(path.join(dir, "main.tmpl.md"), mainSrc);
+
+      const cache = new TemplateCache();
+      const compileWith = (value: string): Template => {
+        const t = Template.fromSourceWithOptions(mainSrc, {
+          baseDir: dir,
+          env: { PROMPTS_DIR: value },
+        });
+        t._cache = cache;
+        return t;
+      };
+
+      // Render with env A → caches "dir=/alpha".
+      const outA = compileWith("/alpha").render();
+      assert.ok(outA.includes("dir=/alpha"), outA);
+
+      // Render with env B against the SAME cache. The file is untouched, so
+      // without env-aware invalidation the mtime fast path would return the
+      // stale "/alpha" entry. It must instead recompute to "/beta".
+      const outB = compileWith("/beta").render();
+      assert.ok(outB.includes("dir=/beta"), outB);
     } finally {
       fs.rmSync(dir, { recursive: true });
     }
@@ -2912,10 +3316,9 @@ params: [name = str, count = int]
 ---
 {{ name }} {{ count }}`,
     );
-    assert.throws(
-      () => tmpl.validateDeclarationsAgainst([["name", "str"]]),
-      TemplateError,
-    );
+    assert.throws(() => {
+      tmpl.validateDeclarationsAgainst([["name", "str"]]);
+    }, TemplateError);
   });
 
   it("rejects when count differs (removed)", () => {
@@ -2925,14 +3328,12 @@ params: [name = str]
 ---
 {{ name }}`,
     );
-    assert.throws(
-      () =>
-        tmpl.validateDeclarationsAgainst([
-          ["name", "str"],
-          ["count", "int"],
-        ]),
-      TemplateError,
-    );
+    assert.throws(() => {
+      tmpl.validateDeclarationsAgainst([
+        ["name", "str"],
+        ["count", "int"],
+      ]);
+    }, TemplateError);
   });
 
   it("rejects retyped parameter", () => {
@@ -2942,14 +3343,12 @@ params: [name = str, count = int]
 ---
 {{ name }} {{ count }}`,
     );
-    assert.throws(
-      () =>
-        tmpl.validateDeclarationsAgainst([
-          ["name", "str"],
-          ["count", "float"],
-        ]),
-      TemplateError,
-    );
+    assert.throws(() => {
+      tmpl.validateDeclarationsAgainst([
+        ["name", "str"],
+        ["count", "float"],
+      ]);
+    }, TemplateError);
   });
 
   it("rejects renamed parameter", () => {
@@ -2959,10 +3358,9 @@ params: [name = str]
 ---
 {{ name }}`,
     );
-    assert.throws(
-      () => tmpl.validateDeclarationsAgainst([["different", "str"]]),
-      TemplateError,
-    );
+    assert.throws(() => {
+      tmpl.validateDeclarationsAgainst([["different", "str"]]);
+    }, TemplateError);
   });
 });
 
@@ -3016,7 +3414,7 @@ describe("Context", () => {
     const val = ctx.get("name");
     assert.ok(val !== undefined);
     assert.strictEqual(val.type, "str");
-    if (val.type === "str") assert.strictEqual(val.value, "Alice");
+    assert.strictEqual(val.value, "Alice");
   });
 
   it("set and get int value", () => {
@@ -3302,7 +3700,7 @@ params: [x = str]
       );
       const tmpl = Template.fromFile(fp);
       assert.ok(tmpl.basePath !== undefined);
-      assert.ok(tmpl.basePath!.includes(dir));
+      assert.ok(tmpl.basePath.includes(dir));
     } finally {
       fs.rmSync(dir, { recursive: true });
     }
@@ -3362,14 +3760,14 @@ params: [x = str]
     const tmpl = Template.fromSource(src);
     const fm = tmpl.frontmatter;
     assert.strictEqual(fm.params.length, 4);
-    assert.strictEqual(fm.params[0]!.name, "name");
-    assert.strictEqual(fm.params[0]!.varType.kind, "str");
-    assert.strictEqual(fm.params[1]!.name, "count");
-    assert.strictEqual(fm.params[1]!.varType.kind, "int");
-    assert.strictEqual(fm.params[2]!.name, "score");
-    assert.strictEqual(fm.params[2]!.varType.kind, "float");
-    assert.strictEqual(fm.params[3]!.name, "flag");
-    assert.strictEqual(fm.params[3]!.varType.kind, "bool");
+    assert.strictEqual(defined(fm.params[0]).name, "name");
+    assert.strictEqual(defined(fm.params[0]).varType.kind, "str");
+    assert.strictEqual(defined(fm.params[1]).name, "count");
+    assert.strictEqual(defined(fm.params[1]).varType.kind, "int");
+    assert.strictEqual(defined(fm.params[2]).name, "score");
+    assert.strictEqual(defined(fm.params[2]).varType.kind, "float");
+    assert.strictEqual(defined(fm.params[3]).name, "flag");
+    assert.strictEqual(defined(fm.params[3]).varType.kind, "bool");
   });
 
   it("consts are accessible via frontmatter", () => {
@@ -3385,8 +3783,8 @@ params: []
     );
     const fm = tmpl.frontmatter;
     assert.strictEqual(fm.consts.length, 2);
-    assert.strictEqual(fm.consts[0]!.name, "MAX");
-    assert.strictEqual(fm.consts[1]!.name, "TAG");
+    assert.strictEqual(defined(fm.consts[0]).name, "MAX");
+    assert.strictEqual(defined(fm.consts[1]).name, "TAG");
   });
 
   it("imports are empty for simple template", () => {
@@ -3748,29 +4146,25 @@ describe("fromJs edge cases", () => {
   it("converts nested objects correctly", () => {
     const val = fromJs({ host: "localhost", port: 8080 });
     assert.strictEqual(val.type, "struct");
-    if (val.type === "struct") {
-      assert.ok(val.fields.has("host"));
-      assert.ok(val.fields.has("port"));
-    }
+    assert.ok(val.fields.has("host"));
+    assert.ok(val.fields.has("port"));
   });
 
   it("converts arrays of objects", () => {
     const val = fromJs([{ name: "a" }, { name: "b" }]);
     assert.strictEqual(val.type, "list");
-    if (val.type === "list") {
-      assert.strictEqual(val.items.length, 2);
-    }
+    assert.strictEqual(val.items.length, 2);
   });
 
   it("converts null to str empty", () => {
     const val = fromJs(null);
-    // null should become a str("") or similar
-    assert.ok(val !== undefined);
+    // null and undefined convert to the NONE sentinel.
+    assert.strictEqual(val.type, TYPE_NONE);
   });
 
   it("converts undefined to str empty", () => {
     const val = fromJs(undefined);
-    assert.ok(val !== undefined);
+    assert.strictEqual(val.type, TYPE_NONE);
   });
 });
 
@@ -5239,7 +5633,7 @@ describe("Context API", () => {
     ctx.set("x", "hello");
     const entries = [...ctx.entries()];
     assert.strictEqual(entries.length, 1);
-    assert.strictEqual(entries[0]![0], "x");
+    assert.strictEqual(defined(entries[0])[0], "x");
   });
 
   it("Context.from creates from plain object", () => {
@@ -5302,9 +5696,7 @@ describe("Value module", () => {
   it("display of list", () => {
     const val = fromJs(["a", "b"]);
     assert.strictEqual(val.type, "list");
-    if (val.type === "list") {
-      assert.ok(val.items.length === 2);
-    }
+    assert.ok(val.items.length === 2);
   });
 
   it("isTruthy for non-empty string", () => {
@@ -5353,8 +5745,8 @@ params: [name = str, count = int]
 `,
     );
     assert.strictEqual(fm.params.length, 2);
-    assert.strictEqual(fm.params[0]!.name, "name");
-    assert.strictEqual(fm.params[1]!.name, "count");
+    assert.strictEqual(defined(fm.params[0]).name, "name");
+    assert.strictEqual(defined(fm.params[1]).name, "count");
   });
 
   it("handles empty params list", () => {
@@ -5374,8 +5766,8 @@ consts:
 `,
     );
     assert.strictEqual(fm.consts.length, 1);
-    assert.strictEqual(fm.consts[0]!.name, "GREETING");
-    assert.ok(fm.consts[0]!.defaultValue !== undefined);
+    assert.strictEqual(defined(fm.consts[0]).name, "GREETING");
+    assert.ok(defined(fm.consts[0]).defaultValue !== undefined);
   });
 
   it("parses type aliases", () => {
@@ -5592,10 +5984,10 @@ params:
 Hello {{ name }}!`,
     );
     assert.ok(result.fields.length === 2);
-    assert.strictEqual(result.fields[0]!.name, "name");
-    assert.ok(result.fields[0]!.tsType.includes("string"));
-    assert.strictEqual(result.fields[1]!.name, "count");
-    assert.ok(result.fields[1]!.tsType.includes("number"));
+    assert.strictEqual(defined(result.fields[0]).name, "name");
+    assert.ok(defined(result.fields[0]).tsType.includes("string"));
+    assert.strictEqual(defined(result.fields[1]).name, "count");
+    assert.ok(defined(result.fields[1]).tsType.includes("number"));
   });
 });
 
@@ -5681,7 +6073,7 @@ describe("defineVariants — construction", () => {
     // Struct constructor
     const nc = Status.NeedsChanges({ reason: "fix tests" });
     assert.strictEqual(nc.__kind__, "NeedsChanges");
-    assert.strictEqual(nc["reason"], "fix tests");
+    assert.strictEqual(nc.reason, "fix tests");
     assert.deepStrictEqual(
       { ...nc },
       { __kind__: "NeedsChanges", reason: "fix tests" },
@@ -5694,14 +6086,19 @@ describe("defineVariants — construction", () => {
       Scroll: ["delta"],
     });
     const click = Event.Click({ x: 10, y: 20 });
-    assert.strictEqual(click["x"], 10);
-    assert.strictEqual(click["y"], 20);
+    assert.strictEqual(click.x, 10);
+    assert.strictEqual(click.y, 20);
     assert.deepStrictEqual({ ...click }, { __kind__: "Click", x: 10, y: 20 });
   });
 
   it("unit variant toString returns tag name", () => {
     const { Approved } = defineVariants({ Approved: null });
-    assert.strictEqual(Approved.toString(), "Approved");
+    // Variant instances define a non-enumerable custom `toString` not
+    // surfaced by the type; assert through a `toString`-bearing view.
+    assert.strictEqual(
+      (Approved as { toString(): string }).toString(),
+      "Approved",
+    );
   });
 
   it("struct variant toString includes fields", () => {
@@ -5709,8 +6106,10 @@ describe("defineVariants — construction", () => {
       NeedsChanges: ["reason"],
     });
     const v = NeedsChanges({ reason: "tests fail" });
-    assert.ok(v.toString().includes("NeedsChanges"));
-    assert.ok(v.toString().includes("tests fail"));
+    // Variant instances carry a non-enumerable custom `toString`.
+    const rendered = (v as { toString(): string }).toString();
+    assert.ok(rendered.includes("NeedsChanges"));
+    assert.ok(rendered.includes("tests fail"));
   });
 });
 
@@ -5720,7 +6119,7 @@ describe("variant() constructor validation", () => {
       NeedsChanges: ["reason"],
     });
     assert.throws(
-      () => NeedsChanges({} as Record<"reason", unknown>),
+      () => NeedsChanges({}),
       (err: Error) => err.message.includes("missing"),
     );
   });
@@ -5745,7 +6144,7 @@ describe("variant() constructor validation", () => {
     });
     const v = NeedsChanges({ reason: "original" });
     assert.throws(() => {
-      (v as Record<string, unknown>)["reason"] = "modified";
+      (v as Record<string, unknown>).reason = "modified";
     });
   });
 });
@@ -5770,7 +6169,7 @@ describe("match() — pattern matching", () => {
     const v = Status.NeedsChanges({ reason: "fix tests" });
     const result = match(v, {
       Approved: () => "ok",
-      NeedsChanges: (f) => `Please fix: ${f.reason}`,
+      NeedsChanges: (f) => `Please fix: ${String(f.reason)}`,
       Rejected: () => "no",
     });
     assert.strictEqual(result, "Please fix: fix tests");
@@ -5796,13 +6195,10 @@ describe("match() — pattern matching", () => {
 
   it("works with __kind__ objects from generated types", () => {
     const result = match(
-      { __kind__: "NeedsChanges", reason: "codegen" } as Record<
-        string,
-        unknown
-      >,
+      { __kind__: "NeedsChanges", reason: "codegen" },
       {
         Approved: () => "yes",
-        NeedsChanges: (f) => `fix: ${f.reason}`,
+        NeedsChanges: (f) => `fix: ${String(f.reason)}`,
         _: () => "default",
       },
     );
@@ -5887,7 +6283,7 @@ params: [name = str]
 {{ GREETING }} {{ name }}!`,
     );
     const consts = tmpl.consts();
-    assert.strictEqual(consts["GREETING"], "Hi");
+    assert.strictEqual(consts.GREETING, "Hi");
   });
 
   it("declarations() returns all param declarations", () => {
@@ -5901,8 +6297,8 @@ params:
     );
     const decls = tmpl.declarations();
     assert.strictEqual(decls.length, 2);
-    assert.strictEqual(decls[0]![0], "name");
-    assert.strictEqual(decls[1]![0], "count");
+    assert.strictEqual(defined(decls[0])[0], "name");
+    assert.strictEqual(defined(decls[1])[0], "count");
   });
 
   it("sourceHash is deterministic", () => {
@@ -6417,7 +6813,7 @@ describe("tmpl() type parsing", () => {
     ].join("\n");
     const decls = Template.fromSource(src).declarations();
     assert.strictEqual(decls.length, 1);
-    assert.strictEqual(decls[0]![0], "sub");
+    assert.strictEqual(defined(decls[0])[0], "sub");
   });
 });
 
@@ -7088,11 +7484,11 @@ params: [v = str]
       // Write 3 distinct template files
       for (let i = 1; i <= 3; i++) {
         fs.writeFileSync(
-          path.join(dir, `t${i}.tmpl.md`),
+          path.join(dir, `t${String(i)}.tmpl.md`),
           `---
 params: [x = str]
 ---
-Template ${i}: {{ x }}`,
+Template ${String(i)}: {{ x }}`,
         );
       }
 
@@ -7426,9 +7822,7 @@ params:
     // Should not throw
     const vt = parseVarType("enum(Active, Paused, Done)");
     assert.strictEqual(vt.kind, "enum");
-    if (vt.kind === "enum") {
-      assert.strictEqual(vt.variants.length, 3);
-    }
+    assert.strictEqual(vt.variants.length, 3);
   });
 });
 
@@ -7557,17 +7951,13 @@ describe("option(T) parsing", () => {
   it("parses option(int) as dedicated option type", () => {
     const vt = parseVarType("option(int)");
     assert.strictEqual(vt.kind, "option");
-    if (vt.kind === "option") {
-      assert.deepStrictEqual(vt.innerType, { kind: "int" });
-    }
+    assert.deepStrictEqual(vt.innerType, { kind: "int" });
   });
 
   it("parses option(str)", () => {
     const vt = parseVarType("option(str)");
     assert.strictEqual(vt.kind, "option");
-    if (vt.kind === "option") {
-      assert.deepStrictEqual(vt.innerType, { kind: "str" });
-    }
+    assert.deepStrictEqual(vt.innerType, { kind: "str" });
   });
 
   it("formats option(int) back to string", () => {
@@ -7591,7 +7981,7 @@ params:
 
 > {% /if %}`);
     const decls = tmpl.declarations();
-    assert.strictEqual(decls[0]![1], "option(int)");
+    assert.strictEqual(defined(decls[0])[1], "option(int)");
   });
 });
 
@@ -7898,6 +8288,266 @@ yes
   });
 });
 
+// ===========================================================================
+// D1 — option has()/None handling and leak-safety (regression)
+//
+// Locks in the divergence-contract behavior shared with the Rust core:
+//   * has() is false only for the None sentinel, true for any present value.
+//   * The literal string "None" is a *present* value (has() == true), so it
+//     never masquerades as the None sentinel — both as a parsed default and as
+//     a runtime-supplied value.
+//   * The inner value of an option must not "leak" into a branch where it is
+//     statically known to be absent: reading it in the else-branch of
+//     `if has(x)`, the body of `if !has(x)`, or a `case None` arm is rejected.
+// ===========================================================================
+describe("D1: option has()/None + leak-safety (regression)", () => {
+  const renders = (src: string, ctx: Record<string, unknown>): string =>
+    Template.fromSource(src).render(ctx);
+
+  const ifHasElse = `---
+params:
+  - x = option(int)
+---
+> {% if has(x) %}
+
+present
+
+> {% else %}
+
+absent
+
+> {% /if %}`;
+
+  it("has() is false for the None sentinel (absent)", () => {
+    assert.ok(renders(ifHasElse, { x: null }).includes("absent"));
+  });
+
+  it("has() is true for a present Some value", () => {
+    assert.ok(renders(ifHasElse, { x: 42 }).includes("present"));
+  });
+
+  it('the literal string "None" is present (has() == true) via default', () => {
+    const src = `---
+params:
+  - x = option(str) := "None"
+---
+> {% if has(x) %}
+
+present:{{ x }}
+
+> {% else %}
+
+absent
+
+> {% /if %}`;
+    assert.strictEqual(renders(src, {}).trim(), "present:None");
+  });
+
+  it('the literal string "None" is present (has() == true) at runtime', () => {
+    const src = `---
+params:
+  - x = option(str)
+---
+> {% if has(x) %}
+
+present:{{ x }}
+
+> {% else %}
+
+absent
+
+> {% /if %}`;
+    assert.strictEqual(renders(src, { x: "None" }).trim(), "present:None");
+  });
+
+  it("rejects reading the inner value in the else-branch of `if has(x)`", () => {
+    const src = `---
+params:
+  - x = option(int)
+---
+> {% if has(x) %}
+
+present
+
+> {% else %}
+
+val={{ x }}
+
+> {% /if %}`;
+    assert.throws(
+      () => renders(src, { x: null }),
+      (err: Error) => {
+        assert.ok(err instanceof TemplateSyntaxError);
+        assert.ok(err.message.includes("cannot display value of type option"));
+        return true;
+      },
+    );
+  });
+
+  it("rejects reading the inner value in the body of `if !has(x)`", () => {
+    const src = `---
+params:
+  - x = option(int)
+---
+> {% if !has(x) %}
+
+val={{ x }}
+
+> {% /if %}`;
+    assert.throws(
+      () => renders(src, { x: null }),
+      (err: Error) => {
+        assert.ok(err instanceof TemplateSyntaxError);
+        assert.ok(err.message.includes("cannot display value of type option"));
+        return true;
+      },
+    );
+  });
+
+  it("rejects reading the inner value in a `case None` arm", () => {
+    const src = `---
+params:
+  - x = option(int)
+---
+> {% match x %}
+
+> {% case Some %}
+
+some
+
+> {% case None %}
+
+val={{ x }}
+
+> {% /match %}`;
+    assert.throws(
+      () => renders(src, { x: null }),
+      (err: Error) => {
+        assert.ok(err instanceof TemplateSyntaxError);
+        assert.ok(err.message.includes("cannot display value of type option"));
+        return true;
+      },
+    );
+  });
+});
+
+// ===========================================================================
+// D2 / D4 — declaration diagnostics (byte-for-byte parity with the Rust core)
+//
+// The exact wording of these diagnostics is part of the cross-backend
+// divergence contract, so the assertions pin the full core message. The parser
+// appends a " (line N, --> ...)" location suffix, which `includes` tolerates.
+// ===========================================================================
+describe("D2/D4: declaration diagnostics (byte-for-byte)", () => {
+  const expectError = (fm: string, coreMessage: string): void => {
+    assert.throws(
+      () => parseFrontmatter(fm),
+      (err: Error) => {
+        assert.ok(err instanceof TemplateSyntaxError);
+        assert.ok(
+          err.message.includes(coreMessage),
+          `expected message to include:\n  ${coreMessage}\ngot:\n  ${err.message}`,
+        );
+        return true;
+      },
+    );
+  };
+
+  // --- D2: qualified enum-variant defaults are rejected ---
+
+  it("D2 rejects a qualified default on an inline enum type", () => {
+    expectError(
+      `---
+params:
+  - s = enum(Design, Build) := MyEnum.Build
+---
+body`,
+      "declaration 's': invalid enum default 'MyEnum.Build': use the bare " +
+        "variant name 'Build' (a qualified 'Type.Variant' is only valid in " +
+        "expressions)",
+    );
+  });
+
+  it("D2 rejects a qualified default on an enum type alias", () => {
+    expectError(
+      `---
+types:
+  - Stage = enum(Design, Build, Deploy)
+
+params:
+  - s = Stage := Stage.Build
+---
+body`,
+      "declaration 's': invalid enum default 'Stage.Build': use the bare " +
+        "variant name 'Build' (a qualified 'Type.Variant' is only valid in " +
+        "expressions)",
+    );
+  });
+
+  it("D2 rejects a qualified default on an option(enum) type", () => {
+    expectError(
+      `---
+types:
+  - Stage = enum(Design, Build, Deploy)
+
+params:
+  - o = option(Stage) := Stage.Deploy
+---
+body`,
+      "declaration 'o': invalid enum default 'Stage.Deploy': use the bare " +
+        "variant name 'Deploy' (a qualified 'Type.Variant' is only valid in " +
+        "expressions)",
+    );
+  });
+
+  // --- D4: implicit-typed declarations with a default are rejected ---
+
+  it("D4 rejects an implicit-typed param (`x := ...`)", () => {
+    expectError(
+      `---
+params:
+  - x := "hello"
+---
+body`,
+      "param 'x' must have an explicit type (expected 'name = type := value')",
+    );
+  });
+
+  it("D4 rejects an implicit-typed param with no spaces (`x:=...`)", () => {
+    expectError(
+      `---
+params:
+  - x:="hello"
+---
+body`,
+      "param 'x' must have an explicit type (expected 'name = type := value')",
+    );
+  });
+
+  it("D4 rejects an implicit-typed const (`X := ...`)", () => {
+    expectError(
+      `---
+consts:
+  - X := "hello"
+---
+body`,
+      "constant 'X' must have an explicit type (expected 'name = type := value')",
+    );
+  });
+
+  it("D4 reports a missing type annotation for a bare name", () => {
+    expectError(
+      `---
+params:
+  - untyped_param
+---
+body`,
+      "param 'untyped_param' is missing a type annotation " +
+        "(expected 'name = type')",
+    );
+  });
+});
+
 describe("option(T) match/case", () => {
   it("matches Some case", () => {
     const tmpl = Template.fromSource(`---
@@ -8004,7 +8654,7 @@ params:
 {{ x }}
 
 > {% /if %}`);
-    assert.strictEqual(result.fields[0]!.tsType, "number | null");
+    assert.strictEqual(defined(result.fields[0]).tsType, "number | null");
   });
 
   it("generates null for None default in codegen", () => {
@@ -8209,18 +8859,14 @@ describe("option(tmpl(...)) parsing", () => {
   it("parses option(tmpl(x = str)) — tmpl is first-class kind", () => {
     const vt = parseVarType("option(tmpl(x = str))");
     assert.strictEqual(vt.kind, "option");
-    if (vt.kind === "option") {
-      // tmpl is a first-class VarType kind
-      assert.strictEqual(vt.innerType.kind, "tmpl");
-    }
+    // tmpl is a first-class VarType kind
+    assert.strictEqual(vt.innerType.kind, "tmpl");
   });
 
   it("parses option(tmpl()) — empty tmpl", () => {
     const vt = parseVarType("option(tmpl())");
     assert.strictEqual(vt.kind, "option");
-    if (vt.kind === "option") {
-      assert.strictEqual(vt.innerType.kind, "tmpl");
-    }
+    assert.strictEqual(vt.innerType.kind, "tmpl");
   });
 
   it("formats option(tmpl(x = str)) as option(tmpl(x = str))", () => {
@@ -8245,7 +8891,7 @@ absent
 > {% /if %}`);
     const decls = tmpl.declarations();
     // tmpl is preserved as first-class kind
-    assert.strictEqual(decls[0]![1], "option(tmpl(test = str))");
+    assert.strictEqual(defined(decls[0])[1], "option(tmpl(test = str))");
   });
 });
 
@@ -8436,10 +9082,8 @@ describe("option(tmpl(...)) nested: option(tmpl(x = option(tmpl(...))))", () => 
   it("parses deeply nested option(tmpl(option(tmpl))) — first-class", () => {
     const vt = parseVarType("option(tmpl(sub = option(tmpl(test = str))))");
     assert.strictEqual(vt.kind, "option");
-    if (vt.kind === "option") {
-      // tmpl is a first-class VarType kind
-      assert.strictEqual(vt.innerType.kind, "tmpl");
-    }
+    // tmpl is a first-class VarType kind
+    assert.strictEqual(vt.innerType.kind, "tmpl");
   });
 
   it("formats deeply nested type — tmpl preserved", () => {
@@ -8559,8 +9203,8 @@ params:
     const field = result.fields.find((f) => f.name === "cb");
     assert.ok(field, "cb field should exist in inferred types");
     assert.ok(
-      field!.tsType.includes("null"),
-      `type should include null: ${field!.tsType}`,
+      field.tsType.includes("null"),
+      `type should include null: ${field.tsType}`,
     );
   });
 });
@@ -9739,16 +10383,22 @@ params:
 // ---------------------------------------------------------------------------
 
 describe("Undefined variable errors (additional)", () => {
-  it("throws on undefined variable in expression", () => {
-    const tmpl = Template.fromSource(`---
+  it("throws on undeclared variable in expression at compile time", () => {
+    // A fully-undeclared top-level variable is a compile-time error in both
+    // backends (Rust's `check_undeclared` / TS's `checkUndeclaredVariables`),
+    // so construction — not render — is where it is rejected.
+    assert.throws(
+      () =>
+        Template.fromSource(`---
 params:
   - x = str
 ---
-{{ x }} {{ y }}`);
-    assert.throws(
-      () => tmpl.render({ x: "hi" }),
+{{ x }} {{ y }}`),
       (err: Error) => {
-        assert.ok(err instanceof UndefinedVariableError);
+        assert.ok(err instanceof TemplateSyntaxError);
+        assert.ok(
+          err.message.includes("undeclared variable(s) referenced in body: y"),
+        );
         return true;
       },
     );
@@ -9773,32 +10423,19 @@ params:
 
 describe("Raw block comprehensive (additional)", () => {
   it("raw block preserves template syntax literally", () => {
-    // x is only inside {% raw %}, so it's correctly unused.
-    // Use allow_unused since the test is about raw block output, not unused params.
     const tmpl = Template.fromSource(`---
-params:
-  - x = str
-
-allow_unused: true
+params: []
 ---
 > {% raw %}{{ x }}{% /raw %}`);
-    assert.strictEqual(tmpl.render({ x: "hello" }).trim(), "{{ x }}");
+    assert.strictEqual(tmpl.render({}).trim(), "{{ x }}");
   });
 
   it("raw block preserves statements literally", () => {
-    // x is only inside {% raw %}, so it's correctly unused.
-    // Use allow_unused since the test is about raw block output, not unused params.
     const tmpl = Template.fromSource(`---
-params:
-  - x = str
-
-allow_unused: true
+params: []
 ---
 > {% raw %}{% if x %}yes{% /if %}{% /raw %}`);
-    assert.strictEqual(
-      tmpl.render({ x: "hello" }).trim(),
-      "{% if x %}yes{% /if %}",
-    );
+    assert.strictEqual(tmpl.render({}).trim(), "{% if x %}yes{% /if %}");
   });
 });
 
@@ -9915,17 +10552,13 @@ describe("Value module comprehensive (additional)", () => {
   it("fromJs converts array to list", () => {
     const val = fromJs([1, 2, 3]);
     assert.strictEqual(val.type, "list");
-    if (val.type === "list") {
-      assert.strictEqual(val.items.length, 3);
-    }
+    assert.strictEqual(val.items.length, 3);
   });
 
   it("fromJs converts object to dict", () => {
     const val = fromJs({ a: 1, b: "two" });
     assert.strictEqual(val.type, "struct");
-    if (val.type === "struct") {
-      assert.strictEqual(val.fields.size, 2);
-    }
+    assert.strictEqual(val.fields.size, 2);
   });
 
   it("display of list throws", () => {
@@ -10215,6 +10848,25 @@ params:
     assert.ok(output.includes("b: (no note)"));
   });
 
+  it("throws on undefined variable in expression", () => {
+    // Undeclared root variables are rejected at compile time (mirrors the Rust
+    // core's `check_undeclared_variables`), so the error surfaces at
+    // `fromSource` before `render` is ever reached.
+    assert.throws(
+      () =>
+        Template.fromSource(`---
+params:
+  - x = str
+---
+{{ x }} {{ y }}`),
+      (err: Error) => {
+        assert.ok(err instanceof TemplateSyntaxError);
+        assert.ok(err.message.includes("undeclared variable"));
+        return true;
+      },
+    );
+  });
+
   it("default None creates null in defaults()", () => {
     const tmpl = Template.fromSource(`---
 params:
@@ -10309,8 +10961,8 @@ params:
 > {% /if %}`);
     const decls = tmpl.declarations();
     assert.strictEqual(decls.length, 1);
-    assert.strictEqual(decls[0]![0], "x");
-    assert.strictEqual(decls[0]![1], "option(str)");
+    assert.strictEqual(defined(decls[0])[0], "x");
+    assert.strictEqual(defined(decls[0])[1], "option(str)");
   });
 
   it("inline match with option Some", () => {
@@ -11277,7 +11929,6 @@ consts:
 describe("Milestone 2 Enforcement", () => {
   it("accepts compound types with parens (...)", () => {
     const tmpl = Template.fromSource(`---
-allow_unused: true
 types:
   - MyStruct = struct(name = str)
   - MyEnum = enum(A, B)
@@ -11286,7 +11937,7 @@ params:
   - items = list(MyStruct)
   - opt = option(int)
 ---
-{{ len(items) }}`);
+{{ len(items) }}{% if has(opt) %}{{ opt }}{% /if %}`);
     assert.ok(tmpl);
   });
 
@@ -11851,19 +12502,26 @@ params:
     assert.strictEqual(tmpl.render({ role: "User" }).trim(), "");
   });
 
-  it("allows unquoted case label on str param when it IS a declared param (compiles)", () => {
-    // Unquoted labels that are declared params should compile without error.
-    // Runtime param-ref matching (resolving label value to param value) is
-    // a separate feature — this test only verifies the type check passes.
-    assert.doesNotThrow(() =>
-      Template.fromSource(
-        `---
+  it("counts an unquoted case label that matches a declared param as a reference", () => {
+    // `{% case expected %}` on a str match reads the param `expected`'s value
+    // at runtime for comparison — the param IS used. The collector must count
+    // it, so no `allow_unused` is needed and no unused-param error is thrown.
+    const tmpl = Template.fromSource(
+      `---
 params:
   - status = str
   - expected = str
 ---
 > {% match status %}{% case expected %}matched{% else %}nope{% /match %}`,
-      ),
+    );
+    // Runtime: param-ref match — `expected`'s value is compared to `status`.
+    assert.strictEqual(
+      tmpl.render({ status: "Active", expected: "Active" }).trim(),
+      "matched",
+    );
+    assert.strictEqual(
+      tmpl.render({ status: "Active", expected: "Paused" }).trim(),
+      "nope",
     );
   });
 
@@ -12526,7 +13184,7 @@ describe("API review: variant __kind__ convergence", () => {
     assert.strictEqual(
       match(nc, {
         Approved: () => "ok",
-        NeedsChanges: (v) => `changes: ${v.reason}`,
+        NeedsChanges: (v) => `changes: ${String(v.reason)}`,
       }),
       "changes: fix",
     );

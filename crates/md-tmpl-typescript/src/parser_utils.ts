@@ -38,8 +38,7 @@ export function buildSimpleLineMap(
   const lines = body.split("\n");
   const lineMap: LineMapEntry[] = [];
   let offset = 0;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
+  for (const [i, line] of lines.entries()) {
     lineMap.push({
       offset,
       lineNo: startLineNo + i,
@@ -84,8 +83,7 @@ export function preprocessBlockquotes(
   let pendingBlanks = 0;
   let inRaw = false;
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
+  for (const [i, line] of lines.entries()) {
     const trimmed = line.trimStart();
 
     if (inRaw) {
@@ -249,8 +247,8 @@ export function preprocessBlockquotes(
     if (isStandaloneTag) {
       const isRawTag = tagLine.includes("raw");
       if (!isRawTag && i > 0) {
-        const prevLine = lines[i - 1]!;
-        if (!isValidTagNeighbor(prevLine)) {
+        const prevLine = lines[i - 1];
+        if (prevLine !== undefined && !isValidTagNeighbor(prevLine)) {
           throw new TemplateSyntaxError(
             `Standalone statement tag '${line.trim()}' must be preceded by a blank line or another blockquote tag line (> {%...%})`,
             startLineNo + i,
@@ -261,8 +259,8 @@ export function preprocessBlockquotes(
       }
 
       if (!isRawTag && i + 1 < lines.length) {
-        const nextLine = lines[i + 1]!;
-        if (!isValidTagNeighbor(nextLine)) {
+        const nextLine = lines[i + 1];
+        if (nextLine !== undefined && !isValidTagNeighbor(nextLine)) {
           throw new TemplateSyntaxError(
             `Standalone statement tag '${line.trim()}' must be followed by a blank line or another blockquote tag line (> {%...%})`,
             startLineNo + i,
@@ -325,10 +323,12 @@ export const VALID_FILTERS = new Set([
 ]);
 
 export function validateFilters(expr: string): void {
-  if (expr.indexOf(PIPE) !== -1) {
+  if (expr.includes(PIPE)) {
     const parts = splitPipes(expr);
     for (let i = 1; i < parts.length; i++) {
-      const filterStr = parts[i]!.trim();
+      const part = parts[i];
+      if (part === undefined) continue;
+      const filterStr = part.trim();
       if (!filterStr) continue;
       const [filterName] = parseFilter(filterStr);
       if (!VALID_FILTERS.has(filterName)) {

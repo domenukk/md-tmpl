@@ -53,6 +53,9 @@ class Check:
     message: str
     exclude: re.Pattern[str] | None = None  # lines matching this are skipped
     exclude_path: re.Pattern[str] | None = None  # file paths matching this are skipped
+    # When True, NOLINT comments are ignored — the check always fires.
+    # Use for structural issues where suppression is never acceptable.
+    no_nolint: bool = False
     hits: list[str] = field(default_factory=list)
     suppressed: list[str] = field(default_factory=list)
 
@@ -77,10 +80,27 @@ CHECKS: list[Check] = [
     ),
     Check(
         name="Rust: too_many_lines suppression",
-        pattern=re.compile(r"too_many_lines"),
+        pattern=re.compile(r"#\[(allow|expect)\(.*too_many_lines"),
         dirs=RUST_DIRS,
         exts=RUST_EXTS,
         message="NEVER suppress too_many_lines — split the function instead.",
+        no_nolint=True,
+    ),
+    Check(
+        name="Rust: type_complexity suppression",
+        pattern=re.compile(r"#\[(allow|expect)\(.*type_complexity"),
+        dirs=RUST_DIRS,
+        exts=RUST_EXTS,
+        message="NEVER suppress type_complexity — introduce a type alias instead.",
+        no_nolint=True,
+    ),
+    Check(
+        name="Rust: cognitive_complexity suppression",
+        pattern=re.compile(r"#\[(allow|expect)\(.*cognitive_complexity"),
+        dirs=RUST_DIRS,
+        exts=RUST_EXTS,
+        message="NEVER suppress cognitive_complexity — extract sub-functions.",
+        no_nolint=True,
     ),
     # ── Rust: silently discarded values ───────────────────────────────────
     Check(
@@ -349,15 +369,16 @@ def run_pattern_checks() -> bool:
                     continue
                 if check.exclude and check.exclude.search(line):
                     continue
-                if is_nolinted(lines, lineno):
-                    # Mark the NOLINT as consumed.
-                    nolint_key = (path, lineno - 1)
-                    if nolint_key in nolint_locations:
-                        nolint_locations[nolint_key] = True
-                    check.suppressed.append(
-                        f"  {path}:{lineno}: {line.strip()}"
-                    )
-                    continue
+                if not check.no_nolint:
+                    if is_nolinted(lines, lineno):
+                        # Mark the NOLINT as consumed.
+                        nolint_key = (path, lineno - 1)
+                        if nolint_key in nolint_locations:
+                            nolint_locations[nolint_key] = True
+                        check.suppressed.append(
+                            f"  {path}:{lineno}: {line.strip()}"
+                        )
+                        continue
                 check.hits.append(f"  {path}:{lineno}: {line.strip()}")
         if check.hits:
             for hit in check.hits:
@@ -493,6 +514,50 @@ def run_long_file_check() -> bool:
     return False
 
 
+def run_packaging_invariant_check() -> bool:
+    """Ensure the published `md-tmpl` crate ships no build script / build-deps.
+
+    The compile-time `template!` test generator lives in the unpublished
+    `md-tmpl-compile-tests` crate precisely so downstream consumers don't
+    compile the toml/toml_edit/winnow tree (a build-dependency) or run a build
+    script that produces nothing outside this workspace. This check fails if
+    either is reintroduced into `crates/md-tmpl`.
+    """
+    print("=== Packaging: md-tmpl has no build script / build-dependencies ===")
+    crate_dir = Path("crates/md-tmpl")
+    hits: list[str] = []
+
+    build_rs = crate_dir / "build.rs"
+    if build_rs.is_file():
+        hits.append(
+            f"  {build_rs}: build script present — move it to "
+            "crates/md-tmpl-compile-tests instead."
+        )
+
+    # Match `[build-dependencies]` and target-scoped variants such as
+    # `[target.'cfg(...)'.build-dependencies]`, whether inline or dotted.
+    manifest = crate_dir / "Cargo.toml"
+    build_dep_header = re.compile(r"^\s*\[[^\]]*build-dependencies\]")
+    try:
+        for lineno, line in enumerate(manifest.read_text().splitlines(), start=1):
+            if build_dep_header.search(line):
+                hits.append(f"  {manifest}:{lineno}: {line.strip()}")
+    except OSError as err:
+        # Don't silently ignore a read failure — surface it as a violation.
+        hits.append(f"  {manifest}: could not read manifest ({err})")
+
+    if hits:
+        for hit in hits:
+            print(hit)
+        print(
+            "^^^ The published md-tmpl crate must stay free of a build script "
+            "and build-dependencies (adds compile cost to every downstream)."
+        )
+        return True
+    print("  ✓ clean")
+    return False
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 
@@ -500,6 +565,7 @@ def main() -> int:
     failed = run_pattern_checks()
     failed = run_bare_nolint_check() or failed
     failed = run_empty_catch_check() or failed
+    failed = run_packaging_invariant_check() or failed
     # Long file check is advisory — warns but doesn't fail the lint.
     run_long_file_check()
 

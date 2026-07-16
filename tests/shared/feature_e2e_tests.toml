@@ -1515,6 +1515,34 @@ expected_error = "len() requires a list or string"
 [tests.params]
 data = { a = 1, b = 2 }
 
+# -- Undeclared variable references are compile-time errors --
+
+[[tests]]
+name = "undeclared_variable_in_body_is_error"
+description = "Referencing a variable declared nowhere is a compile-time error"
+template = '''
+---
+params:
+  - x = str
+---
+{{ x }} {{ y }}'''
+expected_error = "undeclared variable"
+[tests.params]
+x = "hi"
+
+[[tests]]
+name = "undeclared_variable_in_condition_is_error"
+description = "Referencing an undeclared variable inside an if condition errors"
+template = '''
+---
+params:
+  - x = int
+---
+> {% if y > 0 %}{{ x }}{% /if %}'''
+expected_error = "undeclared variable"
+[tests.params]
+x = 1
+
 # ============================================================================
 # F7: Option Types — None/Some Convention
 #
@@ -2178,15 +2206,11 @@ template = '''
 types:
   - Status = enum(Active, Paused, Stopped)
 
-params:
-  - status = Status
-
-allow_unused: true
+params: []
 ---
 > {% for v in kinds(Status) %}{{ v }} {% /for %}'''
 expected_output = "Active Paused Stopped "
-[tests.params]
-status = "Active"
+params = {}
 
 [[tests]]
 name = "kinds_enum_in_operator"
@@ -2197,15 +2221,11 @@ types:
   - Role = enum(Admin, User, Guest)
 
 params:
-  - role = Role
   - check = str
-
-allow_unused: true
 ---
 > {% if check in kinds(Role) %}valid{% else %}invalid{% /if %}'''
 expected_output = "valid"
 [tests.params]
-role = "Admin"
 check = "User"
 
 [[tests]]
@@ -2217,15 +2237,11 @@ types:
   - Role = enum(Admin, User, Guest)
 
 params:
-  - role = Role
   - check = str
-
-allow_unused: true
 ---
 > {% if check in kinds(Role) %}valid{% else %}invalid{% /if %}'''
 expected_output = "invalid"
 [tests.params]
-role = "Admin"
 check = "Superadmin"
 
 # ============================================================================
@@ -2396,8 +2412,6 @@ template = '''
 params:
   - status = str
   - expected = str
-
-allow_unused: true
 ---
 > {% match status %}{% case expected %}matched{% else %}nope{% /match %}'''
 expected_output = "matched"
@@ -2413,8 +2427,6 @@ template = '''
 params:
   - status = str
   - expected = str
-
-allow_unused: true
 ---
 > {% match status %}{% case expected %}matched{% else %}nope{% /match %}'''
 expected_output = "nope"
@@ -2430,8 +2442,6 @@ template = '''
 params:
   - status = str
   - alt = str
-
-allow_unused: true
 ---
 > {% match status %}{% case "Active" %}a{% case alt %}b{% else %}c{% /match %}'''
 expected_output = "b"
@@ -2447,7 +2457,6 @@ template = '''
 ---
 types: [StatusKind = enum(Active, Paused, Done)]
 params: [status = str]
-allow_unused: true
 ---
 > {% if status == kind(StatusKind.Active) %}matched{% else %}nope{% /if %}'''
 expected_output = "matched"
@@ -2461,7 +2470,6 @@ template = '''
 ---
 types: [StatusKind = enum(Active, Paused, Done)]
 params: [status = str]
-allow_unused: true
 ---
 > {% if status == kind(StatusKind.Active) %}matched{% else %}nope{% /if %}'''
 expected_output = "nope"
@@ -2573,7 +2581,6 @@ description = "Inline list format (params: [...]) followed by another key withou
 template = '''
 ---
 params: [x = str]
-allow_unused: true
 ---
 {{ x }}'''
 expected_output = "hi"
@@ -2620,7 +2627,6 @@ types:
   - Name = Base
 
 params: [n = Name]
-allow_unused: true
 ---
 {{ n }}'''
 expected_output = "test"
@@ -3399,3 +3405,632 @@ params:
 out:{% for r in rows %}{{ r.id }}:{{ r.label }} {% /for %}'''
 expected_output = "out:1:alpha 2:beta "
 params = {}
+
+# ============================================================================
+# F11: Nested Type Patterns — option(enum), list(enum), struct(enum field)
+#
+# These verify that deeper nesting of types works correctly for matching,
+# rendering, and the undeclared-variable static analysis.
+# ============================================================================
+
+# -- option(enum) --
+
+[[tests]]
+name = "option_enum_match_some"
+description = "option(enum) — nested match: outer for Some/None, inner for variant"
+template = '''
+---
+types:
+  - Status = enum(Active, Paused, Stopped)
+
+params: [s = option(Status)]
+---
+> {% match s %}
+> {% case Some %}{% match s %}{% case Active %}on{% case Paused %}pause{% case Stopped %}off{% /match %}{% case None %}none{% /match %}'''
+expected_output = "on"
+[tests.params]
+s = "Active"
+
+[[tests]]
+name = "option_enum_match_none"
+description = "option(enum) — match hits None arm when absent"
+template = '''
+---
+types:
+  - Status = enum(Active, Paused, Stopped)
+
+params: [s = option(Status)]
+---
+> {% match s %}
+> {% case Some %}{{ kind(s) }}{% case None %}none{% /match %}'''
+expected_output = "none"
+[tests.params]
+s = "None"
+
+[[tests]]
+name = "option_enum_has_and_match"
+description = "option(enum) — has() guard + match on inner enum variant"
+template = '''
+---
+types:
+  - Color = enum(Red, Green, Blue)
+
+params: [c = option(Color)]
+---
+> {% if has(c) %}{% match c %}{% case Red %}R{% case Green %}G{% case Blue %}B{% /match %}{% else %}none{% /if %}'''
+expected_output = "G"
+[tests.params]
+c = "Green"
+
+# -- list(enum) --
+
+[[tests]]
+name = "list_enum_for_match"
+description = "list(enum) — iterate and match each variant"
+template = '''
+---
+types:
+  - Light = enum(Red, Yellow, Green)
+
+params: [lights = list(Light)]
+---
+> {% for l in lights %}{% match l %}{% case Red %}stop{% case Yellow %}slow{% case Green %}go{% /match %},{% /for %}'''
+expected_output = "go,stop,slow,"
+[tests.params]
+lights = ["Green", "Red", "Yellow"]
+
+[[tests]]
+name = "list_enum_kind_in_loop"
+description = "list(enum) — kind() on each element in a for loop"
+template = '''
+---
+types:
+  - Dir = enum(Up, Down)
+
+params: [dirs = list(Dir)]
+---
+> {% for d in dirs %}{{ kind(d) }} {% /for %}'''
+expected_output = "Up Down Up "
+[tests.params]
+dirs = ["Up", "Down", "Up"]
+
+# -- struct with enum field --
+
+[[tests]]
+name = "struct_enum_field_match"
+description = "struct with an enum field — match on the field value"
+template = '''
+---
+types:
+  - Severity = enum(Low, Medium, High)
+
+params: [issue = struct(title = str, sev = Severity)]
+---
+> {% match issue.sev %}{% case High %}🔴{% case Medium %}🟡{% case Low %}🟢{% /match %} {{ issue.title }}'''
+expected_output = "🔴 fix crash"
+[tests.params]
+issue = { "title" = "fix crash", "sev" = "High" }
+
+[[tests]]
+name = "struct_enum_field_kind"
+description = "struct with an enum field — kind() extracts variant name"
+template = '''
+---
+types:
+  - Role = enum(Admin, User, Guest)
+
+params: [acct = struct(name = str, role = Role)]
+---
+{{ acct.name }} ({{ kind(acct.role) }})'''
+expected_output = "alice (Admin)"
+[tests.params]
+acct = { "name" = "alice", "role" = "Admin" }
+
+# -- list(option(enum)) — three levels deep --
+
+[[tests]]
+name = "list_option_enum_for_match"
+description = "list(option(enum)) — triple nesting: iterate, check Some/None, match variant"
+template = '''
+---
+types:
+  - Prio = enum(P0, P1, P2)
+
+params: [items = list(option(Prio))]
+---
+> {% for p in items %}{% match p %}{% case Some %}{% match p %}{% case P0 %}🔴{% case P1 %}🟡{% case P2 %}🟢{% /match %}{% case None %}-{% /match %} {% /for %}'''
+expected_output = "🔴 - 🟢 "
+[tests.params]
+items = ["P0", "None", "P2"]
+
+# -- option(enum) narrowing edge cases --
+
+[[tests]]
+name = "option_enum_match_some_other_variant"
+description = "option(enum) — nested match: match Paused variant after Some narrowing"
+template = '''
+---
+types:
+  - Status = enum(Active, Paused, Stopped)
+
+params: [s = option(Status)]
+---
+> {% match s %}
+> {% case Some %}{% match s %}{% case Active %}on{% case Paused %}pause{% case Stopped %}off{% /match %}{% case None %}none{% /match %}'''
+expected_output = "pause"
+[tests.params]
+s = "Paused"
+
+[[tests]]
+name = "option_enum_kind_after_has"
+description = "option(enum) — kind() after has() guard returns variant name, not Some"
+template = '''
+---
+types:
+  - Color = enum(Red, Green, Blue)
+
+params: [c = option(Color)]
+---
+> {% if has(c) %}{{ kind(c) }}{% else %}absent{% /if %}'''
+expected_output = "Red"
+[tests.params]
+c = "Red"
+
+[[tests]]
+name = "option_enum_has_none"
+description = "option(enum) — has() guard returns false for None, else branch renders"
+template = '''
+---
+types:
+  - Color = enum(Red, Green, Blue)
+
+params: [c = option(Color)]
+---
+> {% if has(c) %}{{ kind(c) }}{% else %}absent{% /if %}'''
+expected_output = "absent"
+[tests.params]
+c = "None"
+
+[[tests]]
+name = "option_enum_match_some_kind"
+description = "option(enum) — kind() inside Some arm still returns Some (option semantics per SPEC); use nested match for variant"
+template = '''
+---
+types:
+  - Level = enum(L0, L1, L2)
+
+params: [lev = option(Level)]
+---
+> {% match lev %}{% case Some %}{% match lev %}{% case L0 %}zero{% case L1 %}one{% case L2 %}two{% /match %}{% case None %}N/A{% /match %}'''
+expected_output = "two"
+[tests.params]
+lev = "L2"
+
+[[tests]]
+name = "struct_option_enum_field_match"
+description = "struct with option(enum) field — has() guard + match"
+template = '''
+---
+types:
+  - Priority = enum(High, Normal, Low)
+
+params: [task = struct(title = str, prio = option(Priority))]
+---
+{{ task.title }}: {% if has(task.prio) %}{% match task.prio %}{% case High %}🔴{% case Normal %}⚪{% case Low %}🟢{% /match %}{% else %}unset{% /if %}'''
+expected_output = "deploy: 🔴"
+[tests.params]
+task = { "title" = "deploy", "prio" = "High" }
+
+[[tests]]
+name = "struct_option_enum_field_none"
+description = "struct with option(enum) field — has() guard with None value"
+template = '''
+---
+types:
+  - Priority = enum(High, Normal, Low)
+
+params: [task = struct(title = str, prio = option(Priority))]
+---
+{{ task.title }}: {% if has(task.prio) %}{{ kind(task.prio) }}{% else %}unset{% /if %}'''
+expected_output = "deploy: unset"
+[tests.params]
+task = { "title" = "deploy", "prio" = "None" }
+
+# -- Blockquote expression tests (SPEC §Markdown Blockquotes) --
+# `> {{ expr }}` is literal blockquote — `> ` is preserved in output.
+# `> {% tag %}` is a control tag — `> ` is stripped.
+
+[[tests]]
+name = "blockquote_expression_preserved"
+description = "> {{ expr }} is literal blockquote — preserves > prefix"
+template = '''
+---
+params: [name = str]
+---
+> {{ name }} is here'''
+expected_output = "> hello is here"
+[tests.params]
+name = "hello"
+
+[[tests]]
+name = "blockquote_expression_inside_if_block"
+description = "> {{ expr }} inside a > {% if %} block preserves > prefix"
+template = '''
+---
+params: [name = str, show = bool]
+---
+
+> {% if show %}
+
+> {{ name }} is visible
+
+> {% /if %}'''
+expected_output = "> hello is visible\n"
+[tests.params]
+name = "hello"
+show = true
+
+# -- Reserved-name rejection tests (SPEC §Naming Conventions & Collision Rules) --
+
+[[tests]]
+name = "reserved_param_name_None"
+description = "param named 'None' is rejected — pattern keyword"
+template = '''
+---
+params: [None = str]
+---
+{{ None }}'''
+expected_error = "reserved keyword used as name: 'None'"
+
+[[tests]]
+name = "reserved_param_name_Some"
+description = "param named 'Some' is rejected — pattern keyword"
+template = '''
+---
+params: [Some = str]
+---
+{{ Some }}'''
+expected_error = "reserved keyword used as name: 'Some'"
+
+[[tests]]
+name = "reserved_param_name_true"
+description = "param named 'true' is rejected — boolean literal"
+template = '''
+---
+params: [true = str]
+---
+{{ true }}'''
+expected_error = "reserved keyword used as name: 'true'"
+
+[[tests]]
+name = "reserved_param_name_false"
+description = "param named 'false' is rejected — boolean literal"
+template = '''
+---
+params: [false = str]
+---
+{{ false }}'''
+expected_error = "reserved keyword used as name: 'false'"
+
+[[tests]]
+name = "reserved_param_name_underscore"
+description = "param named '_' is rejected — wildcard pattern"
+template = '''
+---
+params: [_ = str]
+---
+{{ _ }}'''
+expected_error = "reserved keyword used as name: '_'"
+
+[[tests]]
+name = "reserved_param_name___kind__"
+description = "param named '__kind__' is rejected — internal enum tag key"
+template = '''
+---
+params: [__kind__ = str]
+---
+{{ __kind__ }}'''
+expected_error = "reserved keyword used as name: '__kind__'"
+
+[[tests]]
+name = "reserved_param_name___variants__"
+description = "param named '__variants__' is rejected — internal enum variants key"
+template = '''
+---
+params: [__variants__ = str]
+---
+{{ __variants__ }}'''
+expected_error = "reserved keyword used as name: '__variants__'"
+
+[[tests]]
+name = "reserved_const_name_None"
+description = "const named 'None' is rejected — pattern keyword"
+template = '''
+---
+consts: [None = str := "x"]
+---
+{{ None }}'''
+expected_error = "reserved keyword used as name: 'None'"
+
+[[tests]]
+name = "reserved_const_name_true"
+description = "const named 'true' is rejected — boolean literal"
+template = '''
+---
+consts: [true = str := "x"]
+---
+{{ true }}'''
+expected_error = "reserved keyword used as name: 'true'"
+
+[[tests]]
+name = "reserved_type_alias_list"
+description = "type alias named 'list' is rejected — built-in type name"
+template = '''
+---
+types:
+  - list = enum(A, B)
+
+params: [x = list]
+---
+> {% match x %}{% case A %}a{% case B %}b{% /match %}'''
+expected_error = "reserved keyword used as name: 'list'|shadows built-in type name: 'list'"
+
+[[tests]]
+name = "reserved_type_alias_enum"
+description = "type alias named 'enum' is rejected — built-in type name"
+template = '''
+---
+types:
+  - enum = enum(X, Y)
+
+params: [x = enum]
+---
+> {% match x %}{% case X %}x{% case Y %}y{% /match %}'''
+expected_error = "reserved keyword used as name: 'enum'|shadows built-in type name: 'enum'"
+
+[[tests]]
+name = "reserved_param_name_option"
+description = "param named 'option' is rejected — built-in type name"
+template = '''
+---
+params: [option = str]
+---
+{{ option }}'''
+expected_error = "reserved keyword used as name: 'option'"
+
+# ============================================================================
+# Language Keyword Compatibility
+# ============================================================================
+# Verifies that target-language keywords (e.g. Rust's `type`, `match`, `loop`,
+# or TypeScript's `class`, `delete`) work as param/field names at the runtime
+# level.  The md-tmpl engine treats these as plain identifiers; only the Rust
+# proc-macro codegen needs raw identifiers (`r#type`), handled transparently.
+
+[[tests]]
+name = "language_keyword_param_type"
+description = "Param named 'type' (Rust keyword) works at runtime"
+template = '''
+---
+params: [type = str]
+---
+{{ type }}'''
+expected_output = "widget"
+[tests.params]
+type = "widget"
+
+[[tests]]
+name = "language_keyword_param_match"
+description = "Param named 'match' (Rust keyword) works at runtime"
+template = '''
+---
+params: [match = int]
+---
+{{ match }}'''
+expected_output = "42"
+[tests.params]
+match = 42
+
+[[tests]]
+name = "language_keyword_param_class"
+description = "Param named 'class' (JS/TS keyword) works at runtime"
+template = '''
+---
+params: [class = str]
+---
+{{ class }}'''
+expected_output = "primary"
+[tests.params]
+class = "primary"
+
+[[tests]]
+name = "language_keyword_param_delete"
+description = "Param named 'delete' (JS keyword) works at runtime"
+template = '''
+---
+params: [delete = bool]
+---
+{{ delete }}'''
+expected_output = "true"
+[tests.params]
+delete = true
+
+[[tests]]
+name = "language_keyword_struct_field_type"
+description = "Struct field named 'type' works at runtime"
+template = '''
+---
+params: [item = struct(type = str, value = int)]
+---
+{{ item.type }}={{ item.value }}'''
+expected_output = "widget=42"
+[tests.params.item]
+type = "widget"
+value = 42
+
+[[tests]]
+name = "language_keyword_list_field_type"
+description = "List item field named 'type' works at runtime"
+template = '''
+---
+params: [items = list(type = str)]
+---
+> {% for x in items %}{{ x.type }} {% /for %}'''
+expected_output = "a b "
+[[tests.params.items]]
+type = "a"
+[[tests.params.items]]
+type = "b"
+
+[[tests]]
+name = "language_keyword_in_if_condition"
+description = "Keyword param used in if condition"
+template = '''
+---
+params: [loop = bool]
+---
+> {% if loop %}yes{% else %}no{% /if %}'''
+expected_output = "yes"
+[tests.params]
+loop = true
+
+[[tests]]
+name = "language_keyword_multiple_params"
+description = "Multiple keyword params in one template"
+template = '''
+---
+params:
+  - type = str
+  - match = int
+  - loop = bool
+---
+{{ type }}: {{ match }}
+> {% if loop %}(looping){% /if %}'''
+expected_output = "widget: 42\n(looping)"
+[tests.params]
+type = "widget"
+match = 42
+loop = true
+
+# ============================================================================
+# Un-escapable Keywords — Allowed as Names (renamed in Rust codegen)
+# ============================================================================
+# self, Self, super, crate are valid at the md-tmpl level.  Rust codegen
+# renames them to __self, __Self, __super, __crate internally.
+
+[[tests]]
+name = "unescapable_keyword_self_allowed"
+description = "param named 'self' works at runtime"
+template = '''
+---
+params: [self = str]
+---
+{{ self }}'''
+expected_output = "me"
+[tests.params]
+self = "me"
+
+[[tests]]
+name = "unescapable_keyword_Self_allowed"
+description = "param named 'Self' works at runtime"
+template = '''
+---
+params: [Self = str]
+---
+{{ Self }}'''
+expected_output = "typ"
+[tests.params]
+Self = "typ"
+
+[[tests]]
+name = "unescapable_keyword_super_allowed"
+description = "param named 'super' works at runtime"
+template = '''
+---
+params: [super = str]
+---
+{{ super }}'''
+expected_output = "parent"
+[tests.params]
+super = "parent"
+
+[[tests]]
+name = "unescapable_keyword_crate_allowed"
+description = "param named 'crate' works at runtime"
+template = '''
+---
+params: [crate = str]
+---
+{{ crate }}'''
+expected_output = "mylib"
+[tests.params]
+crate = "mylib"
+
+[[tests]]
+name = "unescapable_keyword_self_in_struct_field"
+description = "struct field named 'self' works at runtime"
+template = '''
+---
+params: [item = struct(self = str)]
+---
+{{ item.self }}'''
+expected_output = "me"
+[tests.params.item]
+self = "me"
+
+[[tests]]
+name = "unescapable_keyword_self_as_const"
+description = "const named 'self' works at runtime"
+template = '''
+---
+consts: [self = str := "x"]
+
+params: []
+---
+{{ self }}'''
+expected_output = "x"
+params = {}
+
+# ============================================================================
+# Collision Guard Rejection (__self, __Self, __super, __crate)
+# ============================================================================
+# These mangled names are reserved to prevent collisions with Rust codegen.
+
+[[tests]]
+name = "collision_guard_dunder_self"
+description = "param named '__self' is rejected — codegen collision guard"
+template = '''
+---
+params: [__self = str]
+---
+{{ __self }}'''
+expected_error = "reserved keyword used as name: '__self'"
+
+[[tests]]
+name = "collision_guard_dunder_Self"
+description = "param named '__Self' is rejected — codegen collision guard"
+template = '''
+---
+params: [__Self = str]
+---
+{{ __Self }}'''
+expected_error = "reserved keyword used as name: '__Self'"
+
+[[tests]]
+name = "collision_guard_dunder_super"
+description = "param named '__super' is rejected — codegen collision guard"
+template = '''
+---
+params: [__super = str]
+---
+{{ __super }}'''
+expected_error = "reserved keyword used as name: '__super'"
+
+[[tests]]
+name = "collision_guard_dunder_crate"
+description = "param named '__crate' is rejected — codegen collision guard"
+template = '''
+---
+params: [__crate = str]
+---
+{{ __crate }}'''
+expected_error = "reserved keyword used as name: '__crate'"

@@ -28,7 +28,7 @@ import { type Value, fromJs } from "./value.js";
  */
 export class Context {
   /** Internal variable storage. */
-  readonly values: Map<string, Value> = new Map();
+  readonly values = new Map<string, Value>();
 
   /** Insert a value into the context. Plain JS values are auto-converted. */
   set(key: string, value: unknown): void {

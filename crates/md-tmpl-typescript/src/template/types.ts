@@ -102,3 +102,19 @@ export interface CachedInclude {
   /** Type aliases from the child's own frontmatter + imports. */
   readonly typeAliases?: ReadonlyMap<string, VarType>;
 }
+
+/**
+ * A single entry in an include cache.
+ *
+ * Keyed by absolute path; the `hash`/`mtimeMs` pair drives file-change
+ * invalidation while `envHash` drives compile-env invalidation (the env values
+ * are baked into `cached`, so a change in env must produce a fresh entry).
+ * Shared by the {@link CachedInclude} resolver, the per-`Template` cache, and
+ * the standalone `TemplateCache` so all three stay structurally in sync.
+ */
+export interface IncludeCacheEntry {
+  hash: number;
+  envHash: number;
+  mtimeMs: number;
+  cached: CachedInclude;
+}

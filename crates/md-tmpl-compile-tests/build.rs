@@ -216,7 +216,8 @@ fn generate_test_module(
     // Each module also contains its test function.
     writeln!(
         output,
-        r#"mod test_{name} {{
+        r#"#[allow(non_snake_case)]
+mod test_{name} {{
     use super::*;
 
     md_tmpl::template!(

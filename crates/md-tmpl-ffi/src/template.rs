@@ -335,6 +335,11 @@ pub unsafe extern "C" fn pt_template_from_source_with_base_dir(
 /// On failure:
 /// - Returns an error string (caller must free with `pt_free_string`)
 ///
+/// # Panics
+///
+/// Panics if `CString::new` fails on the frontmatter JSON output (should not
+/// happen unless the template name or description contains interior NUL bytes).
+///
 /// The frontmatter JSON contains:
 /// ```json
 /// {

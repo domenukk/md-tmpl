@@ -98,13 +98,14 @@ pub(crate) fn build_overrides(
     let mut overrides = HashMap::new();
     for &(key, val_expr) in &directive.with_vars {
         let value = if let Some(inner) = crate::consts::strip_string_literal(val_expr) {
+            let inner = crate::consts::unescape_string_literal(inner);
             if inner.contains(crate::consts::EXPR_START) {
                 // Interpolated string: compile {{ expr }} references and render.
-                let segments = crate::compiled::compile_body(inner)?;
+                let segments = crate::compiled::compile_body(&inner)?;
                 let rendered = crate::compiled::render_interpolated_str(&segments, scope)?;
                 Value::Str(rendered)
             } else {
-                Value::Str(inner.to_string())
+                Value::Str(inner)
             }
         } else {
             // Evaluate as a full expression — supports paths, functions, filters.

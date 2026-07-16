@@ -1,6 +1,6 @@
 [package]
 name = "md-tmpl"
-version = "0.7.1"
+version = "0.9.0"
 edition = "2024"
 rust-version = "1.85"
 description = "Lightweight template engine for .tmpl.md prompt files with typed frontmatter"
@@ -11,16 +11,18 @@ keywords = ["template", "prompt", "markdown", "llm", "agent"]
 categories = ["template-engine", "text-processing"]
 
 [features]
-default = ["std", "serde", "macros"]
+default = ["std", "serde", "macros", "cbor", "flexbuffers"]
 std = ["md-tmpl-core/std"]
 serde = ["md-tmpl-core/serde"]
+cbor = ["serde", "md-tmpl-core/cbor"]
+flexbuffers = ["std", "serde", "md-tmpl-core/flexbuffers"]
 # Re-export proc macros so users can write `md_tmpl::include_template!`
 # instead of importing `md_tmpl_macros` separately.
 macros = ["dep:md-tmpl-macros"]
 
 [dependencies]
-md-tmpl-core = { version = "0.7.1", path = "../md-tmpl-core", default-features = false }
-md-tmpl-macros = { version = "0.7.1", path = "../md-tmpl-macros", optional = true, features = [
+md-tmpl-core = { version = "0.9.0", path = "../md-tmpl-core", default-features = false }
+md-tmpl-macros = { version = "0.9.0", path = "../md-tmpl-macros", optional = true, features = [
   "serde",
 ] }
 
@@ -30,10 +32,6 @@ serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 criterion = { version = "0.8", features = ["html_reports"] }
 flexbuffers = "25.12"
-toml = "0.8"
-
-[build-dependencies]
-toml = "0.8"
 
 [[test]]
 name = "yaml_conformance"
@@ -43,14 +41,10 @@ required-features = ["std"]
 name = "adv_m1_tests"
 required-features = ["std"]
 
-[[test]]
-name = "shared_compile_time"
-required-features = ["std", "macros"]
-
 [[bench]]
 name = "template_bench"
 harness = false
-required-features = ["std"]
+required-features = ["std", "flexbuffers"]
 
 [lints]
 workspace = true

@@ -1,8 +1,4 @@
 #![forbid(unsafe_code)]
-#![expect(
-    clippy::missing_errors_doc,
-    reason = "WASM FFI crate; errors documented with JS-style 'Throws' convention"
-)]
 //! WebAssembly bindings for the `md-tmpl` engine.
 //!
 //! Exposes the core Rust template engine to JavaScript/TypeScript via
@@ -118,6 +114,10 @@ impl Template {
     /// Parse a template from source text.
     ///
     /// Throws a JavaScript error if the source contains a syntax error.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JS `Error` if the source contains a syntax or parse error.
     #[wasm_bindgen(js_name = "fromSource")]
     pub fn from_source(source: &str) -> Result<Template, JsValue> {
         let inner = md_tmpl::Template::from_source(source).map_err(|e| js_error(&e))?;
@@ -132,6 +132,11 @@ impl Template {
     ///
     /// Throws if required parameters are missing, types mismatch, or rendering
     /// fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JS `Error` if parameter conversion fails, required parameters
+    /// are missing, types mismatch, or rendering fails.
     pub fn render(&self, params: &JsParams) -> Result<String, JsValue> {
         let ctx = json_to_context(params.as_ref())?;
         self.inner.render_ctx(&ctx).map_err(|e| js_error(&e))
@@ -144,6 +149,11 @@ impl Template {
     ///
     /// Throws if any declared parameter lacks a default value, or if rendering
     /// fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JS `Error` if a declared parameter lacks a default value or
+    /// rendering fails.
     #[wasm_bindgen(js_name = "renderEmpty")]
     pub fn render_empty(&self) -> Result<String, JsValue> {
         self.inner.render_empty().map_err(|e| js_error(&e))
@@ -158,6 +168,11 @@ impl Template {
     /// body) is reported.
     ///
     /// Throws only if rendering itself fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JS `Error` if parameter conversion fails or rendering itself
+    /// fails.
     #[wasm_bindgen(js_name = "renderUnchecked")]
     pub fn render_unchecked(&self, params: &JsParams) -> Result<String, JsValue> {
         let ctx = json_to_context(params.as_ref())?;
@@ -174,6 +189,11 @@ impl Template {
     ///
     /// Throws if required parameters are missing, types mismatch, or rendering
     /// fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JS `Error` if parameter conversion fails, required parameters
+    /// are missing, types mismatch, or rendering fails.
     #[wasm_bindgen(js_name = "renderAllowingExtra")]
     pub fn render_allowing_extra(&self, params: &JsParams) -> Result<String, JsValue> {
         let ctx = json_to_context(params.as_ref())?;
@@ -190,6 +210,11 @@ impl Template {
     ///
     /// Throws if the JSON is invalid, required parameters are missing, or
     /// rendering fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JS `Error` if the JSON string is malformed, required
+    /// parameters are missing, types mismatch, or rendering fails.
     #[wasm_bindgen(js_name = "renderJson")]
     pub fn render_json(&self, json_str: &str) -> Result<String, JsValue> {
         let ctx = json_str_to_context(json_str)?;
@@ -202,6 +227,11 @@ impl Template {
     /// matching `renderUnchecked`.
     ///
     /// Throws if the JSON is invalid or rendering fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JS `Error` if the JSON string is malformed or rendering
+    /// fails.
     #[wasm_bindgen(js_name = "renderUncheckedJson")]
     pub fn render_unchecked_json(&self, json_str: &str) -> Result<String, JsValue> {
         let ctx = json_str_to_context(json_str)?;
@@ -218,6 +248,11 @@ impl Template {
     ///
     /// Throws if required parameters are missing, types mismatch, the JSON is
     /// invalid, or rendering fails.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JS `Error` if the JSON string is malformed, required
+    /// parameters are missing, types mismatch, or rendering fails.
     #[wasm_bindgen(js_name = "renderAllowingExtraJson")]
     pub fn render_allowing_extra_json(&self, json_str: &str) -> Result<String, JsValue> {
         let ctx = json_str_to_context(json_str)?;
@@ -230,6 +265,11 @@ impl Template {
     ///
     /// Bypasses all JSON serialization and JS object iteration overhead,
     /// achieving maximum performance across the WASM boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JS `Error` if the buffer is not valid `FlexBuffers`, required
+    /// parameters are missing, types mismatch, or rendering fails.
     #[wasm_bindgen(js_name = "renderFlexbuffers")]
     pub fn render_flexbuffers(&self, buffer: &[u8]) -> Result<String, JsValue> {
         let ctx = md_tmpl::Context::from_flexbuffers(buffer).map_err(|e| js_error(&e))?;
@@ -239,6 +279,11 @@ impl Template {
     /// Render from a `FlexBuffers` binary buffer **without any validation**.
     ///
     /// Skips all validation (missing, type, extra), matching `renderUnchecked`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JS `Error` if the buffer is not valid `FlexBuffers` or
+    /// rendering fails.
     #[wasm_bindgen(js_name = "renderUncheckedFlexbuffers")]
     pub fn render_unchecked_flexbuffers(&self, buffer: &[u8]) -> Result<String, JsValue> {
         let ctx = md_tmpl::Context::from_flexbuffers(buffer).map_err(|e| js_error(&e))?;
@@ -249,6 +294,11 @@ impl Template {
 
     /// Render from a `FlexBuffers` binary buffer, allowing extra (undeclared)
     /// parameters while still validating missing parameters and types.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JS `Error` if the buffer is not valid `FlexBuffers`, required
+    /// parameters are missing, types mismatch, or rendering fails.
     #[wasm_bindgen(js_name = "renderAllowingExtraFlexbuffers")]
     pub fn render_allowing_extra_flexbuffers(&self, buffer: &[u8]) -> Result<String, JsValue> {
         let ctx = md_tmpl::Context::from_flexbuffers(buffer).map_err(|e| js_error(&e))?;
@@ -357,6 +407,10 @@ impl Template {
     ///
     /// Like `fromSource`, but does not error when parameters are declared
     /// but never referenced in the body.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JS `Error` if the source contains a syntax or parse error.
     #[wasm_bindgen(js_name = "fromSourceAllowingUnused")]
     pub fn from_source_allowing_unused(source: &str) -> Result<Template, JsValue> {
         let (inner, _fm) = md_tmpl::Template::compile(
@@ -371,6 +425,10 @@ impl Template {
     ///
     /// The `base_dir` is used to resolve `{% include %}` and `{% import %}`
     /// directives relative to the template location.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JS `Error` if the source contains a syntax or parse error.
     #[wasm_bindgen(js_name = "fromSourceWithBaseDir")]
     pub fn from_source_with_base_dir(source: &str, base_dir: &str) -> Result<Template, JsValue> {
         let (inner, _fm) = md_tmpl::Template::compile(
@@ -387,6 +445,11 @@ impl Template {
     /// time against `env:` declarations in the frontmatter.
     ///
     /// Throws if the source has errors, required env vars are missing, or types mismatch.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JS `Error` if the `env` object is malformed, required env
+    /// vars are missing, types mismatch, or the source has parse errors.
     #[wasm_bindgen(js_name = "fromSourceWithEnv")]
     pub fn from_source_with_env(source: &str, env: &JsEnvRecord) -> Result<Template, JsValue> {
         let env_pairs = js_env_to_values(env.as_ref())?;
@@ -403,6 +466,11 @@ impl Template {
     /// Parse a template from source with full compile options.
     ///
     /// Accepts optional `base_dir`, `env`, and `allow_unused` parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JS `Error` if the `env` object is malformed, required env
+    /// vars are missing, types mismatch, or the source has parse errors.
     #[wasm_bindgen(js_name = "fromSourceWithOptions")]
     #[expect(
         clippy::needless_pass_by_value,

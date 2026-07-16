@@ -17,19 +17,19 @@ import { TemplateSyntaxError, TypeMismatchError } from "./errors.js";
 import { applyFilter, parseFilter } from "./filters.js";
 import { type VarDecl, type VarType } from "./frontmatter.js";
 import {
+  TokKind,
+  type Token,
+  tokenizeCondition,
+} from "./condition_tokenizer.js";
+export { isOptionMatchNode } from "./consts.js";
+import {
   PIPE,
-  PAREN_OPEN,
-  PAREN_CLOSE,
   OP_EQ,
   OP_NE,
   OP_LT,
   OP_GT,
   OP_LE,
   OP_GE,
-  OP_AND,
-  OP_OR,
-  OP_NOT,
-  VARIANT_SEP,
   FN_IDX,
   FN_LEN,
   FN_KIND,
@@ -49,14 +49,8 @@ import {
   OPTION_SOME,
   EXPR_START,
   EXPR_END,
-  QUOTE_DOUBLE,
-  QUOTE_SINGLE,
-  DOT,
+  unescapeStringLiteral,
   LIT_TRUE,
-  LIT_FALSE,
-  KW_MATCH,
-  KW_CASE,
-  KW_IN,
 } from "./consts.js";
 
 export function evaluateExpression(expr: string, scope: Scope): Value {
@@ -74,13 +68,15 @@ export function evaluateExpression(expr: string, scope: Scope): Value {
   const trimmed = expr.trim();
   // Split by pipe, respecting parentheses
   const parts = splitPipes(trimmed);
-  const pathPart = parts[0]!.trim();
+  const pathPart = (parts[0] ?? "").trim();
 
   let value = resolveExpr(pathPart, scope);
 
   // Apply filter chain
   for (let i = 1; i < parts.length; i++) {
-    const filterStr = parts[i]!.trim();
+    const part = parts[i];
+    if (part === undefined) continue;
+    const filterStr = part.trim();
     const [filterName, filterArgs] = parseFilter(filterStr);
     value = applyFilter(value, filterName, filterArgs);
   }
@@ -99,7 +95,7 @@ function resolveExpr(expr: string, scope: Scope): Value {
     (first === 34 /* '"' */ || first === 39) /* "'" */ &&
     expr.charCodeAt(expr.length - 1) === first
   ) {
-    const inner = expr.slice(1, -1);
+    const inner = unescapeStringLiteral(expr.slice(1, -1));
     if (inner.includes(EXPR_START)) {
       return str(interpolateString(inner, scope));
     }
@@ -113,7 +109,7 @@ function resolveExpr(expr: string, scope: Scope): Value {
 
   // Function calls: idx(binding), len(expr), kind(expr)
   const funcMatch = FUNC_CALL_RE.exec(expr);
-  if (funcMatch && funcMatch[1] && funcMatch[2]) {
+  if (funcMatch?.[1] && funcMatch[2]) {
     const funcName = funcMatch[1];
     const arg = funcMatch[2].trim();
     switch (funcName) {
@@ -188,7 +184,7 @@ export function getVariantName(val: Value, isOption: boolean): string {
   if (val.type === TYPE_STR) return val.value;
   if (val.type === TYPE_STRUCT) {
     const tag = val.fields.get(ENUM_TAG_KEY);
-    if (tag && tag.type === TYPE_STR) return tag.value;
+    if (tag?.type === TYPE_STR) return tag.value;
     throw new TemplateSyntaxError(
       "kind() requires an enum value (struct with variant tag)",
     );
@@ -205,22 +201,6 @@ export function getVariantName(val: Value, isOption: boolean): string {
   );
 }
 
-/** Returns true if the match node uses option-style variant names. */
-export function isOptionMatchNode(node: {
-  arms: { variants: string[] }[];
-  inlineGuard?: { variant: string };
-}): boolean {
-  if (node.inlineGuard) {
-    return (
-      node.inlineGuard.variant === OPTION_SOME ||
-      node.inlineGuard.variant === OPTION_NONE
-    );
-  }
-  return node.arms.some((arm) =>
-    arm.variants.some((v) => v === OPTION_SOME || v === OPTION_NONE),
-  );
-}
-
 /** Evaluate a condition expression for `{% if %}`. */
 export function evaluateCondition(condition: string, scope: Scope): boolean {
   const trimmed = condition.trim();
@@ -231,236 +211,18 @@ export function evaluateCondition(condition: string, scope: Scope): boolean {
   const ctx: ParseCtx = { tokens, pos: 0, scope };
   const result = parseOrExpr(ctx);
   if (ctx.pos < ctx.tokens.length) {
-    const remaining = ctx.tokens[ctx.pos]!;
-    throw new TemplateSyntaxError(
-      `unexpected token '${remaining.value}' in condition`,
-    );
+    const remaining = ctx.tokens[ctx.pos];
+    if (remaining !== undefined) {
+      throw new TemplateSyntaxError(
+        `unexpected token '${remaining.value}' in condition`,
+      );
+    }
   }
   return result;
 }
 
-// ---------------------------------------------------------------------------
-// Condition tokenizer
-// ---------------------------------------------------------------------------
-
-const enum TokKind {
-  And = "&&",
-  Or = "||",
-  Not = "!",
-  LParen = "(",
-  RParen = ")",
-  Eq = "==",
-  Ne = "!=",
-  Le = "<=",
-  Ge = ">=",
-  Lt = "<",
-  Gt = ">",
-  In = "in",
-  Pipe = "|",
-  Match = "match",
-  Case = "case",
-
-  Ident = "IDENT",
-  StrLit = "STR",
-  NumLit = "NUM",
-  BoolLit = "BOOL",
-}
-
-interface Token {
-  kind: TokKind;
-  value: string;
-}
-
-function tokenizeCondition(input: string): Token[] {
-  const tokens: Token[] = [];
-  let i = 0;
-  const len = input.length;
-
-  while (i < len) {
-    // Skip whitespace
-    if (input.charCodeAt(i) === 32 || input.charCodeAt(i) === 9) {
-      i++;
-      continue;
-    }
-
-    // Two-char operators
-    if (i + 1 < len) {
-      const two = input.slice(i, i + 2);
-      if (two === OP_AND) {
-        tokens.push({ kind: TokKind.And, value: two });
-        i += 2;
-        continue;
-      }
-      if (two === OP_OR) {
-        tokens.push({ kind: TokKind.Or, value: two });
-        i += 2;
-        continue;
-      }
-      if (two === OP_EQ) {
-        tokens.push({ kind: TokKind.Eq, value: two });
-        i += 2;
-        continue;
-      }
-      if (two === OP_NE) {
-        tokens.push({ kind: TokKind.Ne, value: two });
-        i += 2;
-        continue;
-      }
-      if (two === OP_LE) {
-        tokens.push({ kind: TokKind.Le, value: two });
-        i += 2;
-        continue;
-      }
-      if (two === OP_GE) {
-        tokens.push({ kind: TokKind.Ge, value: two });
-        i += 2;
-        continue;
-      }
-    }
-
-    const ch = input[i]!;
-
-    // Single-char operators
-    if (ch === OP_NOT) {
-      tokens.push({ kind: TokKind.Not, value: ch });
-      i++;
-      continue;
-    }
-    if (ch === PAREN_OPEN) {
-      tokens.push({ kind: TokKind.LParen, value: ch });
-      i++;
-      continue;
-    }
-    if (ch === PAREN_CLOSE) {
-      tokens.push({ kind: TokKind.RParen, value: ch });
-      i++;
-      continue;
-    }
-    if (ch === OP_LT) {
-      tokens.push({ kind: TokKind.Lt, value: ch });
-      i++;
-      continue;
-    }
-    if (ch === OP_GT) {
-      tokens.push({ kind: TokKind.Gt, value: ch });
-      i++;
-      continue;
-    }
-    // Pipe operator — only used inside match-case for multi-variant
-    if (ch === VARIANT_SEP) {
-      tokens.push({ kind: TokKind.Pipe, value: ch });
-      i++;
-      continue;
-    }
-
-    // String literals
-    if (ch === QUOTE_DOUBLE || ch === QUOTE_SINGLE) {
-      const quote = ch;
-      let j = i + 1;
-      while (j < len && input[j] !== quote) j++;
-      if (j >= len) {
-        throw new TemplateSyntaxError(
-          `unclosed string literal in condition: ${input.slice(i)}`,
-        );
-      }
-      tokens.push({ kind: TokKind.StrLit, value: input.slice(i, j + 1) });
-      i = j + 1;
-      continue;
-    }
-
-    // Number literals (including negative: only if preceded by an operator or start)
-    if (
-      (ch >= "0" && ch <= "9") ||
-      (ch === "-" &&
-        i + 1 < len &&
-        input[i + 1]! >= "0" &&
-        input[i + 1]! <= "9" &&
-        (tokens.length === 0 || isOperatorToken(tokens[tokens.length - 1]!)))
-    ) {
-      let j = i;
-      if (ch === "-") j++;
-      while (
-        j < len &&
-        ((input[j]! >= "0" && input[j]! <= "9") || input[j] === DOT)
-      )
-        j++;
-      tokens.push({ kind: TokKind.NumLit, value: input.slice(i, j) });
-      i = j;
-      continue;
-    }
-
-    // Identifiers, keywords, function calls, dotted paths
-    if (isIdentStart(ch)) {
-      let j = i;
-      while (j < len && isIdentChar(input[j]!)) j++;
-
-      const word = input.slice(i, j);
-
-      // Check for keywords
-      if (word === LIT_TRUE || word === LIT_FALSE) {
-        tokens.push({ kind: TokKind.BoolLit, value: word });
-        i = j;
-        continue;
-      }
-      if (word === KW_IN) {
-        tokens.push({ kind: TokKind.In, value: word });
-        i = j;
-        continue;
-      }
-      if (word === KW_MATCH) {
-        tokens.push({ kind: TokKind.Match, value: word });
-        i = j;
-        continue;
-      }
-      if (word === KW_CASE) {
-        tokens.push({ kind: TokKind.Case, value: word });
-        i = j;
-        continue;
-      }
-
-      // Check for dotted path or function call
-      while (j < len && input[j] === DOT) {
-        j++;
-        while (j < len && isIdentChar(input[j]!)) j++;
-      }
-      // Function call: consume (args)
-      if (j < len && input[j] === PAREN_OPEN) {
-        let depth = 1;
-        j++;
-        while (j < len && depth > 0) {
-          if (input[j] === PAREN_OPEN) depth++;
-          else if (input[j] === PAREN_CLOSE) depth--;
-          j++;
-        }
-      }
-      tokens.push({ kind: TokKind.Ident, value: input.slice(i, j) });
-      i = j;
-      continue;
-    }
-
-    throw new TemplateSyntaxError(`unexpected character '${ch}' in condition`);
-  }
-
-  return tokens;
-}
-
-function isIdentStart(ch: string): boolean {
-  return (ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z") || ch === "_";
-}
-
-function isIdentChar(ch: string): boolean {
-  return isIdentStart(ch) || (ch >= "0" && ch <= "9");
-}
-
-function isOperatorToken(t: Token): boolean {
-  return (
-    t.kind !== TokKind.Ident &&
-    t.kind !== TokKind.StrLit &&
-    t.kind !== TokKind.NumLit &&
-    t.kind !== TokKind.BoolLit &&
-    t.kind !== TokKind.RParen
-  );
-}
+// Compile-time condition syntax validation — extracted to its own module.
+export { validateConditionSyntax } from "./condition_validate.js";
 
 // ---------------------------------------------------------------------------
 // Recursive descent parser/evaluator (evaluates in-place)
@@ -554,7 +316,7 @@ function parseAtom(ctx: ParseCtx): boolean {
     }
     const result = parseOrExpr(ctx);
     const closing = peek(ctx);
-    if (!closing || closing.kind !== TokKind.RParen) {
+    if (closing?.kind !== TokKind.RParen) {
       throw new TemplateSyntaxError(
         "unclosed parenthesis ')' expected in condition",
       );
@@ -596,7 +358,7 @@ function parseMatchCondition(ctx: ParseCtx): boolean {
 
   // Expect 'case' keyword
   const caseToken = peek(ctx);
-  if (!caseToken || caseToken.kind !== TokKind.Case) {
+  if (caseToken?.kind !== TokKind.Case) {
     throw new TemplateSyntaxError(
       "expected 'case' keyword after 'match' expression",
     );
@@ -606,7 +368,7 @@ function parseMatchCondition(ctx: ParseCtx): boolean {
   // Parse variant name(s), separated by |
   const variants: string[] = [];
   const firstVariant = peek(ctx);
-  if (!firstVariant || firstVariant.kind !== TokKind.Ident) {
+  if (firstVariant?.kind !== TokKind.Ident) {
     throw new TemplateSyntaxError("expected variant name after 'case'");
   }
   variants.push(advance(ctx).value);
@@ -614,7 +376,7 @@ function parseMatchCondition(ctx: ParseCtx): boolean {
   while (peek(ctx)?.kind === TokKind.Pipe) {
     advance(ctx); // consume |
     const nextVar = peek(ctx);
-    if (!nextVar || nextVar.kind !== TokKind.Ident) {
+    if (nextVar?.kind !== TokKind.Ident) {
       throw new TemplateSyntaxError("expected variant name after '|'");
     }
     variants.push(advance(ctx).value);
@@ -651,7 +413,7 @@ function parseOperand(ctx: ParseCtx): OperandToken {
 function evaluateOperandValue(operand: OperandToken, scope: Scope): Value {
   switch (operand.kind) {
     case TokKind.StrLit: {
-      const inner = operand.value.slice(1, -1);
+      const inner = unescapeStringLiteral(operand.value.slice(1, -1));
       if (inner.includes(EXPR_START)) {
         return str(interpolateString(inner, scope));
       }
@@ -681,9 +443,8 @@ function evaluateOperandValue(operand: OperandToken, scope: Scope): Value {
 function interpolateString(input: string, scope: Scope): string {
   let result = "";
   let remaining = input;
-  while (true) {
-    const startIdx = remaining.indexOf(EXPR_START);
-    if (startIdx === -1) break;
+  let startIdx = remaining.indexOf(EXPR_START);
+  while (startIdx !== -1) {
     result += remaining.slice(0, startIdx);
     const afterStart = remaining.slice(startIdx + EXPR_START.length);
     const endIdx = afterStart.indexOf(EXPR_END);
@@ -701,6 +462,7 @@ function interpolateString(input: string, scope: Scope): string {
     const val = evaluateExpression(expr, scope);
     result += display(val);
     remaining = afterStart.slice(endIdx + EXPR_END.length);
+    startIdx = remaining.indexOf(EXPR_START);
   }
   result += remaining;
   return result;
@@ -854,7 +616,9 @@ function compareValues(
     case OP_GE:
       return l >= r;
     default:
-      throw new TemplateSyntaxError(`unknown comparison operator '${op}'`);
+      throw new TemplateSyntaxError(
+        `unknown comparison operator '${String(op)}'`,
+      );
   }
 }
 

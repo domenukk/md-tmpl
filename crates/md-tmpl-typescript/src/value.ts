@@ -92,12 +92,12 @@ export interface TmplValue {
 
 /** Interface for higher-order template references (avoids circular deps). */
 export interface TmplRef {
-  declarations(): ReadonlyArray<readonly [string, string]>;
-  rawDeclarations(): ReadonlyArray<{
+  declarations(): readonly (readonly [string, string])[];
+  rawDeclarations(): readonly {
     name: string;
     varType: unknown;
     defaultValue?: Value;
-  }>;
+  }[];
   renderForInclude(
     params: ReadonlyMap<string, Value>,
     parentConsts: ReadonlyMap<string, Value>,
@@ -276,11 +276,7 @@ export function getField(v: Value, key: string): Value | undefined {
  *
  * Throws `TypeError` for unconvertible values (functions, symbols, etc.).
  */
-export function fromJs(
-  value: unknown,
-  seen: WeakSet<object> = new WeakSet(),
-  depth = 0,
-): Value {
+export function fromJs(value: unknown, seen = new WeakSet(), depth = 0): Value {
   if (depth > 256) {
     throw new TemplateError(
       "maximum recursion depth exceeded in template parameter",
@@ -292,7 +288,7 @@ export function fromJs(
   if (value === null || value === undefined) {
     return NONE;
   }
-  if (value && typeof value === "object" && "type" in (value as object)) {
+  if (typeof value === "object" && "type" in value) {
     const t = (value as { type: string }).type;
     if (
       t === TYPE_STR ||
@@ -324,10 +320,10 @@ export function fromJs(
     if (typeof (value as TmplRef).renderForInclude === "function") {
       return tmplVal(value as TmplRef);
     }
-    if (seen.has(value as object)) {
+    if (seen.has(value)) {
       throw new TemplateError("cyclic object detected in template parameter");
     }
-    seen.add(value as object);
+    seen.add(value);
     try {
       if (Array.isArray(value)) {
         return list(value.map((v) => fromJs(v, seen, depth + 1)));
@@ -346,7 +342,7 @@ export function fromJs(
       }
       return structVal(entries);
     } finally {
-      seen.delete(value as object);
+      seen.delete(value);
     }
   }
   throw new TypeError(`cannot convert ${typeof value} to template Value`);

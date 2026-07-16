@@ -272,6 +272,28 @@ params: [name = str, unused = int]
 ---
 Hello {{ name }}!""")
 
+    def test_undeclared_variable_in_body_rejected(self) -> None:
+        """Referencing a variable declared nowhere is a compile-time error.
+
+        Mirrors the Rust core's ``check_undeclared_variables``: the error is
+        raised at construction (``from_source``), not at render time.
+        """
+        with pytest.raises(TemplateSyntaxError, match="undeclared variable"):
+            Template.from_source("""---
+params:
+  - x = str
+---
+{{ x }} {{ y }}""")
+
+    def test_undeclared_variable_in_condition_rejected(self) -> None:
+        """Undeclared variables inside an if condition are compile-time errors."""
+        with pytest.raises(TemplateSyntaxError, match="undeclared variable"):
+            Template.from_source("""---
+params:
+  - x = int
+---
+> {% if y > 0 %}{{ x }}{% /if %}""")
+
 
 # ---------------------------------------------------------------------------
 # Strict validation — extra params
@@ -2470,6 +2492,69 @@ Body here.""")
         assert "HEADER: Test" in result
         assert "Body here." in result
 
+    def test_render_cached_include_resolves_compile_env(self, tmp_path: Path) -> None:
+        """Regression: a cached include whose ``env:`` var has no default must
+        resolve from the *parent's* compile-time env — identical to the uncached
+        path. Before the core fix the cached resolver parsed the include with an
+        empty env and raised "no value provided and no default". Python exercises
+        the same ``render_ctx_cached`` core path via the PyO3 binding.
+        """
+        (tmp_path / "child.tmpl.md").write_text(textwrap.dedent("""\
+            ---
+            name: child
+            env: [PROMPTS_DIR = str]
+            params: []
+            ---
+            dir={{ PROMPTS_DIR }}"""))
+        main = tmp_path / "main.tmpl.md"
+        main.write_text(textwrap.dedent("""\
+            ---
+            params: []
+            ---
+            > {% include [child](./child.tmpl.md) %}"""))
+        cache = TemplateCache()
+        tmpl = Template.from_source_with_options(
+            main.read_text(),
+            base_dir=str(tmp_path),
+            env={"PROMPTS_DIR": "/prompts"},
+        )
+        # First render compiles the include from disk with env threaded in.
+        out1 = tmpl.render_cached(cache)
+        assert "dir=/prompts" in out1
+        # Second render is served from cache; the env-injected const persists.
+        assert tmpl.render_cached(cache) == out1
+
+    def test_render_cached_include_invalidated_on_env_change(
+        self, tmp_path: Path
+    ) -> None:
+        """Regression: changing the compile-time env must invalidate a cached
+        include even though the file's mtime and content are unchanged (which
+        would otherwise hit the cache fast path)."""
+        (tmp_path / "child.tmpl.md").write_text(textwrap.dedent("""\
+            ---
+            name: child
+            env: [PROMPTS_DIR = str]
+            params: []
+            ---
+            dir={{ PROMPTS_DIR }}"""))
+        main = tmp_path / "main.tmpl.md"
+        main.write_text(textwrap.dedent("""\
+            ---
+            params: []
+            ---
+            > {% include [child](./child.tmpl.md) %}"""))
+        main_src = main.read_text()
+        cache = TemplateCache()
+
+        def compile_with(value: str) -> Template:
+            return Template.from_source_with_options(
+                main_src, base_dir=str(tmp_path), env={"PROMPTS_DIR": value}
+            )
+
+        assert "dir=/alpha" in compile_with("/alpha").render_cached(cache)
+        # Same file, same cache — must recompute for the new env, not serve /alpha.
+        assert "dir=/beta" in compile_with("/beta").render_cached(cache)
+
     def test_render_cached_dict(self, tmp_path: Path) -> None:
         path = tmp_path / "hello.tmpl.md"
         path.write_text(textwrap.dedent("""\
@@ -2647,6 +2732,174 @@ class TestDefaultsIntrospection:
             > {% /if %}"""))
         assert tmpl.defaults()["enabled"] is True
         assert tmpl.render() == "on\n"
+
+
+# ---------------------------------------------------------------------------
+# Delimiters inside quoted strings in frontmatter default values
+# ---------------------------------------------------------------------------
+
+
+class TestEmbeddedDelimiterDefaults:
+    """Regression tests: delimiters inside quoted default-value literals.
+
+    Commas ``,`` and the bracket family ``()[]{}<>`` that appear **inside**
+    quoted string literals (``"..."`` or ``'...'``) in a frontmatter default
+    (``:= ...``) must be treated as literal characters, not as field/element
+    separators. Python inherits this quote-aware parsing through the PyO3
+    binding to the Rust core (``split_at_depth_zero``); these end-to-end tests
+    lock the behavior in at the binding boundary via ``Template.defaults()``.
+
+    Each test maps to a case in the canonical regression matrix (T1–T8).
+    """
+
+    @staticmethod
+    def _defaults(params: str) -> dict[str, Any]:
+        """Compile a params-only template and return its parsed defaults.
+
+        ``from_source_allowing_unused`` is used so the params need not be
+        referenced in the body — these tests only introspect the parsed
+        default values, which is exactly the code path under test.
+        """
+        source = textwrap.dedent("""\
+            ---
+            params:
+            {params}
+            ---
+            body""").format(params=params)
+        return Template.from_source_allowing_unused(source).defaults()
+
+    def test_t1_list_of_strings_with_commas(self) -> None:
+        """T1: commas inside list string items are not element separators."""
+        defaults = self._defaults('  - x = list(str) := ["a, b", "c, d"]')
+        assert defaults["x"] == ["a, b", "c, d"]
+
+    def test_t2_struct_field_with_comma(self) -> None:
+        """T2: a comma inside a struct string field stays in that field."""
+        defaults = self._defaults(
+            '  - x = struct(msg = str, n = int) := {msg = "a, b", n = 1}'
+        )
+        assert defaults["x"] == {"msg": "a, b", "n": 1}
+
+    def test_t3_list_of_records_with_commas(self) -> None:
+        """T3: commas inside record string fields don't split records."""
+        defaults = self._defaults(
+            "  - x = list(name = str, note = str) := "
+            '[{name = "x", note = "p, q, r"}, {name = "y", note = "s"}]'
+        )
+        records = defaults["x"]
+        assert len(records) == 2
+        assert records[0] == {"name": "x", "note": "p, q, r"}
+        assert records[1] == {"name": "y", "note": "s"}
+
+    def test_t4_list_items_with_brackets(self) -> None:
+        """T4: bracket family inside quoted items is preserved verbatim."""
+        defaults = self._defaults('  - x = list(str) := ["a[b]c", "d{e}f", "g(h)i"]')
+        assert defaults["x"] == ["a[b]c", "d{e}f", "g(h)i"]
+
+    def test_t5_single_quoted_items_with_commas(self) -> None:
+        """T5: single-quoted strings are quote-aware just like double."""
+        defaults = self._defaults("  - x = list(str) := ['a, b', 'c']")
+        assert defaults["x"] == ["a, b", "c"]
+
+    def test_t6_unicode_items_intact(self) -> None:
+        """T6: unicode (em-dash, emoji) and embedded commas survive."""
+        defaults = self._defaults(
+            '  - x = list(str) := ["Theory — not a finding", "✅ done, ok"]'
+        )
+        assert defaults["x"] == ["Theory — not a finding", "✅ done, ok"]
+
+    def test_t7_empty_strings_in_records(self) -> None:
+        """T7: empty quoted strings parse as empty, commas still literal."""
+        defaults = self._defaults(
+            "  - x = list(name = str, note = str) := "
+            '[{name = "", note = ""}, {name = "a", note = "y, z"}]'
+        )
+        records = defaults["x"]
+        assert len(records) == 2
+        assert records[0] == {"name": "", "note": ""}
+        assert records[1] == {"name": "a", "note": "y, z"}
+
+    def test_t8_severity_ladder_shape(self) -> None:
+        """T8: faithful reduced SEVERITY_LADDER — list of enum-tagged records
+        with prose fields containing commas, em-dashes, and brackets.
+        """
+        source = textwrap.dedent("""\
+            ---
+            types:
+              - Tier = enum(L0, L1, L2)
+
+            params:
+              - ladder = list(tier = Tier, short = str, proves = str) := [{tier = L0, short = "theory", proves = "Nothing proven — just a hypothesis, unverified"}, {tier = L1, short = "trigger", proves = "Crash, panic, or sanitizer report (e.g. [heap-overflow])"}]
+            ---
+            body""")
+        ladder = Template.from_source_allowing_unused(source).defaults()["ladder"]
+        assert len(ladder) == 2
+        assert ladder[0]["tier"] == "L0"
+        assert ladder[0]["short"] == "theory"
+        # Comma- and em-dash-bearing prose must stay in a single field.
+        assert ladder[0]["proves"] == "Nothing proven — just a hypothesis, unverified"
+        assert ladder[1]["tier"] == "L1"
+        # Commas and brackets inside the prose must not split the record.
+        assert ladder[1]["proves"] == (
+            "Crash, panic, or sanitizer report (e.g. [heap-overflow])"
+        )
+
+    def test_e1_single_quote_char_inside_double_quoted_item(self) -> None:
+        """E1: an apostrophe inside a double-quoted item is a literal char and
+        does not open a quote context that would hide the following comma.
+        """
+        defaults = self._defaults('  - x = list(str) := ["it\'s, fine", "ok"]')
+        assert defaults["x"] == ["it's, fine", "ok"]
+
+    def test_e2_double_quotes_inside_single_quoted_item(self) -> None:
+        """E2: double quotes nested inside a single-quoted item are literal,
+        and the comma between them stays inside the item.
+        """
+        defaults = self._defaults('  - x = list(str) := [\'say "hi", bye\', "z"]')
+        assert defaults["x"] == ['say "hi", bye', "z"]
+
+    def test_e3_nested_list_of_lists(self) -> None:
+        """E3: commas inside quoted items of a nested list(list(str)) default
+        never split the inner or outer lists.
+        """
+        defaults = self._defaults(
+            '  - x = list(list(str)) := [["a, b"], ["c, d", "e"]]'
+        )
+        assert defaults["x"] == [["a, b"], ["c, d", "e"]]
+
+    def test_e4_leading_trailing_spaces_preserved(self) -> None:
+        """E4: whitespace inside a quoted item is preserved verbatim."""
+        defaults = self._defaults('  - x = list(str) := [" a, b "]')
+        assert defaults["x"] == [" a, b "]
+
+    def test_e5a_hash_without_leading_space_is_literal(self) -> None:
+        """E5a: a `#` with no leading space is an ordinary character, kept."""
+        defaults = self._defaults('  - x = str := "a#b,c"')
+        assert defaults["x"] == "a#b,c"
+
+    def test_e5b_space_hash_starts_yaml_comment(self) -> None:
+        """E5b: a ` #` (space-hash) starts a YAML inline comment (the core is
+        not md-tmpl-string-aware), truncating the scalar to ``x = str := "a`` —
+        an unterminated string literal that is rejected as an invalid default.
+        Wrap the whole declaration in outer YAML quotes to keep a literal ` #`
+        (see E5c).
+        """
+        with pytest.raises(TemplateSyntaxError, match="strings must be quoted"):
+            self._defaults('  - x = str := "a # b, c"')
+
+    def test_e5c_outer_yaml_quotes_protect_hash(self) -> None:
+        """E5c: outer YAML quotes around the whole declaration protect an inner
+        ` #`, recovering the full default value.
+        """
+        defaults = self._defaults('  - "x = str := \\"a # b, c\\""')
+        assert defaults["x"] == "a # b, c"
+
+    def test_e5d_space_hash_outside_string_is_stripped(self) -> None:
+        """E5d: a ` #` outside any string literal starts a YAML inline comment
+        and is stripped, so the numeric default still parses.
+        """
+        defaults = self._defaults("  - x = int := 3 # the retry count")
+        assert defaults["x"] == 3
 
 
 # ---------------------------------------------------------------------------

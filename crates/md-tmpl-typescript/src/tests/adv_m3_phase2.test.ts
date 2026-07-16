@@ -46,14 +46,18 @@ Hello!
 
 > {% /if %}`;
       const tmpl = Template.fromSource(src);
-      const cyclic: any = {};
+      interface Cyclic {
+        self?: Cyclic;
+      }
+      const cyclic: Cyclic = {};
       cyclic.self = cyclic;
 
       assert.throws(
         () => {
           tmpl.render({ data: cyclic });
         },
-        (err: any) => {
+        (err: unknown) => {
+          assert.ok(err instanceof Error);
           assert.strictEqual(err.name, "TemplateError");
           assert.ok(
             err.message.includes(
@@ -100,7 +104,7 @@ params:
 > {% /for %}`;
       const tmpl = Template.fromSource(src);
       const items = Array.from({ length: 1000 }, (_, i) => ({ val: i }));
-      const expected = items.map((i) => `${i.val},\n`).join("");
+      const expected = items.map((i) => `${String(i.val)},\n`).join("");
       assert.strictEqual(tmpl.render({ items }), expected);
       assert.strictEqual(tmpl.renderUnchecked({ items }), expected);
     });

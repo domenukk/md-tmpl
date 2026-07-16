@@ -13,6 +13,16 @@
 
 use crate::{CompileOptions, Context, Template, Value};
 
+/// Check if an error message matches a pipe-separated `expected_error` pattern.
+/// `"reserved keyword|shadows built-in"` means the error must contain at
+/// least one of the alternatives (case-insensitive).
+fn matches_expected_error(message: &str, pattern: &str) -> bool {
+    let msg_lower = message.to_lowercase();
+    pattern
+        .split('|')
+        .any(|alt| msg_lower.contains(&alt.to_lowercase()))
+}
+
 fn toml_to_value(val: &toml::Value) -> Value {
     match val {
         toml::Value::String(s) => {
@@ -103,9 +113,7 @@ fn shared_inline_tmpl_tests() {
             });
             let err = result.unwrap_err();
             assert!(
-                err.to_string()
-                    .to_lowercase()
-                    .contains(&expected_substr.to_lowercase()),
+                matches_expected_error(&err.to_string(), expected_substr),
                 "[{name}] expected error containing \"{expected_substr}\", got: \"{err}\""
             );
         }
@@ -217,9 +225,7 @@ fn shared_include_tests() {
             });
             let err = result.unwrap_err();
             assert!(
-                err.to_string()
-                    .to_lowercase()
-                    .contains(&expected_substr.to_lowercase()),
+                matches_expected_error(&err.to_string(), expected_substr),
                 "[{name}] expected error containing \"{expected_substr}\", got: \"{err}\""
             );
         }
@@ -280,9 +286,7 @@ fn shared_inline_control_tests() {
                 ),
             };
             assert!(
-                err.to_string()
-                    .to_lowercase()
-                    .contains(&expected_substr.to_lowercase()),
+                matches_expected_error(&err.to_string(), expected_substr),
                 "[{name}] expected error containing \"{expected_substr}\", got: \"{err}\""
             );
         }
@@ -323,9 +327,7 @@ fn shared_tmpl_param_tests() {
             });
             let err = result.unwrap_err();
             assert!(
-                err.to_string()
-                    .to_lowercase()
-                    .contains(&expected_substr.to_lowercase()),
+                matches_expected_error(&err.to_string(), expected_substr),
                 "[{name}] expected error containing \"{expected_substr}\", got: \"{err}\""
             );
         }
@@ -372,9 +374,7 @@ fn shared_feature_e2e_tests() {
                 }
                 Err(err) => {
                     assert!(
-                        err.to_string()
-                            .to_lowercase()
-                            .contains(&expected_substr.to_lowercase()),
+                        matches_expected_error(&err.to_string(), expected_substr),
                         "[{name}] expected error containing \"{expected_substr}\", got: \"{err}\""
                     );
                 }
@@ -442,9 +442,7 @@ fn shared_env_tests() {
                 }
                 Err(err) => {
                     assert!(
-                        err.to_string()
-                            .to_lowercase()
-                            .contains(&expected_substr.to_lowercase()),
+                        matches_expected_error(&err.to_string(), expected_substr),
                         "[{name}] expected error containing \"{expected_substr}\", got: \"{err}\""
                     );
                 }

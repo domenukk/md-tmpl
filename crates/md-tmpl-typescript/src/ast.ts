@@ -31,14 +31,18 @@ export function getLocation(
   let best = 0;
   while (low <= high) {
     const mid = (low + high) >> 1;
-    if (lineMap[mid]!.offset <= pos) {
+    const midEntry = lineMap[mid];
+    if (midEntry !== undefined && midEntry.offset <= pos) {
       best = mid;
       low = mid + 1;
     } else {
       high = mid - 1;
     }
   }
-  const entry = lineMap[best]!;
+  const entry = lineMap[best];
+  if (entry === undefined) {
+    return { line: 1, column: 1, snippet: "" };
+  }
   const column = Math.max(1, pos - entry.offset + 1 + entry.colOffset);
   return {
     line: entry.lineNo,

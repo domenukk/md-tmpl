@@ -20,7 +20,9 @@ import {
   BRACKET_CLOSE,
   BRACKET_OPEN,
   COMMA,
+  DOT,
   EQUALS,
+  ERR_BARE_VARIANT_HINT,
   LIT_FALSE,
   LIT_TRUE,
   OPTION_NONE,
@@ -38,6 +40,7 @@ import {
   TYPE_SCALAR_LIST,
   TYPE_STR,
   TYPE_STRUCT,
+  unescapeStringLiteral,
 } from "../consts.js";
 import { type VarType } from "./types.js";
 import { splitTopLevel } from "./var_type.js";
@@ -98,8 +101,8 @@ export function validateConstDefaultType(
     int: "int",
     float: "float",
   };
-  if (expectedKind in typeMap) {
-    const expected = typeMap[expectedKind]!;
+  const expected = typeMap[expectedKind];
+  if (expected !== undefined) {
     if (constVal.type !== expected) {
       // Allow int → float promotion.
       if (expected === TYPE_FLOAT && constVal.type === TYPE_INT) return;
@@ -110,11 +113,7 @@ export function validateConstDefaultType(
   }
   // For option(T), validate against the inner type (const can't be None).
   if (expectedKind === TYPE_OPTION) {
-    validateConstDefaultType(
-      constName,
-      constVal,
-      (varType as Extract<VarType, { kind: typeof TYPE_OPTION }>).innerType,
-    );
+    validateConstDefaultType(constName, constVal, varType.innerType);
   }
 }
 
@@ -142,8 +141,11 @@ export function parseLiteral(
       return NONE;
     }
     const someVariant = varType.variants.find((v) => v.name === OPTION_SOME);
-    if (someVariant && someVariant.fields.length === 1) {
-      return parseLiteral(literal, someVariant.fields[0]!.varType, constValues);
+    if (someVariant?.fields.length === 1) {
+      const firstField = someVariant.fields[0];
+      if (firstField) {
+        return parseLiteral(literal, firstField.varType, constValues);
+      }
     }
   }
 
@@ -152,7 +154,7 @@ export function parseLiteral(
     (literal.startsWith(QUOTE_DOUBLE) && literal.endsWith(QUOTE_DOUBLE)) ||
     (literal.startsWith(QUOTE_SINGLE) && literal.endsWith(QUOTE_SINGLE))
   ) {
-    return str(literal.slice(1, -1));
+    return str(unescapeStringLiteral(literal.slice(1, -1)));
   }
 
   // Boolean
@@ -222,7 +224,17 @@ export function parseLiteral(
       return { type: TYPE_STRUCT, fields: new Map(entries) };
     }
 
-    // Bare identifier — must be a known variant.
+    // Bare identifier — must be a known variant. A qualified `Type.Variant`
+    // form (e.g. `Stage.Build`) is rejected: the canonical default is the
+    // bare variant name. Mirrors the Rust core and the top-level check in
+    // `parseParamDeclDeferred`.
+    if (literal.includes(DOT)) {
+      const variantName = literal.slice(literal.indexOf(DOT) + 1);
+      throw new TemplateSyntaxError(
+        `enum variant default '${literal}' must ${ERR_BARE_VARIANT_HINT}` +
+          ` (e.g. '${variantName}'), not the qualified 'Type.Variant' form`,
+      );
+    }
     const variant = varType.variants.find((v) => v.name === literal);
     if (!variant) {
       throw new TemplateSyntaxError(`unknown enum variant '${literal}'`);
@@ -238,6 +250,19 @@ ue)`,
 
   // If the expected type is a type alias, allow unquoted identifiers.
   if (varType.kind === TYPE_ALIAS) {
+    // A qualified `Alias.Variant` default (where the stem is the alias itself)
+    // is a rejected enum-variant reference — the canonical form is the bare
+    // variant name. Other dotted forms are left for later resolution.
+    if (
+      literal.includes(DOT) &&
+      literal.slice(0, literal.indexOf(DOT)) === varType.name
+    ) {
+      const variantName = literal.slice(literal.indexOf(DOT) + 1);
+      throw new TemplateSyntaxError(
+        `enum variant default '${literal}' must ${ERR_BARE_VARIANT_HINT}` +
+          ` (e.g. '${variantName}'), not the qualified 'Type.Variant' form`,
+      );
+    }
     return str(literal);
   }
 

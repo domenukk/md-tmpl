@@ -137,8 +137,12 @@ allow_unused: false
 | `AliasName`                 | Resolved type from `types:` block                   | See [Type Aliases](#type-aliases)                                        |
 | `stem.TypeName`             | Resolved type from imported template                | See [Cross-Template Imports](#cross-template-imports)                    |
 
-All parameters **must** have explicit types. Bare `- name` without a type is a
-hard error.
+All parameters (and `consts:` entries) **must** have explicit types:
+
+- A bare `- name` with no type is a hard error (`missing a type annotation`).
+- An implicit-typed default such as `- name := "value"` is also rejected —
+  write `- name = str := "value"` instead. The engine cannot infer the type
+  from the default value.
 
 #### Template Parameter Signature Matching
 
@@ -369,6 +373,15 @@ Append `:= {literal}` after the type:
 - Bare struct variant names without fields are rejected (e.g., `:= Confirmed`
   fails when `Confirmed` has required fields).
 - Unknown variant names are rejected at compile time.
+- Enum variant defaults use the **bare** variant name — identical to `{% case %}`
+  arm syntax. A qualified `Type.Variant` in default position (e.g.
+  `s = Stage := Stage.Build`) is a **compile error**; write `:= Build` instead.
+  Namespacing (`Type.Variant`) is only valid in expression position, such as
+  `kind(Stage.Build)` (see [Enum Literal Expressions](#enum-literal-expressions)).
+- Enum defaults **nest** inside compound types using the same bare-variant
+  syntax: `struct(st = Stage) := {st = Build}`, `list(Stage) := [Build, Deploy]`,
+  `option(Stage) := Build` (or `:= None`), and enum-typed fields of a struct
+  variant, e.g. `enum(Wrap(s = Stage), Empty) := Wrap(s = Build)`.
 - Struct defaults use `{key = value}` syntax (curly braces with `=`).
 - List defaults use `[value, ...]` syntax.
 - **Const-reference defaults**: a default value can reference a local
@@ -378,6 +391,42 @@ Append `:= {literal}` after the type:
   not matter. Imported constants are resolved after import resolution.
 - **YAML constraint**: see [YAML validity](#file-format) — use block
   list format for compound types and defaults containing commas.
+
+#### Embedded Delimiters and Quoting in String Defaults
+
+Inside a **quoted** string default, the structural delimiters — commas and
+the bracket family `()`, `[]`, `{}`, `<>` — are treated as literal
+characters. List and struct/record defaults are only split on delimiters
+that appear at the **top level**, i.e. outside any quoted string. This makes
+prose defaults with punctuation safe:
+
+```markdown
+# Commas inside quoted strings do not split list items / struct fields
+
+- tags = list(str) := ["red, green", "blue"] # 2 items, not 3
+- cfg = struct(msg = str, n = int) := {msg = "a, b", n = 1} # msg = "a, b"
+- rows = list(name = str, note = str) := [{name = "x", note = "p, q, r"}]
+
+# Bracket characters inside quoted strings are literal too
+
+- samples = list(str) := ["arr[0]", "set{1}", "f(x)"] # 3 items, intact
+```
+
+String defaults support the same backslash escapes as statement string
+literals — `\\` → `\`, `\"` → `"`, `\'` → `'` — while any other `\X` sequence
+is preserved verbatim (see [String Literal Syntax](#string-literal-syntax)).
+Both `"` and `'` are valid quotes, so a quote character can be embedded either
+by escaping it or by switching to the other quote style:
+
+```markdown
+- a = str := 'He said "hi", then left' # other-quote style
+- b = str := "He said \"hi\", then left" # escaped quote — same value
+- c = str := "it's, fine" # single quote inside double quotes
+```
+
+> **Note:** the [YAML constraint](#file-format) still applies — any default
+> containing commas must use the block-list frontmatter form, never the
+> inline `params: [ ... ]` flow form.
 
 Defaults are type-checked at compile time. If a param with a default is
 omitted from the render context, the default is injected automatically.
@@ -403,10 +452,16 @@ assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Hello World!");
 ### Unused Parameters and Type Aliases
 
 Declared params that are never referenced in the body (not even in a
-`{# comment #}`) are a hard error by default. Similarly, type aliases
-declared in `types:` but never referenced by any parameter or constant
-declaration are also rejected. **Enum types are exempt** — they are
-implicitly used as namespace constants (see
+`{# comment #}`) are a hard error by default. A parameter is considered
+"referenced" if it appears in an expression (`{{ param }}`), a condition
+(`{% if param %}`), a match target (`{% match param %}`), **or as an
+unquoted case label** (`{% case param_name %}`), since the runtime reads
+its value for comparison.
+
+Similarly, type aliases declared in `types:` but never referenced by any
+parameter, constant declaration, **or another type alias** (chained aliases
+like `Name = Base`) are also rejected. **Enum types are exempt** — they
+are implicitly used as namespace constants (see
 [Enum Literal Expressions](#enum-literal-expressions)).
 
 Disable both checks with `allow_unused: true` in frontmatter, or call
@@ -1021,9 +1076,20 @@ Type alias names in `types:` are used as-is (they should already be
 
 All naming checks run at compile time and produce syntax errors.
 
-**Reserved names** — built-in type names (`str`, `bool`, `int`, `float`,
-`list`, `struct`, `enum`, `tmpl`, `params`) cannot be used as parameter,
-constant, or type alias names.
+**Reserved names** — the following cannot be used as parameter, constant,
+or type alias names:
+
+- **Built-in type names**: `str`, `bool`, `int`, `float`, `list`, `struct`,
+  `enum`, `tmpl`, `option`, `params`.
+- **Pattern-syntax keywords**: `true`, `false`, `Some`, `None`, `_` — these
+  have special meaning in `{% case %}` arms and boolean/option contexts.
+- **Internal keys**: `__kind__`, `__variants__` — reserved for internal enum
+  variant tagging and variant enumeration.
+- **Codegen collision guards**: `__self`, `__Self`, `__super`, `__crate` —
+  Rust codegen renames `self` → `__self` etc. because these cannot be raw
+  identifiers; the mangled names are reserved to prevent collisions.
+
+Using any of these as a name produces a compile-time error.
 
 **Reserved internal key** — the key `__kind__` is reserved for internal
 enum variant tagging. Accessing it via dot-path (e.g., `{{ item.__kind__ }}`)
@@ -1050,6 +1116,28 @@ are exempt — their variants are injected as namespace constants.
 **For-loop binding shadowing** — a `{% for %}` binding must not shadow
 a declared param, const, import stem, or inline template name.
 Sequential loops may reuse the same binding name.
+
+**Target-language keywords** — keywords from host languages (Rust's
+`type`, `match`, `loop`, `fn`; TypeScript's `class`, `delete`, `typeof`;
+Python's `def`, `class`, `del`, etc.) are **not** reserved by md-tmpl.
+They are valid as parameter, constant, and field names.
+
+Each backend is responsible for emitting valid code when these names
+appear in generated types:
+
+- **Rust proc-macro** (`template!`, `include_template!`): The codegen
+  automatically uses raw identifiers (`r#type`, `r#match`, etc.) for
+  any name that is a Rust keyword. Users access these fields in Rust code
+  via the `r#` prefix (e.g., `params.r#type`). For the four keywords that
+  cannot be raw identifiers (`self`, `Self`, `super`, `crate`), the codegen
+  prefixes with `__` (e.g., `self` → `__self`) and emits
+  `#[serde(rename = "self")]` for serialization compatibility. Users access
+  these fields as `params.__self`.
+- **TypeScript**: Interface properties and object keys accept all
+  keywords without escaping (`{ type: string }` is valid TypeScript).
+  No special handling is needed.
+- **Runtime API**: Both `Context::set("type", ...)` (Rust) and
+  `{ type: "value" }` (TypeScript/JavaScript) work with any name.
 
 ---
 
@@ -1209,18 +1297,37 @@ interpolation overhead.
 
 ### String Literal Syntax
 
-String literals in statements are delimited by double quotes (`"`).
-No escape sequences are supported — `\"`, `\n`, etc. are **not** interpreted.
-If the content requires a double quote, use the variable indirection pattern
-(assign the value in the calling context).
+String literals are delimited by double quotes (`"`) or single quotes (`'`).
+The following backslash escape sequences are interpreted:
+
+| Escape | Result        |
+| ------ | ------------- |
+| `\\`   | a literal `\` |
+| `\"`   | a literal `"` |
+| `\'`   | a literal `'` |
+
+Any other `\X` sequence is preserved **verbatim** — both the backslash and the
+following character are kept — so content such as Windows paths (`"C:\path"`) or
+regex snippets is unaffected. C-style whitespace escapes like `\n` and `\t` are
+**not** interpreted.
+
+Escapes are honored everywhere a string literal appears: statement conditions,
+`{% case %}` / `{% match %}` labels, `include … with` arguments, and frontmatter
+`:= …` defaults (including inside `list`, `struct`, and enum-variant literals).
+Because `\"` does not close a string, a quoted element like `["a\", b", "c"]`
+parses as two items rather than a parse error.
+
+Escapes compose with `{{ }}` interpolation: escapes are decoded first, then
+interpolation runs, so `"he said \"{{ name }}\""` with `name = "Alice"` renders
+`he said "Alice"`.
 
 ### Error Behavior
 
-| Condition                              | Error                                   |
-| -------------------------------------- | --------------------------------------- |
-| Unclosed `{{` (no matching `}}`)       | Syntax error: `unclosed '{{'`           |
-| Empty expression `{{ }}`               | Syntax error: `empty expression '{{}}'` |
-| Unresolvable expression inside `{{ }}` | Render error (undefined variable)       |
+| Condition                          | Error                                   |
+| ---------------------------------- | --------------------------------------- |
+| Unclosed `{{` (no matching `}}`)   | Syntax error: `unclosed '{{'`           |
+| Empty expression `{{ }}`           | Syntax error: `empty expression '{{}}'` |
+| Undeclared variable inside `{{ }}` | Compile error: `undeclared variable`    |
 
 ---
 
@@ -1504,7 +1611,8 @@ Multiple items.
 - **Unquoted** case labels on **non-enum** params are compared literally
   against the stringified value at runtime. They can also act as param-reference
   matches: if the label resolves as a declared parameter, its runtime value
-  is used for comparison.
+  is used for comparison and the parameter is counted as referenced (it will
+  not trigger an unused-parameter error).
 - **Quoted** case labels (including interpolated strings — see below) are
   **string literal comparisons**. They are only valid on `str` parameters;
   using them on `int`, `bool`, or `float` is a compile error.
@@ -1659,6 +1767,12 @@ Option values are **transparent** — the inner value is used directly:
 | `42`                      | `IntValue(42)`      | `42`             | `42`      |
 | `"hello"`                 | `StrValue("hello")` | `hello`          | `"hello"` |
 
+> **Note:** Only the bare `None` keyword (or a host `null` / `None`) is the
+> absent sentinel. A **quoted** string `"None"` is an ordinary present value:
+> `option(str) := "None"` yields `Some("None")`, so `has(x)` is `true` and
+> `{{ x }}` renders `None`. The string never masquerades as the sentinel — this
+> holds for both parsed defaults and runtime-supplied values.
+
 ### Checking presence with `has()`
 
 `has(x)` returns `true` when the option holds a value (`Some`), `false`
@@ -1675,6 +1789,13 @@ Hello stranger!
 
 > {% /if %}
 ```
+
+Presence narrowing is **branch-local**: `has(x)` makes the inner value usable
+only in the branch that proves presence. In the `{% else %}` of
+`{% if has(x) %}`, the body of `{% if !has(x) %}`, and the `{% case None %}`
+arm, `x` remains an absent option — accessing its inner value there is an
+error, so a `None` value can never leak into an absent branch. (Implementations
+may report this at compile time or at render time.)
 
 ### Inspecting variant name with `kind()`
 
@@ -1829,6 +1950,53 @@ import chains work.
 
 Param-based include paths work but skip compile-time type checking
 (path unknown until render time).
+
+### Static vs. Dynamic Includes (Async / Browser Implications)
+
+There are two classes of file include, and the distinction matters for any
+environment without **synchronous** file I/O (browsers, Deno, edge runtimes):
+
+- **Static include path** — the path is a literal, e.g.
+  `{% include [x](./sections/intro.tmpl.md) %}`. The target file is known
+  from the source alone, before any render.
+- **Dynamic include path** — the path embeds `{{ expr }}` interpolation, e.g.
+  `{% include [x](./sections/{{ section }}.tmpl.md) %}`. Two sub-cases:
+  - If the interpolated expressions reference only `env:`/`consts:`/imported
+    consts, the path is still **param-independent** and resolvable at load time
+    (like `imports:` paths).
+  - If they reference `params` or loop variables, the target file depends on
+    the values passed to `render()` and is only known at **render time**, per
+    render.
+
+Implications:
+
+- The **transitive set of files a template needs is not statically knowable**
+  in the presence of dynamic include paths. You cannot, in general, compute
+  the full closure by walking the AST — a dynamic segment can resolve to any
+  file for a given parameter set.
+- In **Node** this is a non-issue: include resolution reads files
+  synchronously (`readFileSync`) on demand during rendering, so dynamic paths
+  "just work".
+- In **browsers / async-only runtimes**, file bytes can only be fetched
+  asynchronously (`fetch`), but rendering is synchronous. Two consequences:
+  1. **Static** closures _can_ be pre-fetched: parse the entry file, collect
+     literal `{% include %}` paths and `imports:` targets, fetch them, recurse
+     to a fixpoint, then render synchronously against the in-memory set.
+  2. **Dynamic** includes cannot be fully pre-fetched from source alone. They
+     must be resolved for a specific parameter set. A robust strategy is a
+     render-and-retry loop: attempt a synchronous render, catch the
+     `IncludeNotFoundError` (which carries the fully-resolved path), fetch that
+     one file, and retry until the render succeeds. Because rendering is pure,
+     re-rendering is safe; the number of retries is bounded by the number of
+     distinct files reached for those params.
+- `imports:` paths never interpolate `params` or loop variables (see the scope
+  table above), so import closures are **param-independent** — resolvable at
+  load time from the compile-time `env:` alone, without any render. However,
+  they are **not** a single parallel batch: an import path may interpolate a
+  const imported by an **earlier** import (imports resolve sequentially, and
+  each import's `stem.NAME` consts become available to subsequent import
+  paths). A pre-fetcher must therefore resolve imports **in declared order**,
+  potentially fetching import _N_ before it can compute import _N+1_'s path.
 
 ### Self-Recursive Includes
 

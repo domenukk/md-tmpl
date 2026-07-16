@@ -145,8 +145,8 @@ export function parseNodes(
         }
         // Apply {#- trim: strip trailing whitespace from previous text node
         if (trimBefore && nodes.length > 0) {
-          const last = nodes[nodes.length - 1]!;
-          if (last.kind === "text") {
+          const last = nodes[nodes.length - 1];
+          if (last?.kind === "text") {
             nodes[nodes.length - 1] = {
               ...last,
               kind: "text",
@@ -158,7 +158,7 @@ export function parseNodes(
         pos = endIdx + 2;
         // Apply -#} trim: strip leading whitespace from following text
         if (trimAfter) {
-          while (pos < input.length && /\s/.test(input[pos]!)) {
+          while (pos < input.length && /\s/.test(input.charAt(pos))) {
             pos++;
           }
         }
@@ -184,8 +184,8 @@ export function parseNodes(
         );
         // Handle {%- trim: strip trailing whitespace from previous text
         if (trimBefore && nodes.length > 0) {
-          const last = nodes[nodes.length - 1]!;
-          if (last.kind === "text") {
+          const last = nodes[nodes.length - 1];
+          if (last?.kind === "text") {
             nodes[nodes.length - 1] = {
               ...last,
               kind: "text",
@@ -272,7 +272,7 @@ export function parseBlockWithClosing(
           const loc = getLoc(openTag?.tagStart ?? earliest, lineMap);
           const keyword = openTag
             ? openTag.keyword
-            : closingTags[0]!.replace(/^\//, "");
+            : (closingTags[0] ?? "").replace(/^\//, "");
           throw new TemplateSyntaxError(
             `unclosed '{% ${keyword} %}' block`,
             loc?.line,
@@ -297,8 +297,8 @@ export function parseBlockWithClosing(
           // Handle {%- on closing tag: trim trailing whitespace from last text node
           const closingTrimBefore = tagContent.startsWith("-");
           if (closingTrimBefore && nodes.length > 0) {
-            const last = nodes[nodes.length - 1]!;
-            if (last.kind === "text") {
+            const last = nodes[nodes.length - 1];
+            if (last?.kind === "text") {
               nodes[nodes.length - 1] = {
                 ...last,
                 kind: "text",
@@ -315,7 +315,7 @@ export function parseBlockWithClosing(
           if (closingTrimAfter) {
             while (
               adjustedEnd < input.length &&
-              /\s/.test(input[adjustedEnd]!)
+              /\s/.test(input.charAt(adjustedEnd))
             ) {
               adjustedEnd++;
             }
@@ -372,10 +372,7 @@ export function parseBlockWithClosing(
         pos = endPos;
       } else {
         // It's a nested statement tag — handle recursively
-        const [, endPos, _trimBefore, trimAfter] = parseStatement(
-          input,
-          stmtIdx,
-        );
+        const [, endPos, , trimAfter] = parseStatement(input, stmtIdx);
         const innerTag = input
           .slice(stmtIdx + 2, endPos - 2)
           .trim()
@@ -417,7 +414,7 @@ export function parseBlockWithClosing(
     const loc = getLoc(openTag?.tagStart ?? pos, lineMap);
     const keyword = openTag
       ? openTag.keyword
-      : closingTags[0]!.replace(/^\//, "");
+      : (closingTags[0]?.replace(/^\//, "") ?? "");
     throw new TemplateSyntaxError(
       `unclosed '{% ${keyword} %}' block`,
       loc?.line,

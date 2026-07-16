@@ -43,6 +43,18 @@ function bench(name: string, fn: () => void, iterations: number): BenchResult {
   return { name, ops: iterations, nsPerOp, msTotal: bestElapsed };
 }
 
+/**
+ * Return the element at `index`, throwing if it is missing. Used instead of
+ * non-null assertions so that out-of-range access surfaces a clear error.
+ */
+function nth<T>(arr: readonly T[], index: number): T {
+  const value = arr[index];
+  if (value === undefined) {
+    throw new Error(`missing benchmark result at index ${String(index)}`);
+  }
+  return value;
+}
+
 function printResult(r: BenchResult): void {
   const opsPerSec = Math.round(1_000_000_000 / r.nsPerOp);
   console.log(
@@ -246,7 +258,7 @@ renderResults.push(
 );
 
 const bigList = Array.from({ length: 20 }, (_, i) => ({
-  title: `Task ${i}`,
+  title: `Task ${String(i)}`,
   priority: i % 2 === 0 ? "High" : "Low",
 }));
 renderResults.push(
@@ -365,10 +377,10 @@ for (const r of uncheckedResults) printResult(r);
 // Speedup comparison
 console.log("\n📊 Speedup (render vs renderUnchecked):");
 const pairs = [
-  ["simple", renderResults[0]!, uncheckedResults[0]!],
-  ["multi-param", renderResults[1]!, uncheckedResults[1]!],
-  ["list (2 items)", renderResults[2]!, uncheckedResults[2]!],
-  ["conditional", renderResults[7]!, uncheckedResults[3]!],
+  ["simple", nth(renderResults, 0), nth(uncheckedResults, 0)],
+  ["multi-param", nth(renderResults, 1), nth(uncheckedResults, 1)],
+  ["list (2 items)", nth(renderResults, 2), nth(uncheckedResults, 2)],
+  ["conditional", nth(renderResults, 7), nth(uncheckedResults, 3)],
 ] as const;
 for (const [label, checked, unchecked] of pairs) {
   const speedup = checked.nsPerOp / unchecked.nsPerOp;
@@ -385,8 +397,8 @@ const avgUncheckedNs =
   uncheckedResults.reduce((sum, r) => sum + r.nsPerOp, 0) /
   uncheckedResults.length;
 console.log(
-  `Average render:           ${Math.round(avgRenderNs)} ns/op (${Math.round(1_000_000_000 / avgRenderNs).toLocaleString()} ops/s)`,
+  `Average render:           ${String(Math.round(avgRenderNs))} ns/op (${Math.round(1_000_000_000 / avgRenderNs).toLocaleString()} ops/s)`,
 );
 console.log(
-  `Average renderUnchecked:  ${Math.round(avgUncheckedNs)} ns/op (${Math.round(1_000_000_000 / avgUncheckedNs).toLocaleString()} ops/s)`,
+  `Average renderUnchecked:  ${String(Math.round(avgUncheckedNs))} ns/op (${Math.round(1_000_000_000 / avgUncheckedNs).toLocaleString()} ops/s)`,
 );

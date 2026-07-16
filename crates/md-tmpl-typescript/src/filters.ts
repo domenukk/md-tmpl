@@ -9,6 +9,7 @@
 
 import { type Value, str, int, float, list, display } from "./value.js";
 import { TemplateSyntaxError, UnknownFilterError } from "./errors.js";
+import { unescapeStringLiteral } from "./consts.js";
 
 /** Parse a filter expression like `fixed(2)` into `[name, args?]`. */
 export function parseFilter(filter: string): [string, string | undefined] {
@@ -26,14 +27,14 @@ export function parseFilter(filter: string): [string, string | undefined] {
   return [name, args.length === 0 ? undefined : args];
 }
 
-/** Strip surrounding quotes from a filter argument. */
+/** Strip surrounding quotes from a filter argument and unescape its content. */
 function stripQuotes(s: string): string {
   if (s.length >= 2) {
     if (
       (s.startsWith('"') && s.endsWith('"')) ||
       (s.startsWith("'") && s.endsWith("'"))
     ) {
-      return s.slice(1, -1);
+      return unescapeStringLiteral(s.slice(1, -1));
     }
   }
   return s;

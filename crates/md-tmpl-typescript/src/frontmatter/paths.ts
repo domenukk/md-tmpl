@@ -33,10 +33,8 @@ export function interpolatePathStr(
   let result = "";
   let remaining = path;
 
-  while (true) {
-    const startIdx = remaining.indexOf(EXPR_START);
-    if (startIdx === -1) break;
-
+  let startIdx = remaining.indexOf(EXPR_START);
+  while (startIdx !== -1) {
     result += remaining.slice(0, startIdx);
     const afterStart = remaining.slice(startIdx + EXPR_START.length);
 
@@ -78,8 +76,8 @@ export function interpolatePathStr(
           let val = constsMap.get(rootKey);
           if (val !== undefined) {
             let ok = true;
-            for (let i = 1; i < parts.length; i++) {
-              const part = parts[i]!.trim();
+            for (const rawPart of parts.slice(1)) {
+              const part = rawPart.trim();
               const nextVal = getField(val, part);
               if (nextVal !== undefined) {
                 val = nextVal;
@@ -102,6 +100,7 @@ export function interpolatePathStr(
 
     result += display(valOpt);
     remaining = afterStart.slice(endIdx + EXPR_END.length);
+    startIdx = remaining.indexOf(EXPR_START);
   }
 
   result += remaining;
@@ -113,7 +112,8 @@ export function interpolateImports(
   availableConsts: ReadonlyMap<string, Value>,
 ): void {
   for (let i = 0; i < imports.length; i++) {
-    const imp = imports[i]!;
+    const imp = imports[i];
+    if (imp === undefined) continue;
     if (imp.path.includes(EXPR_START)) {
       const loc = (
         imp as { loc?: { line?: number; column?: number; snippet?: string } }

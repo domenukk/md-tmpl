@@ -228,13 +228,39 @@ pub(super) fn check_undeclared_variables(
         declared.insert(import.stem.clone());
     }
     for (name, ty) in &fm.type_aliases {
-        if matches!(ty, VarType::Enum(_)) {
+        if let VarType::Enum(variants) = ty {
             declared.insert(name.clone());
+            // Enum variant names appear in `{% case Variant %}` labels and are
+            // collected by `collect_referenced_params` alongside real variable
+            // references. They are pattern labels, not variable references, so
+            // we must mark them as "known" here.
+            for variant in variants {
+                declared.insert(variant.name.clone());
+            }
+        }
+    }
+    // Also whitelist variant names from inline enum types on params/consts
+    // (e.g. `status = enum(Open, Closed)` without a type alias).
+    for decl in fm.declarations.iter().chain(fm.consts.iter()) {
+        if let VarType::Enum(variants) = &decl.var_type {
+            for variant in variants {
+                declared.insert(variant.name.clone());
+            }
         }
     }
     for inline_name in inline_templates.keys() {
         declared.insert(inline_name.clone());
     }
+    // The wildcard `_` in `{% case _ %}` / `{% match x case _ %}` and the
+    // boolean literals `true`/`false` in `{% case true %}` are pattern syntax,
+    // not variable references. Mark them as known so they are never flagged.
+    declared.insert("_".into());
+    declared.insert("true".into());
+    declared.insert("false".into());
+    // `Some` and `None` are option-type sentinels used in `{% case Some %}`
+    // and `{% case None %}` arms.
+    declared.insert(crate::consts::OPTION_SOME.into());
+    declared.insert(crate::consts::OPTION_NONE.into());
 
     let undeclared: Vec<&String> = referenced
         .iter()
@@ -273,9 +299,14 @@ pub(super) fn check_undeclared_variables(
 }
 
 /// Reject declared parameters that are never referenced in the body.
+///
+/// A parameter is considered "used" if it appears in the body-expression
+/// reference set OR as an unquoted case label in a match arm (which reads
+/// the param's value at runtime for comparison).
 pub(super) fn check_unused_params(
     declarations: &[VarDecl],
     referenced: &HashSet<String>,
+    case_labels: &HashSet<String>,
     allow_unused: bool,
 ) -> Result<(), TemplateError> {
     if allow_unused {
@@ -283,7 +314,7 @@ pub(super) fn check_unused_params(
     }
     let unused: Vec<&str> = declarations
         .iter()
-        .filter(|decl| !referenced.contains(&decl.name))
+        .filter(|decl| !referenced.contains(&decl.name) && !case_labels.contains(&decl.name))
         .map(|decl| decl.name.as_str())
         .collect();
     if unused.is_empty() {

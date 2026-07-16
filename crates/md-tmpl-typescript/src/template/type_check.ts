@@ -30,8 +30,9 @@ export function typeCheckValue(
   varType: VarType,
   typeAliases: ReadonlyMap<string, VarType>,
 ): void {
-  const typeCheck = (path: string, value: Value, varType: VarType): void =>
+  const typeCheck = (path: string, value: Value, varType: VarType): void => {
     typeCheckValue(path, value, varType, typeAliases);
+  };
   switch (varType.kind) {
     case TYPE_STR:
       if (value.type !== TYPE_STR) {
@@ -59,17 +60,26 @@ export function typeCheckValue(
       }
       // Check item types
       if (varType.fields.length > 0) {
-        for (let i = 0; i < value.items.length; i++) {
-          const item = value.items[i]!;
+        for (const [i, item] of value.items.entries()) {
           if (item.type !== TYPE_STRUCT) {
-            throw new TypeMismatchError(`${path}[${i}]`, "struct", item.type);
+            throw new TypeMismatchError(
+              `${path}[${String(i)}]`,
+              "struct",
+              item.type,
+            );
           }
           for (const field of varType.fields) {
             const fieldVal = item.fields.get(field.name);
             if (fieldVal === undefined) {
-              throw new MissingParamsError([`${path}[${i}].${field.name}`]);
+              throw new MissingParamsError([
+                `${path}[${String(i)}].${field.name}`,
+              ]);
             }
-            typeCheck(`${path}[${i}].${field.name}`, fieldVal, field.varType);
+            typeCheck(
+              `${path}[${String(i)}].${field.name}`,
+              fieldVal,
+              field.varType,
+            );
           }
         }
       }
@@ -111,8 +121,9 @@ export function typeCheckValue(
         const someVariant = varType.variants.find(
           (v) => v.name === OPTION_SOME,
         );
-        if (someVariant && someVariant.fields.length === 1) {
-          typeCheck(path, value, someVariant.fields[0]!.varType);
+        const someField = someVariant?.fields[0];
+        if (someVariant?.fields.length === 1 && someField) {
+          typeCheck(path, value, someField.varType);
         }
         break;
       }
@@ -129,7 +140,7 @@ export function typeCheckValue(
       } else if (value.type === TYPE_STRUCT) {
         // Struct variant as struct with __kind__
         const tag = value.fields.get(ENUM_TAG_KEY);
-        if (tag === undefined || tag.type !== TYPE_STR) {
+        if (tag?.type !== TYPE_STR) {
           throw new TypeMismatchError(
             path,
             "enum variant",
@@ -179,8 +190,8 @@ export function typeCheckValue(
         throw new TypeMismatchError(path, "list", value.type);
       }
       // Check each element against the declared element type
-      for (let i = 0; i < value.items.length; i++) {
-        typeCheck(`${path}[${i}]`, value.items[i]!, varType.elementType);
+      for (const [i, item] of value.items.entries()) {
+        typeCheck(`${path}[${String(i)}]`, item, varType.elementType);
       }
       break;
     case TYPE_UNTYPED_LIST:

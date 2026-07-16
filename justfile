@@ -51,6 +51,13 @@ lint: lint-rust lint-toml lint-markdown lint-just lint-python lint-go lint-ts li
 lint-rust:
     cargo clippy --workspace --all-targets --exclude md-tmpl-macros --all-features -- -D warnings
     cargo clippy -p md-tmpl-macros --all-targets -- -D warnings
+    # Reduced feature combos: catch lints that only surface without `std`/all-features
+    # (e.g. an unused generic in a `no_std` render path). See the codec features.
+    cargo clippy -p md-tmpl-core --no-default-features -- -D warnings
+    cargo clippy -p md-tmpl-core --no-default-features --features std -- -D warnings
+    cargo clippy -p md-tmpl-core --no-default-features --features serde -- -D warnings
+    cargo clippy -p md-tmpl-core --no-default-features --features cbor -- -D warnings
+    cargo clippy -p md-tmpl-core --no-default-features --features flexbuffers -- -D warnings
 
 # Check Rust formatting without modifying files
 lint-rust-fmt:
@@ -79,9 +86,10 @@ lint-go: build-go-ffi
     cd go/md_tmpl && go vet ./...
     @cd go/md_tmpl && if [ -n "$(gofmt -l .)" ]; then echo "Go code is not formatted. Run 'just fmt'"; exit 1; fi
 
-# Lint TypeScript (strict type-check with tsc)
+# Lint TypeScript (strict type-check with tsc, ESLint, prettier)
 lint-ts:
     cd crates/md-tmpl-typescript && npx tsc --noEmit --strict
+    cd crates/md-tmpl-typescript && npx eslint .
     cd crates/md-tmpl-typescript && npx -y prettier@latest --check '**/*.ts'
 
 # Run hygiene linter (suppression patterns, error handling, file length)
@@ -109,6 +117,8 @@ test-no-std:
     cargo build -p md-tmpl --no-default-features --features serde --target thumbv7em-none-eabihf
     cargo build -p md-tmpl --no-default-features --features macros --target thumbv7em-none-eabihf
     cargo build -p md-tmpl --no-default-features --features serde,macros --target thumbv7em-none-eabihf
+    cargo build -p md-tmpl --no-default-features --features cbor --target thumbv7em-none-eabihf
+    cargo build -p md-tmpl --no-default-features --features serde,cbor,macros --target thumbv7em-none-eabihf
     @echo "All no_std checks pass ✓"
 
 # Build and test Python bindings
@@ -126,6 +136,13 @@ test-ts: build-ts
 # Run WASM tests (parity + comprehensive unit tests)
 test-wasm: build-wasm
     cd crates/md-tmpl-wasm && npm test
+
+# Replay the shared cross-language conformance corpus against BOTH backends
+test-conformance: build-ts
+    @echo "── Rust conformance harness ──"
+    cargo test -p md-tmpl-core --test conformance --all-features
+    @echo "── TypeScript conformance harness ──"
+    cd crates/md-tmpl-typescript && node --test dist/tests/conformance.test.js
 
 # ── Docs ──────────────────────────────────────────────────────────────
 

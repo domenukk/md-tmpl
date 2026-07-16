@@ -287,14 +287,23 @@ fn extract_yaml_logical_lines(
     }
 
     let after_first = trimmed[FM_DELIMITER.len()..].trim_start_matches(['\r', '\n']);
-    let Some(end) = after_first.find(FM_DELIMITER_NEWLINE) else {
-        return Err(TemplateError::syntax(
-            crate::consts::ERR_UNCLOSED_FM.to_string(),
-        ));
+    // An empty block: the closing delimiter follows the opener immediately
+    // (its separator newlines were consumed above), so the `\n---` search
+    // below cannot see it and would misreport the block as unclosed.
+    let (yaml_block, after_close) = if after_first.starts_with(FM_DELIMITER)
+        && matches!(
+            after_first.as_bytes().get(FM_DELIMITER.len()),
+            None | Some(b'\n' | b'\r')
+        ) {
+        ("", FM_DELIMITER.len())
+    } else {
+        let Some(end) = after_first.find(FM_DELIMITER_NEWLINE) else {
+            return Err(TemplateError::syntax(
+                crate::consts::ERR_UNCLOSED_FM.to_string(),
+            ));
+        };
+        (&after_first[..end], end + FM_DELIMITER_NEWLINE.len())
     };
-
-    let yaml_block = &after_first[..end];
-    let after_close = end + FM_DELIMITER_NEWLINE.len();
     let body_start = if after_first[after_close..].starts_with('\n') {
         after_close + 1
     } else if after_first[after_close..].starts_with("\r\n") {

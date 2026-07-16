@@ -652,3 +652,113 @@ none
     let result = main.render_ctx(&ctx).unwrap();
     assert!(result.contains("Hey World!"), "got: {result}");
 }
+
+// --- D1: has() on a None option must be false --------------------------------
+
+/// `has()` on an option param defaulted to `None` is false; a Some default is true.
+#[test]
+fn d1_has_option_default_none_is_false() {
+    let none_tmpl = Template::from_source(
+        r"---
+params: [o = option(str) := None]
+---
+> {% if has(o) %}
+
+present
+
+> {% else %}
+
+absent
+
+> {% /if %}",
+    )
+    .unwrap();
+    let ctx = crate::Context::new();
+    let out = none_tmpl.render_ctx(&ctx).unwrap();
+    assert!(
+        out.contains("absent"),
+        "None option: has() must be false, got: {out}"
+    );
+
+    let some_tmpl = Template::from_source(
+        r#"---
+params: [o = option(str) := "x"]
+---
+> {% if has(o) %}
+
+present
+
+> {% else %}
+
+absent
+
+> {% /if %}"#,
+    )
+    .unwrap();
+    let out = some_tmpl.render_ctx(&crate::Context::new()).unwrap();
+    assert!(
+        out.contains("present"),
+        "Some option: has() must be true, got: {out}"
+    );
+}
+
+/// `has()` on an option param explicitly set to `Value::None` is false; set to a
+/// concrete value it is true.
+#[test]
+fn d1_has_option_context_none_vs_some() {
+    let tmpl = Template::from_source(
+        r"---
+params: [o = option(str)]
+---
+> {% if has(o) %}
+
+present
+
+> {% else %}
+
+absent
+
+> {% /if %}",
+    )
+    .unwrap();
+
+    let mut none_ctx = crate::Context::new();
+    none_ctx.set("o", Value::None);
+    let out = tmpl.render_ctx(&none_ctx).unwrap();
+    assert!(
+        out.contains("absent"),
+        "None: has() must be false, got: {out}"
+    );
+
+    let mut some_ctx = crate::Context::new();
+    some_ctx.set("o", "hello");
+    let out = tmpl.render_ctx(&some_ctx).unwrap();
+    assert!(
+        out.contains("present"),
+        "Some: has() must be true, got: {out}"
+    );
+}
+
+/// Unit test for the low-level predicate. Absence is represented solely by
+/// `Value::None`; the string `"None"` is the `Some(None)` escape and therefore
+/// counts as present (a Some holding the literal string `"None"`).
+#[test]
+fn d1_is_option_some_predicate() {
+    use crate::scope::Scope;
+    assert!(
+        !Scope::is_option_some(&Value::None),
+        "Value::None must be absent"
+    );
+    assert!(
+        Scope::is_option_some(&Value::Str(crate::consts::OPTION_NONE.into())),
+        "Str(\"None\") is the Some(None) escape and must be present"
+    );
+    assert!(
+        Scope::is_option_some(&Value::Str("Some".into())),
+        "non-None string is present"
+    );
+    assert!(
+        Scope::is_option_some(&Value::Int(0)),
+        "concrete value is present"
+    );
+}

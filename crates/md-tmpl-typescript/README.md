@@ -306,6 +306,34 @@ Expert: {{ name }}
 {{ has(field) }}          → true if option(T) is present
 ```
 
+## Browser
+
+The core engine reads files synchronously (via `node:fs`), which browsers can't
+do. The `md-tmpl/browser` entry point bridges this with a lazy, fetch-on-demand
+loader — **nothing is preloaded**; only the files a given render actually
+reaches are fetched over the network, then cached.
+
+```ts
+import { loadTemplate } from "md-tmpl/browser";
+
+// Fetches the entry (and its `imports:`) up front.
+const tmpl = await loadTemplate("/prompts/agent.tmpl.md");
+
+// renderAsync fetches any `{% include %}` this render reaches — including
+// dynamic, param-dependent include paths — on demand, then caches them.
+const out = await tmpl.renderAsync({ role: "reviewer" });
+
+// Once the cache is warm, the same shapes can render synchronously.
+const out2 = tmpl.render({ role: "planner" });
+```
+
+`loadTemplate(url, options?)` options: `env` (values for `env:` frontmatter),
+`fetch` (custom transport for auth/testing), `baseUrl` (for relative URLs;
+defaults to the document location), and `maxRounds` (defensive fetch cap).
+
+For custom runtimes, compose the primitives directly:
+`setFileSystemProvider(fs, path)` with the exported `MemoryFs` and `posixPath`.
+
 ## API Reference
 
 ### Template

@@ -41,7 +41,7 @@ pub(crate) fn typed_list_codegen(
     let mut item_set_stmts = Vec::new();
 
     for inner_decl in inner_fields {
-        let inner_field = format_ident!("{}", inner_decl.name);
+        let inner_field = crate::make_ident(&inner_decl.name);
         let inner_name_str = &inner_decl.name;
         let (inner_type, inner_set) = var_type_to_rust(
             &inner_decl.var_type,
@@ -50,7 +50,9 @@ pub(crate) fn typed_list_codegen(
             sub_structs,
         );
         let inner_builder_attrs = builder_field_attrs(&inner_decl.var_type);
-        item_fields.push(quote! { #inner_builder_attrs pub #inner_field: #inner_type });
+        let inner_rename_attr = crate::serde_rename_attr(&inner_decl.name);
+        item_fields
+            .push(quote! { #inner_rename_attr #inner_builder_attrs pub #inner_field: #inner_type });
         item_set_stmts.push(inner_set(quote! { item.#inner_field }, inner_name_str));
     }
 
@@ -99,7 +101,7 @@ pub(crate) fn typed_dict_codegen(
     let mut dict_set_stmts = Vec::new();
 
     for inner_decl in inner_fields {
-        let inner_field = format_ident!("{}", inner_decl.name);
+        let inner_field = crate::make_ident(&inner_decl.name);
         let inner_name_str = &inner_decl.name;
         let (inner_type, inner_set) = var_type_to_rust(
             &inner_decl.var_type,
@@ -108,7 +110,9 @@ pub(crate) fn typed_dict_codegen(
             sub_structs,
         );
         let inner_builder_attrs = builder_field_attrs(&inner_decl.var_type);
-        dict_fields.push(quote! { #inner_builder_attrs pub #inner_field: #inner_type });
+        let inner_rename_attr = crate::serde_rename_attr(&inner_decl.name);
+        dict_fields
+            .push(quote! { #inner_rename_attr #inner_builder_attrs pub #inner_field: #inner_type });
         dict_set_stmts.push(inner_set(quote! { val.#inner_field }, inner_name_str));
     }
 
@@ -240,14 +244,15 @@ pub(crate) fn typed_enum_codegen(
         } else {
             let mut struct_fields = Vec::new();
             for inner_decl in &var.fields {
-                let inner_field = quote::format_ident!("{}", inner_decl.name);
+                let inner_field = crate::make_ident(&inner_decl.name);
                 let (inner_type, _) = var_type_to_rust(
                     &inner_decl.var_type,
                     &format!("{parent_struct}{capitalized}{var_ident}"),
                     &inner_decl.name,
                     sub_structs,
                 );
-                struct_fields.push(quote! { #inner_field: #inner_type });
+                let inner_rename = crate::serde_rename_attr(&inner_decl.name);
+                struct_fields.push(quote! { #inner_rename #inner_field: #inner_type });
             }
 
             variant_tokens.push(quote! {
@@ -428,14 +433,15 @@ pub(crate) fn generate_toplevel_enum(
         } else {
             let mut struct_fields = Vec::new();
             for inner_decl in &var.fields {
-                let inner_field = format_ident!("{}", inner_decl.name);
+                let inner_field = crate::make_ident(&inner_decl.name);
                 let (inner_type, _) = var_type_to_rust(
                     &inner_decl.var_type,
                     &format!("{name}{}", var.name),
                     &inner_decl.name,
                     &mut sub_types,
                 );
-                struct_fields.push(quote! { #inner_field: #inner_type });
+                let inner_rename = crate::serde_rename_attr(&inner_decl.name);
+                struct_fields.push(quote! { #inner_rename #inner_field: #inner_type });
             }
             variant_tokens.push(quote! {
                 #serde_rename
@@ -684,7 +690,7 @@ fn mixed_serialize_arms(
                 let field_idents: Vec<_> = v
                     .fields
                     .iter()
-                    .map(|f| format_ident!("{}", f.name))
+                    .map(|f| crate::make_ident(&f.name))
                     .collect();
                 let field_names: Vec<_> = v.fields.iter().map(|f| f.name.as_str()).collect();
                 quote! {
@@ -725,7 +731,7 @@ fn mixed_deserialize_kind_arms(
             let field_result_idents: Vec<_> = v
                 .fields
                 .iter()
-                .map(|f| format_ident!("{}", f.name))
+                .map(|f| crate::make_ident(&f.name))
                 .collect();
             let field_types: Vec<_> = v
                 .fields
@@ -1004,7 +1010,7 @@ pub(crate) fn generate_toplevel_list_item(
     let mut item_fields = Vec::new();
 
     for decl in fields {
-        let field_ident = format_ident!("{}", decl.name);
+        let field_ident = crate::make_ident(&decl.name);
         let (field_type, _) = var_type_to_rust(
             &decl.var_type,
             &format!("{name}Item"),
@@ -1012,7 +1018,8 @@ pub(crate) fn generate_toplevel_list_item(
             &mut sub_types,
         );
         let builder_attrs = builder_field_attrs(&decl.var_type);
-        item_fields.push(quote! { #builder_attrs pub #field_ident: #field_type });
+        let rename_attr = crate::serde_rename_attr(&decl.name);
+        item_fields.push(quote! { #rename_attr #builder_attrs pub #field_ident: #field_type });
     }
 
     let derive_attrs = struct_derive_attrs(contains_tmpl_field(fields));
@@ -1042,10 +1049,11 @@ pub(crate) fn generate_toplevel_dict(
     let mut dict_fields = Vec::new();
 
     for decl in fields {
-        let field_ident = format_ident!("{}", decl.name);
+        let field_ident = crate::make_ident(&decl.name);
         let (field_type, _) = var_type_to_rust(&decl.var_type, name, &decl.name, &mut sub_types);
         let builder_attrs = builder_field_attrs(&decl.var_type);
-        dict_fields.push(quote! { #builder_attrs pub #field_ident: #field_type });
+        let rename_attr = crate::serde_rename_attr(&decl.name);
+        dict_fields.push(quote! { #rename_attr #builder_attrs pub #field_ident: #field_type });
     }
 
     let derive_attrs = struct_derive_attrs(contains_tmpl_field(fields));

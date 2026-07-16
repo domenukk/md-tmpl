@@ -68,6 +68,7 @@ export const PATH_SEP = ".";
 export const DOT = ".";
 export const QUOTE_DOUBLE = '"';
 export const QUOTE_SINGLE = "'";
+export const BACKSLASH = "\\";
 export const OPTION_SOME = "Some";
 export const OPTION_NONE = "None";
 export const MATCH_DEFAULT = "_";
@@ -159,8 +160,80 @@ export const VARIANT_SEP = "|";
 export const ERR_COMPOUND_BRACKETS_PROHIBITED =
   "must use parentheses (...); angle brackets <...> and square brackets [...] are prohibited";
 
+/**
+ * Prefix for the compile-time undeclared-variable error. Mirrors the Rust
+ * core's `ERR_UNDECLARED_PREFIX` so both backends emit the identical message
+ * (and the shared conformance suite can assert on the `undeclared variable`
+ * substring).
+ */
+export const ERR_UNDECLARED_PREFIX =
+  "undeclared variable(s) referenced in body: ";
+
+/**
+ * Hint substring emitted when a parameter default uses the qualified
+ * `Type.Variant` form (e.g. `Stage.Build`) instead of the canonical bare
+ * variant name (e.g. `Build`). Both backends must include this exact phrase.
+ */
+export const ERR_BARE_VARIANT_HINT = "use the bare variant name";
+
 // Variable prefixes
 export const PREFIX_CONSTS_DOT = "consts.";
 export const PREFIX_OPTS_DOT = "opts.";
 export const PREFIX_OPTIONS_DOT = "options.";
 export const PREFIX_PARAMS_DOT = "params.";
+
+/**
+ * Unescape the inner content of a string literal (surrounding quotes already
+ * stripped) using md-tmpl's uniform escape rules. Mirrors the Rust core's
+ * `unescape_string_literal` so all backends agree.
+ *
+ * Recognized escapes:
+ * - `\\` -> `\`
+ * - `\"` -> `"`
+ * - `\'` -> `'`
+ *
+ * Any other backslash sequence `\X` is preserved verbatim (both the backslash
+ * and `X`), so strings containing literal backslashes (e.g. `\n`, `c:\path`)
+ * are unaffected. A trailing lone backslash is kept.
+ */
+export function unescapeStringLiteral(inner: string): string {
+  // Fast path: no backslash means nothing to unescape.
+  if (!inner.includes(BACKSLASH)) return inner;
+  let out = "";
+  for (let i = 0; i < inner.length; i++) {
+    const c = inner.charAt(i);
+    if (c === BACKSLASH) {
+      const next = inner.charAt(i + 1);
+      if (
+        next === QUOTE_DOUBLE ||
+        next === QUOTE_SINGLE ||
+        next === BACKSLASH
+      ) {
+        out += next;
+        i++;
+      } else {
+        // Unknown escape or trailing backslash: keep the backslash verbatim.
+        out += BACKSLASH;
+      }
+    } else {
+      out += c;
+    }
+  }
+  return out;
+}
+
+/** Returns true if the match node uses option-style variant names. */
+export function isOptionMatchNode(node: {
+  arms: { variants: string[] }[];
+  inlineGuard?: { variant: string };
+}): boolean {
+  if (node.inlineGuard) {
+    return (
+      node.inlineGuard.variant === OPTION_SOME ||
+      node.inlineGuard.variant === OPTION_NONE
+    );
+  }
+  return node.arms.some((arm) =>
+    arm.variants.some((v) => v === OPTION_SOME || v === OPTION_NONE),
+  );
+}

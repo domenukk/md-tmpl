@@ -6,7 +6,14 @@
 
 import type { Node } from "../parser.js";
 import {
+  BACKSLASH,
   EXPR_START,
+  PIPE,
+  PATH_SEP,
+  PREFIX_CONSTS_DOT,
+  PREFIX_OPTS_DOT,
+  PREFIX_OPTIONS_DOT,
+  PREFIX_PARAMS_DOT,
   NODE_TEXT,
   NODE_EXPR,
   NODE_COMMENT,
@@ -43,9 +50,15 @@ function extractRootVariable(
   if (parenIdx > 0 && trimmed.endsWith(")")) {
     const funcName = trimmed.slice(0, parenIdx).trim();
     if (BUILTIN_FUNCTIONS.has(funcName)) {
-      const arg = trimmed.slice(parenIdx + 1, -1).trim();
-      const root = arg.split(".")[0]!.trim();
-      if (root.length > 0 && !loopBindings.has(root) && !isLiteralToken(root)) {
+      const arg = stripPathPrefix(trimmed.slice(parenIdx + 1, -1).trim());
+      // split() always yields at least one element; the fallback satisfies
+      // noUncheckedIndexedAccess without a non-null assertion.
+      const root = (arg.split(PATH_SEP)[0] ?? arg).trim();
+      if (
+        !loopBindings.has(root) &&
+        !isLiteralToken(root) &&
+        isValidIdentifier(root)
+      ) {
         return root;
       }
       return undefined;
@@ -53,22 +66,50 @@ function extractRootVariable(
   }
 
   // Handle pipe expressions: take the part before the first `|`
-  const pipeIdx = trimmed.indexOf("|");
-  const base = pipeIdx >= 0 ? trimmed.slice(0, pipeIdx).trim() : trimmed;
-
-  // Extract root from dotted path, also strip any trailing operators/whitespace
-  const dotRoot = base.split(".")[0]!.trim();
-  // Split on whitespace to handle fragments like "a &&" or "x || y"
-  const root = dotRoot.split(/\s/)[0]!.trim();
+  const pipeIdx = trimmed.indexOf(PIPE);
+  const base = stripPathPrefix(
+    (pipeIdx >= 0 ? trimmed.slice(0, pipeIdx) : trimmed).trim(),
+  );
+  const root = (base.split(PATH_SEP)[0] ?? base).trim();
+  // isValidIdentifier rejects malformed roots (e.g. fragments containing
+  // whitespace or operators), mirroring the Rust core exactly.
   if (
     root.length === 0 ||
     isLiteralToken(root) ||
     loopBindings.has(root) ||
-    !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(root) // Must be a valid identifier
+    !isValidIdentifier(root)
   ) {
     return undefined;
   }
   return root;
+}
+
+/**
+ * Strip a leading namespace path prefix (`consts.`, `opts.`, `options.`,
+ * `params.`) from a token, mirroring the Rust core's `extract_root_variable`.
+ */
+function stripPathPrefix(token: string): string {
+  for (const prefix of [
+    PREFIX_CONSTS_DOT,
+    PREFIX_OPTS_DOT,
+    PREFIX_OPTIONS_DOT,
+    PREFIX_PARAMS_DOT,
+  ]) {
+    if (token.startsWith(prefix)) {
+      return token.slice(prefix.length).trim();
+    }
+  }
+  return token;
+}
+
+/**
+ * Returns true if `token` is a syntactically valid identifier
+ * (`[A-Za-z_][A-Za-z0-9_]*`). Mirrors the Rust core so both engines agree on
+ * which tokens can name a variable, rejecting malformed roots that would
+ * otherwise produce spurious "undeclared variable" errors.
+ */
+function isValidIdentifier(token: string): boolean {
+  return /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(token);
 }
 
 /** Returns true if the token looks like a literal (string, number, bool). */
@@ -113,9 +154,13 @@ function extractConditionVariables(
     }
   }
 
-  // Remove leading !
+  // Remove leading ! or `not ` (logical negation)
   if (trimmed.startsWith("!")) {
     extractConditionVariables(trimmed.slice(1), refs, loopBindings);
+    return;
+  }
+  if (trimmed.startsWith("not ")) {
+    extractConditionVariables(trimmed.slice(4), refs, loopBindings);
     return;
   }
 
@@ -153,33 +198,11 @@ function extractConditionVariables(
     }
   }
 
-  // Plain truthiness — also serves as fallback for malformed conditions.
-  // Extract all identifier-like tokens that could be variable references.
-  const identifiers = trimmed.match(/\b[a-zA-Z_][a-zA-Z0-9_]*\b/g);
-  if (identifiers) {
-    const keywords = new Set([
-      "true",
-      "false",
-      "match",
-      "case",
-      "in",
-      "not",
-      "if",
-      "else",
-      "for",
-      "and",
-      "or",
-    ]);
-    for (const id of identifiers) {
-      if (
-        !keywords.has(id) &&
-        !loopBindings.has(id) &&
-        !BUILTIN_FUNCTIONS.has(id)
-      ) {
-        refs.add(id);
-      }
-    }
-  }
+  // Plain truthiness: extract the root variable of the operand only.
+  // Mirrors the Rust core, which extracts path roots and never scans raw
+  // identifiers — so struct field names (e.g. `item.active`) are never
+  // mistaken for standalone variable references.
+  extractOperandRefs(trimmed, refs, loopBindings);
 }
 
 /**
@@ -200,37 +223,11 @@ function extractOperandRefs(
     extractInterpolationRefs(inner, refs, loopBindings);
     return;
   }
-  // Otherwise extract the root variable
+  // Otherwise extract the root variable. If none is found, there is no
+  // reference to record (mirrors the Rust core — no raw identifier scan).
   const root = extractRootVariable(operand, loopBindings);
   if (root) {
     refs.add(root);
-    return;
-  }
-  // Fallback: scan for any identifier-like tokens (handles fragments like "&& a")
-  const identifiers = operand.match(/\b[a-zA-Z_][a-zA-Z0-9_]*\b/g);
-  if (identifiers) {
-    const keywords = new Set([
-      "true",
-      "false",
-      "match",
-      "case",
-      "in",
-      "not",
-      "if",
-      "else",
-      "for",
-      "and",
-      "or",
-    ]);
-    for (const id of identifiers) {
-      if (
-        !keywords.has(id) &&
-        !loopBindings.has(id) &&
-        !BUILTIN_FUNCTIONS.has(id)
-      ) {
-        refs.add(id);
-      }
-    }
   }
 }
 
@@ -256,15 +253,26 @@ export function extractInterpolationRefs(
   }
 }
 
-/** Split a string at top-level occurrences of a delimiter (not inside parens). */
+/** Split a string at top-level occurrences of a delimiter (not inside parens
+ * or string literals). */
 function splitTopLevel(s: string, delim: string): string[] {
   const parts: string[] = [];
   let depth = 0;
   let start = 0;
   for (let i = 0; i < s.length; i++) {
-    if (s[i] === "(") depth++;
-    else if (s[i] === ")") depth--;
-    else if (
+    const ch = s[i];
+    if (ch === "(") depth++;
+    else if (ch === ")") depth--;
+    else if (ch === "'" || ch === '"') {
+      // Skip string literals; a backslash escapes the next char so an escaped
+      // quote does not close the literal (mirrors the Rust analysis parser).
+      const quote = ch;
+      i++;
+      while (i < s.length && s[i] !== quote) {
+        if (s[i] === BACKSLASH && i + 1 < s.length) i += 2;
+        else i++;
+      }
+    } else if (
       depth === 0 &&
       i + delim.length <= s.length &&
       s.slice(i, i + delim.length) === delim
@@ -283,12 +291,20 @@ function splitTopLevel(s: string, delim: string): string[] {
 function findTopLevelOp(s: string, op: string): number {
   let depth = 0;
   for (let i = 0; i < s.length; i++) {
-    if (s[i] === "(") depth++;
-    else if (s[i] === ")") depth--;
-    else if (s[i] === "'" || s[i] === '"') {
-      const quote = s[i]!;
+    // Capture once so control-flow narrowing proves `quote` is defined,
+    // avoiding a non-null assertion under noUncheckedIndexedAccess.
+    const ch = s[i];
+    if (ch === "(") depth++;
+    else if (ch === ")") depth--;
+    else if (ch === "'" || ch === '"') {
+      const quote = ch;
       i++;
-      while (i < s.length && s[i] !== quote) i++;
+      // A backslash escapes the next char so an escaped quote does not close
+      // the literal (mirrors the Rust analysis parser).
+      while (i < s.length && s[i] !== quote) {
+        if (s[i] === BACKSLASH && i + 1 < s.length) i += 2;
+        else i++;
+      }
     } else if (
       depth === 0 &&
       i + op.length <= s.length &&
@@ -364,22 +380,21 @@ function collectRefsInner(
         const matchRoot = extractRootVariable(node.expr, loopBindings);
         if (matchRoot) refs.add(matchRoot);
         for (const arm of node.arms) {
-          // Scan case labels for references
+          // Scan quoted case labels for {{ expr }} interpolation refs.
+          // Unquoted labels are either enum variant names or param-ref
+          // matches — the collector cannot distinguish them without type
+          // context, so param-ref labels are handled separately by the
+          // unused-param checker (which has the declared param set).
           for (const variant of arm.variants) {
             if (
               (variant.startsWith('"') && variant.endsWith('"')) ||
               (variant.startsWith("'") && variant.endsWith("'"))
             ) {
-              // Quoted string: extract {{ expr }} interpolation refs
               extractInterpolationRefs(
                 variant.slice(1, -1),
                 refs,
                 loopBindings,
               );
-            } else {
-              // Unquoted label: could be a param name used as a dynamic case
-              const root = extractRootVariable(variant, loopBindings);
-              if (root) refs.add(root);
             }
           }
           collectRefsInner(arm.body, refs, loopBindings);
@@ -394,10 +409,20 @@ function collectRefsInner(
       }
 
       case NODE_INCLUDE:
-        // Include with-mappings reference variables
+        // Include with-mappings reference variables. A quoted value is a
+        // string literal that may embed {{ expr }} interpolation (mirrors the
+        // renderer); collect those refs the same way. An unquoted value is a
+        // plain expression (path/function/filter).
         for (const [, valExpr] of node.withMappings) {
-          const root = extractRootVariable(valExpr, loopBindings);
-          if (root) refs.add(root);
+          if (
+            (valExpr.startsWith('"') && valExpr.endsWith('"')) ||
+            (valExpr.startsWith("'") && valExpr.endsWith("'"))
+          ) {
+            extractInterpolationRefs(valExpr.slice(1, -1), refs, loopBindings);
+          } else {
+            const root = extractRootVariable(valExpr, loopBindings);
+            if (root) refs.add(root);
+          }
         }
         // Include for-binding iteration expression
         if (node.forExpr) {
@@ -405,7 +430,7 @@ function collectRefsInner(
           if (root) refs.add(root);
         }
         // Dynamic include paths with {{ expr }}
-        if (node.path && node.path.includes(EXPR_START)) {
+        if (node.path?.includes(EXPR_START)) {
           let remaining = node.path;
           while (remaining.includes(EXPR_START)) {
             const startIdx = remaining.indexOf(EXPR_START);
@@ -486,4 +511,54 @@ export function collectForBindings(nodes: readonly Node[]): Set<string> {
     }
   }
   return bindings;
+}
+
+/**
+ * Collect all unquoted case labels from match nodes in the AST.
+ *
+ * Used by the unused-param checker: if a declared param name appears as an
+ * unquoted case label, the runtime reads that param's value for comparison,
+ * so it counts as "used". The collector cannot do this directly because it
+ * doesn't have access to the declared param set (and would confuse enum
+ * variant names like "Active" with param names).
+ */
+export function collectUnquotedCaseLabels(nodes: readonly Node[]): Set<string> {
+  const labels = new Set<string>();
+  collectLabelsInner(nodes, labels);
+  return labels;
+}
+
+function collectLabelsInner(nodes: readonly Node[], labels: Set<string>): void {
+  for (const node of nodes) {
+    if (node.kind === NODE_MATCH) {
+      for (const arm of node.arms) {
+        for (const variant of arm.variants) {
+          // Only collect unquoted labels (not quoted strings)
+          if (!(
+            (variant.startsWith('"') && variant.endsWith('"')) ||
+            (variant.startsWith("'") && variant.endsWith("'"))
+          )) {
+            labels.add(variant);
+          }
+        }
+        collectLabelsInner(arm.body, labels);
+      }
+      if (node.elseArm) {
+        collectLabelsInner(node.elseArm, labels);
+      }
+      if (node.inlineGuard) {
+        collectLabelsInner(node.inlineGuard.body, labels);
+      }
+    } else if ("body" in node && Array.isArray(node.body)) {
+      collectLabelsInner(node.body, labels);
+    }
+    if ("branches" in node && Array.isArray(node.branches)) {
+      for (const branch of node.branches as { body: Node[] }[]) {
+        collectLabelsInner(branch.body, labels);
+      }
+    }
+    if ("elseBody" in node && Array.isArray(node.elseBody)) {
+      collectLabelsInner(node.elseBody, labels);
+    }
+  }
 }

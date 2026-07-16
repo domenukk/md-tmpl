@@ -907,7 +907,6 @@ name = "bq_tag_content_1_blank"
 description = "Tag followed by 1 blank line (mandatory) — blank consumed, no extra whitespace"
 template = '''
 ---
-allow_unused: true
 params: [flag = bool]
 ---
 > {% if flag %}
@@ -927,7 +926,6 @@ name = "bq_tag_content_2_blanks"
 description = "Tag followed by 2 blank lines — 1 consumed, 1 preserved as extra newline"
 template = '''
 ---
-allow_unused: true
 params: [flag = bool]
 ---
 > {% if flag %}
@@ -949,7 +947,6 @@ name = "bq_tag_content_3_blanks"
 description = "Tag followed by 3 blank lines — 1 consumed, 2 preserved as extra newlines"
 template = '''
 ---
-allow_unused: true
 params: [flag = bool]
 ---
 > {% if flag %}
@@ -973,7 +970,6 @@ name = "bq_content_tag_1_blank"
 description = "Content followed by 1 blank line before tag — blank consumed"
 template = '''
 ---
-allow_unused: true
 params: [flag = bool]
 ---
 > {% if flag %}
@@ -995,7 +991,6 @@ name = "bq_content_tag_2_blanks"
 description = "Content followed by 2 blank lines before tag — 1 consumed, 1 preserved"
 template = '''
 ---
-allow_unused: true
 params: [flag = bool]
 ---
 > {% if flag %}
@@ -1019,7 +1014,6 @@ name = "bq_tag_tag_all_consumed"
 description = "Between consecutive standalone tags, all blank lines are consumed"
 template = '''
 ---
-allow_unused: true
 params: [a = bool, b = bool]
 ---
 > {% if a %}
@@ -1046,7 +1040,6 @@ name = "bq_trim_redundant_if_open_left"
 description = "Trim {%- on standalone if open is redundant — same output as non-trim"
 template = '''
 ---
-allow_unused: true
 params: [flag = bool]
 ---
 before   
@@ -1069,7 +1062,6 @@ name = "bq_trim_redundant_if_open_right"
 description = "Trim -%} on standalone if open is redundant — same output as non-trim"
 template = '''
 ---
-allow_unused: true
 params: [flag = bool]
 ---
 > {% if flag -%}
@@ -1089,7 +1081,6 @@ name = "bq_trim_redundant_if_close_left"
 description = "Trim {%- on standalone /if is redundant — same output as non-trim"
 template = '''
 ---
-allow_unused: true
 params: [flag = bool]
 ---
 > {% if flag %}
@@ -1109,7 +1100,6 @@ name = "bq_trim_redundant_if_both"
 description = "Trim {%- -%} on standalone if is redundant — same output as non-trim"
 template = '''
 ---
-allow_unused: true
 params: [flag = bool]
 ---
 before   
@@ -1132,7 +1122,6 @@ name = "bq_trim_redundant_for"
 description = "Trim modifiers on standalone for loop are redundant"
 template = '''
 ---
-allow_unused: true
 params: [items = list(name = str)]
 ---
 > {%- for item in items -%}
@@ -1572,3 +1561,82 @@ expected_output = '''hello
 world
 '''
 params = {}
+
+[[tests]]
+name = "condition_operators_inside_string_literal"
+description = "||, && and == inside a quoted RHS literal are not treated as top-level operators"
+template = '''
+---
+params: [label = str]
+---
+> {% if label == "a || b && c == d" %}match{% else %}no{% /if %}'''
+expected_output = "match"
+
+[tests.params]
+label = "a || b && c == d"
+
+[[tests]]
+name = "condition_escaped_quote_in_string_literal"
+description = "A backslash-escaped quote does not close the literal; trailing operators stay literal"
+template = '''
+---
+params: [label = str]
+---
+> {% if label == "a\" && b || c" %}match{% else %}no{% /if %}'''
+expected_output = "match"
+
+[tests.params]
+label = 'a" && b || c'
+
+[[tests]]
+name = "condition_escaped_single_quote_inside_literal"
+description = "A backslash-escaped single quote does not close a single-quoted literal"
+template = '''
+---
+params: [note = str]
+---
+> {% if note == 'x\' || y' %}match{% else %}no{% /if %}'''
+expected_output = "match"
+
+[tests.params]
+note = "x' || y"
+
+[[tests]]
+name = "condition_escaped_quote_analysis_detects_unused_param"
+description = "A param only appearing after an escaped quote inside a string literal is still unused; analysis must treat the whole literal as opaque, not a reference"
+template = '''
+---
+params: [label = str, ghost = str]
+---
+> {% if label == "x\" && ghost" %}hi{% else %}no{% /if %}'''
+expected_error = "unused"
+
+[tests.params]
+label = "nomatch"
+ghost = "g"
+
+[[tests]]
+name = "case_label_escaped_quote_matches"
+description = "A quoted case label containing an escaped quote matches a string value with that literal quote (label must be unescaped, mirroring Rust matching)"
+template = '''
+---
+params: [color = str]
+---
+> {% match color %}{% case "a\"b" %}match{% else %}no{% /match %}'''
+expected_output = "match"
+
+[tests.params]
+color = 'a"b'
+
+[[tests]]
+name = "join_filter_escaped_quote_separator"
+description = "join() unescapes escaped quotes in its separator argument, mirroring Rust filter arg handling"
+template = '''
+---
+params: [items = list(str)]
+---
+> {{ items | join("\"") }}'''
+expected_output = '> a"b'
+
+[tests.params]
+items = ["a", "b"]

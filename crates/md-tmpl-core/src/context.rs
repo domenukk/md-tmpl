@@ -157,11 +157,15 @@ impl Context {
         })?;
         Self::from_value(val)
     }
+}
 
+/// CBOR support — behind the `cbor` feature, which implies `serde`.
+///
+/// Available in `no_std` — ciborium uses its own `Read` trait with a
+/// blanket impl for `&[u8]`.
+#[cfg(feature = "cbor")]
+impl Context {
     /// Build a `Context` from a CBOR binary buffer.
-    ///
-    /// Available in `no_std` — ciborium uses its own `Read` trait with a
-    /// blanket impl for `&[u8]`.
     ///
     /// # Errors
     ///
@@ -174,10 +178,9 @@ impl Context {
     }
 }
 
-/// `FlexBuffers` support — requires `std` (the `flexbuffers` crate does not
-/// support `no_std`).
-#[cfg(feature = "std")]
-#[cfg(feature = "serde")]
+/// `FlexBuffers` support — behind the `flexbuffers` feature, which implies
+/// `std` and `serde` (the `flexbuffers` crate does not support `no_std`).
+#[cfg(feature = "flexbuffers")]
 impl Context {
     /// Build a `Context` from a `FlexBuffers` binary buffer.
     ///
@@ -268,5 +271,59 @@ mod tests {
         ctx.set("kind_of", "something");
         assert!(ctx.get("kind").is_some());
         assert!(ctx.get("__type__").is_some());
+    }
+
+    #[cfg(feature = "cbor")]
+    #[test]
+    fn from_cbor_roundtrip() {
+        use alloc::{collections::BTreeMap, vec::Vec};
+
+        let source = BTreeMap::from([("name", "Alice"), ("role", "admin")]);
+        let mut buf = Vec::new();
+        ciborium::into_writer(&source, &mut buf).expect("cbor encode");
+
+        let ctx = Context::from_cbor(&buf).expect("from_cbor");
+        assert_eq!(ctx.get("name"), Some(&Value::Str("Alice".into())));
+        assert_eq!(ctx.get("role"), Some(&Value::Str("admin".into())));
+    }
+
+    #[cfg(feature = "cbor")]
+    #[test]
+    fn from_cbor_rejects_non_map() {
+        use alloc::vec::Vec;
+
+        let mut buf = Vec::new();
+        ciborium::into_writer(&42_i64, &mut buf).expect("cbor encode");
+        Context::from_cbor(&buf).expect_err("a non-map CBOR value must not produce a Context");
+    }
+
+    #[cfg(feature = "cbor")]
+    #[test]
+    fn from_cbor_rejects_garbage() {
+        Context::from_cbor(&[]).expect_err("empty buffer must error");
+        Context::from_cbor(&[0xde, 0xad, 0xbe, 0xef])
+            .expect_err("garbage bytes must error without panicking");
+    }
+
+    #[cfg(feature = "flexbuffers")]
+    #[test]
+    fn from_flexbuffers_roundtrip() {
+        use serde::Serialize;
+
+        let source = alloc::collections::BTreeMap::from([("name", "Alice"), ("role", "admin")]);
+        let mut ser = flexbuffers::FlexbufferSerializer::new();
+        source.serialize(&mut ser).expect("flexbuffers encode");
+
+        let ctx = Context::from_flexbuffers(ser.view()).expect("from_flexbuffers");
+        assert_eq!(ctx.get("name"), Some(&Value::Str("Alice".into())));
+        assert_eq!(ctx.get("role"), Some(&Value::Str("admin".into())));
+    }
+
+    #[cfg(feature = "flexbuffers")]
+    #[test]
+    fn from_flexbuffers_rejects_garbage() {
+        Context::from_flexbuffers(&[]).expect_err("empty flexbuffer must error");
+        Context::from_flexbuffers(&[0xde, 0xad, 0xbe, 0xef])
+            .expect_err("garbage flexbuffer must error without panicking");
     }
 }

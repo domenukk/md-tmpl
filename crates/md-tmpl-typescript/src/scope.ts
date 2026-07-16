@@ -21,7 +21,10 @@ import {
 export class Scope {
   private readonly ctx: ReadonlyMap<string, Value>;
   private readonly layers: Map<string, Value>[] = [];
-  private readonly loopMetas: Map<string, LoopMeta> = new Map();
+  private readonly loopMetas = new Map<string, LoopMeta>();
+  /** Option params that have been narrowed to Some (unwrapped) in an enclosing
+   *  match/if-has arm. One set per layer so narrowing is properly scoped. */
+  private readonly narrowedOptions: Set<string>[] = [];
   private readonly consts: ReadonlyMap<string, Value>;
   private readonly optionParams: ReadonlySet<string>;
   private readonly typeAliases: ReadonlyMap<string, unknown>;
@@ -44,27 +47,48 @@ export class Scope {
    */
   isOptionParam(path: string): boolean {
     // Check exact match first
-    if (this.optionParams.has(path)) return true;
-    // For dotted paths, check if the root is known as option
-    const dotIdx = path.indexOf(DOT);
-    if (dotIdx > 0) {
-      return this.optionParams.has(path);
+    if (!this.optionParams.has(path)) {
+      // For dotted paths, check if the root is known as option
+      const dotIdx = path.indexOf(DOT);
+      if (dotIdx > 0) {
+        if (!this.optionParams.has(path)) return false;
+      } else {
+        return false;
+      }
     }
-    return false;
+    // If narrowed (unwrapped via case Some / if has()), no longer option
+    for (let i = this.narrowedOptions.length - 1; i >= 0; i--) {
+      if (this.narrowedOptions[i]?.has(path)) return false;
+    }
+    return true;
   }
 
-  getTypeAlias(name: string): unknown | undefined {
+  /**
+   * Mark an option param as narrowed (unwrapped) in the current scope.
+   * After narrowing, `isOptionParam(name)` returns false so inner match blocks
+   * see the unwrapped value instead of the option wrapper.
+   */
+  narrowOption(name: string): void {
+    const top = this.narrowedOptions[this.narrowedOptions.length - 1];
+    if (top) {
+      top.add(name);
+    }
+  }
+
+  getTypeAlias(name: string): unknown {
     return this.typeAliases.get(name);
   }
 
   pushLayer(): Map<string, Value> {
     const layer = new Map<string, Value>();
     this.layers.push(layer);
+    this.narrowedOptions.push(new Set());
     return layer;
   }
 
   popLayer(): void {
     this.layers.pop();
+    this.narrowedOptions.pop();
   }
 
   setLoopMeta(binding: string, meta: LoopMeta): void {
@@ -82,7 +106,9 @@ export class Scope {
 
     // 2. Layers (innermost first)
     for (let i = this.layers.length - 1; i >= 0; i--) {
-      const v = this.layers[i]!.get(key);
+      const layer = this.layers[i];
+      if (layer === undefined) continue;
+      const v = layer.get(key);
       if (v !== undefined) return v;
     }
 

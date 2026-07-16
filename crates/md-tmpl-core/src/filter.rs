@@ -140,9 +140,13 @@ fn apply_fixed(value: &Value, args: Option<&str>) -> Result<Value, TemplateError
     }
 }
 
-/// Strip surrounding single or double quotes from a filter argument.
-fn strip_quotes(s: &str) -> &str {
-    crate::consts::strip_string_literal(s).unwrap_or(s)
+/// Strip surrounding single or double quotes from a filter argument and apply
+/// md-tmpl's uniform escape unescaping to the inner content.
+fn strip_quotes(s: &str) -> alloc::borrow::Cow<'_, str> {
+    match crate::consts::strip_string_literal(s) {
+        Some(inner) => alloc::borrow::Cow::Owned(crate::consts::unescape_string_literal(inner)),
+        None => alloc::borrow::Cow::Borrowed(s),
+    }
 }
 
 /// Join list items into a single string with a separator.
@@ -155,7 +159,7 @@ fn apply_join(value: &Value, args: Option<&str>) -> Result<Value, TemplateError>
             let mut buf = String::new();
             for (i, v) in items.iter().enumerate() {
                 if i > 0 {
-                    buf.push_str(separator);
+                    buf.push_str(&separator);
                 }
                 match v {
                     Value::Str(s) => buf.push_str(s),

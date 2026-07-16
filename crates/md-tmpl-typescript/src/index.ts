@@ -55,9 +55,13 @@ export {
   type ITemplate,
   type CachedInclude,
   type CompileOptions,
+  type FsProvider,
+  type PathProvider,
   Template,
   TypedTemplate,
   TemplateCache,
+  setFileSystemProvider,
+  resetFileSystemProvider,
 } from "./template.js";
 export { Context } from "./context.js";
 

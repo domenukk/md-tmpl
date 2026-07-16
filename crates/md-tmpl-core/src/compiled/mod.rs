@@ -19,9 +19,9 @@ use alloc::{
     vec::Vec,
 };
 
-// Re-export submodule items used by the rest of the crate.
-pub use analysis::collect_referenced_params;
 use analysis::parse_condition;
+// Re-export submodule items used by the rest of the crate.
+pub use analysis::{collect_referenced_params, collect_unquoted_case_labels};
 #[cfg(feature = "std")]
 pub(crate) use render::register_loop_meta;
 pub(crate) use render::render_interpolated_str;

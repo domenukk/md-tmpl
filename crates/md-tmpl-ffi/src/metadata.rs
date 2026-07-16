@@ -169,6 +169,11 @@ pub(crate) fn value_to_json(val: &Value) -> String {
 ///
 /// Returns `"{}"` if no defaults exist.
 ///
+/// # Panics
+///
+/// Panics if `CString::new` fails on the JSON output (should not happen
+/// unless default values contain interior NUL bytes).
+///
 /// # Safety
 ///
 /// `tmpl` must be a valid template handle.
@@ -197,6 +202,11 @@ pub unsafe extern "C" fn pt_template_defaults_json(tmpl: *const PtTemplate) -> *
 /// The caller must free the string with `pt_free_string`.
 ///
 /// Returns `"{}"` if no constants exist.
+///
+/// # Panics
+///
+/// Panics if `CString::new` fails on the JSON output (should not happen
+/// unless constant values contain interior NUL bytes).
 ///
 /// # Safety
 ///
@@ -247,6 +257,11 @@ pub unsafe extern "C" fn pt_template_defaults_context(tmpl: *const PtTemplate) -
 ///
 /// The caller must free the string with `pt_free_string`.
 /// Returns `"{}"` if no imported constants exist.
+///
+/// # Panics
+///
+/// Panics if `CString::new` fails on the JSON output (should not happen
+/// unless imported constant values contain interior NUL bytes).
 ///
 /// # Safety
 ///

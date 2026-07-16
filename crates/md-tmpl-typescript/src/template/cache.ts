@@ -5,7 +5,7 @@
  */
 
 import { TemplateError } from "../errors.js";
-import { type CachedInclude } from "./types.js";
+import { type CachedInclude, type IncludeCacheEntry } from "./types.js";
 import { getFs, getPath, hashString } from "./utils.js";
 import { resolveIncludeEntry } from "./includes.js";
 import { Template } from "./template_class.js";
@@ -23,12 +23,11 @@ import { Template } from "./template_class.js";
  * ```
  */
 export class TemplateCache {
-  private readonly cache: Map<string, { hash: number; template: Template }> =
-    new Map();
-  private readonly includes: Map<
+  private readonly cache = new Map<
     string,
-    { hash: number; mtimeMs: number; cached: CachedInclude }
-  > = new Map();
+    { hash: number; template: Template }
+  >();
+  private readonly includes = new Map<string, IncludeCacheEntry>();
   private readonly maxEntries: number | undefined;
 
   constructor(options?: { maxEntries?: number }) {
@@ -49,7 +48,7 @@ export class TemplateCache {
 
     const hash = hashString(source);
     const cached = this.cache.get(absPath);
-    if (cached && cached.hash === hash) {
+    if (cached?.hash === hash) {
       return cached.template;
     }
 

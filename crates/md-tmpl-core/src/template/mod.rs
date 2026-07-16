@@ -350,10 +350,12 @@ impl Template {
 
         // --- Static analysis ---
         let referenced = compiled::collect_referenced_params(&segments);
+        let case_labels = compiled::collect_unquoted_case_labels(&segments);
         check_undeclared_variables(&referenced, &fm, &inline_templates)?;
         check_unused_params(
             &fm.declarations,
             &referenced,
+            &case_labels,
             force_allow_unused || fm.allow_unused,
         )?;
         check_name_collisions(&fm, &inline_templates, &segments)?;
@@ -427,10 +429,12 @@ impl Template {
         let (segments, inline_templates) = compiled::compile(&body, &fm.type_aliases)?;
 
         let referenced = compiled::collect_referenced_params(&segments);
+        let case_labels = compiled::collect_unquoted_case_labels(&segments);
         check_undeclared_variables(&referenced, &fm, &inline_templates)?;
         check_unused_params(
             &fm.declarations,
             &referenced,
+            &case_labels,
             force_allow_unused || fm.allow_unused,
         )?;
         check_name_collisions(&fm, &inline_templates, &segments)?;

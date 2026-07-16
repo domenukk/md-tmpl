@@ -720,3 +720,114 @@ fn template_inline_string_env_still_works() {
     let output = env_str_compat::Params { count: 42 }.render().unwrap();
     assert_eq!(output, "Total: 42\n");
 }
+
+// ── template! with Rust keyword param names (raw ident codegen) ─────
+
+md_tmpl_macros::template!(
+    r#"
+---
+params:
+  - type = str
+  - match = int
+  - loop = str
+---
+{{ type }}: {{ match }} (loop={{ loop }})
+"# => keyword_params
+);
+
+#[test]
+fn template_keyword_param_names_render() {
+    let output = keyword_params::Params {
+        r#type: "widget".into(),
+        r#match: 42,
+        r#loop: "forever".into(),
+    }
+    .render()
+    .unwrap();
+    assert_eq!(output, "widget: 42 (loop=forever)\n");
+}
+
+#[test]
+fn template_keyword_param_to_context() {
+    let params = keyword_params::Params {
+        r#type: "gadget".into(),
+        r#match: 7,
+        r#loop: "once".into(),
+    };
+    let ctx = params.to_context();
+    let tmpl = keyword_params::template();
+    let output = tmpl.render_ctx(&ctx).unwrap();
+    assert_eq!(output, "gadget: 7 (loop=once)\n");
+}
+
+// ── template! with keyword as struct field name ─────────────────────
+
+md_tmpl_macros::template!(
+    r#"
+---
+params:
+  - items = list(type = str, value = int)
+---
+
+> {% for item in items %}
+
+{{ item.type }}={{ item.value }}
+
+> {% /for %}
+"# => keyword_struct_field
+);
+
+#[test]
+fn template_keyword_struct_field_render() {
+    let output = keyword_struct_field::Params {
+        items: vec![
+            keyword_struct_field::ParamsItemsItem {
+                r#type: "a".into(),
+                value: 1,
+            },
+            keyword_struct_field::ParamsItemsItem {
+                r#type: "b".into(),
+                value: 2,
+            },
+        ],
+    }
+    .render()
+    .unwrap();
+    assert_eq!(output, "a=1\nb=2\n");
+}
+
+// ── template! with un-escapable keywords (self → __self) ────────────
+
+md_tmpl_macros::template!(
+    r#"
+---
+params:
+  - self = str
+  - super = str
+---
+{{ self }}: {{ super }}
+"# => unescapable_keyword_params
+);
+
+#[test]
+fn template_unescapable_keyword_self_renders() {
+    let output = unescapable_keyword_params::Params {
+        __self: "me".into(),
+        __super: "parent".into(),
+    }
+    .render()
+    .unwrap();
+    assert_eq!(output, "me: parent\n");
+}
+
+#[test]
+fn template_unescapable_keyword_to_context() {
+    let params = unescapable_keyword_params::Params {
+        __self: "me".into(),
+        __super: "up".into(),
+    };
+    let ctx = params.to_context();
+    let tmpl = unescapable_keyword_params::template();
+    let output = tmpl.render_ctx(&ctx).unwrap();
+    assert_eq!(output, "me: up\n");
+}

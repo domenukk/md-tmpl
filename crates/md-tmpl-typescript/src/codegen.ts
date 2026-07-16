@@ -90,7 +90,7 @@ export function generateTypes(
 ): string {
   const [fm] = parseFrontmatter(source);
   const opts = resolveOptions(options);
-  const ctx = new CodegenContext(opts, fm.typeAliases);
+  const ctx = new CodegenContext(opts);
 
   // Resolve type aliases first (emits their definitions)
   for (const [name, varType] of fm.typeAliases) {
@@ -212,10 +212,7 @@ class CodegenContext {
   /** Set of names already generated to avoid duplicates. */
   private readonly generatedNames = new Set<string>();
 
-  constructor(
-    opts: ResolvedOptions,
-    _typeAliases: ReadonlyMap<string, VarType>,
-  ) {
+  constructor(opts: ResolvedOptions) {
     this.opts = opts;
   }
 
@@ -332,7 +329,7 @@ class CodegenContext {
         lines.push(` * import { Template } from "md-tmpl";`);
         lines.push(` * const tmpl = Template.fromFile("my_template.tmpl.md");`);
         lines.push(
-          ` * const output = render(tmpl, { ${params.length > 0 ? `${params[0]!.name}: ...` : ""} });`,
+          ` * const output = render(tmpl, { ${params[0] ? `${params[0].name}: ...` : ""} });`,
         );
         lines.push(` * \`\`\``);
         lines.push(" */");
@@ -382,12 +379,12 @@ class CodegenContext {
       case TYPE_ENUM: {
         if (vt.isOption) {
           const someVariant = vt.variants.find((v) => v.name === OPTION_SOME);
-          if (someVariant && someVariant.fields.length === 1) {
-            const innerType = this.varTypeToTs(
-              fieldName,
-              someVariant.fields[0]!.varType,
-            );
-            return `${innerType} | null`;
+          if (someVariant?.fields.length === 1) {
+            const someField = someVariant.fields[0];
+            if (someField !== undefined) {
+              const innerType = this.varTypeToTs(fieldName, someField.varType);
+              return `${innerType} | null`;
+            }
           }
         }
         const enumName = pascalCase(fieldName);
@@ -580,8 +577,11 @@ function varTypeToLabel(vt: VarType): string {
     case TYPE_ENUM:
       if (vt.isOption) {
         const someVariant = vt.variants.find((v) => v.name === OPTION_SOME);
-        if (someVariant && someVariant.fields.length === 1) {
-          return `option(${varTypeToLabel(someVariant.fields[0]!.varType)})`;
+        if (someVariant?.fields.length === 1) {
+          const someField = someVariant.fields[0];
+          if (someField !== undefined) {
+            return `option(${varTypeToLabel(someField.varType)})`;
+          }
         }
       }
       return `enum(${vt.variants.map((v) => v.name).join(", ")})`;
@@ -620,8 +620,11 @@ function varTypeToTsType(
     case TYPE_ENUM: {
       if (vt.isOption) {
         const someVariant = vt.variants.find((v) => v.name === OPTION_SOME);
-        if (someVariant && someVariant.fields.length === 1) {
-          return `${varTypeToTsType(_fieldName, someVariant.fields[0]!.varType, typeAliases)} | null`;
+        if (someVariant?.fields.length === 1) {
+          const someField = someVariant.fields[0];
+          if (someField !== undefined) {
+            return `${varTypeToTsType(_fieldName, someField.varType, typeAliases)} | null`;
+          }
         }
       }
       const parts = vt.variants.map((v) => {

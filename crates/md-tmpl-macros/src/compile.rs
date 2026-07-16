@@ -108,9 +108,36 @@ fn check_undeclared_variables(
     }
     // Type alias names are valid references in kind()/kinds() expressions
     // (e.g., `kind(Status.Active)`, `kinds(Role)`).
-    for type_name in fm.type_aliases.keys() {
-        declared.insert(type_name.clone());
+    // Enum variant names (e.g. `Active`, `Paused`) appear as unquoted labels
+    // in match arms and are collected by the analysis — they must not be
+    // flagged as undeclared variables.  We only add top-level enum variants
+    // (not recursively nested ones) to avoid masking real typos.
+    for (type_name, var_type) in &fm.type_aliases {
+        if let md_tmpl_core::VarType::Enum(variants) = var_type {
+            declared.insert(type_name.clone());
+            for variant in variants {
+                declared.insert(variant.name.clone());
+            }
+        }
     }
+    // Variant names from inline enum types on params/consts
+    // (e.g. `status = enum(Open, Closed)` without a type alias).
+    for decl in fm.declarations.iter().chain(fm.consts.iter()) {
+        if let md_tmpl_core::VarType::Enum(variants) = &decl.var_type {
+            for variant in variants {
+                declared.insert(variant.name.clone());
+            }
+        }
+    }
+    // The wildcard `_` in `{% case _ %}` and boolean literals `true`/`false`
+    // in `{% case true %}` are pattern syntax, not variable references.
+    declared.insert("_".to_string());
+    declared.insert("true".to_string());
+    declared.insert("false".to_string());
+    // `Some` and `None` are option-type sentinels used in `{% case Some %}`
+    // and `{% case None %}` arms.
+    declared.insert("Some".to_string());
+    declared.insert("None".to_string());
     let undeclared: Vec<&String> = referenced
         .iter()
         .filter(|v| !declared.contains(v.as_str()))

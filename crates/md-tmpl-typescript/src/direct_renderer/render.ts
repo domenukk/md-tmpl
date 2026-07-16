@@ -27,6 +27,7 @@ import {
   NODE_PANIC,
   NODE_TEXT,
   NODE_TMPL,
+  unescapeStringLiteral,
 } from "../consts.js";
 import { type DirectRenderOptions } from "./options.js";
 import { DirectScope } from "./scope.js";
@@ -52,10 +53,10 @@ export function directLabelMatches(
   // Quoted string literal: strip quotes and compare (with interpolation).
   if (
     label.length >= 2 &&
-    ((label[0] === '"' && label[label.length - 1] === '"') ||
-      (label[0] === "'" && label[label.length - 1] === "'"))
+    ((label.startsWith('"') && label.endsWith('"')) ||
+      (label.startsWith("'") && label.endsWith("'")))
   ) {
-    const inner = label.slice(1, -1);
+    const inner = unescapeStringLiteral(label.slice(1, -1));
     if (inner.includes(EXPR_START)) {
       try {
         return interpolateDirectString(inner, scope) === variantName;
@@ -101,7 +102,8 @@ export function renderDirectNodes(
   const parts: string[] = [];
 
   for (let i = 0; i < nodes.length; i++) {
-    const node = nodes[i]!;
+    const node = nodes[i];
+    if (node === undefined) continue;
     switch (node.kind) {
       case NODE_TEXT:
         parts.push(node.text);
@@ -109,17 +111,19 @@ export function renderDirectNodes(
 
       case NODE_EXPR: {
         if (node.trimBefore && parts.length > 0) {
-          const last = parts[parts.length - 1]!;
-          parts[parts.length - 1] = last.replace(/\s+$/, "");
+          const last = parts[parts.length - 1];
+          if (last !== undefined) {
+            parts[parts.length - 1] = last.replace(/\s+$/, "");
+          }
         }
         const val = evaluateDirectExpr(node.expr, scope);
         parts.push(directDisplay(val));
         if (node.trimAfter) {
           // Trim leading whitespace from the next text node without
           // mutating the AST (which would corrupt subsequent renders).
-          if (i + 1 < nodes.length && nodes[i + 1]!.kind === NODE_TEXT) {
-            const next = nodes[i + 1]! as { kind: "text"; text: string };
-            parts.push(next.text.replace(/^\s+/, ""));
+          const nextNode = nodes[i + 1];
+          if (nextNode?.kind === NODE_TEXT) {
+            parts.push(nextNode.text.replace(/^\s+/, ""));
             i++; // skip the next node — we already handled it
           }
         }
@@ -140,7 +144,7 @@ export function renderDirectNodes(
           parts.push(renderDirectNodes(node.elseBody, scope, options));
         } else {
           for (let idx = 0; idx < listVal.length; idx++) {
-            const item = listVal[idx];
+            const item: unknown = listVal[idx];
             const layer = scope.pushLayer();
             layer.set(node.binding, item);
             scope.setLoopIndex(node.binding, idx);
@@ -220,9 +224,9 @@ export function renderDirectNodes(
           );
         }
         let includedNodes: readonly Node[];
-        let loadedConsts = new Map<string, unknown>();
+        const loadedConsts = new Map<string, unknown>();
         let decls: readonly VarDecl[];
-        let childOpts: DirectRenderOptions | undefined = options;
+        let childOpts: DirectRenderOptions | undefined;
 
         if (node.path !== undefined) {
           if (!options?.templateLoader) {

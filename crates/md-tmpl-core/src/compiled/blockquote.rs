@@ -415,4 +415,95 @@ OFF
             "inline if should be preserved: {result}"
         );
     }
+
+    // -- `> {{ }}` (expression) is literal blockquote, NOT stripped (SPEC §Blockquotes) --
+
+    #[test]
+    fn expression_blockquote_not_stripped() {
+        // `> {{ x }}` is a literal markdown blockquote — the `> ` must be preserved.
+        let input = "> {{ title }}";
+        let result = strip_blockquote_tags(input);
+        assert_eq!(
+            result.as_ref(),
+            "> {{ title }}",
+            "> before {{ }} is literal"
+        );
+    }
+
+    #[test]
+    fn expression_blockquote_mixed_with_tags() {
+        // `> {{ expr }}` is literal; `> {% tag %}` is stripped.
+        let input = r"
+> {% if show %}
+
+> {{ name }} is visible
+
+> {% /if %}";
+        let result = strip_blockquote_tags(input);
+        // `> ` on the {{ }} line must be preserved.
+        assert!(
+            result.contains("> {{ name }} is visible"),
+            "`> ` before expression should be preserved: {result}"
+        );
+        // `> ` on the {% %} lines must be stripped.
+        assert!(
+            result.contains("{% if show %}"),
+            "`> ` before tag should be stripped: {result}"
+        );
+    }
+
+    #[test]
+    fn expression_blockquote_does_not_require_blank_lines() {
+        // `> {{ x }}` is a content line, not a tag — blank lines around it are NOT required.
+        let input = r"
+> {% if show %}
+
+> {{ title }}
+
+> {% /if %}";
+        let result = validate_blockquote_prefix(input);
+        assert!(
+            // NOLINT: test assertion — we only care about Ok/Err, the error value is checked elsewhere
+            result.is_ok(),
+            "> {{ }} content line should not require blank lines beyond what tags need"
+        );
+    }
+
+    #[test]
+    fn expression_blockquote_adjacent_to_tag_accepted() {
+        // `> {{ expr }}` is a content line — it counts as normal content.
+        // The tag still needs a blank line before content, but `> {{ }}` is
+        // a valid tag neighbor because it's just content.
+        let input = r"
+> {% if show %}
+
+> {{ title }}
+
+> {% /if %}
+";
+        let result = validate_blockquote_prefix(input);
+        assert!(
+            // NOLINT: test assertion — we only care about Ok/Err, the error value is checked elsewhere
+            result.is_ok(),
+            "> {{{{ }}}} adjacent to > {{%...%}} via blank line should be accepted"
+        );
+    }
+
+    #[test]
+    fn strip_blockquote_line_only_strips_tags() {
+        // Direct unit test: `> {{ x }}` → not stripped (returns original).
+        let expr_line = "> {{ value }}";
+        assert!(
+            core::ptr::eq(strip_blockquote_line(expr_line), expr_line),
+            "expression line should not be stripped"
+        );
+
+        // `> {% if %}` → stripped.
+        let tag_line = "> {% if x %}";
+        assert!(
+            !core::ptr::eq(strip_blockquote_line(tag_line), tag_line),
+            "tag line should be stripped"
+        );
+        assert_eq!(strip_blockquote_line(tag_line), "{% if x %}");
+    }
 }

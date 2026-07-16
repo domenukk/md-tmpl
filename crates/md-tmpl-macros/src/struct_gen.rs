@@ -1,4 +1,4 @@
-use quote::{format_ident, quote};
+use quote::quote;
 
 use crate::{
     codegen::{codegen_value_as_rust_literal, is_scalar},
@@ -73,7 +73,7 @@ pub(crate) fn generate_struct_tokens(
     let mut expected_vars = Vec::new();
 
     for decl in &frontmatter.declarations {
-        let field_name = format_ident!("{}", decl.name);
+        let field_name = crate::make_ident(&decl.name);
         let var_name_str = &decl.name;
         let (field_type, field_set) = var_type_to_rust(
             &decl.var_type,
@@ -83,7 +83,8 @@ pub(crate) fn generate_struct_tokens(
         );
 
         let builder_attrs = builder_field_attrs(&decl.var_type);
-        fields.push(quote! { #builder_attrs pub #field_name: #field_type });
+        let rename_attr = crate::serde_rename_attr(&decl.name);
+        fields.push(quote! { #rename_attr #builder_attrs pub #field_name: #field_type });
         set_stmts.push(field_set(quote! { self.#field_name }, var_name_str));
         expected_vars.push(var_name_str.clone());
     }
@@ -115,6 +116,7 @@ pub(crate) fn generate_struct_tokens(
 
         #(#doc_attrs)*
         #derive_attrs
+        #[allow(clippy::pub_underscore_fields)]
         pub struct #struct_name {
             #(#fields),*
         }
@@ -189,7 +191,7 @@ pub(crate) fn generate_const_decl_tokens(
     let mut const_decls = Vec::new();
     for decl in consts {
         let const_name = decl.name.to_uppercase();
-        let const_ident = format_ident!("{}", const_name);
+        let const_ident = crate::make_ident(&const_name);
         let (rust_type, _) =
             var_type_to_rust(&decl.var_type, struct_name_str, &decl.name, sub_structs);
 

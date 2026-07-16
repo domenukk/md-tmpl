@@ -11,5 +11,13 @@ export type {
   ITemplate,
   CompileOptions,
   CachedInclude,
+  FsProvider,
+  PathProvider,
 } from "./template/index.js";
-export { Template, TypedTemplate, TemplateCache } from "./template/index.js";
+export {
+  Template,
+  TypedTemplate,
+  TemplateCache,
+  setFileSystemProvider,
+  resetFileSystemProvider,
+} from "./template/index.js";

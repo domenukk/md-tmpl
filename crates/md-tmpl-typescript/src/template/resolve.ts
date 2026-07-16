@@ -187,7 +187,7 @@ export function resolveImportedConsts(
       importSource = fsModule.readFileSync(fullPath, "utf-8");
     } catch (err) {
       throw new TemplateError(
-        `cannot read imported template file '${fullPath}' for stem '${imp.stem}': ${err}`,
+        `cannot read imported template file '${fullPath}' for stem '${imp.stem}': ${String(err)}`,
       );
     }
 

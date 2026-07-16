@@ -371,10 +371,9 @@ impl Value {
     }
 }
 
-/// `FlexBuffers` support — requires `std` (the `flexbuffers` crate does not
-/// support `no_std`).
-#[cfg(feature = "std")]
-#[cfg(feature = "serde")]
+/// `FlexBuffers` support — behind the `flexbuffers` feature, which implies
+/// `std` and `serde` (the `flexbuffers` crate does not support `no_std`).
+#[cfg(feature = "flexbuffers")]
 impl Value {
     /// Create a `Value` from a `FlexBuffers` binary buffer.
     ///
@@ -636,6 +635,33 @@ mod tests {
             Value::Struct(Arc::new(HashMap::new())).to_string(),
             "{<struct of 0>}"
         );
+    }
+
+    // -- FlexBuffers --
+
+    #[cfg(feature = "flexbuffers")]
+    #[test]
+    fn from_flexbuffers_roundtrip() {
+        use serde::Serialize;
+
+        let source = alloc::collections::BTreeMap::from([("name", "Alice"), ("role", "admin")]);
+        let mut ser = flexbuffers::FlexbufferSerializer::new();
+        source.serialize(&mut ser).expect("flexbuffers encode");
+
+        match Value::from_flexbuffers(ser.view()).expect("from_flexbuffers") {
+            Value::Struct(map) => {
+                assert_eq!(map.get("name"), Some(&Value::Str("Alice".into())));
+                assert_eq!(map.get("role"), Some(&Value::Str("admin".into())));
+            }
+            _ => panic!("expected a struct value"),
+        }
+    }
+
+    #[cfg(feature = "flexbuffers")]
+    #[test]
+    fn from_flexbuffers_rejects_garbage() {
+        Value::from_flexbuffers(&[0xde, 0xad, 0xbe, 0xef])
+            .expect_err("garbage flexbuffer must error without panicking");
     }
 
     // -- is_truthy --

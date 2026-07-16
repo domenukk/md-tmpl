@@ -36,7 +36,12 @@ import {
   QUOTE_DOUBLE,
   QUOTE_SINGLE,
   OPTION_SOME,
+  OPTION_NONE,
   MATCH_DEFAULT,
+  ENUM_TAG_KEY,
+  ENUM_VARIANTS_KEY,
+  LIT_TRUE,
+  LIT_FALSE,
   DOT,
   OP_IN_SPACED,
   NODE_EXPR,
@@ -51,6 +56,7 @@ import {
 
 /** Reserved keywords that cannot be used as parameter, constant, or type alias names. */
 const RESERVED_NAMES: ReadonlySet<string> = new Set([
+  // Type names
   TYPE_STR,
   TYPE_BOOL,
   TYPE_INT,
@@ -60,7 +66,22 @@ const RESERVED_NAMES: ReadonlySet<string> = new Set([
   TYPE_ENUM,
   TYPE_TMPL,
   TYPE_OPTION,
+  // Namespace
   "params",
+  // Pattern-syntax keywords (match/case arm labels)
+  LIT_TRUE,
+  LIT_FALSE,
+  OPTION_SOME,
+  OPTION_NONE,
+  MATCH_DEFAULT,
+  // Internal enum keys
+  ENUM_TAG_KEY,
+  ENUM_VARIANTS_KEY,
+  // Codegen collision guards — Rust codegen renames self → __self etc.
+  "__self",
+  "__Self",
+  "__super",
+  "__crate",
 ]);
 
 /** Built-in type names. A type alias cannot shadow any of these. */
@@ -125,7 +146,8 @@ function varTypeEquals(a: VarType, b: VarType): boolean {
       const bFields = (b as typeof a).fields;
       if (a.fields.length !== bFields.length) return false;
       return a.fields.every((f, i) => {
-        const bf = bFields[i]!;
+        const bf = bFields[i];
+        if (bf === undefined) return false;
         return f.name === bf.name && varTypeEquals(f.varType, bf.varType);
       });
     }
@@ -133,11 +155,13 @@ function varTypeEquals(a: VarType, b: VarType): boolean {
       const bVariants = (b as typeof a).variants;
       if (a.variants.length !== bVariants.length) return false;
       return a.variants.every((v, i) => {
-        const bv = bVariants[i]!;
+        const bv = bVariants[i];
+        if (bv === undefined) return false;
         if (v.name !== bv.name || v.fields.length !== bv.fields.length)
           return false;
         return v.fields.every((f, j) => {
-          const bf = bv.fields[j]!;
+          const bf = bv.fields[j];
+          if (bf === undefined) return false;
           return f.name === bf.name && varTypeEquals(f.varType, bf.varType);
         });
       });
@@ -224,9 +248,16 @@ export function validateFrontmatter(fm: Frontmatter): void {
     }
   }
   for (const aliasName of fm.typeAliases.keys()) {
+    // Check reserved keywords first (matches Rust backend order).
     if (RESERVED_NAMES.has(aliasName)) {
       throw new TemplateSyntaxError(
         `reserved keyword used as name: '${aliasName}'`,
+      );
+    }
+    // Check built-in type shadowing (case-insensitive, catches e.g. "Str").
+    if (BUILTIN_TYPE_NAMES.has(aliasName.toLowerCase())) {
+      throw new TemplateSyntaxError(
+        `type alias shadows built-in type name: '${aliasName}'`,
       );
     }
   }
@@ -263,15 +294,6 @@ export function validateFrontmatter(fm: Frontmatter): void {
   // since Map.set overwrites. We check here for consistency.
   // (The Rust crate checks during parsing too, but we can't easily detect
   // duplicates from a Map after parsing. We rely on parse-time checks.)
-
-  // ── Built-in shadowing check ────────────────────────────────────────
-  for (const aliasName of fm.typeAliases.keys()) {
-    if (BUILTIN_TYPE_NAMES.has(aliasName.toLowerCase())) {
-      throw new TemplateSyntaxError(
-        `type alias shadows built-in type name: '${aliasName}'`,
-      );
-    }
-  }
 
   // ── Param ↔ const conflict (exact match) ────────────────────────────
   for (const param of fm.params) {
@@ -373,10 +395,21 @@ export function validateFrontmatter(fm: Frontmatter): void {
     for (const [aliasName, aliasType] of fm.typeAliases) {
       // Enum types are always used — they're auto-injected as constants.
       if (aliasType.kind === TYPE_ENUM) continue;
-      const isUsed = allDecls.some((d) =>
+      // Check if any param/const/env declaration references this alias.
+      const isUsedByDecl = allDecls.some((d) =>
         varTypeReferencesAlias(d.varType, aliasType, aliasName),
       );
-      if (!isUsed) {
+      if (isUsedByDecl) continue;
+      // Check if any other type alias references this alias (chained aliases).
+      let isUsedByAlias = false;
+      for (const [otherName, otherType] of fm.typeAliases) {
+        if (otherName === aliasName) continue;
+        if (varTypeReferencesAlias(otherType, aliasType, aliasName)) {
+          isUsedByAlias = true;
+          break;
+        }
+      }
+      if (!isUsedByAlias) {
         throw new TemplateSyntaxError(`unused type alias: '${aliasName}'`);
       }
     }
@@ -558,7 +591,7 @@ class TypeEnv {
    */
   resolveExprType(expr: string): VarType | undefined {
     // If filters are applied, skip — filters may transform the type.
-    if (expr.indexOf(PIPE) >= 0) return undefined;
+    if (expr.includes(PIPE)) return undefined;
 
     const pathStr = expr.trim();
 
@@ -571,9 +604,11 @@ class TypeEnv {
       return undefined;
     }
 
-    // Skip built-in functions — they return scalars
-    const funcMatch = pathStr.match(/^(\w+)\s*\(/);
-    if (funcMatch && SCALAR_FUNCTIONS.has(funcMatch[1]!)) {
+    // Skip built-in functions — they return scalars. Match a leading
+    // `name(` function-call form and check it against the scalar builtins.
+    const funcMatch = /^([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/.exec(pathStr);
+    const funcName = funcMatch?.[1];
+    if (funcName !== undefined && SCALAR_FUNCTIONS.has(funcName)) {
       return undefined;
     }
 
@@ -583,7 +618,8 @@ class TypeEnv {
 
     // Split dotted path: "user.address.city" → ["user", "address", "city"]
     const parts = pathStr.split(DOT);
-    const root = parts[0]!;
+    const root = parts[0];
+    if (root === undefined) return undefined;
 
     // Check if a prefix is narrowed (e.g. "x" narrowed, resolving "x.field")
     const rootNarrowed = this.narrowings.get(root);
@@ -609,7 +645,8 @@ class TypeEnv {
 
     // Walk remaining path segments
     for (let i = 1; i < parts.length; i++) {
-      const field = parts[i]!;
+      const field = parts[i];
+      if (field === undefined) continue;
       const resolved = resolveFieldType(currentType, field);
       if (resolved === undefined) return undefined;
       currentType = resolved;
@@ -675,7 +712,8 @@ function extractHasNarrowing(
   const match = /^has\(\s*([^)]+?)\s*\)$/.exec(trimmed);
   if (!match) return undefined;
 
-  const path = match[1]!;
+  const path = match[1];
+  if (path === undefined) return undefined;
   const ty = env.resolveExprType(path);
   if (!ty) return undefined;
 
@@ -686,8 +724,11 @@ function extractHasNarrowing(
   // Legacy enum-based option
   if (ty.kind === TYPE_ENUM && ty.isOption) {
     const someVariant = ty.variants.find((v) => v.name === OPTION_SOME);
-    if (someVariant && someVariant.fields.length === 1) {
-      return [path, someVariant.fields[0]!.varType];
+    if (someVariant?.fields.length === 1) {
+      const someField = someVariant.fields[0];
+      if (someField !== undefined) {
+        return [path, someField.varType];
+      }
     }
   }
 
@@ -712,8 +753,8 @@ function validateStaticCondition(
     const left = trimmed.slice(0, inIdx).trim();
     const right = trimmed.slice(inIdx + OP_IN_SPACED.length).trim();
     const kindsMatch = /^kinds\(\s*([a-zA-Z0-9_-]+)\s*\)$/.exec(right);
-    if (kindsMatch) {
-      const enumName = kindsMatch[1]!;
+    if (kindsMatch?.[1] !== undefined) {
+      const enumName = kindsMatch[1];
       const enumType = env.resolveExprType(enumName);
       if (enumType?.kind === TYPE_ENUM) {
         if (
@@ -958,12 +999,14 @@ export function validateDisplayability(
   walkNodesWithNarrowing(nodes, env, errors);
 
   if (errors.length > 0) {
-    const err = errors[0]!;
-    throw new TemplateSyntaxError(
-      err.message,
-      err.loc?.line,
-      err.loc?.column,
-      err.loc?.snippet,
-    );
+    const err = errors[0];
+    if (err !== undefined) {
+      throw new TemplateSyntaxError(
+        err.message,
+        err.loc?.line,
+        err.loc?.column,
+        err.loc?.snippet,
+      );
+    }
   }
 }

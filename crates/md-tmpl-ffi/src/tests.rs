@@ -1772,3 +1772,135 @@ from file",
         pt_template_free(tmpl);
     }
 }
+
+// ─── cached include + compile-env regression tests ───────────────────────────
+
+/// Write a parent template that includes a `PROMPTS_DIR`-driven child into
+/// `dir`, returning the parent source. The child's `env:` var has no default,
+/// so it must resolve from the parent's compile-time env on the cached path.
+fn write_env_include_fixture(dir: &std::path::Path) -> CString {
+    std::fs::write(
+        dir.join("child.tmpl.md"),
+        "\
+---
+name: child
+env: [PROMPTS_DIR = str]
+params: []
+---
+dir={{ PROMPTS_DIR }}",
+    )
+    .unwrap();
+    CString::new(
+        "\
+---
+params: []
+---
+> {% include [child](./child.tmpl.md) %}",
+    )
+    .unwrap()
+}
+
+#[test]
+fn test_render_cached_include_resolves_compile_env() {
+    // Regression: on the cached include path the child's env-only var must
+    // resolve from the parent's compile env (mirrors render_ctx_cached). Before
+    // the core fix this raised "no value provided and no default".
+    let dir = tempfile::tempdir().unwrap();
+    let source = write_env_include_fixture(dir.path());
+    let base_dir = CString::new(dir.path().to_str().unwrap()).unwrap();
+    let env_json = CString::new(r#"{"PROMPTS_DIR":"/prompts"}"#).unwrap();
+
+    let mut tmpl: *mut PtTemplate = ptr::null_mut();
+    let err = unsafe {
+        pt_template_from_source_with_options(
+            source.as_ptr(),
+            base_dir.as_ptr(),
+            env_json.as_ptr(),
+            false,
+            &raw mut tmpl,
+        )
+    };
+    assert!(err.is_null(), "compile error: {:?}", unsafe {
+        err.as_ref().map(|p| CStr::from_ptr(p))
+    });
+
+    let cache = pt_cache_new();
+    let ctx = pt_context_new();
+
+    // First render compiles the include from disk with env threaded in.
+    let mut render_err: *mut c_char = ptr::null_mut();
+    let result = unsafe { pt_template_render_cached(tmpl, ctx, cache, &raw mut render_err) };
+    assert!(render_err.is_null(), "render error: {:?}", unsafe {
+        render_err.as_ref().map(|p| CStr::from_ptr(p))
+    });
+    let first = unsafe { CStr::from_ptr(result) }
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(first.contains("dir=/prompts"), "got: {first}");
+
+    // Second render is served from cache; the env-injected const persists.
+    let result2 = unsafe { pt_template_render_cached(tmpl, ctx, cache, &raw mut render_err) };
+    assert!(render_err.is_null());
+    assert_eq!(unsafe { CStr::from_ptr(result2) }.to_str().unwrap(), first);
+
+    unsafe {
+        pt_free_string(result);
+        pt_free_string(result2);
+        pt_context_free(ctx);
+        pt_cache_free(cache);
+        pt_template_free(tmpl);
+    }
+}
+
+#[test]
+fn test_render_cached_include_invalidated_on_env_change() {
+    // Regression: a shared cache must not serve a stale include when only the
+    // compile env changed (file mtime + content are identical, which would
+    // otherwise hit the fast path).
+    let dir = tempfile::tempdir().unwrap();
+    let source = write_env_include_fixture(dir.path());
+    let base_dir = CString::new(dir.path().to_str().unwrap()).unwrap();
+    let cache = pt_cache_new();
+    let ctx = pt_context_new();
+
+    let render_with = |env_json: &str| -> String {
+        let env = CString::new(env_json).unwrap();
+        let mut tmpl: *mut PtTemplate = ptr::null_mut();
+        let err = unsafe {
+            pt_template_from_source_with_options(
+                source.as_ptr(),
+                base_dir.as_ptr(),
+                env.as_ptr(),
+                false,
+                &raw mut tmpl,
+            )
+        };
+        assert!(err.is_null(), "compile error: {:?}", unsafe {
+            err.as_ref().map(|p| CStr::from_ptr(p))
+        });
+        let mut render_err: *mut c_char = ptr::null_mut();
+        let result = unsafe { pt_template_render_cached(tmpl, ctx, cache, &raw mut render_err) };
+        assert!(render_err.is_null(), "render error: {:?}", unsafe {
+            render_err.as_ref().map(|p| CStr::from_ptr(p))
+        });
+        let out = unsafe { CStr::from_ptr(result) }
+            .to_str()
+            .unwrap()
+            .to_string();
+        unsafe {
+            pt_free_string(result);
+            pt_template_free(tmpl);
+        }
+        out
+    };
+
+    assert!(render_with(r#"{"PROMPTS_DIR":"/alpha"}"#).contains("dir=/alpha"));
+    // Same file + cache, different env — must recompute, not serve /alpha.
+    assert!(render_with(r#"{"PROMPTS_DIR":"/beta"}"#).contains("dir=/beta"));
+
+    unsafe {
+        pt_context_free(ctx);
+        pt_cache_free(cache);
+    }
+}

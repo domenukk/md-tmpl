@@ -66,7 +66,7 @@ export function handleStatement(
   let bodyStart = afterTag;
   if (trimAfter) {
     // -%} strips all whitespace after the tag (through next newline)
-    while (bodyStart < input.length && /\s/.test(input[bodyStart]!)) {
+    while (bodyStart < input.length && /\s/.test(input.charAt(bodyStart))) {
       bodyStart++;
     }
   }
@@ -140,7 +140,7 @@ function handleFor(
   tagStart?: number,
 ): [Node[], number] {
   const match = /^for\s+(\w+)\s+in\s+(.+)$/.exec(tag);
-  if (!match || !match[1] || !match[2]) {
+  if (!match?.[1] || !match[2]) {
     throw new TemplateSyntaxError(`invalid for loop: '${tag}'`);
   }
 
@@ -209,7 +209,7 @@ function handleIf(
   let pos = afterTag;
   let currentCondition = condition;
 
-  while (true) {
+  for (;;) {
     const [body, endPos, closingTag, closingContent] = parseBlockWithClosing(
       input,
       pos,
@@ -287,7 +287,7 @@ function handleMatch(
 
   // Check for inline match: `match expr case Variant [| Variant] [&& guard]`
   const inlineMatch = /^(\S+)\s+case\s+(.+)$/.exec(tagContent);
-  if (inlineMatch && inlineMatch[1] && inlineMatch[2]) {
+  if (inlineMatch?.[1] && inlineMatch[2]) {
     const caseContent = inlineMatch[2].trim();
 
     // Split on && to separate variant(s) from guard condition
@@ -306,7 +306,8 @@ function handleMatch(
       .split(PIPE)
       .map((v) => v.trim())
       .filter((v) => v.length > 0);
-    if (variants.length === 0) {
+    const firstVariant = variants[0];
+    if (firstVariant === undefined) {
       throw new TemplateSyntaxError(
         "match: empty variant name in inline match case",
       );
@@ -366,7 +367,7 @@ function handleMatch(
           elseArm,
           inlineGuard:
             guardExpr === undefined
-              ? { variant: variants[0]!, body }
+              ? { variant: firstVariant, body }
               : undefined,
 
           loc: getLoc(tagStart, lineMap),
@@ -382,7 +383,7 @@ function handleMatch(
   let pos = afterTag;
 
   // Parse case arms
-  while (true) {
+  for (;;) {
     const [body, endPos, closingTag, closingContent] = parseBlockWithClosing(
       input,
       pos,
@@ -410,7 +411,10 @@ function handleMatch(
       if (body.length > 0 || arms.length === 0) {
         // This is the body of the previous arm, or we're at the first arm
         if (arms.length > 0) {
-          arms[arms.length - 1]!.body = body;
+          const lastArm = arms[arms.length - 1];
+          if (lastArm !== undefined) {
+            lastArm.body = body;
+          }
         }
       }
       // Parse the case variants and optional guard
@@ -436,8 +440,9 @@ function handleMatch(
       arms.push({ variants, body: [], guard: caseGuard });
       pos = endPos;
     } else if (closingTag === KW_ELSE) {
-      if (arms.length > 0) {
-        arms[arms.length - 1]!.body = body;
+      const lastArm = arms[arms.length - 1];
+      if (lastArm !== undefined) {
+        lastArm.body = body;
       }
       const [elseBody, elseEndPos, elClosingTag] = parseBlockWithClosing(
         input,
@@ -460,8 +465,9 @@ function handleMatch(
       break;
     } else {
       // /match
-      if (arms.length > 0) {
-        arms[arms.length - 1]!.body = body;
+      const lastArm = arms[arms.length - 1];
+      if (lastArm !== undefined) {
+        lastArm.body = body;
       }
       pos = endPos;
       break;
@@ -551,7 +557,7 @@ function handleInclude(
   let path: string | undefined;
   let remaining: string;
 
-  if (linkMatch && linkMatch[1] && linkMatch[2]) {
+  if (linkMatch?.[1] && linkMatch[2]) {
     name = linkMatch[1];
     path = linkMatch[2].trim();
     if (!isValidPathPrefix(path)) {
@@ -578,7 +584,7 @@ function handleInclude(
 
   // Parse `for binding in expr`
   const forMatch = /^for\s+(\w+)\s+in\s+(\S+)(.*)$/.exec(remaining);
-  if (forMatch && forMatch[1] && forMatch[2]) {
+  if (forMatch?.[1] && forMatch[2]) {
     forBinding = forMatch[1];
     forExpr = forMatch[2];
     remaining = (forMatch[3] ?? "").trim();

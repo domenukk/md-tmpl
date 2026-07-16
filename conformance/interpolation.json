@@ -1,0 +1,28 @@
+[
+  {
+    "name": "interp_in_if_condition_rhs",
+    "note": "{{ }} interpolation inside a string literal in an if condition",
+    "source": "---\nparams:\n  - role = str\n  - env = str\n---\n\n> {% if role == \"admin_{{ env }}\" %}\n\nA\n\n> {% else %}\n\nB\n\n> {% /if %}\n",
+    "params": {
+      "role": "admin_prod",
+      "env": "prod"
+    },
+    "expect": {
+      "kind": "render",
+      "output": "A\n"
+    }
+  },
+  {
+    "name": "interp_in_if_condition_no_match",
+    "note": "interpolated condition string that does not match takes else",
+    "source": "---\nparams:\n  - role = str\n  - env = str\n---\n\n> {% if role == \"admin_{{ env }}\" %}\n\nA\n\n> {% else %}\n\nB\n\n> {% /if %}\n",
+    "params": {
+      "role": "admin_dev",
+      "env": "prod"
+    },
+    "expect": {
+      "kind": "render",
+      "output": "B\n"
+    }
+  }
+]

@@ -1,0 +1,21 @@
+[package]
+name = "md-tmpl-compile-tests"
+version = "0.9.0"
+edition = "2024"
+rust-version = "1.85"
+description = "Internal, unpublished compile-time template! test generator for md-tmpl"
+publish = false
+
+[dev-dependencies]
+md-tmpl = { path = "../md-tmpl", features = ["std", "serde", "macros"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[build-dependencies]
+toml = "0.8"
+
+[[test]]
+name = "shared_compile_time"
+
+[lints]
+workspace = true

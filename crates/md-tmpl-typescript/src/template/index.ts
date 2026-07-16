@@ -10,3 +10,9 @@ export type { ITemplate, CompileOptions, CachedInclude } from "./types.js";
 export { Template } from "./template_class.js";
 export { TypedTemplate } from "./typed_template.js";
 export { TemplateCache } from "./cache.js";
+export {
+  type FsProvider,
+  type PathProvider,
+  setFileSystemProvider,
+  resetFileSystemProvider,
+} from "./utils.js";

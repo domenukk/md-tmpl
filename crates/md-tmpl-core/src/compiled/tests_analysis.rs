@@ -501,6 +501,48 @@ fn eval_condition_truthy_bool_values() {
 }
 
 #[test]
+fn condition_operators_inside_string_literal_not_split() {
+    // REGRESSION: `||`, `&&`, and comparison operators embedded inside a quoted
+    // string literal must be treated as literal characters by split_top_level /
+    // find_top_level_op, not as boolean/comparison operators. Otherwise a
+    // comparison against a string containing these tokens would be mis-parsed.
+    let mut ctx = Context::new();
+    ctx.set("label", "a || b && c == d");
+    assert!(
+        eval_cond("label == \"a || b && c == d\"", &ctx).unwrap(),
+        "operators inside the quoted RHS must not fragment the condition"
+    );
+    assert!(
+        !eval_cond("label == \"a || b\"", &ctx).unwrap(),
+        "only the top-level comparison should be evaluated"
+    );
+    // Single-quoted literals must behave identically.
+    assert!(eval_cond("label == 'a || b && c == d'", &ctx).unwrap());
+}
+
+#[test]
+fn condition_escaped_quote_in_string_literal_not_split() {
+    // REGRESSION: a backslash-escaped quote (`\"` / `\'`) must NOT terminate a
+    // string literal during condition parsing. Otherwise `split_top_level` /
+    // `find_top_level_op` would close the literal early and treat operators that
+    // appear *after* the escaped quote (but still inside the string) as
+    // top-level, fragmenting the condition. This mirrors `split_at_depth_zero`.
+    let mut ctx = Context::new();
+    ctx.set("label", "a\" && b || c");
+    assert!(
+        eval_cond("label == \"a\\\" && b || c\"", &ctx).unwrap(),
+        "escaped quote must not close the literal early; trailing operators stay literal"
+    );
+    // A different RHS (literal ends right after the escaped quote's segment)
+    // must compare unequal — proving the full literal was compared, not a
+    // prematurely-closed prefix.
+    assert!(!eval_cond("label == \"a\\\" && b\"", &ctx).unwrap());
+    // Single-quoted literals with an escaped single quote behave identically.
+    ctx.set("note", "x' || y");
+    assert!(eval_cond("note == 'x\\' || y'", &ctx).unwrap());
+}
+
+#[test]
 fn condition_in_template_with_len_function() {
     let mut ctx = Context::new();
     ctx.set(

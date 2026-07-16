@@ -10,7 +10,7 @@ use super::segments::render_segments_into_no_std;
 use crate::{
     compiled::{Condition, Segment},
     error::TemplateError,
-    scope::{CompiledExpr, Scope},
+    scope::{CompiledExpr, ConditionOperand, Scope},
     value::Value,
 };
 
@@ -124,7 +124,17 @@ pub(super) fn render_if(
 ) -> Result<(), TemplateError> {
     for (condition, body) in branches {
         if super::condition::eval_condition(condition, scope)? {
-            return render_segments_into(body, scope, base_dir, output);
+            // If the condition is a simple `has(x)` guard on an option param,
+            // narrow so inner kind()/match see the unwrapped value.
+            let narrowed = extract_has_option_path(condition, scope);
+            if let Some(ref path) = narrowed {
+                scope.narrow_option(path);
+            }
+            let result = render_segments_into(body, scope, base_dir, output);
+            if let Some(ref path) = narrowed {
+                scope.unnarrow_option(path);
+            }
+            return result;
         }
     }
 
@@ -145,7 +155,15 @@ pub(super) fn render_if_no_std(
 ) -> Result<(), TemplateError> {
     for (condition, body) in branches {
         if super::condition::eval_condition(condition, scope)? {
-            return render_segments_into_no_std(body, scope, output);
+            let narrowed = extract_has_option_path(condition, scope);
+            if let Some(ref path) = narrowed {
+                scope.narrow_option(path);
+            }
+            let result = render_segments_into_no_std(body, scope, output);
+            if let Some(ref path) = narrowed {
+                scope.unnarrow_option(path);
+            }
+            return result;
         }
     }
 
@@ -154,4 +172,17 @@ pub(super) fn render_if_no_std(
     }
 
     Ok(())
+}
+
+/// If `condition` is a bare `has(x)` on an option-typed param, return the path.
+///
+/// Used to narrow the option so `kind()`/inner `match` blocks see the
+/// unwrapped enum value instead of `"Some"`.
+fn extract_has_option_path(condition: &Condition, scope: &Scope<'_>) -> Option<String> {
+    if let Condition::Truthy(ConditionOperand::Has(path)) = condition {
+        if scope.is_option_path(path.as_str()) {
+            return Some(String::from(path.as_str()));
+        }
+    }
+    None
 }

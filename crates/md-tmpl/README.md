@@ -225,6 +225,23 @@ let output = tmpl.render(&ReviewParams {
 }).unwrap();
 ```
 
+## Binary Deserialization (CBOR & `FlexBuffers`)
+
+Build a `Context` straight from a binary buffer — useful for language bindings
+and zero-copy pipelines. Each format lives behind its own feature, so you only
+compile the codecs you actually use (both are enabled by default):
+
+- `cbor` — `Context::from_cbor` (works in `no_std`, via `ciborium`)
+- `flexbuffers` — `Context::from_flexbuffers` and `Value::from_flexbuffers`
+  (requires `std`)
+
+Opt out of the defaults to trim dependencies down to exactly what you need:
+
+```bash
+# serde + CBOR only, no FlexBuffers (and its transitive deps)
+cargo add md-tmpl --no-default-features --features std,serde,cbor
+```
+
 ## Runtime API
 
 For dynamic or scripting use cases, parse templates at runtime.

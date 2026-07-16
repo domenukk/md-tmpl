@@ -8,6 +8,7 @@ import { TemplateSyntaxError } from "../errors.js";
 import {
   ANGLE_CLOSE,
   ANGLE_OPEN,
+  BACKSLASH,
   BRACE_CLOSE,
   BRACE_OPEN,
   BRACKET_CLOSE,
@@ -70,7 +71,7 @@ export function parseVarType(typeStr: string): VarType {
     const topItems = splitTopLevel(inner, COMMA);
     const hasTopLevelEquals = topItems.some(
       (item) =>
-        item.indexOf(EQUALS) !== -1 &&
+        item.includes(EQUALS) &&
         !startsWithCompoundType(item.trim(), TYPE_STRUCT) &&
         !startsWithCompoundType(item.trim(), TYPE_ENUM) &&
         !startsWithCompoundType(item.trim(), TYPE_LIST) &&
@@ -160,7 +161,7 @@ export function stripTypeBrackets(s: string, keyword: string): string {
   if (keywordIdx === -1) return "";
   let openIdx = -1;
   for (let i = keywordIdx + keyword.length; i < s.length; i++) {
-    const ch = s[i]!;
+    const ch = s.charAt(i);
     if (ch === PAREN_OPEN) {
       openIdx = i;
       break;
@@ -228,11 +229,19 @@ export function splitTopLevel(s: string, delimiter: string): string[] {
   // When inside a string literal, holds the opening quote char; delimiters are
   // ignored until the matching closing quote is seen.
   let inQuote: string | undefined;
+  // When inside a quote, tracks whether the previous char was an unescaped
+  // backslash (which escapes the current char, e.g. `\"` does not close).
+  let escaped = false;
 
-  for (let i = 0; i < s.length; i++) {
-    const ch = s[i]!;
+  for (const ch of s) {
     if (inQuote !== undefined) {
-      if (ch === inQuote) inQuote = undefined;
+      if (escaped) {
+        escaped = false;
+      } else if (ch === BACKSLASH) {
+        escaped = true;
+      } else if (ch === inQuote) {
+        inQuote = undefined;
+      }
       current += ch;
     } else if (ch === QUOTE_DOUBLE || ch === QUOTE_SINGLE) {
       inQuote = ch;

@@ -115,7 +115,7 @@ fn interpolate_include_path(path: &str, scope: &Scope<'_>) -> Result<String, Tem
         }
 
         let val_str = if let Some(lit) = crate::consts::strip_string_literal(expr) {
-            lit.to_string()
+            crate::consts::unescape_string_literal(lit)
         } else {
             let val = scope.resolve_path_str(expr).map_err(|_| {
                 TemplateError::syntax(format!(
@@ -250,7 +250,7 @@ fn resolve_from_filesystem(
     // Try the template cache first — avoids re-reading and re-compiling
     // unchanged include files.
     if let Some(cache) = scope.cache() {
-        let cached = cache.resolve_include(&include_path)?;
+        let cached = cache.resolve_include(&include_path, scope.compile_env())?;
         scope.push_consts(cached.consts.clone(), cached.imported_consts.clone());
         let result = validate_and_render_into(
             &cached.segments,

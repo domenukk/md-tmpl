@@ -62,6 +62,7 @@ Result: {{ x }}";
     assert_eq!(output, "Result: 42");
 }
 
+#[cfg(feature = "flexbuffers")]
 #[test]
 fn test_adv_flexbuffers_malformed_input_handling() {
     // Empty buffer

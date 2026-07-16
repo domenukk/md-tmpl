@@ -58,7 +58,7 @@ export class TemplateSyntaxError extends TemplateError {
   ) {
     const formattedMessage =
       line !== undefined
-        ? `${message} (line ${line}${snippet ? `, --> ${snippet}` : ""})`
+        ? `${message} (line ${String(line)}${snippet ? `, --> ${snippet}` : ""})`
         : message;
     super(formattedMessage, "syntax");
     this.name = "TemplateSyntaxError";

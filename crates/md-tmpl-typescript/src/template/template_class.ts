@@ -47,10 +47,11 @@ import {
   valueToJs,
 } from "../value.js";
 import { type DirectRenderOptions, renderDirect } from "../direct_renderer.js";
-import { TYPE_NONE } from "../consts.js";
+import { ERR_UNDECLARED_PREFIX, TYPE_ENUM, TYPE_NONE } from "../consts.js";
 import {
   type CachedInclude,
   type CompileOptions,
+  type IncludeCacheEntry,
   type ITemplate,
 } from "./types.js";
 import { getFs, getPath, hashString } from "./utils.js";
@@ -69,14 +70,47 @@ import {
 } from "./inline_templates.js";
 import {
   walkNodesForBareEnumAccess,
+  walkNodesForConditionSyntax,
   walkNodesForMatchTypeSafety,
 } from "./compile_checks.js";
 import {
   collectForBindings,
   collectReferencedParams,
+  collectUnquotedCaseLabels,
   extractInterpolationRefs,
 } from "./references.js";
 import { type TemplateCache } from "./cache.js";
+
+/**
+ * Compute the Levenshtein edit distance between two strings.
+ *
+ * Returns the minimum number of single-character edits (insertions,
+ * deletions, or substitutions) required to transform `a` into `b`.
+ * Mirrors the Rust core's `levenshtein_distance` so the "did you mean"
+ * suggestions in undeclared-variable errors match byte-for-byte.
+ */
+function levenshteinDistance(a: string, b: string): number {
+  const aLen = a.length;
+  const bLen = b.length;
+  if (aLen === 0) return bLen;
+  if (bLen === 0) return aLen;
+  let prev: number[] = Array.from({ length: bLen + 1 }, (_, i) => i);
+  let curr: number[] = new Array<number>(bLen + 1).fill(0);
+  for (let i = 0; i < aLen; i++) {
+    curr[0] = i + 1;
+    for (let j = 0; j < bLen; j++) {
+      const cost = a[i] === b[j] ? 0 : 1;
+      // Non-null: indices are within the pre-sized arrays above.
+      curr[j + 1] = Math.min(
+        (prev[j] ?? 0) + cost,
+        (prev[j + 1] ?? 0) + 1,
+        (curr[j] ?? 0) + 1,
+      );
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[bLen] ?? 0;
+}
 
 // ---------------------------------------------------------------------------
 // Template class
@@ -121,10 +155,7 @@ export class Template implements ITemplate, TmplRef {
   _cache?: TemplateCache;
   /** Compile-time env values, stored for propagation to included templates. */
   private readonly _compileEnv: Record<string, unknown>;
-  private readonly _includeCache = new Map<
-    string,
-    { hash: number; mtimeMs: number; cached: CachedInclude }
-  >();
+  private readonly _includeCache = new Map<string, IncludeCacheEntry>();
 
   /** Get the base path for include resolution (if set). */
   get basePath(): string | undefined {
@@ -222,7 +253,9 @@ export class Template implements ITemplate, TmplRef {
     const [fm, body] = parseFrontmatter(source);
     validateFrontmatter(fm);
     const nodes = parseBody(body, false, fm.bodyStartLine ?? 1);
+    walkNodesForConditionSyntax(nodes);
     const tmpl = new Template(fm, body, nodes, source);
+    tmpl.checkUndeclaredVariables(body);
     if (!fm.allowUnused) {
       tmpl.checkUnusedParams(body);
     }
@@ -268,6 +301,7 @@ export class Template implements ITemplate, TmplRef {
       resolvedFm = resolveImportedConsts(resolvedFm, baseDir);
     }
     const nodes = parseBody(body, false, resolvedFm.bodyStartLine ?? 1);
+    walkNodesForConditionSyntax(nodes);
     const tmpl = new Template(
       resolvedFm,
       body,
@@ -276,6 +310,7 @@ export class Template implements ITemplate, TmplRef {
       baseDir,
       envValues,
     );
+    tmpl.checkUndeclaredVariables(body);
     if (!resolvedFm.allowUnused && !options.allowUnused) {
       tmpl.checkUnusedParams(body);
     }
@@ -323,7 +358,9 @@ export class Template implements ITemplate, TmplRef {
   static fromSourceAllowingUnused(source: string): Template {
     const [fm, body] = parseFrontmatter(source);
     const nodes = parseBody(body, false, fm.bodyStartLine ?? 1);
+    walkNodesForConditionSyntax(nodes);
     const tmpl = new Template(fm, body, nodes, source);
+    tmpl.checkUndeclaredVariables(body);
     tmpl.checkBareEnumAccess();
     tmpl.checkMatchTypeSafety();
     validateDisplayability(
@@ -344,7 +381,9 @@ export class Template implements ITemplate, TmplRef {
     validateFrontmatter(fm);
     const resolvedFm = resolveImportedConsts(fm, baseDir);
     const nodes = parseBody(body, false, resolvedFm.bodyStartLine ?? 1);
+    walkNodesForConditionSyntax(nodes);
     const tmpl = new Template(resolvedFm, body, nodes, source, baseDir);
+    tmpl.checkUndeclaredVariables(body);
     if (!resolvedFm.allowUnused) {
       tmpl.checkUnusedParams(body);
     }
@@ -404,6 +443,7 @@ export class Template implements ITemplate, TmplRef {
     validateFrontmatter(envResolved);
     const resolvedFm = resolveImportedConsts(envResolved, baseDir);
     const nodes = parseBody(body, false, resolvedFm.bodyStartLine ?? 1);
+    walkNodesForConditionSyntax(nodes);
     const tmpl = new Template(
       resolvedFm,
       body,
@@ -412,6 +452,7 @@ export class Template implements ITemplate, TmplRef {
       baseDir,
       envValues,
     );
+    tmpl.checkUndeclaredVariables(body);
     if (!resolvedFm.allowUnused) {
       tmpl.checkUnusedParams(body);
     }
@@ -579,11 +620,11 @@ params:
    * Return raw parameter declarations with VarType objects.
    * Used by TmplRef for higher-order template signature validation.
    */
-  rawDeclarations(): ReadonlyArray<{
+  rawDeclarations(): readonly {
     name: string;
     varType: VarType;
     defaultValue?: Value;
-  }> {
+  }[] {
     return this.fm.params;
   }
 
@@ -712,11 +753,9 @@ params:
         `expected ${JSON.stringify(expected)}, got ${JSON.stringify(current)}`,
       );
     }
-    for (let i = 0; i < current.length; i++) {
-      if (
-        current[i]![0] !== expected[i]![0] ||
-        current[i]![1] !== expected[i]![1]
-      ) {
+    for (const [i, cur] of current.entries()) {
+      const exp = expected[i];
+      if (cur[0] !== exp?.[0] || cur[1] !== exp[1]) {
         throw new DeclarationsMutatedError(
           `expected ${JSON.stringify(expected)}, got ${JSON.stringify(current)}`,
         );
@@ -850,11 +889,16 @@ params:
     const commentPattern = /\{#(.*?)#\}/gs;
     let match;
     while ((match = commentPattern.exec(_body)) !== null) {
-      const commentText = match[1]!;
+      const commentText = match[1] ?? "";
       extractInterpolationRefs(commentText, referenced, new Set());
     }
+    // Collect unquoted case labels: if a declared param name appears as an
+    // unquoted label in `{% case paramName %}`, the runtime reads that param's
+    // value for comparison — it IS used. The reference collector can't do
+    // this because it would confuse enum variant names with param names.
+    const caseLabels = collectUnquotedCaseLabels(this.nodes);
     for (const decl of this.fm.params) {
-      if (!referenced.has(decl.name)) {
+      if (!referenced.has(decl.name) && !caseLabels.has(decl.name)) {
         throw new TemplateSyntaxError(
           `unused parameter '${decl.name}' declared but not referenced in body`,
           decl.loc?.line,
@@ -863,6 +907,66 @@ params:
         );
       }
     }
+  }
+
+  /**
+   * Reject references to variables that are not declared anywhere.
+   *
+   * Mirrors the Rust core's `check_undeclared_variables`: the referenced set
+   * (body + comment interpolations) is compared against the union of declared
+   * params, consts, env vars, import stems, enum type aliases, and inline
+   * template names. Unknown references produce a syntax error with optional
+   * Levenshtein "did you mean" suggestions, byte-for-byte identical to Rust.
+   */
+  private checkUndeclaredVariables(body: string): void {
+    const referenced = collectReferencedParams(this.nodes);
+    // Include {{ expr }} references inside {# comments #}: the Rust core stores
+    // these as `Segment::Comment` refs, so they count as references too.
+    const commentPattern = /\{#(.*?)#\}/gs;
+    let match: RegExpExecArray | null;
+    while ((match = commentPattern.exec(body)) !== null) {
+      extractInterpolationRefs(match[1] ?? "", referenced, new Set());
+    }
+
+    const declared = new Set<string>();
+    for (const decl of this.fm.params) declared.add(decl.name);
+    for (const decl of this.fm.consts) declared.add(decl.name);
+    for (const decl of this.fm.env) declared.add(decl.name);
+    for (const imp of this.fm.imports) declared.add(imp.stem);
+    for (const [name, ty] of this.fm.typeAliases) {
+      if (ty.kind === TYPE_ENUM) declared.add(name);
+    }
+    for (const name of collectInlineTemplateNames(this.nodes)) {
+      declared.add(name);
+    }
+
+    const undeclared: string[] = [];
+    for (const name of referenced) {
+      if (!declared.has(name)) undeclared.push(name);
+    }
+    if (undeclared.length === 0) return;
+    undeclared.sort();
+
+    const suggestions: string[] = [];
+    for (const name of undeclared) {
+      let best: { candidate: string; dist: number } | undefined;
+      for (const candidate of declared) {
+        const dist = levenshteinDistance(name, candidate);
+        if (dist > 0 && dist <= 2 && (best === undefined || dist < best.dist)) {
+          best = { candidate, dist };
+        }
+      }
+      if (best) {
+        suggestions.push(`'${name}' (did you mean '${best.candidate}'?)`);
+      }
+    }
+    const suffix =
+      suggestions.length === 0
+        ? ""
+        : `. Suggestions: ${suggestions.join(", ")}`;
+    throw new TemplateSyntaxError(
+      `${ERR_UNDECLARED_PREFIX}${undeclared.join(", ")}${suffix}`,
+    );
   }
 
   private getDirectOptions(): DirectRenderOptions {
