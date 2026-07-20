@@ -205,6 +205,72 @@ result, err = tmpl.RenderMap(map[string]any{
 })
 ```
 
+## Code Generation
+
+The `pt-gen-go` tool turns a `.tmpl.md` file into a typed Go source file, so a
+template's parameters and enums become real Go types instead of `any` slots.
+
+```bash
+go install github.com/domenukk/md-tmpl/go/cmd/pt-gen-go@latest
+
+pt-gen-go -input prompts/review.tmpl.md -output review_types.go -package review
+```
+
+Or drive it with `go:generate`:
+
+```go
+//go:generate pt-gen-go -input prompts/review.tmpl.md -output review_types.go -package review
+```
+
+Flags: `-input` and `-output` (required), `-package` (default `main`),
+`-params` (params struct name, default derived from the filename), and
+`-no-render` (omit the generated `Render` helper).
+
+### Generated code
+
+For `Status = enum(Approved, NeedsChanges(reason = str), Rejected)`, the tool
+emits an idiomatic **sealed interface** sum type — one struct per variant, so
+the compiler enforces exhaustiveness and you never touch `any`:
+
+```go
+// Status is a sum type (sealed interface).
+type Status interface {
+    isStatus()
+    Kind() string                // discriminant name, e.g. "Approved"
+    AsVariant() md_tmpl.Variant  // dynamic __kind__-tagged wire form
+}
+
+// StatusVariants lists every variant name, in declaration order.
+var StatusVariants = []string{"Approved", "NeedsChanges", "Rejected"}
+
+type StatusApproved struct{}
+type StatusNeedsChanges struct {
+    Reason string `json:"reason"`
+}
+type StatusRejected struct{}
+```
+
+Each variant also gets a `New…` constructor, a `MarshalJSON` that produces the
+shared cross-language wire format (a bare string for unit variants, a
+`{"__kind__": …}` object for data variants), and the enum gets an
+`UnmarshalStatus([]byte) (Status, error)` dispatcher for the reverse direction.
+
+The generated params struct carries a `Render` helper, so rendering is fully
+typed end to end:
+
+```go
+import "github.com/domenukk/md-tmpl/go/md_tmpl"
+
+tmpl, _ := md_tmpl.FromFile("prompts/review.tmpl.md")
+defer tmpl.Close()
+
+out, _ := review.StatusParams{
+    Reviewer: "Alice",
+    Status:   review.NewStatusNeedsChanges("missing tests"),
+}.Render(tmpl)
+fmt.Println(out)
+```
+
 ## Features
 
 ### Typed Lists
@@ -452,7 +518,7 @@ vs Go's `text/template`, median of 3 runs
 Allocations: 2 per render (small/medium/large) vs 3–517 for `text/template`.
 
 ```bash
-just test-go     # 230 tests
+just test-go     # 257 tests
 just bench-go    # 24 benchmarks
 ```
 

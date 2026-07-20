@@ -443,28 +443,18 @@ impl<'a> Scope<'a> {
     }
 
     /// Create a new scope with an include resolver for faster include resolution.
+    ///
+    /// Equivalent to [`Scope::new`] with the include resolver attached — the
+    /// two constructors share all other defaults via struct-update syntax so
+    /// they cannot drift apart.
     #[cfg(feature = "std")]
     pub(crate) fn with_cache(
         ctx: &'a Context,
         cache: &'a dyn crate::cache::IncludeResolver,
     ) -> Self {
         Self {
-            ctx,
-            layers: Vec::new(),
-            loop_metas: Vec::new(),
-            active_len: 0,
-            active_loop_bindings: 0,
-            loop_bindings: Vec::with_capacity(4),
-            include_depth: 0,
-            max_include_depth: MAX_INCLUDE_DEPTH,
-            inline_templates: &EMPTY_INLINE_TEMPLATES,
-            inline_template_stack: Vec::new(),
             cache: Some(cache),
-            consts_stack: Vec::new(),
-            imported_consts_stack: Vec::new(),
-            declarations_stack: Vec::new(),
-            narrowed_options: Vec::new(),
-            env_values: Arc::from([]),
+            ..Self::new(ctx)
         }
     }
 

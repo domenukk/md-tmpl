@@ -376,7 +376,7 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "md-tmpl"
-version = "0.9.0"
+version = "0.9.2"
 dependencies = [
  "criterion",
  "flexbuffers",
@@ -390,7 +390,7 @@ dependencies = [
 
 [[package]]
 name = "md-tmpl-compile-tests"
-version = "0.9.0"
+version = "0.9.2"
 dependencies = [
  "md-tmpl",
  "serde",
@@ -399,7 +399,7 @@ dependencies = [
 
 [[package]]
 name = "md-tmpl-core"
-version = "0.9.0"
+version = "0.9.2"
 dependencies = [
  "ciborium",
  "flexbuffers",
@@ -416,7 +416,7 @@ dependencies = [
 
 [[package]]
 name = "md-tmpl-ffi"
-version = "0.9.0"
+version = "0.9.2"
 dependencies = [
  "flexbuffers",
  "md-tmpl",
@@ -426,7 +426,7 @@ dependencies = [
 
 [[package]]
 name = "md-tmpl-macros"
-version = "0.9.0"
+version = "0.9.2"
 dependencies = [
  "hashbrown",
  "md-tmpl-core",
@@ -438,17 +438,18 @@ dependencies = [
 
 [[package]]
 name = "md-tmpl-python"
-version = "0.9.0"
+version = "0.9.2"
 dependencies = [
  "hashbrown",
  "md-tmpl",
  "pyo3",
  "serde_json",
+ "typed-builder",
 ]
 
 [[package]]
 name = "md-tmpl-wasm"
-version = "0.9.0"
+version = "0.9.2"
 dependencies = [
  "js-sys",
  "md-tmpl",
@@ -819,9 +820,9 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 
 [[package]]
 name = "spin"
-version = "0.12.1"
+version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd5231412d905519dca6a5deb0327d407be68d6c941feec004533401d3a0a715"
+checksum = "8abadc99fd9c7bbb7d0ca2b31d72a067d0c0dcd7aad25ab8cac71ba91417694b"
 
 [[package]]
 name = "syn"

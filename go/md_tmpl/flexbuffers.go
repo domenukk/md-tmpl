@@ -360,6 +360,14 @@ func (b *flexBuilder) marshalValue(val reflect.Value) error {
 		return nil
 	}
 
+	// Statically-typed enum variants (e.g. codegen output) expose their
+	// __kind__-tagged wire form via AsVariant; encode that instead. This keeps
+	// the encoder type-preserving (unlike a JSON round-trip) while matching the
+	// shared cross-language wire format.
+	if vm, ok := val.Interface().(VariantMarshaler); ok {
+		return b.marshalValue(reflect.ValueOf(vm.AsVariant()))
+	}
+
 	switch val.Kind() {
 	case reflect.Ptr, reflect.Interface:
 		if val.IsNil() {

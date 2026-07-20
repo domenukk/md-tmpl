@@ -149,41 +149,42 @@ fn build_enum_class(py: Python<'_>, name: &str, variants: &[VariantDecl]) -> PyR
                 Field::new("_md_tmpl_tag", "str"),
                 Field::new("_md_tmpl_fields", "dict"),
             ])
-            .method(PyMethodDef {
-                name: "__init__".into(),
-                params: vec![tag_field],
-                return_annotation: None,
-                doc: None,
-                body: vec![
-                    "self._md_tmpl_tag = tag".into(),
-                    "self._md_tmpl_fields = {}".into(),
-                ],
-            })
-            .method(PyMethodDef {
-                name: "__repr__".into(),
-                params: Vec::new(),
-                return_annotation: Some("str".into()),
-                doc: None,
-                body: vec!["return self._md_tmpl_tag".into()],
-            })
-            .method(PyMethodDef {
-                name: "__eq__".into(),
-                params: vec![Field::new("other", "")],
-                return_annotation: Some("bool".into()),
-                doc: None,
-                body: vec![
-                    "if not isinstance(other, type(self)):".into(),
-                    "    return NotImplemented".into(),
-                    "return self._md_tmpl_tag == other._md_tmpl_tag".into(),
-                ],
-            })
-            .method(PyMethodDef {
-                name: "__hash__".into(),
-                params: Vec::new(),
-                return_annotation: Some("int".into()),
-                doc: None,
-                body: vec!["return hash(self._md_tmpl_tag)".into()],
-            });
+            .method(
+                PyMethodDef::builder()
+                    .name("__init__")
+                    .params(vec![tag_field])
+                    .body(vec![
+                        "self._md_tmpl_tag = tag".into(),
+                        "self._md_tmpl_fields = {}".into(),
+                    ])
+                    .build(),
+            )
+            .method(
+                PyMethodDef::builder()
+                    .name("__repr__")
+                    .return_annotation("str")
+                    .body(vec!["return self._md_tmpl_tag".into()])
+                    .build(),
+            )
+            .method(
+                PyMethodDef::builder()
+                    .name("__eq__")
+                    .params(vec![Field::new("other", "")])
+                    .return_annotation("bool")
+                    .body(vec![
+                        "if not isinstance(other, type(self)):".into(),
+                        "    return NotImplemented".into(),
+                        "return self._md_tmpl_tag == other._md_tmpl_tag".into(),
+                    ])
+                    .build(),
+            )
+            .method(
+                PyMethodDef::builder()
+                    .name("__hash__")
+                    .return_annotation("int")
+                    .body(vec!["return hash(self._md_tmpl_tag)".into()])
+                    .build(),
+            );
 
         cls = cls.inner_class(unit_sentinel);
     }
@@ -333,27 +334,29 @@ fn build_params_class(
             format!("'{template_path}'"),
         ))
         .slots(typed_fields.clone())
-        .method(PyMethodDef {
-            name: "__init__".into(),
-            params: init_params,
-            return_annotation: None,
-            doc: None,
-            body: init_body,
-        })
-        .method(PyMethodDef {
-            name: "__repr__".into(),
-            params: Vec::new(),
-            return_annotation: Some("str".into()),
-            doc: None,
-            body: vec![format!("return f'{name}({})'", repr_parts.join(", "))],
-        })
-        .method(PyMethodDef {
-            name: "render".into(),
-            params: vec![Field::new("template", "")],
-            return_annotation: Some("str".into()),
-            doc: Some("Render this params object into a template.".into()),
-            body: render_body,
-        })
+        .method(
+            PyMethodDef::builder()
+                .name("__init__")
+                .params(init_params)
+                .body(init_body)
+                .build(),
+        )
+        .method(
+            PyMethodDef::builder()
+                .name("__repr__")
+                .return_annotation("str")
+                .body(vec![format!("return f'{name}({})'", repr_parts.join(", "))])
+                .build(),
+        )
+        .method(
+            PyMethodDef::builder()
+                .name("render")
+                .params(vec![Field::new("template", "")])
+                .return_annotation("str")
+                .doc("Render this params object into a template.")
+                .body(render_body)
+                .build(),
+        )
         .with_dict_property(&typed_fields);
 
     cls.exec_with_locals(py, Some(generated_types))

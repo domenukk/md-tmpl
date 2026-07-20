@@ -431,17 +431,27 @@ class CodegenContext {
 
     for (const v of variants) {
       if (v.fields.length === 0) {
-        // Unit variant — just the string literal
+        // Unit variant — just the string literal (matches the wire format).
         variantTypes.push(`"${v.name}"`);
       } else {
-        // Struct variant — generate a tagged interface
-        const variantIfaceName = `${name}_${v.name}`;
+        // Data variant — generate a `__kind__`-tagged interface.
+        const variantIfaceName = `${name}_${sanitizeVariantIdent(v.name)}`;
         this.emitVariantInterface(variantIfaceName, v.name, v.fields);
         variantTypes.push(variantIfaceName);
       }
     }
 
+    // Discriminant union of every variant's tag name (unit + data). This is
+    // what `kindOf`/`is`/`match` narrow over and what UIs enumerate.
+    const kindType = `${name}Kind`;
+    const kindUnion = variants.map((v) => `"${v.name}"`).join(" | ");
+
     const lines: string[] = [];
+    if (this.opts.jsdoc) {
+      lines.push(`/** Discriminant tag names of \`${name}\`. */`);
+    }
+    lines.push(`${exp}type ${kindType} = ${kindUnion};`);
+    lines.push("");
     if (this.opts.jsdoc) {
       lines.push(
         `/** Enum type: ${variants.map((v) => v.name).join(" | ")}. */`,
@@ -450,67 +460,135 @@ class CodegenContext {
     lines.push(`${exp}type ${name} = ${variantTypes.join(" | ")};`);
     this.auxiliaryTypes.push(lines.join("\n"));
 
-    // Emit factory functions for each variant
-    this.emitVariantFactories(name, variants);
-
-    if (variants.every((v) => v.fields.length === 0)) {
-      const upperSnake = toUpperSnake(name);
-      const items = variants.map((v) => `"${v.name}"`).join(", ");
-      const lines: string[] = [];
-      if (this.opts.jsdoc) {
-        lines.push(`/** All variants of \`${name}\`. */`);
-      }
-      lines.push(
-        `${exp}const ${upperSnake}_ALL: readonly ${name}[] = [${items}] as const;`,
-      );
-      this.auxiliaryTypes.push(lines.join("\n"));
-    }
+    // Companion namespace: variant constructors + helpers, merged with the type.
+    this.emitEnumNamespace(name, kindType, variants);
   }
 
   /**
-   * Emit factory functions for enum variants.
+   * Emit the companion `const <Name>` namespace object that is merged with the
+   * `type <Name>` declaration. It provides, for every enum:
    *
-   * - Unit variants: `export const Rejected: Outcome = "Rejected";`
-   * - Struct variants: `export function Confirmed(fields: { evidence: string }): Outcome_Confirmed { ... }`
+   * - variant constructors — unit variants as string constants, data variants
+   *   as factory functions returning a `__kind__`-tagged object;
+   * - `kinds` — a readonly tuple of every variant tag name;
+   * - `kindOf(v)` — the discriminant tag of a value;
+   * - `is(v, k)` — a tag guard;
+   * - `match(v, arms)` — an exhaustive, type-checked matcher.
+   *
+   * Object keys are quoted only when the variant name is not a valid identifier
+   * (e.g. `"ACTUAL OUTPUT"`), so spaced/punctuated variant names are supported
+   * without emitting invalid TypeScript.
    */
-  private emitVariantFactories(
-    enumName: string,
+  private emitEnumNamespace(
+    name: string,
+    kindType: string,
     variants: readonly VariantDecl[],
   ): void {
     const exp = this.opts.exportTypes ? "export " : "";
+    const unitVariants = variants.filter((v) => v.fields.length === 0);
+    const dataVariants = variants.filter((v) => v.fields.length > 0);
+    const tag = ENUM_TAG_KEY;
 
+    const lines: string[] = [];
+    if (this.opts.jsdoc) {
+      lines.push(
+        `/** Companion namespace for \`${name}\`: variant constructors + helpers. */`,
+      );
+    }
+    lines.push(`${exp}const ${name} = {`);
+
+    // Variant constructors.
     for (const v of variants) {
-      if (this.generatedNames.has(v.name)) continue;
-      this.generatedNames.add(v.name);
-      const lines: string[] = [];
-
+      const key = objectKey(v.name);
       if (v.fields.length === 0) {
-        // Unit variant → const
-        if (this.opts.jsdoc) {
-          lines.push(`/** Create a \`${v.name}\` variant. */`);
-        }
-        lines.push(`${exp}const ${v.name} = "${v.name}" as const;`);
+        lines.push(`  ${key}: "${v.name}" as const,`);
       } else {
-        // Struct variant → factory function
-        const ifaceName = `${enumName}_${v.name}`;
+        const ifaceName = `${name}_${sanitizeVariantIdent(v.name)}`;
         const fieldParts = v.fields.map((f) => {
           const tsType = this.varTypeToTs(f.name, f.varType);
-          return `${f.name}: ${tsType}`;
+          return `${objectKey(f.name)}: ${tsType}`;
         });
         const fieldsType = `{ ${fieldParts.join("; ")} }`;
-
-        if (this.opts.jsdoc) {
-          lines.push(`/** Create a \`${v.name}\` variant. */`);
-        }
         lines.push(
-          `${exp}function ${v.name}(fields: ${fieldsType}): ${ifaceName} {`,
+          `  ${key}: (fields: ${fieldsType}): ${ifaceName} => ` +
+            `({ ${tag}: "${v.name}", ...fields }),`,
         );
-        lines.push(`  return { ${ENUM_TAG_KEY}: "${v.name}", ...fields };`);
-        lines.push("}");
       }
-
-      this.auxiliaryTypes.push(lines.join("\n"));
     }
+
+    // Introspection + narrowing helpers. The discriminant expression depends
+    // on the enum's variant composition: unit-only values are strings,
+    // data-only values are `__kind__`-tagged objects, and mixed values require
+    // a runtime `typeof` check. Specializing avoids a dead `never` branch (and
+    // the corresponding `no-unnecessary-condition` lint).
+    let kindOfExpr: string;
+    if (dataVariants.length === 0) {
+      kindOfExpr = "v";
+    } else if (unitVariants.length === 0) {
+      kindOfExpr = `v.${tag}`;
+    } else {
+      kindOfExpr = `(typeof v === "string" ? v : v.${tag})`;
+    }
+    const kindsItems = variants.map((v) => `"${v.name}"`).join(", ");
+    lines.push(`  kinds: [${kindsItems}] as const,`);
+    lines.push(`  kindOf: (v: ${name}): ${kindType} => ${kindOfExpr},`);
+    lines.push(
+      `  is: (v: ${name}, k: ${kindType}): boolean => ${kindOfExpr} === k,`,
+    );
+
+    // Exhaustive matcher. Arm parameter types are the precise variant types.
+    const armParts = variants.map((v) => {
+      const argType =
+        v.fields.length === 0
+          ? `"${v.name}"`
+          : `${name}_${sanitizeVariantIdent(v.name)}`;
+      return `${objectKey(v.name)}: (v: ${argType}) => R`;
+    });
+    lines.push(
+      `  match: <R>(v: ${name}, arms: { ${armParts.join("; ")} }): R => {`,
+    );
+    if (unitVariants.length > 0 && dataVariants.length > 0) {
+      lines.push(`    if (typeof v === "string") {`);
+      lines.push(`      switch (v) {`);
+      for (const v of unitVariants) {
+        lines.push(
+          `        case "${v.name}": return arms[${JSON.stringify(v.name)}](v);`,
+        );
+      }
+      lines.push(`      }`);
+      lines.push(`    } else {`);
+      lines.push(`      switch (v.${tag}) {`);
+      for (const v of dataVariants) {
+        lines.push(
+          `        case "${v.name}": return arms[${JSON.stringify(v.name)}](v);`,
+        );
+      }
+      lines.push(`      }`);
+      lines.push(`    }`);
+    } else if (dataVariants.length > 0) {
+      lines.push(`    switch (v.${tag}) {`);
+      for (const v of dataVariants) {
+        lines.push(
+          `      case "${v.name}": return arms[${JSON.stringify(v.name)}](v);`,
+        );
+      }
+      lines.push(`    }`);
+    } else {
+      lines.push(`    switch (v) {`);
+      for (const v of unitVariants) {
+        lines.push(
+          `      case "${v.name}": return arms[${JSON.stringify(v.name)}](v);`,
+        );
+      }
+      lines.push(`    }`);
+    }
+    lines.push(
+      `    throw new Error(\`unhandled ${name} variant: \${JSON.stringify(v)}\`);`,
+    );
+    lines.push(`  },`);
+
+    lines.push(`} as const;`);
+    this.auxiliaryTypes.push(lines.join("\n"));
   }
 
   private emitVariantInterface(
@@ -551,12 +629,29 @@ function pascalCase(s: string): string {
     .join("");
 }
 
-/** Convert a PascalCase, camelCase, or snake_case name to UPPER_SNAKE_CASE. */
-function toUpperSnake(s: string): string {
-  return s
-    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
-    .replace(/[_\s-]+/g, "_")
-    .toUpperCase();
+/**
+ * Render `name` as an object-literal key: a bare identifier when it is a valid
+ * ECMAScript identifier, otherwise a double-quoted string literal. This lets
+ * variant/field names containing spaces or punctuation (e.g. `ACTUAL OUTPUT`)
+ * appear as valid keys without emitting uncompilable TypeScript.
+ */
+function objectKey(name: string): string {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name) ? name : JSON.stringify(name);
+}
+
+/**
+ * Derive a valid TypeScript identifier suffix for a data variant's tagged
+ * interface (e.g. `Outcome_Confirmed`). Non-alphanumeric characters are
+ * dropped; a leading digit (or an empty result) is prefixed so the identifier
+ * is always valid. The variant's *string* tag is preserved separately, so this
+ * only affects the generated type name, never the wire value.
+ */
+function sanitizeVariantIdent(name: string): string {
+  const cleaned = name.replace(/[^A-Za-z0-9_$]/g, "");
+  if (cleaned === "" || /^[0-9]/.test(cleaned)) {
+    return `V${cleaned}`;
+  }
+  return cleaned;
 }
 
 /** Get a human-readable label for a VarType (used in JSDoc). */

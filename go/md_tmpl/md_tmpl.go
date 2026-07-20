@@ -94,6 +94,7 @@ extern size_t pt_cache_include_count(const void *cache);
 import "C"
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -297,6 +298,49 @@ func (v Variant) MarshalJSON() ([]byte, error) {
 		m[k] = val
 	}
 	return json.Marshal(m)
+}
+
+// VariantMarshaler is implemented by statically-typed enum variant types (such
+// as those emitted by the code generator) to expose their dynamic,
+// __kind__-tagged representation.
+//
+// It lets the FlexBuffers and JSON encoders serialize a concrete variant using
+// the shared cross-language wire format — a bare string for unit variants, or a
+// {"__kind__": "...", ...fields} object for data variants — without the
+// encoder needing to know the concrete type. Generated code implements this;
+// you rarely call it directly.
+type VariantMarshaler interface {
+	AsVariant() Variant
+}
+
+// VariantKind extracts the discriminant name from a variant's JSON encoding.
+//
+// It accepts both wire forms: a bare JSON string (a unit variant, e.g.
+// "Rejected") and an object carrying a "__kind__" field (a data variant, e.g.
+// {"__kind__":"Confirmed","evidence":"x"}). Generated UnmarshalX dispatchers
+// use it to decide which concrete variant to decode into.
+func VariantKind(data []byte) (string, error) {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return "", errors.New("md_tmpl: empty variant JSON")
+	}
+	if trimmed[0] == '"' {
+		var name string
+		if err := json.Unmarshal(trimmed, &name); err != nil {
+			return "", fmt.Errorf("md_tmpl: decoding unit variant: %w", err)
+		}
+		return name, nil
+	}
+	var probe struct {
+		Kind string `json:"__kind__"`
+	}
+	if err := json.Unmarshal(trimmed, &probe); err != nil {
+		return "", fmt.Errorf("md_tmpl: decoding data variant: %w", err)
+	}
+	if probe.Kind == "" {
+		return "", errors.New("md_tmpl: variant object missing __kind__")
+	}
+	return probe.Kind, nil
 }
 
 // freeError converts a C error string to a Go error and frees the C string.

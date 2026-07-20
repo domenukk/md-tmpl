@@ -1597,41 +1597,66 @@ describe("Code generation", () => {
     assert.ok(code.includes('readonly __kind__: "Confirmed"'));
   });
 
-  it("generates factory function for struct variant", () => {
+  it("emits a companion namespace with a data-variant constructor", () => {
     const code = generateTypes(CODEGEN_SRC);
-    // Should emit a factory function for Confirmed
+    // The enum's companion object is a single `const Outcome = { ... }`.
     assert.ok(
-      code.includes("function Confirmed(fields:"),
-      `expected factory function 'Confirmed' in:\n${code}`,
+      code.includes("export const Outcome = {"),
+      `expected companion namespace 'Outcome' in:\n${code}`,
     );
+    // Data variant → factory taking a typed `fields` object.
     assert.ok(
-      code.includes("evidence: string"),
-      `expected 'evidence: string' in factory fields:\n${code}`,
+      code.includes(
+        "Confirmed: (fields: { evidence: string }): Outcome_Confirmed =>",
+      ),
+      `expected typed 'Confirmed' constructor in:\n${code}`,
     );
+    // The constructor body attaches the reserved discriminant tag + spread.
     assert.ok(
-      code.includes("): Outcome_Confirmed"),
-      `expected return type 'Outcome_Confirmed':\n${code}`,
-    );
-    assert.ok(
-      code.includes('__kind__: "Confirmed"'),
-      `expected __kind__ tag in factory body:\n${code}`,
-    );
-    assert.ok(
-      code.includes("...fields"),
-      `expected spread of fields:\n${code}`,
+      code.includes('{ __kind__: "Confirmed", ...fields }'),
+      `expected __kind__-tagged body in:\n${code}`,
     );
   });
 
-  it("generates const for unit variant", () => {
+  it("emits unit variants as bare string constants in the namespace", () => {
     const code = generateTypes(CODEGEN_SRC);
-    // Should emit a const for Rejected
+    // Unit variant → a `V: "V" as const` entry (matches the bare-string wire form).
     assert.ok(
-      code.includes('const Rejected = "Rejected" as const'),
-      `expected const for unit variant 'Rejected' in:\n${code}`,
+      code.includes('Rejected: "Rejected" as const,'),
+      `expected unit constant 'Rejected' in:\n${code}`,
     );
   });
 
-  it("generates factory functions for enum with multiple variants", () => {
+  it("emits kinds tuple, kindOf, is, and an exhaustive match", () => {
+    const code = generateTypes(CODEGEN_SRC);
+    assert.ok(
+      code.includes('kinds: ["Confirmed", "Rejected"] as const,'),
+      `expected 'kinds' tuple in:\n${code}`,
+    );
+    assert.ok(
+      code.includes("kindOf: (v: Outcome): OutcomeKind =>"),
+      `expected 'kindOf' helper in:\n${code}`,
+    );
+    assert.ok(
+      code.includes("is: (v: Outcome, k: OutcomeKind): boolean =>"),
+      `expected 'is' helper in:\n${code}`,
+    );
+    assert.ok(
+      code.includes("match: <R>(v: Outcome, arms: {"),
+      `expected generic 'match' helper in:\n${code}`,
+    );
+    // Both arms must be present and typed to their precise variant shapes.
+    assert.ok(
+      code.includes("Confirmed: (v: Outcome_Confirmed) => R"),
+      `expected typed 'Confirmed' match arm in:\n${code}`,
+    );
+    assert.ok(
+      code.includes('Rejected: (v: "Rejected") => R'),
+      `expected typed 'Rejected' match arm in:\n${code}`,
+    );
+  });
+
+  it("handles an enum with multiple data + unit variants", () => {
     const code = generateTypes(
       `---
 params:
@@ -1639,62 +1664,45 @@ params:
 ---
 {{ result }}`,
     );
-    // Struct variant factories
+    // Both data-variant constructors, each typed to its own field object.
     assert.ok(
-      code.includes("function Success(fields:"),
-      `expected Success factory in:\n${code}`,
+      code.includes("Success: (fields: { value: string }): Result_Success =>"),
+      `expected Success constructor in:\n${code}`,
     );
     assert.ok(
-      code.includes("function Failure(fields:"),
-      `expected Failure factory in:\n${code}`,
+      code.includes(
+        "Failure: (fields: { error: string; code: number }): Result_Failure =>",
+      ),
+      `expected Failure constructor with both fields in:\n${code}`,
     );
-    // The Failure factory should have both fields
+    // Unit variant const.
     assert.ok(
-      code.includes("error: string"),
-      `expected 'error: string' field:\n${code}`,
+      code.includes('Unknown: "Unknown" as const,'),
+      `expected 'Unknown' unit constant in:\n${code}`,
     );
+    // kinds enumerates every tag in declaration order.
     assert.ok(
-      code.includes("code: number"),
-      `expected 'code: number' field:\n${code}`,
-    );
-    // Unit variant const
-    assert.ok(
-      code.includes('const Unknown = "Unknown" as const'),
-      `expected const for 'Unknown':\n${code}`,
+      code.includes('kinds: ["Success", "Failure", "Unknown"] as const,'),
+      `expected ordered 'kinds' tuple in:\n${code}`,
     );
   });
 
-  it("variant factory JSDoc comments", () => {
-    const code = generateTypes(CODEGEN_SRC, { jsdoc: true });
-    assert.ok(
-      code.includes("/** Create a `Confirmed` variant. */"),
-      `expected JSDoc for Confirmed factory:\n${code}`,
-    );
-    assert.ok(
-      code.includes("/** Create a `Rejected` variant. */"),
-      `expected JSDoc for Rejected factory:\n${code}`,
-    );
-  });
-
-  it("variant factories respect exportTypes: false", () => {
+  it("companion namespace respects exportTypes: false", () => {
     const code = generateTypes(CODEGEN_SRC, { exportTypes: false });
-    // Should NOT have 'export' before factory declarations
+    // No `export` on any generated declaration.
     assert.ok(
-      !code.includes("export const Rejected"),
-      `expected no export on Rejected const:\n${code}`,
+      !code.includes("export const Outcome"),
+      `expected no export on Outcome namespace:\n${code}`,
     );
     assert.ok(
-      !code.includes("export function Confirmed"),
-      `expected no export on Confirmed function:\n${code}`,
+      !code.includes("export type Outcome"),
+      `expected no export on Outcome type:\n${code}`,
     );
-    // But should still have the factories
+    assert.ok(!/\bexport\b/.test(code), `expected zero exports in:\n${code}`);
+    // But the namespace itself is still emitted.
     assert.ok(
-      code.includes('const Rejected = "Rejected" as const'),
-      `expected Rejected const:\n${code}`,
-    );
-    assert.ok(
-      code.includes("function Confirmed(fields:"),
-      `expected Confirmed function:\n${code}`,
+      code.includes("const Outcome = {"),
+      `expected Outcome namespace:\n${code}`,
     );
   });
 
@@ -13294,14 +13302,21 @@ params: [stage = enum(Design, Build, Ship)]
 ---
 {{ stage }}`;
 
-  it("emits exactly one X_ALL constant and no ALL_XS / XS aliases", () => {
+  it("exposes all variants exactly once via the namespace `kinds` tuple", () => {
     const code = generateTypes(SRC);
-    const allMatches = code.match(/\bSTAGE_ALL\b/g) ?? [];
+    // The `kinds` tuple is the single canonical enumeration of variant names.
+    const kindsMatches = code.match(/\bkinds:/g) ?? [];
     assert.strictEqual(
-      allMatches.length,
+      kindsMatches.length,
       1,
-      `expected exactly one STAGE_ALL in:\n${code}`,
+      `expected exactly one 'kinds' tuple in:\n${code}`,
     );
+    assert.ok(
+      code.includes('kinds: ["Design", "Build", "Ship"] as const,'),
+      `expected canonical 'kinds' tuple in:\n${code}`,
+    );
+    // The legacy flat aliases must be gone.
+    assert.ok(!/\bSTAGE_ALL\b/.test(code), "STAGE_ALL alias should be gone");
     assert.ok(!/\bALL_STAGES\b/.test(code), "ALL_STAGES alias should be gone");
     assert.ok(!/\bconst\s+STAGES\b/.test(code), "STAGES alias should be gone");
   });

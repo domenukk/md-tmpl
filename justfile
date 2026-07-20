@@ -235,12 +235,15 @@ check: lint-rust-fmt lint test doc
 # Publish everything (lint + test first, then all packages)
 publish: lint test publish-rust publish-python publish-ts
 
-# Publish Rust crates to crates.io (md-tmpl first, then macros)
+# Publish Rust crates to crates.io in dependency order (core → macros → md-tmpl)
 publish-rust:
-    cargo publish -p md-tmpl
+    cargo publish -p md-tmpl-core
     @echo "Waiting for crates.io index..."
     sleep 30
     cargo publish -p md-tmpl-macros
+    @echo "Waiting for crates.io index..."
+    sleep 30
+    cargo publish -p md-tmpl
 
 # Publish Python package to PyPI via maturin
 publish-python:

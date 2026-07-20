@@ -16,6 +16,7 @@
 use std::fmt::Write;
 
 use pyo3::{Py, prelude::*, types::PyDict};
+use typed_builder::TypedBuilder;
 
 // ---------------------------------------------------------------------------
 // Core types
@@ -38,11 +39,15 @@ impl Field {
 }
 
 /// A Python method definition.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, TypedBuilder)]
 pub(crate) struct PyMethodDef {
+    #[builder(setter(into))]
     pub name: String,
+    #[builder(default)]
     pub params: Vec<Field>,
+    #[builder(default, setter(strip_option, into))]
     pub return_annotation: Option<String>,
+    #[builder(default, setter(strip_option, into))]
     pub doc: Option<String>,
     /// Lines of the method body (without leading indent).
     pub body: Vec<String>,
@@ -347,13 +352,13 @@ impl PyClassDef {
             .iter()
             .map(|f| format!("self.{n} = {n}", n = f.name))
             .collect();
-        self.method(PyMethodDef {
-            name: "__init__".into(),
-            params: fields.to_vec(),
-            return_annotation: None,
-            doc: None,
-            body,
-        })
+        self.method(
+            PyMethodDef::builder()
+                .name("__init__")
+                .params(fields.to_vec())
+                .body(body)
+                .build(),
+        )
     }
 
     /// Add a `__repr__` returning `ClassName(field=val, ...)`.
@@ -362,13 +367,16 @@ impl PyClassDef {
             .iter()
             .map(|f| format!("{}={{self.{}!r}}", f.name, f.name))
             .collect();
-        self.method(PyMethodDef {
-            name: "__repr__".into(),
-            params: Vec::new(),
-            return_annotation: Some("str".into()),
-            doc: None,
-            body: vec![format!("return f'{class_name}({})'", parts.join(", "))],
-        })
+        self.method(
+            PyMethodDef::builder()
+                .name("__repr__")
+                .return_annotation("str")
+                .body(vec![format!(
+                    "return f'{class_name}({})'",
+                    parts.join(", ")
+                )])
+                .build(),
+        )
     }
 
     /// Add a `__eq__` comparing all fields.
@@ -384,13 +392,14 @@ impl PyClassDef {
                 .collect();
             body.push(format!("return {}", parts.join(" and ")));
         }
-        self.method(PyMethodDef {
-            name: "__eq__".into(),
-            params: vec![Field::new("other", "")],
-            return_annotation: Some("bool".into()),
-            doc: None,
-            body,
-        })
+        self.method(
+            PyMethodDef::builder()
+                .name("__eq__")
+                .params(vec![Field::new("other", "")])
+                .return_annotation("bool")
+                .body(body)
+                .build(),
+        )
     }
 
     /// Add a `__hash__` hashing a tag and all fields.
@@ -401,13 +410,13 @@ impl PyClassDef {
         } else {
             format!("return hash(('{tag}', {}))", parts.join(", "))
         };
-        self.method(PyMethodDef {
-            name: "__hash__".into(),
-            params: Vec::new(),
-            return_annotation: Some("int".into()),
-            doc: None,
-            body: vec![hash_expr],
-        })
+        self.method(
+            PyMethodDef::builder()
+                .name("__hash__")
+                .return_annotation("int")
+                .body(vec![hash_expr])
+                .build(),
+        )
     }
 
     /// Add a `_md_tmpl_fields` property returning a dict of fields.

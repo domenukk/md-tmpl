@@ -197,6 +197,11 @@ allow_unused: true
 	if !strings.Contains(code, `"Critical"`) {
 		t.Errorf("expected '\"Critical\"' string literal in generated code:\n%s", code)
 	}
+
+	// Verify the ergonomic Variants slice enumerating all values.
+	if !containsNormalized(code, "var SeverityVariants = []Severity{SeverityCritical, SeverityHigh, SeverityMedium, SeverityLow}") {
+		t.Errorf("expected 'SeverityVariants' slice in generated code:\n%s", code)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +259,62 @@ MAYBE
 	// Verify struct variant field.
 	if !containsNormalized(code, "Evidence string") {
 		t.Errorf("expected 'Evidence string' in OutcomeConfirmed:\n%s", code)
+	}
+
+	// Verify the sealed interface exposes Kind and AsVariant.
+	if !containsNormalized(code, "Kind() string") {
+		t.Errorf("expected 'Kind() string' on the interface:\n%s", code)
+	}
+	if !containsNormalized(code, "AsVariant() md_tmpl.Variant") {
+		t.Errorf("expected 'AsVariant() md_tmpl.Variant' on the interface:\n%s", code)
+	}
+
+	// Verify the variant-name slice.
+	if !containsNormalized(code, `var OutcomeVariants = []string{"Confirmed", "Rejected", "NeedsWork"}`) {
+		t.Errorf("expected 'OutcomeVariants' slice:\n%s", code)
+	}
+
+	// Verify the data variant serializes with __kind__ via AsVariant.
+	if !containsNormalized(code, `func (v OutcomeConfirmed) AsVariant() md_tmpl.Variant {`) {
+		t.Errorf("expected 'OutcomeConfirmed.AsVariant':\n%s", code)
+	}
+	if !containsNormalized(code, `Kind: "Confirmed",`) {
+		t.Errorf("expected AsVariant to set Kind \"Confirmed\":\n%s", code)
+	}
+	if !containsNormalized(code, `func (v OutcomeConfirmed) MarshalJSON() ([]byte, error) { return v.AsVariant().MarshalJSON() }`) {
+		t.Errorf("expected data-variant MarshalJSON delegating to AsVariant:\n%s", code)
+	}
+
+	// Verify the unit variant serializes as a bare string.
+	if !containsNormalized(code, `func (OutcomeRejected) AsVariant() md_tmpl.Variant {`) {
+		t.Errorf("expected 'OutcomeRejected.AsVariant':\n%s", code)
+	}
+	if !containsNormalized(code, `func (OutcomeRejected) MarshalJSON() ([]byte, error) { return json.Marshal("Rejected") }`) {
+		t.Errorf("expected unit-variant MarshalJSON emitting a bare string:\n%s", code)
+	}
+
+	// Verify constructors.
+	if !containsNormalized(code, `func NewOutcomeConfirmed(evidence string) OutcomeConfirmed {`) {
+		t.Errorf("expected 'NewOutcomeConfirmed' constructor:\n%s", code)
+	}
+	if !containsNormalized(code, `func NewOutcomeRejected() OutcomeRejected { return OutcomeRejected{} }`) {
+		t.Errorf("expected 'NewOutcomeRejected' constructor:\n%s", code)
+	}
+
+	// Verify the Unmarshal dispatcher reads either wire form.
+	if !containsNormalized(code, `func UnmarshalOutcome(data []byte) (Outcome, error) {`) {
+		t.Errorf("expected 'UnmarshalOutcome' dispatcher:\n%s", code)
+	}
+	if !containsNormalized(code, `kind, err := md_tmpl.VariantKind(data)`) {
+		t.Errorf("expected UnmarshalOutcome to use md_tmpl.VariantKind:\n%s", code)
+	}
+
+	// Verify the required imports are present.
+	if !strings.Contains(code, `"encoding/json"`) {
+		t.Errorf("expected 'encoding/json' import:\n%s", code)
+	}
+	if !strings.Contains(code, `"github.com/domenukk/md-tmpl/go/md_tmpl"`) {
+		t.Errorf("expected md_tmpl import:\n%s", code)
 	}
 }
 

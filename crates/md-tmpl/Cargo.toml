@@ -1,6 +1,6 @@
 [package]
 name = "md-tmpl"
-version = "0.9.0"
+version = "0.9.2"
 edition = "2024"
 rust-version = "1.85"
 description = "Lightweight template engine for .tmpl.md prompt files with typed frontmatter"
@@ -21,8 +21,8 @@ flexbuffers = ["std", "serde", "md-tmpl-core/flexbuffers"]
 macros = ["dep:md-tmpl-macros"]
 
 [dependencies]
-md-tmpl-core = { version = "0.9.0", path = "../md-tmpl-core", default-features = false }
-md-tmpl-macros = { version = "0.9.0", path = "../md-tmpl-macros", optional = true, features = [
+md-tmpl-core = { version = "0.9.2", path = "../md-tmpl-core", default-features = false }
+md-tmpl-macros = { version = "0.9.2", path = "../md-tmpl-macros", optional = true, features = [
   "serde",
 ] }
 
