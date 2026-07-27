@@ -1540,16 +1540,16 @@ The `in` operator checks for substring or element membership, or static enum var
 
 Conditions in `{% if %}` / `{% elif %}` / inline guards are evaluated for **truthiness**. `bool`, `str`, `int`, `float`, `option(T)`, and `list` have truthiness; `struct`, `enum`, and `tmpl` do not and are a compile-time type error as a bare condition (use a field access, `{% match %}`, or `{% include %}` instead).
 
-| Type in `{% if expr %}` | Allowed? | Truthiness & narrowing behavior                                                                                          |
-| ----------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `bool`                  | ✅       | The boolean value itself (`true` / `false`).                                                                             |
-| `option(T)`             | ✅       | `true` when `Some(...)`, `false` when `None`. **Flow-sensitive narrowing** unwraps `expr` to `T` inside the branch body. |
-| `str`                   | ✅       | Non-empty is `true`; `""` is `false`.                                                                                    |
-| `int` / `float`         | ✅       | Non-zero is `true`; `0` / `0.0` is `false`.                                                                              |
-| `list(...)`             | ✅       | Non-empty is `true`; `[]` is `false`.                                                                                    |
-| `struct(...)`           | ❌       | Compile-time type error — a struct has no truthiness. Test a specific field (e.g. `{% if s.enabled %}`).                 |
-| `enum(...)`             | ❌       | Compile-time type error — an enum has no truthiness. Use `{% match %}` (or `{{ kind(e) }}`) for dispatch.                |
-| `tmpl(...)`             | ❌       | Compile-time type error — a template handle has no truthiness. Use `{% include %}` to render it.                         |
+| Type in `{% if expr %}` | Allowed? | Truthiness & narrowing behavior                                                                                                                                                                                              |
+| ----------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `bool`                  | ✅       | The boolean value itself (`true` / `false`).                                                                                                                                                                                 |
+| `option(T)`             | ✅       | `true` when `Some(val)` and `val` is truthy (e.g. `Some("x")`); `false` when `None` or `Some("")`/`Some(0)`. **Flow-sensitive narrowing** unwraps `expr` to `T` inside the branch body. (Use `has(expr)` for pure presence). |
+| `str`                   | ✅       | Non-empty is `true`; `""` is `false`.                                                                                                                                                                                        |
+| `int` / `float`         | ✅       | Non-zero is `true`; `0` / `0.0` is `false`.                                                                                                                                                                                  |
+| `list(...)`             | ✅       | Non-empty is `true`; `[]` is `false`.                                                                                                                                                                                        |
+| `struct(...)`           | ❌       | Compile-time type error — a struct has no truthiness. Test a specific field (e.g. `{% if s.enabled %}`).                                                                                                                     |
+| `enum(...)`             | ❌       | Compile-time type error — an enum has no truthiness. Use `{% match %}` (or `{{ kind(e) }}`) for dispatch.                                                                                                                    |
+| `tmpl(...)`             | ❌       | Compile-time type error — a template handle has no truthiness. Use `{% include %}` to render it.                                                                                                                             |
 
 > **Tip:** For explicit intent, prefer `has(expr)` (option presence) or an explicit comparison (`count > 0`, `name != ""`, `len(items) > 0`) over relying on bare truthiness.
 
