@@ -2343,6 +2343,28 @@ params:
 }
 
 #[test]
+fn direct_option_rendering_without_guard_is_error() {
+    let decls = vec![VarDecl {
+        name: "opt".to_string(),
+        var_type: VarType::Option(Box::new(VarType::Str)),
+        default_value: None,
+    }];
+    let tmpl = r"---
+name: t
+params:
+  - opt = option(str)
+---
+{{ opt }}";
+    let errors = compile_and_check(tmpl, &decls);
+    assert_eq!(errors.len(), 1, "expected error: {errors:?}");
+    assert!(
+        errors[0].contains("cannot display value of type option"),
+        "got: {}",
+        errors[0]
+    );
+}
+
+#[test]
 fn option_field_access_without_has_guard_is_error() {
     let decls = vec![VarDecl {
         name: "opt".to_string(),
@@ -3095,4 +3117,47 @@ params:
         ]),
     );
     assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "present");
+}
+
+#[test]
+fn bare_option_condition_rejected_at_compile_time() {
+    let decls = vec![VarDecl {
+        name: "opt".to_string(),
+        var_type: VarType::Option(Box::new(VarType::Str)),
+        default_value: None,
+    }];
+    let tmpl = r"---
+name: t
+params:
+  - opt = option(str)
+---
+> {% if opt %}yes{% /if %}";
+    let errors = compile_and_check(tmpl, &decls);
+    assert_eq!(errors.len(), 1, "expected bare option error: {errors:?}");
+    assert!(
+        errors[0].contains("cannot evaluate truthiness of option"),
+        "got: {}",
+        errors[0]
+    );
+}
+
+#[test]
+fn has_and_unwrapped_operand_in_same_condition() {
+    let tmpl = crate::Template::from_source(
+        r"---
+params:
+  - test = option(str) := None
+---
+> {% if has(test) && test %}val: {{ test }}{% /if %}",
+    )
+    .expect("has(test) && test should compile cleanly due to left-to-right narrowing");
+
+    let mut ctx = crate::Context::new();
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "");
+
+    ctx.set("test", "");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "");
+
+    ctx.set("test", "hello");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "val: hello");
 }

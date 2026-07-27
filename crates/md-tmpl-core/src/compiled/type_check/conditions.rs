@@ -38,7 +38,15 @@ pub(super) fn validate_condition(
         Condition::Not(inner) => {
             validate_condition(inner, env, errors);
         }
-        Condition::And(left, right) | Condition::Or(left, right) => {
+        Condition::And(left, right) => {
+            validate_condition(left, env, errors);
+            let mut left_narrowed_env = env.clone();
+            for (path_str, inner_ty) in extract_all_has_narrowings(left, env) {
+                left_narrowed_env.narrowed.insert(path_str, inner_ty);
+            }
+            validate_condition(right, &left_narrowed_env, errors);
+        }
+        Condition::Or(left, right) => {
             validate_condition(left, env, errors);
             validate_condition(right, env, errors);
         }
@@ -128,6 +136,9 @@ fn non_truthy_message(ty: &VarType) -> Option<&'static str> {
         VarType::Enum(_) => Some("cannot evaluate truthiness of enum — use {% match %} instead"),
         VarType::Tmpl(_) => {
             Some("cannot evaluate truthiness of template handle — use {% include %} instead")
+        }
+        VarType::Option(_) => {
+            Some("cannot evaluate truthiness of option — use has(x) to check presence")
         }
         _ => None,
     }

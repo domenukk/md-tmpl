@@ -13,7 +13,11 @@ import {
   typeName,
   display,
 } from "./value.js";
-import { TemplateSyntaxError, TypeMismatchError } from "./errors.js";
+import {
+  TemplateError,
+  TemplateSyntaxError,
+  TypeMismatchError,
+} from "./errors.js";
 import { applyFilter, parseFilter } from "./filters.js";
 import { type VarDecl, type VarType } from "./frontmatter.js";
 import {
@@ -384,6 +388,12 @@ function parseAtom(ctx: ParseCtx): boolean {
 
   // Truthy evaluation
   const val = evaluateOperandValue(operand, ctx.scope);
+  if (val.type === TYPE_NONE) {
+    throw new TemplateError(
+      "cannot evaluate truthiness of option — use has(x) to check presence",
+      "type_mismatch",
+    );
+  }
   return isTruthy(val);
 }
 

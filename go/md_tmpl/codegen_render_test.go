@@ -236,7 +236,7 @@ func TestGeneratedEnumOptionRenders(t *testing.T) {
 params:
   - maybe = option(enum(Confirmed(evidence = str, score = int), Rejected, NeedsWork))
 ---
-> {% if maybe %}
+> {% if has(maybe) %}
 > {% match maybe %}
 > {% case Confirmed %}
 

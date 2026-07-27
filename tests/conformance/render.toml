@@ -297,3 +297,10 @@ note = "an explicit param overrides its default"
 source = "---\nparams:\n  - greeting = str := \"Hi\"\n---\n{{ greeting }}!"
 params = { greeting = "Yo" }
 expect = { kind = "render", output = "Yo!" }
+
+[[cases]]
+name = "narrow_has_and_unwrapped_in_same_condition"
+note = "left-to-right narrowing in `if has(x) && x` allows x to be evaluated as unwrapped inner type"
+source = "---\nparams:\n  - test = option(str) := None\n---\n\n> {% if has(test) && test %}\n\nval: {{ test }}\n\n> {% /if %}\n"
+params = { test = "hello" }
+expect = { kind = "render", output = "val: hello\n" }

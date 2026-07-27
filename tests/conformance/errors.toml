@@ -92,3 +92,10 @@ note = "using an option value in the None arm of a match errors in BOTH backends
 source = "---\nparams:\n  - o = option(struct(v = str))\n---\n\n> {% match o %}\n> {% case Some %}\n\ngot {{ o.v }}\n\n> {% case None %}\n\nleak {{ o.v }}\n\n> {% /match %}\n"
 params = { o = { __none__ = true } }
 expect = { kind = "error", phase = "any", observed_ts_phase = "render" }
+
+[[cases]]
+name = "err_bare_option_condition"
+note = "evaluating an option(T) directly as a bare condition is a type error"
+source = "---\nparams:\n  - opt = option(str) := None\n---\n> {% if opt %}yes{% /if %}"
+params = {}
+expect = { kind = "error", phase = "any", error_contains = "cannot evaluate truthiness of option" }

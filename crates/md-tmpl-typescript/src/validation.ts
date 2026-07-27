@@ -602,6 +602,9 @@ function nonTruthyMessage(ty: VarType): string | undefined {
   if (ty.kind === TYPE_TMPL) {
     return "cannot evaluate truthiness of template handle — use {% include %} instead";
   }
+  if (ty.kind === TYPE_OPTION || (ty.kind === TYPE_ENUM && ty.isOption)) {
+    return "cannot evaluate truthiness of option — use has(x) to check presence";
+  }
   return undefined;
 }
 
@@ -768,11 +771,9 @@ function extractHasNarrowing(
   env: TypeEnv,
 ): [string, VarType] | undefined {
   const trimmed = condition.trim();
-  let path = trimmed;
   const match = /^has\(\s*([^)]+?)\s*\)$/.exec(trimmed);
-  if (match?.[1] !== undefined) {
-    path = match[1];
-  }
+  if (!match?.[1]) return undefined;
+  const path = match[1].trim();
 
   const ty = env.resolveExprType(path);
   if (!ty) return undefined;
@@ -781,7 +782,6 @@ function extractHasNarrowing(
     return [path, ty.innerType];
   }
 
-  // Legacy enum-based option
   if (ty.kind === TYPE_ENUM && ty.isOption) {
     const someVariant = ty.variants.find((v) => v.name === OPTION_SOME);
     if (someVariant?.fields.length === 1) {
@@ -793,6 +793,24 @@ function extractHasNarrowing(
   }
 
   return undefined;
+}
+
+function extractAllHasNarrowings(
+  condition: string,
+  env: TypeEnv,
+): [string, VarType][] {
+  const results: [string, VarType][] = [];
+  const opIdx = findTopLevelOp(condition, ["&&"]);
+  if (opIdx !== -1) {
+    const left = condition.slice(0, opIdx).trim();
+    const right = condition.slice(opIdx + 2).trim();
+    results.push(...extractAllHasNarrowings(left, env));
+    results.push(...extractAllHasNarrowings(right, env));
+  } else {
+    const n = extractHasNarrowing(condition, env);
+    if (n) results.push(n);
+  }
+  return results;
 }
 
 /**
@@ -848,7 +866,7 @@ function validateStaticCondition(
     }
   }
 
-  function checkLeaf(sub: string): void {
+  function checkLeaf(sub: string, currentEnv: TypeEnv): void {
     let s = sub.trim();
     while (s.startsWith("(") && s.endsWith(")")) {
       s = s.slice(1, -1).trim();
@@ -863,8 +881,33 @@ function validateStaticCondition(
 
     const opIdx = findTopLevelOp(s, ["&&", "||"]);
     if (opIdx !== -1) {
-      checkLeaf(s.slice(0, opIdx));
-      checkLeaf(s.slice(opIdx + 2));
+      const op = s.slice(opIdx, opIdx + 2);
+      const leftStr = s.slice(0, opIdx).trim();
+      const rightStr = s.slice(opIdx + 2).trim();
+      checkLeaf(leftStr, currentEnv);
+      let rightEnv = currentEnv;
+      if (op === "&&") {
+        const hasMatch = /^has\(\s*([^)]+?)\s*\)$/.exec(leftStr);
+        if (hasMatch?.[1]) {
+          const target = hasMatch[1].trim();
+          const targetType = currentEnv.resolveExprType(target);
+          if (
+            targetType &&
+            (targetType.kind === TYPE_OPTION ||
+              (targetType.kind === TYPE_ENUM && targetType.isOption))
+          ) {
+            const inner =
+              targetType.kind === TYPE_OPTION
+                ? targetType.innerType
+                : targetType.variants.find((v) => v.name === "Some")?.fields[0]
+                    ?.varType;
+            if (inner) {
+              rightEnv = currentEnv.withNarrowing(target, inner);
+            }
+          }
+        }
+      }
+      checkLeaf(rightStr, rightEnv);
       return;
     }
 
@@ -882,7 +925,7 @@ function validateStaticCondition(
     const hasMatch = /^has\(\s*([^)]+?)\s*\)$/.exec(s);
     if (hasMatch?.[1] !== undefined) {
       const target = hasMatch[1].trim();
-      const targetType = env.resolveExprType(target);
+      const targetType = currentEnv.resolveExprType(target);
       if (targetType) {
         const isOpt =
           targetType.kind === TYPE_OPTION ||
@@ -897,9 +940,9 @@ function validateStaticCondition(
       return;
     }
 
-    // Bare truthiness: struct, enum (non-option), and tmpl have no
+    // Bare truthiness: struct, enum (non-option), tmpl, and option have no
     // truthiness and cannot be used directly as a condition.
-    const leafType = env.resolveExprType(s);
+    const leafType = currentEnv.resolveExprType(s);
     if (leafType) {
       const nonTruthy = nonTruthyMessage(leafType);
       if (nonTruthy) {
@@ -911,7 +954,7 @@ function validateStaticCondition(
     }
   }
 
-  checkLeaf(trimmed);
+  checkLeaf(trimmed, env);
 }
 
 function findTopLevelOp(str: string, ops: string[]): number {
@@ -974,13 +1017,14 @@ function walkNodesWithNarrowing(
             errors,
             node.loc,
           );
-          const posNarrowing = extractHasNarrowing(
+          const posNarrowings = extractAllHasNarrowings(
             branch.condition,
             currentEnv,
           );
-          const branchBodyEnv = posNarrowing
-            ? currentEnv.withNarrowing(posNarrowing[0], posNarrowing[1])
-            : currentEnv;
+          let branchBodyEnv = currentEnv;
+          for (const [path, innerType] of posNarrowings) {
+            branchBodyEnv = branchBodyEnv.withNarrowing(path, innerType);
+          }
           walkNodesWithNarrowing(branch.body, branchBodyEnv, errors);
 
           const negNarrowing = extractNotHasNarrowing(

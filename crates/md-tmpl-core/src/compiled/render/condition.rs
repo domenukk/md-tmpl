@@ -117,6 +117,11 @@ pub(crate) fn eval_condition(
     match condition {
         Condition::Truthy(operand) => {
             let value = operand.resolve(scope)?;
+            if matches!(&*value, Value::None) {
+                return Err(TemplateError::syntax(
+                    "cannot evaluate truthiness of option — use has(x) to check presence",
+                ));
+            }
             Ok(value.is_truthy())
         }
         Condition::Not(inner) => {

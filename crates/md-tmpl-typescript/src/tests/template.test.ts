@@ -10957,6 +10957,26 @@ params:
     assert.doesNotThrow(() => tmpl.render({ x: null }));
   });
 
+  it("rejects option in bare condition at compile time", () => {
+    assert.throws(
+      () =>
+        Template.fromSource(`---
+params:
+  - x = option(str)
+---
+> {% if x %}
+
+yes
+
+> {% else %}
+
+no
+
+> {% /if %}`),
+      /cannot evaluate truthiness of option/,
+    );
+  });
+
   it("option roundtrip: declarations show option(T)", () => {
     const tmpl = Template.fromSource(`---
 params:
@@ -11011,8 +11031,10 @@ default
     assert.strictEqual(tmpl.render({ x: 99 }).trim(), "99");
   });
 
-  it("isTruthy: none is falsy", () => {
-    const tmpl = Template.fromSource(`---
+  it("rejects option in bare condition at compile time", () => {
+    assert.throws(
+      () =>
+        Template.fromSource(`---
 params:
   - x = option(str)
 ---
@@ -11024,9 +11046,9 @@ yes
 
 no
 
-> {% /if %}`);
-    assert.strictEqual(tmpl.render({ x: null }).trim(), "no");
-    assert.strictEqual(tmpl.render({ x: "hi" }).trim(), "yes");
+> {% /if %}`),
+      /cannot evaluate truthiness of option/,
+    );
   });
 
   it("option renderUnchecked with null", () => {
@@ -11145,6 +11167,33 @@ params:
 > {% if has(a) %}{% if has(b) %}{{ a }}-{{ b }}{% /if %}{% /if %}`,
       );
       assert.strictEqual(tmpl.render({ a: "x", b: 5 }).trim(), "x-5");
+    });
+
+    it("bare option condition is compile error", () => {
+      assert.throws(
+        () =>
+          Template.fromSource(
+            `---
+params:
+  - opt = option(str)
+---
+> {% if opt %}yes{% /if %}`,
+          ),
+        /cannot evaluate truthiness of option/,
+      );
+    });
+
+    it("has(test) && test in same condition works due to left-to-right narrowing", () => {
+      const tmpl = Template.fromSource(
+        `---
+params:
+  - test = option(str) := None
+---
+> {% if has(test) && test %}val: {{ test }}{% /if %}`,
+      );
+      assert.strictEqual(tmpl.render({}), "");
+      assert.strictEqual(tmpl.render({ test: "" }), "");
+      assert.strictEqual(tmpl.render({ test: "hello" }), "val: hello");
     });
   });
 
@@ -13345,15 +13394,16 @@ params:
     assert.strictEqual(tmpl.render({ count: 5 }), "yes");
   });
 
-  it("accepts option(str) in condition and narrows to str", () => {
+  it("rejects option(str) in bare condition at compile time", () => {
     const src = `---
 params:
   - opt = option(str) := None
 ---
 > {% if opt %} · {{ opt }}{% /if %}`;
-    const tmpl = Template.fromSource(src);
-    assert.strictEqual(tmpl.render({}), "");
-    assert.strictEqual(tmpl.render({ opt: "High" }), " · High");
+    assert.throws(
+      () => Template.fromSource(src),
+      /cannot evaluate truthiness of option/,
+    );
   });
 
   it("accepts list in bare condition for non-empty truthiness check", () => {
