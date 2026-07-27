@@ -3810,8 +3810,9 @@ allow_unused: true
 class TestOptionType:
     """Tests for option(T) type support in the Python binding.
 
-    option(T) desugars to enum(Some(val=T), None) at parse time.
-    Python None maps to the engine's None variant.
+    option(T) is a first-class type with a transparent representation:
+    Python None maps to the engine's absent value, and any other value is
+    the present inner value directly (no wrapper).
     """
 
     def test_option_none_via_match(self) -> None:

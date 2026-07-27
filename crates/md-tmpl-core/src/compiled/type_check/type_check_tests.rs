@@ -372,12 +372,12 @@ fn condition_inside_match_arm_validated() {
             unit_variant("NotConfirmed"),
         ],
     )];
-    let tmpl = r"---
+    let tmpl = r#"---
 name: t
 params:
   - outcome = enum(Confirmed(evidence = str), NotConfirmed)
 ---
-> {% match outcome %}{% case Confirmed %}{% if outcome.evidence %}yes{% /if %}{% /match %}";
+> {% match outcome %}{% case Confirmed %}{% if outcome.evidence == "secret" %}yes{% /if %}{% /match %}"#;
     let errors = compile_and_check(tmpl, &decls);
     assert!(errors.is_empty(), "condition in arm: {errors:?}");
 }
@@ -1027,6 +1027,14 @@ fn int_decl(name: &str) -> VarDecl {
     VarDecl {
         name: name.to_string(),
         var_type: VarType::Int,
+        default_value: None,
+    }
+}
+
+fn bool_decl(name: &str) -> VarDecl {
+    VarDecl {
+        name: name.to_string(),
+        var_type: VarType::Bool,
         default_value: None,
     }
 }
@@ -1776,7 +1784,7 @@ fn include_inside_if_false_branch_still_checked() {
         vec![str_decl("msg")],
         vec![],
     );
-    let parent_decls = vec![str_decl("flag")];
+    let parent_decls = vec![bool_decl("flag")];
     let segments = vec![Segment::If {
         branches: vec![(
             crate::compiled::Condition::Truthy(
@@ -2758,4 +2766,333 @@ params:
     assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "nope");
     ctx.set("status", "Other");
     assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "ok");
+}
+
+#[test]
+fn scalar_and_collection_types_in_if_condition_are_allowed() {
+    let tmpl_str = "---\n---\n> {% if name %}hello{% /if %}";
+    let errors = compile_and_check(tmpl_str, &[str_decl("name")]);
+    assert!(
+        errors.is_empty(),
+        "str in if condition should succeed: {errors:?}"
+    );
+
+    let tmpl_int = "---\n---\n> {% if count %}hello{% /if %}";
+    let errors = compile_and_check(tmpl_int, &[int_decl("count")]);
+    assert!(
+        errors.is_empty(),
+        "int in if condition should succeed: {errors:?}"
+    );
+
+    let tmpl_list = "---\n---\n> {% if items %}hello{% /if %}";
+    let errors = compile_and_check(
+        tmpl_list,
+        &[VarDecl {
+            name: "items".to_string(),
+            var_type: VarType::List(vec![VarDecl {
+                name: String::new(),
+                var_type: VarType::Str,
+                default_value: None,
+            }]),
+            default_value: None,
+        }],
+    );
+    assert!(
+        errors.is_empty(),
+        "list in bare if condition should succeed: {errors:?}"
+    );
+}
+
+#[test]
+fn has_on_str_and_list_rejected() {
+    // has() is strictly for option(T) presence/unwrapping. String and list
+    // presence is expressed with bare truthiness (`{% if title %}`), not has().
+    let tmpl_str = r"---
+---
+> {% if has(title) %}x{% /if %}";
+    let errors = compile_and_check(tmpl_str, &[str_decl("title")]);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("'has()' requires an option type")),
+        "has(str) should be rejected: {errors:?}"
+    );
+
+    let tmpl_list = r"---
+---
+> {% if has(items) %}x{% /if %}";
+    let errors = compile_and_check(
+        tmpl_list,
+        &[VarDecl {
+            name: "items".to_string(),
+            var_type: VarType::List(vec![VarDecl {
+                name: String::new(),
+                var_type: VarType::Str,
+                default_value: None,
+            }]),
+            default_value: None,
+        }],
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("'has()' requires an option type")),
+        "has(list) should be rejected: {errors:?}"
+    );
+}
+
+#[test]
+fn bare_truthiness_on_str_and_list_renders() {
+    // The replacement for has(str)/has(list): bare truthiness.
+    let tmpl = crate::Template::from_source(
+        r"---
+params:
+  - title = str
+  - items = list(str)
+---
+> {% if title %}title: {{ title }}{% /if %}
+> {% if items %}items count: {{ len(items) }}{% /if %}",
+    )
+    .expect("bare truthiness on str/list should compile");
+
+    let mut ctx = crate::Context::new();
+    ctx.set("title", "");
+    ctx.set("items", crate::Value::list(Vec::<crate::Value>::new()));
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "");
+
+    ctx.set("title", "Hello");
+    ctx.set(
+        "items",
+        crate::Value::list(vec![
+            crate::Value::Str("a".to_string()),
+            crate::Value::Str("b".to_string()),
+        ]),
+    );
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "title: Helloitems count: 2");
+}
+
+#[test]
+fn bare_struct_enum_and_tmpl_in_condition_rejected() {
+    let tmpl_struct = r"---
+---
+> {% if s %}hi{% /if %}";
+    let struct_decl_val = VarDecl {
+        name: "s".to_string(),
+        var_type: VarType::Struct(vec![VarDecl {
+            name: "id".to_string(),
+            var_type: VarType::Int,
+            default_value: None,
+        }]),
+        default_value: None,
+    };
+    let errors = compile_and_check(tmpl_struct, &[struct_decl_val]);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("cannot evaluate truthiness of struct")),
+        "bare struct in if condition should fail: {errors:?}"
+    );
+
+    let tmpl_enum = r"---
+types:
+  - Status = enum(Active, Paused)
+---
+> {% if st %}hi{% /if %}";
+    let enum_decl_val = VarDecl {
+        name: "st".to_string(),
+        var_type: VarType::Enum(vec![
+            crate::types::VariantDecl {
+                name: "Active".into(),
+                fields: vec![],
+            },
+            crate::types::VariantDecl {
+                name: "Paused".into(),
+                fields: vec![],
+            },
+        ]),
+        default_value: None,
+    };
+    let errors = compile_and_check(tmpl_enum, &[enum_decl_val]);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("cannot evaluate truthiness of enum")),
+        "bare enum in if condition should fail: {errors:?}"
+    );
+
+    let tmpl_handle = r"---
+---
+> {% if t %}hi{% /if %}";
+    let tmpl_decl_val = VarDecl {
+        name: "t".to_string(),
+        var_type: VarType::Tmpl(vec![]),
+        default_value: None,
+    };
+    let errors = compile_and_check(tmpl_handle, &[tmpl_decl_val]);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("cannot evaluate truthiness of template handle")),
+        "bare tmpl in if condition should fail: {errors:?}"
+    );
+}
+
+#[test]
+fn option_type_in_if_condition_succeeds_and_narrows() {
+    let tmpl = crate::Template::from_source(
+        r"---
+params:
+  - opt = option(str) := None
+---
+> {% if opt %} · {{ opt }}{% /if %}",
+    )
+    .expect("option in if condition should compile and narrow");
+
+    let mut ctx = crate::Context::new();
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "");
+
+    ctx.set("opt", "High");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), " · High");
+}
+
+#[test]
+fn has_on_invalid_types_rejected() {
+    let tmpl_int = r"---
+---
+> {% if has(n) %}hi{% /if %}";
+    let errors = compile_and_check(tmpl_int, &[int_decl("n")]);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("'has()' requires an option type")),
+        "has(int) should fail: {errors:?}"
+    );
+
+    let tmpl_float = r"---
+---
+> {% if has(x) %}hi{% /if %}";
+    let float_decl_val = VarDecl {
+        name: "x".to_string(),
+        var_type: VarType::Float,
+        default_value: None,
+    };
+    let errors = compile_and_check(tmpl_float, &[float_decl_val]);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("'has()' requires an option type")),
+        "has(float) should fail: {errors:?}"
+    );
+
+    let tmpl_enum = r"---
+types:
+  - Status = enum(Active, Paused)
+---
+> {% if has(st) %}hi{% /if %}";
+    let enum_decl_val = VarDecl {
+        name: "st".to_string(),
+        var_type: VarType::Enum(vec![
+            crate::types::VariantDecl {
+                name: "Active".into(),
+                fields: vec![],
+            },
+            crate::types::VariantDecl {
+                name: "Paused".into(),
+                fields: vec![],
+            },
+        ]),
+        default_value: None,
+    };
+    let errors = compile_and_check(tmpl_enum, &[enum_decl_val]);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("'has()' requires an option type")),
+        "has(enum) should fail: {errors:?}"
+    );
+
+    let tmpl_struct = r"---
+---
+> {% if has(s) %}hi{% /if %}";
+    let struct_decl_val = VarDecl {
+        name: "s".to_string(),
+        var_type: VarType::Struct(vec![VarDecl {
+            name: "id".to_string(),
+            var_type: VarType::Int,
+            default_value: None,
+        }]),
+        default_value: None,
+    };
+    let errors = compile_and_check(tmpl_struct, &[struct_decl_val]);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("'has()' requires an option type")),
+        "has(struct) should fail: {errors:?}"
+    );
+
+    let tmpl_handle = r"---
+---
+> {% if has(t) %}hi{% /if %}";
+    let tmpl_decl_val = VarDecl {
+        name: "t".to_string(),
+        var_type: VarType::Tmpl(vec![]),
+        default_value: None,
+    };
+    let errors = compile_and_check(tmpl_handle, &[tmpl_decl_val]);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("'has()' requires an option type")),
+        "has(tmpl) should fail: {errors:?}"
+    );
+}
+
+#[test]
+fn not_has_negative_narrowing_carry_in_rust() {
+    let tmpl = crate::Template::from_source(
+        r"---
+params:
+  - label = option(str) := None
+---
+> {% if !has(label) %}default{% else %}label: {{ label }}{% /if %}",
+    )
+    .expect("!has(label) should narrow label to inner str in else branch");
+
+    let mut ctx = crate::Context::new();
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "default");
+
+    ctx.set("label", "custom");
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "label: custom");
+}
+
+#[test]
+fn has_on_option_enum_reports_present_for_struct_variant() {
+    // Regression: a Some(enum struct-variant) carries a `__kind__` tag in its
+    // transparent representation. Presence must be decided by Value::None only
+    // (not by inspecting the tag), so has() reports such a value present.
+    let tmpl = crate::Template::from_source(
+        r"---
+params:
+  - status = option(enum(Active(score = int), Idle)) := None
+---
+> {% if has(status) %}present{% else %}absent{% /if %}",
+    )
+    .expect("option(enum) should compile");
+
+    let mut ctx = crate::Context::new();
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "absent");
+
+    // Some(Active { score: 9 }) — transparent enum struct-variant payload.
+    ctx.set(
+        "status",
+        crate::Value::new_struct([
+            (
+                crate::consts::ENUM_TAG_KEY,
+                crate::Value::Str("Active".into()),
+            ),
+            ("score", crate::Value::Int(9)),
+        ]),
+    );
+    assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "present");
 }

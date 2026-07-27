@@ -316,57 +316,84 @@ impl ConditionOperand {
 
                 Ok(Cow::Owned(Value::Int(count)))
             }
-            Self::Kind(path) => {
-                let val = scope.resolve_path(path)?;
-                if scope.is_option_path(path.as_str()) {
-                    return match val {
-                        Value::None => {
-                            Ok(Cow::Owned(Value::Str(crate::consts::OPTION_NONE.into())))
-                        }
-                        _ => Ok(Cow::Owned(Value::Str(crate::consts::OPTION_SOME.into()))),
-                    };
-                }
-                match val {
-                    Value::Struct(d) => {
-                        if let Some(Value::Str(kind)) = d.get(crate::consts::ENUM_TAG_KEY) {
-                            Ok(Cow::Owned(Value::Str(kind.clone())))
-                        } else {
-                            Err(TemplateError::syntax(
-                                "kind() requires an enum value (dict with variant tag)",
-                            ))
-                        }
-                    }
-                    Value::Str(s) => Ok(Cow::Owned(Value::Str(s.clone()))),
-                    Value::None => Ok(Cow::Owned(Value::Str(crate::consts::OPTION_NONE.into()))),
-                    _ => Err(TemplateError::syntax(format!(
-                        "kind() requires an enum value, got {}",
-                        val.type_name()
-                    ))),
-                }
-            }
-            Self::Kinds(path) => {
-                let val = scope.resolve_path(path)?;
-                match val {
-                    Value::Struct(d) => {
-                        if let Some(list_val) = d.get(crate::consts::ENUM_VARIANTS_KEY) {
-                            Ok(Cow::Borrowed(list_val))
-                        } else {
-                            Err(TemplateError::syntax(
-                                "kinds() requires an enum type namespace",
-                            ))
-                        }
-                    }
-                    _ => Err(TemplateError::syntax(format!(
-                        "kinds() requires an enum type namespace, got {}",
-                        val.type_name()
-                    ))),
-                }
-            }
+            Self::Kind(path) => resolve_kind_operand(path, scope),
+            Self::Kinds(path) => resolve_kinds_operand(path, scope),
             Self::Has(path) => {
                 let val = scope.resolve_path(path)?;
-                Ok(Cow::Owned(Value::Bool(Scope::is_option_some(val))))
+                let is_has = if scope.is_option_path(path.as_str()) {
+                    Scope::is_option_some(val)
+                } else {
+                    match val {
+                        Value::Str(s) => !s.is_empty(),
+                        Value::List(l) => !l.is_empty(),
+                        Value::None => false,
+                        _ => true,
+                    }
+                };
+                Ok(Cow::Owned(Value::Bool(is_has)))
             }
         }
+    }
+}
+
+/// Resolve a `kind(path)` operand to its variant-name string value.
+///
+/// Extracted from [`ConditionOperand::resolve`] to keep that method within
+/// the complexity budget. Options report `Some`/`None`; enum structs report
+/// their variant tag; plain strings pass through.
+fn resolve_kind_operand<'s>(
+    path: &CompiledPath,
+    scope: &'s Scope<'_>,
+) -> Result<Cow<'s, Value>, TemplateError> {
+    let val = scope.resolve_path(path)?;
+    if scope.is_option_path(path.as_str()) {
+        return match val {
+            Value::None => Ok(Cow::Owned(Value::Str(crate::consts::OPTION_NONE.into()))),
+            _ => Ok(Cow::Owned(Value::Str(crate::consts::OPTION_SOME.into()))),
+        };
+    }
+    match val {
+        Value::Struct(d) => {
+            if let Some(Value::Str(kind)) = d.get(crate::consts::ENUM_TAG_KEY) {
+                Ok(Cow::Owned(Value::Str(kind.clone())))
+            } else {
+                Err(TemplateError::syntax(
+                    "kind() requires an enum value (dict with variant tag)",
+                ))
+            }
+        }
+        Value::Str(s) => Ok(Cow::Owned(Value::Str(s.clone()))),
+        Value::None => Ok(Cow::Owned(Value::Str(crate::consts::OPTION_NONE.into()))),
+        _ => Err(TemplateError::syntax(format!(
+            "kind() requires an enum value, got {}",
+            val.type_name()
+        ))),
+    }
+}
+
+/// Resolve a `kinds(path)` operand to the list of enum variant names.
+///
+/// Extracted from [`ConditionOperand::resolve`] to keep that method within
+/// the complexity budget.
+fn resolve_kinds_operand<'s>(
+    path: &CompiledPath,
+    scope: &'s Scope<'_>,
+) -> Result<Cow<'s, Value>, TemplateError> {
+    let val = scope.resolve_path(path)?;
+    match val {
+        Value::Struct(d) => {
+            if let Some(list_val) = d.get(crate::consts::ENUM_VARIANTS_KEY) {
+                Ok(Cow::Borrowed(list_val))
+            } else {
+                Err(TemplateError::syntax(
+                    "kinds() requires an enum type namespace",
+                ))
+            }
+        }
+        _ => Err(TemplateError::syntax(format!(
+            "kinds() requires an enum type namespace, got {}",
+            val.type_name()
+        ))),
     }
 }
 
@@ -828,34 +855,22 @@ impl<'a> Scope<'a> {
         Ok(Value::Bool(Self::is_option_some(val)))
     }
 
-    /// Check if a value represents a `Some` variant of an option.
+    /// Check if an option value is present (`Some`).
     ///
-    /// An option is absent (`None`) only when represented by [`Value::None`].
-    /// Every other value counts as present (`Some`), including:
-    /// - A `Struct` tagged `__kind__ = "Some"` (struct variant representation).
-    /// - The literal string `"None"`, which is the `Some(None)` escape used by
-    ///   the shared conformance convention (a present option whose inner string
-    ///   value happens to be `"None"`).
+    /// Options use a **transparent** value representation: the absent case
+    /// (`None`) is always [`Value::None`], and every other value is the inner
+    /// `Some(T)` payload directly (e.g. `Some("x")` is `Value::Str("x")`,
+    /// `Some(Active{..})` is the enum struct-variant `Value::Struct`).
     ///
-    /// This means a non-option enum `Str("Active")` would also return `true`,
-    /// which is acceptable since `has()` should only be used on `option(T)` types.
+    /// Presence is therefore defined purely by *not* being [`Value::None`].
+    /// This is correct for **all** inner types — including `option(enum)` whose
+    /// `Some` payload is a `__kind__`-tagged struct variant — and matches the
+    /// `Value::None` discrimination used by `kind()` and `{% match %}`.
+    ///
+    /// Callers gate this on the type-driven [`Scope::is_option_path`], so it is
+    /// only consulted for values statically known to be `option(T)`.
     pub(crate) fn is_option_some(val: &Value) -> bool {
-        use crate::consts::{ENUM_TAG_KEY, OPTION_SOME};
-        match val {
-            // Explicit absent value — always not-present.
-            Value::None => false,
-            // Struct variant: check __kind__ tag.
-            Value::Struct(d) => {
-                if let Some(Value::Str(tag)) = d.get(ENUM_TAG_KEY) {
-                    tag == OPTION_SOME
-                } else {
-                    // Struct without tag — not an option, treat as truthy.
-                    true
-                }
-            }
-            // Any other value (including strings): treat as present.
-            _ => true,
-        }
+        !matches!(val, Value::None)
     }
 
     /// Set the maximum include depth for this scope (builder style).

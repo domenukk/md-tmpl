@@ -126,6 +126,8 @@ pub struct Template {
     /// `env:` frontmatter declarations can be resolved.
     #[cfg(feature = "std")]
     env_values: alloc::sync::Arc<[(String, Value)]>,
+    /// Pre-computed set of all declared variable names and constants.
+    declared_names: Arc<HashSet<String>>,
     /// Cached `TypeId`s of Rust types that have passed validation.
     ///
     /// When `render::<T>()` is called, the first invocation runs full
@@ -167,6 +169,7 @@ impl Clone for Template {
             estimated_capacity: self.estimated_capacity,
             #[cfg(feature = "std")]
             env_values: self.env_values.clone(),
+            declared_names: self.declared_names.clone(),
             // Clone inherits cached type IDs — the validation is
             // shape-based, not instance-based.
             #[cfg(feature = "std")]
@@ -226,6 +229,20 @@ pub struct PrecompiledTemplateData<'a> {
     pub name: Option<&'a str>,
     /// Template description.
     pub description: Option<&'a str>,
+}
+
+fn build_declared_names(
+    declarations: &[VarDecl],
+    consts: &HashMap<String, Value>,
+) -> Arc<HashSet<String>> {
+    let mut names = HashSet::with_capacity(declarations.len() + consts.len());
+    for d in declarations {
+        names.insert(d.name.clone());
+    }
+    for k in consts.keys() {
+        names.insert(k.clone());
+    }
+    Arc::new(names)
 }
 
 impl Template {
@@ -411,6 +428,7 @@ impl Template {
             .iter()
             .map(|(k, v)| (k.to_string(), v.clone()))
             .collect();
+        let declared_names = build_declared_names(&fm.declarations, &consts);
         let tmpl = Self {
             body,
             name: fm.name.clone(),
@@ -426,6 +444,7 @@ impl Template {
             imported_consts: Arc::new(fm.imported_consts.clone()),
             estimated_capacity,
             env_values,
+            declared_names,
             checked_type_ids: std::sync::Mutex::new(Vec::new()),
         };
         Ok((tmpl, fm))
@@ -486,6 +505,7 @@ impl Template {
         inject_enum_type_constants(&fm.type_aliases, &mut consts);
         let segments: Arc<[Segment]> = Arc::from(segments);
         let estimated_capacity = compiled::render::estimate_output_capacity(&segments);
+        let declared_names = build_declared_names(&fm.declarations, &consts);
         let tmpl = Self {
             body,
             name: fm.name.clone(),
@@ -499,6 +519,7 @@ impl Template {
             consts: Arc::new(consts),
             imported_consts: Arc::new(fm.imported_consts.clone()),
             estimated_capacity,
+            declared_names,
         };
         Ok((tmpl, fm))
     }
@@ -516,6 +537,7 @@ impl Template {
             .iter()
             .any(|d| d.default_value.is_some());
         let estimated_capacity = compiled::render::estimate_output_capacity(&data.segments);
+        let declared_names = build_declared_names(&data.declared_variables, &data.consts);
         Self {
             body: String::new(),
             name: data.name,
@@ -531,6 +553,7 @@ impl Template {
             imported_consts: data.imported_consts,
             estimated_capacity,
             env_values: alloc::sync::Arc::from([]),
+            declared_names,
             checked_type_ids: std::sync::Mutex::new(Vec::new()),
         }
     }
@@ -560,6 +583,7 @@ impl Template {
             .any(|d| d.default_value.is_some());
         let segments: Arc<[Segment]> = Arc::from(data.segments);
         let estimated_capacity = compiled::render::estimate_output_capacity(&segments);
+        let declared_names = build_declared_names(data.declared_variables, &const_map);
         Self {
             body: String::new(),
             name: data.name.map(String::from),
@@ -577,6 +601,7 @@ impl Template {
             estimated_capacity,
             #[cfg(feature = "std")]
             env_values: alloc::sync::Arc::from([]),
+            declared_names,
             #[cfg(feature = "std")]
             checked_type_ids: std::sync::Mutex::new(Vec::new()),
         }
@@ -634,24 +659,19 @@ impl Template {
             });
         }
         // Reject extra (undeclared) parameters unless explicitly allowed.
-        if !allow_extra {
-            let mut declared: HashSet<&str> = self
-                .declared_variables
-                .iter()
-                .map(|d| d.name.as_str())
-                .collect();
-            for name in self.consts.keys() {
-                declared.insert(name.as_str());
-            }
+        if !allow_extra
+            && ctx
+                .values
+                .keys()
+                .any(|k| !self.declared_names.contains(k.as_str()))
+        {
             let extra: Vec<String> = ctx
                 .values
                 .keys()
-                .filter(|k| !declared.contains(k.as_str()))
+                .filter(|k| !self.declared_names.contains(k.as_str()))
                 .cloned()
                 .collect();
-            if !extra.is_empty() {
-                return Err(TemplateError::ExtraParams(extra));
-            }
+            return Err(TemplateError::ExtraParams(extra));
         }
         Ok(())
     }

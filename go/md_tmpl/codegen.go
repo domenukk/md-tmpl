@@ -218,6 +218,8 @@ func generateFromTemplate(tmpl *Template, opts *genOptions) (string, error) {
 				fmt.Fprintf(&b, "\tif err := ctx.SetFloat(%q, float64(p.%s)); err != nil {\n\t\treturn \"\", err\n\t}\n", f.name, goField)
 			case kindBool:
 				fmt.Fprintf(&b, "\tif err := ctx.SetBool(%q, bool(p.%s)); err != nil {\n\t\treturn \"\", err\n\t}\n", f.name, goField)
+			case kindTmpl:
+				fmt.Fprintf(&b, "\tif err := ctx.SetTmpl(%q, p.%s); err != nil {\n\t\treturn \"\", err\n\t}\n", f.name, goField)
 			default:
 				// Complex types (list, struct, enum): use generic Set which
 				// marshals via FlexBuffers — still a single FFI call.
@@ -272,9 +274,27 @@ func (c *codegenContext) resolveType(fieldName string, node typeNode) string {
 
 	case kindOption:
 		if node.innerType == nil {
-			return "any"
+			return "*string"
 		}
 		inner := c.resolveType(fieldName, *node.innerType)
+		if node.innerType.kind == kindTmpl {
+			return inner
+		}
+		if node.innerType.kind == kindEnum {
+			isInterface := false
+			for _, v := range node.innerType.variants {
+				if len(v.fields) > 0 {
+					isInterface = true
+					break
+				}
+			}
+			if isInterface {
+				return inner
+			}
+		}
+		if strings.HasPrefix(inner, "*") {
+			return inner
+		}
 		return "*" + inner
 
 	case kindScalarList:
@@ -284,11 +304,18 @@ func (c *codegenContext) resolveType(fieldName string, node typeNode) string {
 		inner := c.resolveType(fieldName, *node.innerType)
 		return "[]" + inner
 
+	case kindTmpl:
+		c.needsMdTmpl = true
+		return "*md_tmpl.Template"
+
 	case kindAlias:
-		return "any"
+		if node.aliasName != "" {
+			return toPascalCase(node.aliasName)
+		}
+		return "string"
 
 	default:
-		return "any"
+		return "string"
 	}
 }
 
@@ -430,6 +457,7 @@ func (c *codegenContext) emitVariantType(b *strings.Builder, enumName, sealMetho
 	} else {
 		fmt.Fprintf(b, "// %s is the %q variant of %s.\n", typeName, v.name, enumName)
 		fmt.Fprintf(b, "type %s struct {\n", typeName)
+		b.WriteString("\tmd_tmpl.TaggedVariant\n")
 		for _, f := range v.fields {
 			goType := c.resolveType(f.name, f.typeNode)
 			fmt.Fprintf(b, "\t%s %s `json:%q`\n", toPascalCase(f.name), goType, f.name)
@@ -476,12 +504,13 @@ func (c *codegenContext) emitVariantType(b *strings.Builder, enumName, sealMetho
 		fmt.Fprintf(b, "func New%s() %s { return %s{} }\n\n", typeName, typeName, typeName)
 	} else {
 		params := make([]string, len(v.fields))
-		assigns := make([]string, len(v.fields))
+		assigns := make([]string, len(v.fields)+1)
+		assigns[0] = fmt.Sprintf("TaggedVariant: md_tmpl.NewTaggedVariant(%q)", v.name)
 		for i, f := range v.fields {
 			goType := c.resolveType(f.name, f.typeNode)
 			paramName := toCamelCase(f.name)
 			params[i] = fmt.Sprintf("%s %s", paramName, goType)
-			assigns[i] = fmt.Sprintf("%s: %s", toPascalCase(f.name), paramName)
+			assigns[i+1] = fmt.Sprintf("%s: %s", toPascalCase(f.name), paramName)
 		}
 		fmt.Fprintf(b, "// New%s constructs the %q variant of %s.\n", typeName, v.name, enumName)
 		fmt.Fprintf(b, "func New%s(%s) %s {\n", typeName, strings.Join(params, ", "), typeName)
@@ -533,7 +562,8 @@ const (
 	kindEnum
 	kindOption     // option(T) — nullable wrapper.
 	kindScalarList // scalar_list(T) — homogeneous typed list.
-	kindAlias      // Unresolved type alias — maps to any.
+	kindTmpl       // tmpl(...) or tmpl — sub-template parameter.
+	kindAlias      // Unresolved type alias.
 )
 
 // typeNode is a parsed type specification.
@@ -541,7 +571,8 @@ type typeNode struct {
 	kind      typeKind
 	fields    []fieldNode   // For list and struct.
 	variants  []variantNode // For enum.
-	innerType *typeNode     // For option and scalar_list.
+	innerType *typeNode     // For option, scalar_list, and tmpl.
+	aliasName string        // For unresolved type alias.
 }
 
 // fieldNode is a name-type pair inside a list/struct/variant.
@@ -600,11 +631,12 @@ func (p *typeParser) parseType() (typeNode, error) {
 		return p.parseWrapped(kindOption)
 	case "scalar_list":
 		return p.parseWrapped(kindScalarList)
+	case "tmpl":
+		return p.parseCompound(kindTmpl)
 	default:
-		// Type alias or unknown type — use any. The engine resolves
-		// aliases at runtime; codegen cannot expand them without the
-		// full type alias map.
-		return typeNode{kind: kindAlias}, nil
+		// Type alias or unknown type. The engine resolves
+		// aliases at runtime.
+		return typeNode{kind: kindAlias, aliasName: ident}, nil
 	}
 }
 

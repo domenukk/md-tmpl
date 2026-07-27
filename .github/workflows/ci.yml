@@ -60,6 +60,8 @@ jobs:
         run: just lint-markdown
       - name: Lint Justfile
         run: just lint-just
+      - name: Lint hygiene (suppressions, error handling, file length)
+        run: just lint-hygiene
 
   doc:
     name: Docs
@@ -154,4 +156,26 @@ jobs:
         run: cd crates/md-tmpl-wasm && npm install
       - name: Run WASM tests
         run: just test-wasm
+
+  codegen:
+    name: Codegen Freshness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@just
+      - name: Install dependencies
+        run: just setup-ts && just setup-python
+      - name: Verify Codegen Freshness
+        run: just lint-codegen
 

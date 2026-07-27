@@ -44,8 +44,8 @@ fmt-ts:
 
 # ── Lint ──────────────────────────────────────────────────────────────
 
-# Lint all code (Rust clippy, TOML, Markdown, Justfile, Go, Python, TypeScript, hygiene)
-lint: lint-rust lint-toml lint-markdown lint-just lint-python lint-go lint-ts lint-hygiene
+# Lint all code (Rust clippy, TOML, Markdown, Justfile, Go, Python, TypeScript, codegen, hygiene)
+lint: lint-rust lint-toml lint-markdown lint-just lint-python lint-go lint-ts lint-codegen lint-hygiene
 
 # Lint Rust with clippy (pedantic + all, deny warnings)
 lint-rust:
@@ -91,6 +91,16 @@ lint-ts:
     cd crates/md-tmpl-typescript && npx tsc --noEmit --strict
     cd crates/md-tmpl-typescript && npx eslint .
     cd crates/md-tmpl-typescript && npx -y prettier@latest --check '**/*.ts'
+
+# Verify zero-diff of generated static type-generator stubs across TS, Go, and Python
+lint-codegen: build-ts build-go-ffi
+    cd crates/md-tmpl-python && .venv/bin/maturin develop
+    python3 scripts/lint_codegen.py --check
+
+# Regenerate golden static type-generator stubs across TS, Go, and Python
+gen-stubs: build-ts build-go-ffi
+    cd crates/md-tmpl-python && .venv/bin/maturin develop
+    python3 scripts/lint_codegen.py --write
 
 # Run hygiene linter (suppression patterns, error handling, file length)
 lint-hygiene:

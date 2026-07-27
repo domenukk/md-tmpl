@@ -8282,17 +8282,17 @@ no
     assert.ok(tmpl.render({ x: 42 }).includes("yes"));
   });
 
-  it("has() returns true for non-option values", () => {
+  it("bare truthiness is true for non-empty string", () => {
     const tmpl = Template.fromSource(`---
 params:
-  - x = int
+  - x = str
 ---
-> {% if has(x) %}
+> {% if x %}
 
 yes
 
 > {% /if %}`);
-    assert.ok(tmpl.render({ x: 99 }).includes("yes"));
+    assert.ok(tmpl.render({ x: "hello" }).includes("yes"));
   });
 });
 
@@ -9823,7 +9823,7 @@ params:
 params:
   - n = int
 ---
-> {% if n %}truthy{% else %}falsy{% /if %}`);
+> {% if n != 0 %}truthy{% else %}falsy{% /if %}`);
     assert.strictEqual(tmpl.render({ n: 0 }).trim(), "falsy");
   });
 
@@ -9832,7 +9832,7 @@ params:
 params:
   - n = int
 ---
-> {% if n %}truthy{% else %}falsy{% /if %}`);
+> {% if n != 0 %}truthy{% else %}falsy{% /if %}`);
     assert.strictEqual(tmpl.render({ n: 42 }).trim(), "truthy");
   });
 
@@ -9841,7 +9841,7 @@ params:
 params:
   - n = int
 ---
-> {% if n %}truthy{% else %}falsy{% /if %}`);
+> {% if n != 0 %}truthy{% else %}falsy{% /if %}`);
     assert.strictEqual(tmpl.render({ n: -1 }).trim(), "truthy");
   });
 
@@ -9850,7 +9850,7 @@ params:
 params:
   - x = float
 ---
-> {% if x %}truthy{% else %}falsy{% /if %}`);
+> {% if x != 0.0 %}truthy{% else %}falsy{% /if %}`);
     assert.strictEqual(tmpl.render({ x: 0.0 }).trim(), "falsy");
   });
 
@@ -9859,7 +9859,7 @@ params:
 params:
   - x = float
 ---
-> {% if x %}truthy{% else %}falsy{% /if %}`);
+> {% if x != 0.0 %}truthy{% else %}falsy{% /if %}`);
     assert.strictEqual(tmpl.render({ x: 0.001 }).trim(), "truthy");
   });
 
@@ -13319,5 +13319,177 @@ params: [stage = enum(Design, Build, Ship)]
     assert.ok(!/\bSTAGE_ALL\b/.test(code), "STAGE_ALL alias should be gone");
     assert.ok(!/\bALL_STAGES\b/.test(code), "ALL_STAGES alias should be gone");
     assert.ok(!/\bconst\s+STAGES\b/.test(code), "STAGES alias should be gone");
+  });
+});
+
+describe("Condition Truthiness and Type Checking", () => {
+  it("accepts scalar str in condition and evaluates truthiness", () => {
+    const src = `---
+params:
+  - name = str
+---
+> {% if name %}hello {{ name }}{% /if %}`;
+    const tmpl = Template.fromSource(src);
+    assert.strictEqual(tmpl.render({ name: "" }), "");
+    assert.strictEqual(tmpl.render({ name: "Alice" }), "hello Alice");
+  });
+
+  it("accepts scalar int in condition and evaluates non-zero truthiness", () => {
+    const src = `---
+params:
+  - count = int
+---
+> {% if count %}yes{% else %}no{% /if %}`;
+    const tmpl = Template.fromSource(src);
+    assert.strictEqual(tmpl.render({ count: 0 }), "no");
+    assert.strictEqual(tmpl.render({ count: 5 }), "yes");
+  });
+
+  it("accepts option(str) in condition and narrows to str", () => {
+    const src = `---
+params:
+  - opt = option(str) := None
+---
+> {% if opt %} · {{ opt }}{% /if %}`;
+    const tmpl = Template.fromSource(src);
+    assert.strictEqual(tmpl.render({}), "");
+    assert.strictEqual(tmpl.render({ opt: "High" }), " · High");
+  });
+
+  it("accepts list in bare condition for non-empty truthiness check", () => {
+    const src = `---
+params:
+  - items = list(str)
+---
+> {% if items %}items present{% else %}empty{% /if %}`;
+    const tmpl = Template.fromSource(src);
+    assert.strictEqual(tmpl.render({ items: [] }), "empty");
+    assert.strictEqual(tmpl.render({ items: ["a"] }), "items present");
+  });
+
+  it("rejects has() on non-option types (str, list, int, struct) at compile time", () => {
+    const srcStr = `---
+params:
+  - title = str
+---
+> {% if has(title) %}hi{% /if %}`;
+    assert.throws(
+      () => Template.fromSource(srcStr),
+      (err: unknown) =>
+        err instanceof Error &&
+        err.message.includes("'has()' requires an option type"),
+    );
+
+    const srcList = `---
+params:
+  - items = list(str)
+---
+> {% if has(items) %}hi{% /if %}`;
+    assert.throws(
+      () => Template.fromSource(srcList),
+      (err: unknown) =>
+        err instanceof Error &&
+        err.message.includes("'has()' requires an option type"),
+    );
+
+    const srcInt = `---
+params:
+  - count = int
+---
+> {% if has(count) %}hi{% /if %}`;
+    assert.throws(
+      () => Template.fromSource(srcInt),
+      (err: unknown) =>
+        err instanceof Error &&
+        err.message.includes("'has()' requires an option type"),
+    );
+
+    const srcStruct = `---
+params:
+  - info = struct(id = int)
+---
+> {% if has(info) %}hi{% /if %}`;
+    assert.throws(
+      () => Template.fromSource(srcStruct),
+      (err: unknown) =>
+        err instanceof Error &&
+        err.message.includes("'has()' requires an option type"),
+    );
+
+    const srcTmpl = `---
+params:
+  - t = tmpl()
+---
+> {% if has(t) %}hi{% /if %}`;
+    assert.throws(
+      () => Template.fromSource(srcTmpl),
+      (err: unknown) =>
+        err instanceof Error &&
+        err.message.includes("'has()' requires an option type"),
+    );
+
+    const srcEnum = `---
+params:
+  - stage = enum(Design, Build)
+---
+> {% if has(stage) %}hi{% /if %}`;
+    assert.throws(
+      () => Template.fromSource(srcEnum),
+      (err: unknown) =>
+        err instanceof Error &&
+        err.message.includes("'has()' requires an option type"),
+    );
+  });
+
+  it("rejects bare struct, enum, or tmpl in a condition (no truthiness)", () => {
+    const srcStruct = `---
+params:
+  - info = struct(id = int)
+---
+> {% if info %}hi{% /if %}`;
+    assert.throws(
+      () => Template.fromSource(srcStruct),
+      (err: unknown) =>
+        err instanceof Error &&
+        err.message.includes("cannot evaluate truthiness of struct"),
+    );
+
+    const srcEnum = `---
+params:
+  - stage = enum(Design, Build)
+---
+> {% if stage %}hi{% /if %}`;
+    assert.throws(
+      () => Template.fromSource(srcEnum),
+      (err: unknown) =>
+        err instanceof Error &&
+        err.message.includes("cannot evaluate truthiness of enum"),
+    );
+
+    const srcTmpl = `---
+params:
+  - t = tmpl()
+---
+> {% if t %}hi{% /if %}`;
+    assert.throws(
+      () => Template.fromSource(srcTmpl),
+      (err: unknown) =>
+        err instanceof Error &&
+        err.message.includes("cannot evaluate truthiness of template handle"),
+    );
+  });
+
+  it("rejects limit filter on string at render time", () => {
+    const src = `---
+params:
+  - name = str
+---
+{{ name | limit(2) }}`;
+    const tmpl = Template.fromSource(src);
+    assert.throws(
+      () => tmpl.render({ name: "hello" }),
+      (err: unknown) =>
+        err instanceof Error && err.message.includes("'limit' requires a list"),
+    );
   });
 });

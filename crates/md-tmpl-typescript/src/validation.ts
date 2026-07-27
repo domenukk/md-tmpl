@@ -586,6 +586,25 @@ function displayHint(ty: VarType): string {
   }
 }
 
+/**
+ * Returns a diagnostic message if `ty` has no truthiness and therefore cannot
+ * be used directly as a bare `{% if %}` / `{% elif %}` condition. `struct`,
+ * (non-option) `enum`, and `tmpl` have no truthiness; all other types do.
+ * Mirrors the Rust core's `non_truthy_message`.
+ */
+function nonTruthyMessage(ty: VarType): string | undefined {
+  if (ty.kind === TYPE_STRUCT) {
+    return "cannot evaluate truthiness of struct — access a field or compare it instead";
+  }
+  if (ty.kind === TYPE_ENUM && !ty.isOption) {
+    return "cannot evaluate truthiness of enum — use {% match %} instead";
+  }
+  if (ty.kind === TYPE_TMPL) {
+    return "cannot evaluate truthiness of template handle — use {% include %} instead";
+  }
+  return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // Type environment for flow-sensitive narrowing
 // ---------------------------------------------------------------------------
@@ -749,11 +768,12 @@ function extractHasNarrowing(
   env: TypeEnv,
 ): [string, VarType] | undefined {
   const trimmed = condition.trim();
+  let path = trimmed;
   const match = /^has\(\s*([^)]+?)\s*\)$/.exec(trimmed);
-  if (!match) return undefined;
+  if (match?.[1] !== undefined) {
+    path = match[1];
+  }
 
-  const path = match[1];
-  if (path === undefined) return undefined;
   const ty = env.resolveExprType(path);
   if (!ty) return undefined;
 
@@ -775,12 +795,29 @@ function extractHasNarrowing(
   return undefined;
 }
 
+/**
+ * Extract !has() or !option_var negative narrowing.
+ * When `!has(path)` or `!path` occurs in a branch, `path: option(T)` is proven
+ * to be `Some(T)` in all subsequent fall-through branches and `else` blocks.
+ */
+function extractNotHasNarrowing(
+  condition: string,
+  env: TypeEnv,
+): [string, VarType] | undefined {
+  const trimmed = condition.trim();
+  if (trimmed.startsWith("!")) {
+    const inner = trimmed.slice(1).trim();
+    return extractHasNarrowing(inner, env);
+  }
+  return undefined;
+}
+
 interface ValidationError {
   message: string;
   loc?: import("./parser.js").SourceLocation;
 }
 
-/** Validate static condition checks at compile time (e.g., literal in kinds(Enum)). */
+/** Validate static condition checks at compile time (e.g., literal in kinds(Enum), condition operand types). */
 function validateStaticCondition(
   condition: string,
   env: TypeEnv,
@@ -788,6 +825,7 @@ function validateStaticCondition(
   loc?: import("./parser.js").SourceLocation,
 ): void {
   const trimmed = condition.trim();
+
   const inIdx = trimmed.indexOf(OP_IN_SPACED);
   if (inIdx !== -1) {
     const left = trimmed.slice(0, inIdx).trim();
@@ -797,10 +835,7 @@ function validateStaticCondition(
       const enumName = kindsMatch[1];
       const enumType = env.resolveExprType(enumName);
       if (enumType?.kind === TYPE_ENUM) {
-        if (
-          (left.startsWith(QUOTE_DOUBLE) && left.endsWith(QUOTE_DOUBLE)) ||
-          (left.startsWith(QUOTE_SINGLE) && left.endsWith(QUOTE_SINGLE))
-        ) {
+        if (left.startsWith('"') && left.endsWith('"') && left.length >= 2) {
           const strVal = left.slice(1, -1);
           if (!enumType.variants.some((v) => v.name === strVal)) {
             errors.push({
@@ -812,6 +847,96 @@ function validateStaticCondition(
       }
     }
   }
+
+  function checkLeaf(sub: string): void {
+    let s = sub.trim();
+    while (s.startsWith("(") && s.endsWith(")")) {
+      s = s.slice(1, -1).trim();
+    }
+    while (s.startsWith("!")) {
+      s = s.slice(1).trim();
+      while (s.startsWith("(") && s.endsWith(")")) {
+        s = s.slice(1, -1).trim();
+      }
+    }
+    if (!s) return;
+
+    const opIdx = findTopLevelOp(s, ["&&", "||"]);
+    if (opIdx !== -1) {
+      checkLeaf(s.slice(0, opIdx));
+      checkLeaf(s.slice(opIdx + 2));
+      return;
+    }
+
+    if (
+      s.includes("==") ||
+      s.includes("!=") ||
+      s.includes("<") ||
+      s.includes(">") ||
+      s.includes(" in ") ||
+      s.startsWith("match ")
+    ) {
+      return;
+    }
+
+    const hasMatch = /^has\(\s*([^)]+?)\s*\)$/.exec(s);
+    if (hasMatch?.[1] !== undefined) {
+      const target = hasMatch[1].trim();
+      const targetType = env.resolveExprType(target);
+      if (targetType) {
+        const isOpt =
+          targetType.kind === TYPE_OPTION ||
+          (targetType.kind === TYPE_ENUM && targetType.isOption);
+        if (!isOpt) {
+          errors.push({
+            message: `'has()' requires an option type (e.g. 'option(str)'), got ${varTypeLabel(targetType)} on '${target}' — for string or list presence, use bare condition ('if ${target}'), '!= ""', or 'len(...) > 0'`,
+            loc,
+          });
+        }
+      }
+      return;
+    }
+
+    // Bare truthiness: struct, enum (non-option), and tmpl have no
+    // truthiness and cannot be used directly as a condition.
+    const leafType = env.resolveExprType(s);
+    if (leafType) {
+      const nonTruthy = nonTruthyMessage(leafType);
+      if (nonTruthy) {
+        errors.push({
+          message: `type error in condition: ${nonTruthy}, got ${varTypeLabel(leafType)}`,
+          loc,
+        });
+      }
+    }
+  }
+
+  checkLeaf(trimmed);
+}
+
+function findTopLevelOp(str: string, ops: string[]): number {
+  let parenDepth = 0;
+  let inString = false;
+  let stringChar = "";
+  for (let i = 0; i < str.length - 1; i++) {
+    const ch = str[i];
+    if (inString) {
+      if (ch === stringChar && str[i - 1] !== "\\") inString = false;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      inString = true;
+      stringChar = ch;
+      continue;
+    }
+    if (ch === "(") parenDepth++;
+    else if (ch === ")") parenDepth--;
+    else if (parenDepth === 0) {
+      const pair = str.slice(i, i + 2);
+      if (ops.includes(pair)) return i;
+    }
+  }
+  return -1;
 }
 
 /**
@@ -841,20 +966,36 @@ function walkNodesWithNarrowing(
       }
 
       case NODE_IF: {
+        let currentEnv = env;
         for (const branch of node.branches) {
-          validateStaticCondition(branch.condition, env, errors, node.loc);
-          // Check for has() narrowing
-          const narrowing = extractHasNarrowing(branch.condition, env);
-          if (narrowing) {
-            const [path, narrowedType] = narrowing;
-            const narrowedEnv = env.withNarrowing(path, narrowedType);
-            walkNodesWithNarrowing(branch.body, narrowedEnv, errors);
-          } else {
-            walkNodesWithNarrowing(branch.body, env, errors);
+          validateStaticCondition(
+            branch.condition,
+            currentEnv,
+            errors,
+            node.loc,
+          );
+          const posNarrowing = extractHasNarrowing(
+            branch.condition,
+            currentEnv,
+          );
+          const branchBodyEnv = posNarrowing
+            ? currentEnv.withNarrowing(posNarrowing[0], posNarrowing[1])
+            : currentEnv;
+          walkNodesWithNarrowing(branch.body, branchBodyEnv, errors);
+
+          const negNarrowing = extractNotHasNarrowing(
+            branch.condition,
+            currentEnv,
+          );
+          if (negNarrowing) {
+            currentEnv = currentEnv.withNarrowing(
+              negNarrowing[0],
+              negNarrowing[1],
+            );
           }
         }
         if (node.elseBody) {
-          walkNodesWithNarrowing(node.elseBody, env, errors);
+          walkNodesWithNarrowing(node.elseBody, currentEnv, errors);
         }
         break;
       }

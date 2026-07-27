@@ -181,12 +181,18 @@ function resolveExpr(expr: string, scope: Scope): Value {
       }
       case FN_HAS: {
         const val = scope.resolvePath(arg);
-        // NoneValue means the option is absent
-        if (val.type === TYPE_NONE) {
-          return { type: TYPE_BOOL, value: false };
+        if (scope.isOptionParam(arg)) {
+          if (val.type === TYPE_NONE) {
+            return { type: TYPE_BOOL, value: false };
+          }
+          return { type: TYPE_BOOL, value: true };
+        } else {
+          let hasVal = true;
+          if (val.type === TYPE_NONE) hasVal = false;
+          else if (val.type === TYPE_STR) hasVal = val.value.length > 0;
+          else if (val.type === TYPE_LIST) hasVal = val.items.length > 0;
+          return { type: TYPE_BOOL, value: hasVal };
         }
-        // Not None — value is present
-        return { type: TYPE_BOOL, value: true };
       }
       default:
         throw new TemplateSyntaxError(`unknown function '${funcName}'`);

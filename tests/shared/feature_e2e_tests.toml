@@ -4161,23 +4161,23 @@ params = {}
 
 [[tests]]
 name = "literal_int_in_condition"
-description = "Non-zero integer literal is truthy in conditions"
+description = "Non-zero integer comparison in conditions"
 template = '''
 ---
 params: []
 ---
-> {% if 42 %}Y{% /if %}'''
+> {% if 42 > 0 %}Y{% /if %}'''
 expected_output = "Y"
 params = {}
 
 [[tests]]
 name = "literal_zero_in_condition"
-description = "Zero integer literal is falsy in conditions"
+description = "Zero integer comparison in conditions"
 template = '''
 ---
 params: []
 ---
-> {% if 0 %}Y{% else %}N{% /if %}'''
+> {% if 0 > 0 %}Y{% else %}N{% /if %}'''
 expected_output = "N"
 params = {}
 
@@ -4260,6 +4260,163 @@ params: []
 {{ 007 }}'''
 expected_output = "7"
 params = {}
+
+[[tests]]
+name = "truthy_str_nonempty"
+description = "bare truthiness on non-empty string evaluates to true"
+template = '''
+---
+params: [title = str]
+---
+> {% if title %}title={{ title }}{% else %}no_title{% /if %}'''
+expected_output = "title=Hello"
+[tests.params]
+title = "Hello"
+
+[[tests]]
+name = "truthy_str_empty"
+description = "bare truthiness on empty string evaluates to false"
+template = '''
+---
+params: [title = str]
+---
+> {% if title %}title={{ title }}{% else %}no_title{% /if %}'''
+expected_output = "no_title"
+[tests.params]
+title = ""
+
+[[tests]]
+name = "truthy_list_nonempty"
+description = "bare truthiness on non-empty list evaluates to true"
+template = '''
+---
+params: [items = list(str)]
+---
+> {% if items %}count={{ len(items) }}{% else %}no_items{% /if %}'''
+expected_output = "count=2"
+[tests.params]
+items = ["a", "b"]
+
+[[tests]]
+name = "truthy_list_empty"
+description = "bare truthiness on empty list evaluates to false"
+template = '''
+---
+params: [items = list(str)]
+---
+> {% if items %}count={{ len(items) }}{% else %}no_items{% /if %}'''
+expected_output = "no_items"
+[tests.params]
+items = []
+
+[[tests]]
+name = "not_has_negative_narrowing_carry"
+description = "!has() guard carries unwrapped option type into fall-through else branch"
+template = '''
+---
+params: [label = option(str) := None]
+---
+> {% if !has(label) %}default{% else %}{{ label }}{% /if %}'''
+expected_output = "default"
+params = {}
+
+[[tests]]
+name = "not_has_negative_narrowing_carry_present"
+description = "!has() guard fall-through renders option inner value in else branch"
+template = '''
+---
+params: [label = option(str) := None]
+---
+> {% if !has(label) %}default{% else %}{{ label }}{% /if %}'''
+expected_output = "custom"
+[tests.params]
+label = "custom"
+
+[[tests]]
+name = "not_truthy_str_empty"
+description = "negated truthiness on empty string is true"
+template = '''
+---
+params: [title = str]
+---
+> {% if !title %}empty{% else %}non_empty{% /if %}'''
+expected_output = "empty"
+[tests.params]
+title = ""
+
+[[tests]]
+name = "not_truthy_list_empty"
+description = "negated truthiness on empty list is true"
+template = '''
+---
+params: [items = list(str)]
+---
+> {% if !items %}no_items{% else %}has_items{% /if %}'''
+expected_output = "no_items"
+[tests.params]
+items = []
+
+[[tests]]
+name = "compound_truthy_and_chain"
+description = "str && list truthiness in conditional"
+template = '''
+---
+params:
+  - title = str
+  - tags = list(str)
+---
+> {% if title && tags %}both_present{% else %}missing{% /if %}'''
+expected_output = "both_present"
+[tests.params]
+title = "Hello"
+tags = ["rust", "ts"]
+
+[[tests]]
+name = "compound_truthy_and_chain_one_missing"
+description = "str && list truthiness returns false when one is empty"
+template = '''
+---
+params:
+  - title = str
+  - tags = list(str)
+---
+> {% if title && tags %}both_present{% else %}missing{% /if %}'''
+expected_output = "missing"
+[tests.params]
+title = "Hello"
+tags = []
+
+[[tests]]
+name = "compound_not_truthy_or_chain"
+description = "!a || !b boolean truthiness expression"
+template = '''
+---
+params:
+  - name = str
+  - bio = str
+---
+> {% if !name || !bio %}incomplete{% else %}complete{% /if %}'''
+expected_output = "incomplete"
+[tests.params]
+name = "Alice"
+bio = ""
+
+[[tests]]
+name = "compound_parens_truthy_expression"
+description = "Grouped boolean parens with truthiness and !"
+template = '''
+---
+params:
+  - title = str
+  - subtitle = str
+  - draft = bool
+---
+> {% if (title || subtitle) && !draft %}published{% else %}hidden{% /if %}'''
+expected_output = "published"
+[tests.params]
+title = "My Post"
+subtitle = ""
+draft = false
 
 # ============================================================================
 # F14: CRLF Normalization — Windows line endings produce identical output

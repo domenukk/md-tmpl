@@ -20,6 +20,15 @@ use syn::{
 };
 use type_gen::generate_type_alias_tokens;
 
+/// Convert absolute dependency paths into owned strings for `include_str!`
+/// emission, so Cargo tracks imported / `{% include %}`d files as build inputs.
+fn dep_paths_to_strings(paths: &[std::path::PathBuf]) -> Vec<String> {
+    paths
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect()
+}
+
 thread_local! {
     /// The crate path to use in generated code.
     ///
@@ -418,8 +427,10 @@ pub fn include_template(input: TokenStream) -> TokenStream {
         segments,
         inline_templates,
         source_hash,
+        dependency_paths,
     } = ast;
     let path_str = full_path.to_string_lossy().to_string();
+    let dep_paths_str = dep_paths_to_strings(&dependency_paths);
 
     // Module name: custom or derived from file stem.
     let mod_ident = match parsed.custom_name {
@@ -480,6 +491,7 @@ pub fn include_template(input: TokenStream) -> TokenStream {
         let expanded = quote! {
             pub mod #mod_ident {
                 const _: &str = include_str!(#path_str);
+                #(const _: &str = include_str!(#dep_paths_str);)*
 
                 fn __init_template() -> #crate_path::Template {
                     #crate_path::Template::from_precompiled(&#crate_path::PrecompiledTemplateData {
@@ -580,7 +592,9 @@ pub fn template(input: TokenStream) -> TokenStream {
         segments,
         inline_templates,
         source_hash,
+        dependency_paths,
     } = ast;
+    let dep_paths_str = dep_paths_to_strings(&dependency_paths);
 
     // Crate path: custom or default `::md_tmpl`.
     let crate_path = parsed
@@ -622,19 +636,18 @@ pub fn template(input: TokenStream) -> TokenStream {
         // Type alias codegen.
         let type_alias_tokens = generate_type_alias_tokens(&fm.type_aliases);
 
-        let name_token = if let Some(n) = &fm.name {
-            quote! { Some(#n) }
-        } else {
-            quote! { None }
-        };
-        let desc_token = if let Some(d) = &fm.description {
-            quote! { Some(#d) }
-        } else {
-            quote! { None }
-        };
+        let name_token = fm
+            .name
+            .as_ref()
+            .map_or_else(|| quote! { None }, |n| quote! { Some(#n) });
+        let desc_token = fm
+            .description
+            .as_ref()
+            .map_or_else(|| quote! { None }, |d| quote! { Some(#d) });
 
         let expanded = quote! {
             pub mod #mod_ident {
+                #(const _: &str = include_str!(#dep_paths_str);)*
                 fn __init_template() -> #crate_path::Template {
                     #crate_path::Template::from_precompiled(&#crate_path::PrecompiledTemplateData {
                         segments: &[#(#segments_tokens),*],

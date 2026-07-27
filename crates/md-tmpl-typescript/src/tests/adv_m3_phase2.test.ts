@@ -38,11 +38,11 @@ Hello {{ name }}!
     it("passing self-referential cyclic object throws TemplateError cleanly instead of stack overflow", () => {
       const src = `---
 params:
-  - data = struct(self = str)
+  - data = option(struct(self = str)) := None
 ---
-> {% if data %}
+> {% if has(data) %}
 
-Hello!
+{{ data.self }}
 
 > {% /if %}`;
       const tmpl = Template.fromSource(src);

@@ -123,7 +123,7 @@ export function renderDirectNodes(
           // mutating the AST (which would corrupt subsequent renders).
           const nextNode = nodes[i + 1];
           if (nextNode?.kind === NODE_TEXT) {
-            parts.push(nextNode.text.replace(/^\s+/, ""));
+            parts.push(nextNode.text.replace(/^[ \t]*(?:\r?\n)?/, ""));
             i++; // skip the next node — we already handled it
           }
         }

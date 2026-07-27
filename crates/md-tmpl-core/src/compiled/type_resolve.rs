@@ -151,9 +151,19 @@ pub(super) fn validate_operand(
         ConditionOperand::Path { path, .. }
         | ConditionOperand::Len(path)
         | ConditionOperand::Kind(path)
-        | ConditionOperand::Kinds(path)
-        | ConditionOperand::Has(path) => {
+        | ConditionOperand::Kinds(path) => {
             validate_compiled_path(path, env, errors);
+        }
+        ConditionOperand::Has(path) => {
+            validate_compiled_path(path, env, errors);
+            if let Some(ty) = resolve_compiled_path_type(path, env) {
+                if !ty.is_option() {
+                    errors.push(format!(
+                        "'has()' requires an option type, got {ty} on '{}'",
+                        path.as_str()
+                    ));
+                }
+            }
         }
     }
 }

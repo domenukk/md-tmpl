@@ -336,6 +336,21 @@ func marshalFlexbuffers(v any) ([]byte, error) {
 	return res, nil
 }
 
+var taggedVariantType = reflect.TypeOf(TaggedVariant{})
+
+func isTaggedVariantStruct(t reflect.Type) bool {
+	if t.Kind() != reflect.Struct {
+		return false
+	}
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.Anonymous && f.Type == taggedVariantType {
+			return true
+		}
+	}
+	return false
+}
+
 func (b *flexBuilder) marshalValue(val reflect.Value) error {
 	if !val.IsValid() {
 		b.addNull()
@@ -364,7 +379,29 @@ func (b *flexBuilder) marshalValue(val reflect.Value) error {
 	// __kind__-tagged wire form via AsVariant; encode that instead. This keeps
 	// the encoder type-preserving (unlike a JSON round-trip) while matching the
 	// shared cross-language wire format.
+	// Fast path: if the concrete value is a struct embedding TaggedVariant,
+	// marshal directly as a struct without heap-allocating map[string]any in AsVariant().
 	if vm, ok := val.Interface().(VariantMarshaler); ok {
+		elem := val
+		for elem.Kind() == reflect.Ptr || elem.Kind() == reflect.Interface {
+			if elem.IsNil() {
+				b.addNull()
+				return nil
+			}
+			elem = elem.Elem()
+		}
+		if elem.Kind() == reflect.Struct && isTaggedVariantStruct(elem.Type()) {
+			start := len(b.stack)
+			fallbackKind := ""
+			if kp, ok := val.Interface().(interface{ Kind() string }); ok {
+				fallbackKind = kp.Kind()
+			}
+			if err := b.marshalTaggedVariantStructFields(elem, fallbackKind); err != nil {
+				return err
+			}
+			b.endMap(start)
+			return nil
+		}
 		return b.marshalValue(reflect.ValueOf(vm.AsVariant()))
 	}
 
@@ -419,6 +456,60 @@ func (b *flexBuilder) marshalValue(val reflect.Value) error {
 	return nil
 }
 
+func (b *flexBuilder) marshalTaggedVariantStructFields(val reflect.Value, fallbackKind string) error {
+	typ := val.Type()
+	for i := 0; i < typ.NumField(); i++ {
+		field := typ.Field(i)
+		if !field.IsExported() {
+			continue
+		}
+		if field.Anonymous && field.Type == taggedVariantType {
+			tv := val.Field(i).Interface().(TaggedVariant)
+			kind := tv.Kind
+			if kind == "" {
+				kind = fallbackKind
+			}
+			if kind != "" {
+				b.addKey("__kind__")
+				b.addString(kind)
+			}
+			continue
+		}
+		tag := field.Tag.Get("json")
+		if field.Anonymous && field.Type.Kind() == reflect.Struct && (tag == "" || strings.HasPrefix(tag, ",")) {
+			if err := b.marshalStructFields(val.Field(i)); err != nil {
+				return err
+			}
+			continue
+		}
+		name := field.Name
+		omitempty := false
+		if tag != "" {
+			parts := strings.Split(tag, ",")
+			if parts[0] == "-" {
+				continue
+			}
+			if parts[0] != "" {
+				name = parts[0]
+			}
+			for _, opt := range parts[1:] {
+				if opt == "omitempty" {
+					omitempty = true
+				}
+			}
+		}
+		fieldVal := val.Field(i)
+		if omitempty && isZeroValue(fieldVal) {
+			continue
+		}
+		b.addKey(name)
+		if err := b.marshalValue(fieldVal); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // marshalStructFields serializes struct fields into the current FlexBuffer map,
 // promoting anonymous (embedded) struct fields to the parent level, matching
 // encoding/json semantics.
@@ -435,6 +526,14 @@ func (b *flexBuilder) marshalStructFields(val reflect.Value) error {
 		// Anonymous (embedded) struct without an explicit json name:
 		// promote its sub-fields to the parent map level.
 		if field.Anonymous && field.Type.Kind() == reflect.Struct && (tag == "" || strings.HasPrefix(tag, ",")) {
+			if field.Type == taggedVariantType {
+				tv := val.Field(i).Interface().(TaggedVariant)
+				if tv.Kind != "" {
+					b.addKey("__kind__")
+					b.addString(tv.Kind)
+				}
+				continue
+			}
 			if err := b.marshalStructFields(val.Field(i)); err != nil {
 				return err
 			}

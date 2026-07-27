@@ -15,7 +15,7 @@ use crate::{
         },
     },
     scope::ConditionOperand,
-    types::{VarDecl, VarType, VariantDecl},
+    types::{VarDecl, VarType},
 };
 
 pub(super) fn validate_condition(
@@ -26,6 +26,14 @@ pub(super) fn validate_condition(
     match condition {
         Condition::Truthy(operand) => {
             validate_operand(operand, env, errors);
+            if let Some(ty) = resolve_operand_vartype(operand, env) {
+                // Valid conditions: bool, option(T) (presence + narrow),
+                // str (non-empty), int/float (non-zero), list (non-empty).
+                // struct, enum, and tmpl have no truthiness.
+                if let Some(msg) = non_truthy_message(&ty) {
+                    errors.push(format!("type error in condition: {msg}, got {ty}"));
+                }
+            }
         }
         Condition::Not(inner) => {
             validate_condition(inner, env, errors);
@@ -104,6 +112,24 @@ pub(super) fn validate_condition(
                 }
             }
         }
+    }
+}
+
+/// Returns a diagnostic message if `ty` has no truthiness and therefore cannot
+/// be used directly as a condition in `{% if %}` / `{% elif %}` / guards.
+///
+/// `struct`, `enum`, and `tmpl` have no truthiness. All other types
+/// (`bool`, `option(T)`, `str`, `int`, `float`, `list`) are valid conditions.
+fn non_truthy_message(ty: &VarType) -> Option<&'static str> {
+    match ty {
+        VarType::Struct(_) => {
+            Some("cannot evaluate truthiness of struct — access a field or compare it instead")
+        }
+        VarType::Enum(_) => Some("cannot evaluate truthiness of enum — use {% match %} instead"),
+        VarType::Tmpl(_) => {
+            Some("cannot evaluate truthiness of template handle — use {% include %} instead")
+        }
+        _ => None,
     }
 }
 
@@ -229,35 +255,20 @@ fn validate_in_comparison(
 ///
 /// This enables `{% if has(x) %} {{ x }} {% /if %}` to type-check.
 fn extract_has_narrowing(condition: &Condition, env: &TypeEnv<'_>) -> Option<(String, VarType)> {
-    let Condition::Truthy(ConditionOperand::Has(path)) = condition else {
+    let Condition::Truthy(ConditionOperand::Has(path) | ConditionOperand::Path { path, .. }) =
+        condition
+    else {
         return None;
     };
 
     let path_str = path.as_str();
 
-    // Resolve the type for this path.
+    // Resolve the type for this path; only `option(T)` supports has()-narrowing.
     let ty = resolve_compiled_path_type(path, env)?;
 
-    if !ty.is_option() {
-        return None;
-    }
-
-    // Narrow option to its inner type.
+    // Narrow option to its inner type (transparent unwrap).
     match ty {
-        // New-style option(T): unwrap to T directly.
         VarType::Option(inner) => Some((path_str.to_string(), inner.as_ref().clone())),
-        // Legacy enum-based option: extract just the Some variant.
-        VarType::Enum(variants) => {
-            let some_only: Vec<VariantDecl> = variants
-                .iter()
-                .filter(|v| v.name == crate::consts::OPTION_SOME)
-                .cloned()
-                .collect();
-            if some_only.is_empty() {
-                return None;
-            }
-            Some((path_str.to_string(), VarType::Enum(some_only)))
-        }
         _ => None,
     }
 }

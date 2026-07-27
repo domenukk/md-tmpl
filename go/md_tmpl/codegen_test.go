@@ -248,9 +248,9 @@ MAYBE
 		t.Errorf("expected 'isOutcome()' method in generated code:\n%s", code)
 	}
 
-	// Verify variant types.
-	if !strings.Contains(code, "type OutcomeConfirmed struct") {
-		t.Errorf("expected 'type OutcomeConfirmed struct' in generated code:\n%s", code)
+	// Verify variant types embed TaggedVariant.
+	if !strings.Contains(code, "md_tmpl.TaggedVariant") {
+		t.Errorf("expected OutcomeConfirmed to embed md_tmpl.TaggedVariant:\n%s", code)
 	}
 	if !strings.Contains(code, "type OutcomeRejected struct") {
 		t.Errorf("expected 'type OutcomeRejected struct' in generated code:\n%s", code)
@@ -296,6 +296,9 @@ MAYBE
 	// Verify constructors.
 	if !containsNormalized(code, `func NewOutcomeConfirmed(evidence string) OutcomeConfirmed {`) {
 		t.Errorf("expected 'NewOutcomeConfirmed' constructor:\n%s", code)
+	}
+	if !containsNormalized(code, `TaggedVariant: md_tmpl.NewTaggedVariant("Confirmed")`) {
+		t.Errorf("expected constructor to set TaggedVariant:\n%s", code)
 	}
 	if !containsNormalized(code, `func NewOutcomeRejected() OutcomeRejected { return OutcomeRejected{} }`) {
 		t.Errorf("expected 'NewOutcomeRejected' constructor:\n%s", code)
@@ -837,5 +840,47 @@ func TestParseTypeSpecOptionNested(t *testing.T) {
 	}
 	if len(node.innerType.fields) != 2 {
 		t.Errorf("expected 2 fields in inner struct, got %d", len(node.innerType.fields))
+	}
+}
+
+func TestGenerateTmplAndOptionEnumAndAliasParams(t *testing.T) {
+	source := `---
+types:
+  - UserID = str
+
+params:
+  - sub_tmpl = tmpl(name = str)
+  - opt_outcome = option(enum(Confirmed(evidence = str), Rejected))
+  - user_id = UserID
+  - opt_str = option(str)
+
+allow_unused: true
+---
+{{ sub_tmpl }}`
+
+	code, err := GenerateTypes(source, WithRenderHelper(true))
+	if err != nil {
+		t.Fatalf("GenerateTypes: %v", err)
+	}
+
+	assertCompiles(t, code)
+
+	if !containsNormalized(code, "SubTmpl *md_tmpl.Template") {
+		t.Errorf("expected SubTmpl *md_tmpl.Template in generated code:\n%s", code)
+	}
+	if !containsNormalized(code, "OptOutcome OptOutcome") {
+		t.Errorf("expected OptOutcome OptOutcome (no double pointer for interface) in generated code:\n%s", code)
+	}
+	if !containsNormalized(code, "UserId string") {
+		t.Errorf("expected UserId string in generated code:\n%s", code)
+	}
+	if !containsNormalized(code, "OptStr *string") {
+		t.Errorf("expected OptStr *string in generated code:\n%s", code)
+	}
+	if !containsNormalized(code, `ctx.SetTmpl("sub_tmpl", p.SubTmpl)`) {
+		t.Errorf("expected SetTmpl helper call in generated Render:\n%s", code)
+	}
+	if strings.Contains(code, " any") || strings.Contains(code, "\tany") {
+		t.Errorf("did not expect raw any type in generated code:\n%s", code)
 	}
 }

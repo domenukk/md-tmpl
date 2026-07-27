@@ -206,7 +206,7 @@ export function renderNodes(
         if (node.trimAfter) {
           const nextNode = nodes[i + 1];
           if (nextNode?.kind === "text") {
-            parts.push(nextNode.text.replace(/^\s+/, ""));
+            parts.push(nextNode.text.replace(/^[ \t]*(?:\r?\n)?/, ""));
             i++;
           }
         }

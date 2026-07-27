@@ -66,24 +66,19 @@ impl fmt::Display for VarType {
                 write!(f, ")")
             }
             Self::Enum(variants) => {
-                // Detect desugared option(T) pattern and display as `option(T)`.
-                if let Some(inner_ty) = Self::detect_option_inner(variants) {
-                    write!(f, "{}{inner_ty})", crate::consts::TYPE_OPTION_PREFIX)
-                } else {
-                    f.write_str(crate::consts::TYPE_ENUM_PREFIX)?;
-                    for (i, var) in variants.iter().enumerate() {
-                        if i > 0 {
-                            write!(f, ", ")?;
-                        }
-                        write!(f, "{}", var.name)?;
-                        if !var.fields.is_empty() {
-                            write!(f, "(")?;
-                            fmt_fields(&var.fields, f)?;
-                            write!(f, ")")?;
-                        }
+                f.write_str(crate::consts::TYPE_ENUM_PREFIX)?;
+                for (i, var) in variants.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
                     }
-                    write!(f, ")")
+                    write!(f, "{}", var.name)?;
+                    if !var.fields.is_empty() {
+                        write!(f, "(")?;
+                        fmt_fields(&var.fields, f)?;
+                        write!(f, ")")?;
+                    }
                 }
+                write!(f, ")")
             }
             Self::Tmpl(fields) => {
                 f.write_str(crate::consts::TYPE_TMPL_PREFIX)?;
@@ -615,15 +610,13 @@ impl VarDecl {
 }
 
 impl VarType {
-    /// Returns `true` if this type is an `option(T)`, either as the dedicated
-    /// `Option` variant or the desugared `enum(Some(val = T), None)` form.
+    /// Returns `true` if this type is an `option(T)`.
+    ///
+    /// `option` is a first-class type: a literal `enum(Some(val = T), None)`
+    /// is an ordinary enum, not an option. Use `option(T)` for options.
     #[must_use]
     pub fn is_option(&self) -> bool {
-        match self {
-            VarType::Option(_) => true,
-            VarType::Enum(v) => Self::detect_option_inner(v).is_some(),
-            _ => false,
-        }
+        matches!(self, VarType::Option(_))
     }
 
     /// If this type is `option(T)`, returns the inner `T` type.
@@ -631,31 +624,8 @@ impl VarType {
     pub fn option_inner_type(&self) -> Option<&VarType> {
         match self {
             VarType::Option(inner) => Some(inner),
-            VarType::Enum(variants) => Self::detect_option_inner(variants),
             _ => None,
         }
-    }
-
-    /// Detect the `option(T)` pattern: exactly two variants named `Some` and
-    /// `None`, where `Some` has exactly one field named `val` and `None` has
-    /// no fields.
-    fn detect_option_inner(variants: &[VariantDecl]) -> Option<&VarType> {
-        use crate::consts::{OPTION_NONE, OPTION_SOME, OPTION_VAL_FIELD};
-        if variants.len() != 2 {
-            return None;
-        }
-        let (some, none) = if variants[0].name == OPTION_SOME && variants[1].name == OPTION_NONE {
-            (&variants[0], &variants[1])
-        } else {
-            return None;
-        };
-        if !none.fields.is_empty() {
-            return None;
-        }
-        if some.fields.len() != 1 || some.fields[0].name != OPTION_VAL_FIELD {
-            return None;
-        }
-        Some(&some.fields[0].var_type)
     }
 }
 

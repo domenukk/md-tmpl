@@ -52,15 +52,18 @@ The E2E test suite utilizes a unified, language-agnostic TOML fixture architectu
 
 ### Runner Locations & Language Integration
 
-- **Rust (`crates/md-tmpl/src/template/shared_tests.rs`)**:
-  - **Integration**: Attached via `mod shared_tests;` in `crates/md-tmpl/src/template/mod.rs` and executed via `cargo test -p md-tmpl --lib shared_tests`.
+- **Rust (`crates/md-tmpl-core/src/template/shared_tests.rs`)**:
+  - **Integration**: Attached via `mod shared_tests;` in `crates/md-tmpl-core/src/template/mod.rs` and executed via `cargo test -p md-tmpl-core --lib shared_tests`.
   - **Mechanism**: Uses `include_str!("../../../../tests/shared/*.toml")` at compile time with `toml::from_str`. It evaluates inline `template` strings via `Template::from_source_with_base_dir` and external references via `Template::from_file`, converting `"params"` via `params.to_context()` and rendering via `tmpl.render_ctx(&ctx)`.
 - **TypeScript (`crates/md-tmpl-typescript/src/tests/shared_tests.test.ts`)**:
   - **Integration**: Executed via `npm test` / `node --test` using standard `node:test` (`describe`, `it`) blocks.
   - **Mechanism**: Reads fixtures from `tests/shared/` using `fs.readFileSync` and `smol-toml` (TOML v1.0). It resolves templates via `Template.fromSourceWithBaseDir` or `Template.fromFile`, casting parameters and verifying rendering results or caught error substrings.
-- **Python & WASM Bindings**:
-  - **Current State**: Python unit tests reside in `crates/md-tmpl-python/python/tests/test_md_tmpl.py` and WASM tests in `crates/md-tmpl-wasm/tests/wasm.test.ts`.
-  - **E2E Integration Plan**: Both Python and WASM bindings will execute these exact same shared TOML fixtures once shared test harnesses (`test_shared.py` loading `tomllib` via `pytest`, and `shared.test.ts` using `node:test`) are added to their test suites. Because the TOML schema requires only standard dictionary passing and substring error matching, no changes to the fixtures will be required when these harnesses come online.
+- **WASM (`crates/md-tmpl-wasm/tests/shared_tests.test.ts`)**:
+  - **Integration**: Executed via `npm test` (`node:test`) as part of the WASM package's suite, running the exact same shared TOML fixtures against the compiled WASM engine.
+  - **Mechanism**: Reads fixtures from `tests/shared/` and drives them through the WASM `Template` API, mirroring the TypeScript runner.
+- **Python Bindings**:
+  - **Current State**: Python tests reside in `crates/md-tmpl-python/python/tests/` (`test_md_tmpl.py`, `test_conformance.py`, ...). The 121-case conformance corpus (`tests/conformance/`) already runs via `test_conformance.py`; the broader shared E2E fixtures (`tests/shared/`) are not yet wired in.
+  - **E2E Integration Plan**: A `test_shared.py` harness (loading fixtures via `tomllib` under `pytest`) will execute these exact same shared TOML fixtures. Because the schema requires only standard dictionary passing and substring error matching, no fixture changes will be required when the harness comes online.
 
 ### TOML Fixture Format
 
@@ -109,6 +112,8 @@ tests/shared/
 ├── inline_control_tests.toml     # Advanced conditionals, loops, and block scoping
 ├── tmpl_param_tests.toml         # Frontmatter parameter declarations and typing
 ├── include_tests.toml            # Template inclusion and inheritance structures
+├── env_tests.toml                # `env:` compile-time environment injection
+├── feature_e2e_tests.toml        # Broad end-to-end feature coverage
 └── templates/                    # External template file assets referenced by "template" path
     ├── include/
     ├── inline_control/

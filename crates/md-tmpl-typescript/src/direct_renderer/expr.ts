@@ -179,11 +179,17 @@ export function applyDirectFilter(
 
   switch (filterName) {
     case "upper":
-      return strVal.toUpperCase();
+      if (typeof value !== "string")
+        throw new TemplateSyntaxError("'upper' requires a string");
+      return value.toUpperCase();
     case "lower":
-      return strVal.toLowerCase();
+      if (typeof value !== "string")
+        throw new TemplateSyntaxError("'lower' requires a string");
+      return value.toLowerCase();
     case "trim":
-      return strVal.trim();
+      if (typeof value !== "string")
+        throw new TemplateSyntaxError("'trim' requires a string");
+      return value.trim();
     case "fixed": {
       const first = filterArgs[0];
       const digits = first !== undefined ? parseInt(first, 10) : 2;
@@ -199,10 +205,10 @@ export function applyDirectFilter(
     case "limit": {
       const first = filterArgs[0];
       const max = first !== undefined ? parseInt(first, 10) : 100;
-      if (Array.isArray(value)) {
-        return value.slice(0, max);
+      if (!Array.isArray(value)) {
+        throw new TemplateSyntaxError("'limit' requires a list");
       }
-      return strVal.length > max ? `${strVal.slice(0, max)}…` : strVal;
+      return value.slice(0, max);
     }
     case "add": {
       const first = filterArgs[0];

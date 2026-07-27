@@ -1310,13 +1310,13 @@ score = int)`) produces a render-time error — use `{% for %}` and render
 
 ## Built-in Functions
 
-| Function       | Returns | Description                                                                                                                                                                                 |
-| -------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `idx(binding)` | int     | 0-based loop index of a `for` binding                                                                                                                                                       |
-| `len(expr)`    | int     | Length of a list (element count) or string (byte length). Structs, enums, and other types are rejected.                                                                                     |
-| `kind(expr)`   | str     | Variant name of an enum value or option value (returns `"Some"` or `"None"` for options). Also works with [enum literal expressions](#enum-literal-expressions), e.g. `kind(Status.Paused)` |
-| `kinds(type)`  | list    | List of strings representing all variant names of an enum type (in declaration order), e.g. `kinds(Status)`. Errors on non-enum                                                             |
-| `has(expr)`    | bool    | `true` if an `option(T)` value is `Some`, `false` if `None`. See [Option Types](#option-types)                                                                                              |
+| Function       | Returns | Description                                                                                                                                                                                                                              |
+| -------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `idx(binding)` | int     | 0-based loop index of a `for` binding                                                                                                                                                                                                    |
+| `len(expr)`    | int     | Length of a list (element count) or string (byte length). Structs, enums, and other types are rejected.                                                                                                                                  |
+| `kind(expr)`   | str     | Variant name of an enum value or option value (returns `"Some"` or `"None"` for options). Also works with [enum literal expressions](#enum-literal-expressions), e.g. `kind(Status.Paused)`                                              |
+| `kinds(type)`  | list    | List of strings representing all variant names of an enum type (in declaration order), e.g. `kinds(Status)`. Errors on non-enum                                                                                                          |
+| `has(expr)`    | bool    | `true` if an `option(T)` is `Some`, and narrows `expr` to `T` in the guarded branch. Requires an `option(T)` — other types are a compile error (use bare truthiness `{% if expr %}` for `str`/`list`). See [Option Types](#option-types) |
 
 `idx()` tracks each loop variable independently in nested loops:
 
@@ -1538,25 +1538,20 @@ The `in` operator checks for substring or element membership, or static enum var
 
 #### Truthiness
 
-Values are evaluated as follows:
+Conditions in `{% if %}` / `{% elif %}` / inline guards are evaluated for **truthiness**. `bool`, `str`, `int`, `float`, `option(T)`, and `list` have truthiness; `struct`, `enum`, and `tmpl` do not and are a compile-time type error as a bare condition (use a field access, `{% match %}`, or `{% include %}` instead).
 
-| Value               | Truthy? |
-| ------------------- | ------- |
-| `false`             | ❌      |
-| `true`              | ✅      |
-| `0` (int)           | ❌      |
-| non-zero int        | ✅      |
-| `0.0` (float)       | ❌      |
-| non-zero float      | ✅      |
-| `""` (empty string) | ❌      |
-| non-empty string    | ✅      |
-| `[]` (empty list)   | ❌      |
-| non-empty list      | ✅      |
-| `{}` (empty struct) | ❌      |
-| non-empty struct    | ✅      |
-| any `tmpl`          | ✅      |
-| `option`: `None`    | ❌      |
-| `option`: `Some(…)` | ✅      |
+| Type in `{% if expr %}` | Allowed? | Truthiness & narrowing behavior                                                                                          |
+| ----------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `bool`                  | ✅       | The boolean value itself (`true` / `false`).                                                                             |
+| `option(T)`             | ✅       | `true` when `Some(...)`, `false` when `None`. **Flow-sensitive narrowing** unwraps `expr` to `T` inside the branch body. |
+| `str`                   | ✅       | Non-empty is `true`; `""` is `false`.                                                                                    |
+| `int` / `float`         | ✅       | Non-zero is `true`; `0` / `0.0` is `false`.                                                                              |
+| `list(...)`             | ✅       | Non-empty is `true`; `[]` is `false`.                                                                                    |
+| `struct(...)`           | ❌       | Compile-time type error — a struct has no truthiness. Test a specific field (e.g. `{% if s.enabled %}`).                 |
+| `enum(...)`             | ❌       | Compile-time type error — an enum has no truthiness. Use `{% match %}` (or `{{ kind(e) }}`) for dispatch.                |
+| `tmpl(...)`             | ❌       | Compile-time type error — a template handle has no truthiness. Use `{% include %}` to render it.                         |
+
+> **Tip:** For explicit intent, prefer `has(expr)` (option presence) or an explicit comparison (`count > 0`, `name != ""`, `len(items) > 0`) over relying on bare truthiness.
 
 > **Note:** Enum values cannot be compared with `==`/`!=`. Use `{% match %}` for
 > enum dispatch — it provides exhaustiveness checking and struct variant support.
@@ -1868,15 +1863,34 @@ Option values are **transparent** — the inner value is used directly:
 > `{{ x }}` renders `None`. The string never masquerades as the sentinel — this
 > holds for both parsed defaults and runtime-supplied values.
 
-### Checking presence with `has()`
+### Condition Truthiness & Presence
 
-`has(x)` returns `true` when the option holds a value (`Some`), `false`
-when `None`:
+Expressions evaluated inside `{% if expr %}` or `{% elif expr %}` evaluate truthiness naturally according to their value:
+
+- **`bool`**: `true` evaluates to `true`, `false` evaluates to `false`.
+- **`option(T)`**: uses the **inner value's** truthiness and **narrows** `expr` to `T` in the branch. `Some("x")` is `true`; `Some("")` / `Some(0)` / `None` are `false`. Use `has(expr)` for pure presence.
+- **`str`**: Non-empty string (`s != ""`) evaluates to `true`, empty string (`""`) evaluates to `false`.
+- **`list(...)`**: Non-empty collection (`len > 0`) evaluates to `true`, empty list (`[]`) evaluates to `false`.
+- **`int` / `float`**: Non-zero evaluates to `true`, zero (`0` / `0.0`) evaluates to `false`.
 
 ```markdown
-> {% if has(name) %}
+> {% if m.priority %}
+> Priority: {{ m.priority }}
+> {% /if %}
 
-Hello {{ name }}!
+> {% if items %}
+> Items count: {{ len(items) }}
+> {% /if %}
+```
+
+### Checking Option presence with `has()`
+
+`has(x)` is `true` when an `option(T)` is `Some`, regardless of the inner value (so `has(x)` is `true` for `Some("")`, unlike `{% if x %}`). It requires an `option(T)`; for `str`/`list` non-emptiness use bare truthiness (`{% if s %}`) or a comparison:
+
+```markdown
+> {% if has(maybe_name) %}
+
+Hello {{ maybe_name }}!
 
 > {% else %}
 
@@ -1885,9 +1899,9 @@ Hello stranger!
 > {% /if %}
 ```
 
-Presence narrowing is **branch-local**: `has(x)` makes the inner value usable
+Presence narrowing is **branch-local**: evaluating an `option(T)` as `true` makes the inner value usable
 only in the branch that proves presence. In the `{% else %}` of
-`{% if has(x) %}`, the body of `{% if !has(x) %}`, and the `{% case None %}`
+`{% if x %}`, the body of `{% if !has(x) %}`, and the `{% case None %}`
 arm, `x` remains an absent option — accessing its inner value there is an
 error, so a `None` value can never leak into an absent branch. (Implementations
 may report this at compile time or at render time.)

@@ -133,10 +133,7 @@ function applyLimit(value: Value, args: string | undefined): Value {
   if (value.type === "list") {
     return list(value.items.slice(0, limit));
   }
-  if (value.type === "str") {
-    return str(value.value.slice(0, limit));
-  }
-  throw new TemplateSyntaxError("'limit' requires a list or string");
+  throw new TemplateSyntaxError("'limit' requires a list");
 }
 
 function parseNumArg(arg: string | undefined, filterName: string): number {
