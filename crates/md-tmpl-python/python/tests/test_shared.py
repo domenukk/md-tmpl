@@ -7,7 +7,11 @@ Python extension module and asserts behavioral parity with Rust, Go, and TS.
 from __future__ import annotations
 
 import copy
-import tomllib
+
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib  # type: ignore[no-redef]
 from pathlib import Path
 from typing import Any
 

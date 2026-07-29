@@ -13,7 +13,10 @@ sentinel inline table ``{ __none__ = true }`` and decoded back to Python
 
 from __future__ import annotations
 
-import tomllib
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib  # type: ignore[no-redef]
 from pathlib import Path
 from typing import Any
 

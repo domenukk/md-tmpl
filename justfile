@@ -276,7 +276,7 @@ publish-go:
 # Set up Python development environment
 setup-python:
     python3 -m venv crates/md-tmpl-python/.venv
-    crates/md-tmpl-python/.venv/bin/pip install maturin pytest black mypy
+    crates/md-tmpl-python/.venv/bin/pip install maturin pytest black mypy tomli
 
 # Set up TypeScript development environment
 setup-ts:
