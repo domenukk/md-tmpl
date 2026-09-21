@@ -23,21 +23,21 @@ immediately diagnosable.
 
 | File                 | What it asserts                                        | Cases |
 | -------------------- | ------------------------------------------------------ | ----- |
-| `render.toml`        | `source` + `params` → exact rendered `output`          | 42    |
+| `render.toml`        | `source` + `params` → exact rendered `output`          | 50    |
 | `frontmatter.toml`   | `source` → `defaults()` object                         | 18    |
-| `errors.toml`        | `source` (+`params`) → an error at a given phase       | 14    |
+| `errors.toml`        | `source` (+`params`) → an error at a given phase       | 15    |
 | `escapes.toml`       | string-escape (`S`) matrix → `defaults()`              | 8     |
 | `comments.toml`      | trailing-comment (`C`) matrix → `defaults()`           | 5     |
 | `interpolation.toml` | `{{ }}` interpolation inside statement string contexts | 2     |
 | `literals.toml`      | literals usable in every general expression position   | 32    |
 
-Total: **121** cases, every one satisfied by **all four** backends.
+Total: **130** cases, every one satisfied by **all four** backends.
 
 ## Format: TOML
 
 The corpus is **TOML** — parsed by the `toml` crate (Rust), `smol-toml` (TS),
 `BurntSushi/toml` (Go), and stdlib `tomllib` (Python). Each file is a list of
-`[[cases]]`; `\n` inside a `source` string encodes a multi-line template.
+`[[cases]]`, using TOML multi-line literal strings (`'''...'''`) for `source` templates.
 
 ### The `null` / option-`None` sentinel
 
@@ -57,7 +57,12 @@ on load, mirroring the `__kind__` tag used for enum struct variants.
 [[cases]]
 name = "interp_single"
 note = "single {{ }} interpolation"
-source = "---\nparams:\n  - name = str\n---\nHello {{ name }}!"
+source = '''
+---
+params:
+  - name = str
+---
+Hello {{ name }}!'''
 params = { name = "World" }
 expect = { kind = "render", output = "Hello World!" }
 ```
@@ -116,7 +121,8 @@ These are not style choices — the engine enforces them, so cases must follow:
 - **`list(struct(...))` is rejected** in favour of the field shorthand
   `list(name = str, ...)`.
 - Available **filters**: `upper`, `lower`, `trim`, `fixed(n)`, `join(sep)`,
-  `limit(n)`, `add(n)`, `sub(n)`.
+  `limit(n)`, `add(n)`, `sub(n)`, `escape_xml` (`xml`), `escape_json` (`json`),
+  `sanitize_tokens`, `fence(lang)`, `quarantine(tag)`.
 - Available **functions**: `len(...)`, `kind(Enum.Variant)`, `kinds(Enum)`,
   `has(option)`.
 

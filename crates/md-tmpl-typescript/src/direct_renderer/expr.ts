@@ -12,6 +12,13 @@ import {
   OPTION_SOME,
   unescapeStringLiteral,
 } from "../consts.js";
+import {
+  escapeXmlString,
+  escapeJsonString,
+  sanitizeTokensString,
+  fenceString,
+  quarantineString,
+} from "../filters.js";
 import { DirectScope } from "./scope.js";
 import { directDisplay } from "./display.js";
 import { interpolateDirectString } from "./condition.js";
@@ -220,6 +227,33 @@ export function applyDirectFilter(
       const n = first !== undefined ? parseInt(first, 10) : 0;
       return (typeof value === "number" ? value : numVal) - n;
     }
+    case "escape_xml":
+    case "xml":
+      if (typeof value !== "string") {
+        throw new TemplateSyntaxError("'escape_xml' requires a string");
+      }
+      return escapeXmlString(value);
+    case "escape_json":
+    case "json":
+      if (typeof value !== "string") {
+        throw new TemplateSyntaxError("'escape_json' requires a string");
+      }
+      return escapeJsonString(value);
+    case "sanitize_tokens":
+      if (typeof value !== "string") {
+        throw new TemplateSyntaxError("'sanitize_tokens' requires a string");
+      }
+      return sanitizeTokensString(value);
+    case "fence":
+      if (typeof value !== "string") {
+        throw new TemplateSyntaxError("'fence' requires a string");
+      }
+      return fenceString(value, filterArgs[0]);
+    case "quarantine":
+      if (typeof value !== "string") {
+        throw new TemplateSyntaxError("'quarantine' requires a string");
+      }
+      return quarantineString(value, filterArgs[0]);
     default:
       throw new UnknownFilterError(filterName);
   }

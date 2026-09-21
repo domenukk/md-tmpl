@@ -247,6 +247,15 @@ check: lint-rust-fmt lint test doc
 
 # ── Publish ───────────────────────────────────────────────────────────
 
+# Bump version across all workspace crates, Python pyproject.toml, and npm package.json files
+bump new_version:
+    sed -i 's/^version = "{{ version }}"/version = "{{ new_version }}"/' crates/*/Cargo.toml crates/md-tmpl-python/pyproject.toml
+    sed -i 's/md-tmpl-core = { version = "{{ version }}"/md-tmpl-core = { version = "{{ new_version }}"/' crates/*/Cargo.toml
+    sed -i 's/md-tmpl-macros = { version = "{{ version }}"/md-tmpl-macros = { version = "{{ new_version }}"/' crates/*/Cargo.toml
+    sed -i 's/md-tmpl = { version = "{{ version }}"/md-tmpl = { version = "{{ new_version }}"/' crates/*/Cargo.toml
+    sed -i 's/"version": "{{ version }}"/"version": "{{ new_version }}"/' crates/md-tmpl-typescript/package.json crates/md-tmpl-wasm/package.json
+    cargo update -w
+
 # Publish everything (lint + test first, then all packages)
 publish: lint test publish-rust publish-python publish-ts
 

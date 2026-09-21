@@ -320,6 +320,13 @@ export const VALID_FILTERS = new Set([
   "limit",
   "add",
   "sub",
+  "escape_xml",
+  "xml",
+  "escape_json",
+  "json",
+  "sanitize_tokens",
+  "fence",
+  "quarantine",
 ]);
 
 export function validateFilters(expr: string): void {

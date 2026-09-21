@@ -88,21 +88,21 @@ Templates can also be loaded and validated at runtime for dynamic or hot-reload 
 
 ## Features
 
-| Feature                    | Description                                                                                         |
-| -------------------------- | --------------------------------------------------------------------------------------------------- |
-| **Typed parameters**       | `str`, `int`, `float`, `bool`, `list(…)`, `struct(…)`, `enum(…)`, `option(…)`, `tmpl(…)`            |
-| **Type aliases**           | `types:` defines reusable named types                                                               |
-| **Cross-template imports** | `imports:` pulls types via dotted paths (`stem.TypeName`)                                           |
-| **Typed lists**            | `list(title = str, score = int)` — iterate with `{% for %}`, fields validated                       |
-| **Enum dispatch**          | `match`/`case` with exhaustiveness checking and field narrowing                                     |
-| **Includes as links**      | `{% include [name](path.tmpl.md) with … %}` — clickable, type-checked                               |
-| **Inline templates**       | `{% tmpl name %}` — reusable fragments without separate files                                       |
-| **Constants**              | `consts:` for file-scoped immutable values                                                          |
-| **Environment variables**  | `env:` for compile-time injection from the build environment                                        |
-| **String interpolation**   | `{{ expr }}` inside all quoted strings — conditions, includes, panic messages                       |
-| **Built-in functions**     | `idx(b)`, `len(x)`, `kind(x)`, `kinds(t)`, `has(x)` + filters (`upper`, `lower`, `trim`, `join`, …) |
-| **Readable as markdown**   | `> {% %}` blockquote prefix keeps control flow visually separated from prose                        |
-| **Markdown-safe syntax**   | Valid YAML frontmatter, clean `()` type syntax — looks good even unrendered                         |
+| Feature                    | Description                                                                                                                                               |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Typed parameters**       | `str`, `int`, `float`, `bool`, `list(…)`, `struct(…)`, `enum(…)`, `option(…)`, `tmpl(…)`                                                                  |
+| **Type aliases**           | `types:` defines reusable named types                                                                                                                     |
+| **Cross-template imports** | `imports:` pulls types via dotted paths (`stem.TypeName`)                                                                                                 |
+| **Typed lists**            | `list(title = str, score = int)` — iterate with `{% for %}`, fields validated                                                                             |
+| **Enum dispatch**          | `match`/`case` with exhaustiveness checking and field narrowing                                                                                           |
+| **Includes as links**      | `{% include [name](path.tmpl.md) with … %}` — clickable, type-checked                                                                                     |
+| **Inline templates**       | `{% tmpl name %}` — reusable fragments without separate files                                                                                             |
+| **Constants**              | `consts:` for file-scoped immutable values                                                                                                                |
+| **Environment variables**  | `env:` for compile-time injection from the build environment                                                                                              |
+| **String interpolation**   | `{{ expr }}` inside all quoted strings — conditions, includes, panic messages                                                                             |
+| **Built-in functions**     | `idx(b)`, `len(x)`, `kind(x)`, `kinds(t)`, `has(x)` + filters (`upper`, `lower`, `trim`, `join`, `xml`, `json`, `sanitize_tokens`, `fence`, `quarantine`) |
+| **Readable as markdown**   | `> {% %}` blockquote prefix keeps control flow visually separated from prose                                                                              |
+| **Markdown-safe syntax**   | Valid YAML frontmatter, clean `()` type syntax — looks good even unrendered                                                                               |
 
 > **Note:** The `> ` prefix is required only on `{% %}` tag lines — it is
 > stripped before compilation. Content lines between tags are normal text

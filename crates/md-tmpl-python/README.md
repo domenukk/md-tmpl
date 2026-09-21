@@ -276,16 +276,21 @@ on templates where every parameter has a default.
 
 ### Filters
 
-| Filter      | Example                    |
-| ----------- | -------------------------- |
-| `upper`     | `{{ name \| upper }}`      |
-| `lower`     | `{{ name \| lower }}`      |
-| `trim`      | `{{ name \| trim }}`       |
-| `fixed(N)`  | `{{ score \| fixed(2) }}`  |
-| `join(sep)` | `{{ tags \| join(", ") }}` |
-| `limit(N)`  | `{{ items \| limit(3) }}`  |
-| `add(N)`    | `{{ count \| add(1) }}`    |
-| `sub(N)`    | `{{ count \| sub(1) }}`    |
+| Filter            | Example                                    |
+| ----------------- | ------------------------------------------ |
+| `upper`           | `{{ name \| upper }}`                      |
+| `lower`           | `{{ name \| lower }}`                      |
+| `trim`            | `{{ name \| trim }}`                       |
+| `fixed(N)`        | `{{ score \| fixed(2) }}`                  |
+| `join(sep)`       | `{{ tags \| join(", ") }}`                 |
+| `limit(N)`        | `{{ items \| limit(3) }}`                  |
+| `add(N)`          | `{{ count \| add(1) }}`                    |
+| `sub(N)`          | `{{ count \| sub(1) }}`                    |
+| `escape_xml`      | `{{ val \| escape_xml }}` (alias: `xml`)   |
+| `escape_json`     | `{{ val \| escape_json }}` (alias: `json`) |
+| `sanitize_tokens` | `{{ val \| sanitize_tokens }}`             |
+| `fence(lang)`     | `{{ code \| fence("python") }}`            |
+| `quarantine(tag)` | `{{ untrusted \| quarantine }}`            |
 
 ### Built-in Functions
 

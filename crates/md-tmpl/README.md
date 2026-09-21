@@ -85,21 +85,21 @@ cargo add md-tmpl
 
 ## Template Syntax & Features
 
-| Feature                    | Syntax / Example                                                                         |
-| -------------------------- | ---------------------------------------------------------------------------------------- |
-| **Typed parameters**       | `str`, `int`, `float`, `bool`, `list(…)`, `struct(…)`, `enum(…)`, `option(…)`, `tmpl(…)` |
-| **Type aliases**           | `types:` block defines reusable named types (`Priority = enum(High, Low)`)               |
-| **Cross-template imports** | `imports:` pulls types via dotted paths (`stem.TypeName`)                                |
-| **Constants**              | `consts:` block for file-scoped immutable values                                         |
-| **Environment variables**  | `env:` block for compile-time injection from the build environment                       |
-| **String interpolation**   | `{{ expr }}` inside all quoted strings — conditions, includes, panic messages            |
-| **For loops & else**       | `> {% for task in tasks %} … > {% else %} empty > {% /for %}`                            |
-| **Conditionals**           | `> {% if count > 0 %} … > {% elif active %} … > {% else %} … > {% /if %}`                |
-| **Enum dispatch**          | `> {% match status %} > {% case Approved %} … > {% case Rejected %} … > {% /match %}`    |
-| **Includes as links**      | `> {% include [widget](widget.tmpl.md) with title = "Hello" %}`                          |
-| **Inline templates**       | `> {% tmpl header %} … > {% /tmpl %}` (call with `{% include header %}`)                 |
-| **Built-in functions**     | `idx(b)`, `len(x)`, `kind(x)`, `kinds(Type)`, `has(x)`                                   |
-| **Filters**                | `upper`, `lower`, `trim`, `fixed(N)`, `join(sep)`, `limit(N)`, `add(N)`, `sub(N)`        |
+| Feature                    | Syntax / Example                                                                                                                                                          |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Typed parameters**       | `str`, `int`, `float`, `bool`, `list(…)`, `struct(…)`, `enum(…)`, `option(…)`, `tmpl(…)`                                                                                  |
+| **Type aliases**           | `types:` block defines reusable named types (`Priority = enum(High, Low)`)                                                                                                |
+| **Cross-template imports** | `imports:` pulls types via dotted paths (`stem.TypeName`)                                                                                                                 |
+| **Constants**              | `consts:` block for file-scoped immutable values                                                                                                                          |
+| **Environment variables**  | `env:` block for compile-time injection from the build environment                                                                                                        |
+| **String interpolation**   | `{{ expr }}` inside all quoted strings — conditions, includes, panic messages                                                                                             |
+| **For loops & else**       | `> {% for task in tasks %} … > {% else %} empty > {% /for %}`                                                                                                             |
+| **Conditionals**           | `> {% if count > 0 %} … > {% elif active %} … > {% else %} … > {% /if %}`                                                                                                 |
+| **Enum dispatch**          | `> {% match status %} > {% case Approved %} … > {% case Rejected %} … > {% /match %}`                                                                                     |
+| **Includes as links**      | `> {% include [widget](widget.tmpl.md) with title = "Hello" %}`                                                                                                           |
+| **Inline templates**       | `> {% tmpl header %} … > {% /tmpl %}` (call with `{% include header %}`)                                                                                                  |
+| **Built-in functions**     | `idx(b)`, `len(x)`, `kind(x)`, `kinds(Type)`, `has(x)`                                                                                                                    |
+| **Filters**                | `upper`, `lower`, `trim`, `fixed(N)`, `join(sep)`, `limit(N)`, `add(N)`, `sub(N)`, `escape_xml` (`xml`), `escape_json` (`json`), `sanitize_tokens`, `fence`, `quarantine` |
 
 ## Build-Time Typed Structs
 

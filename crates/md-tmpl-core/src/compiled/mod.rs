@@ -217,6 +217,16 @@ pub enum FilterKind {
     Add,
     /// `| sub(n)` — subtract a number.
     Sub,
+    /// `| escape_xml` / `| xml` — escape XML entities.
+    EscapeXml,
+    /// `| escape_json` / `| json` — escape JSON string characters.
+    EscapeJson,
+    /// `| sanitize_tokens` — neutralize LLM control tokens.
+    SanitizeTokens,
+    /// `| fence(lang)` — wrap in adaptive $N$-backtick code fence.
+    Fence,
+    /// `| quarantine(tag)` — wrap in XML quarantine tags.
+    Quarantine,
 }
 
 /// A `(key, expression)` pair used in `{% include ... with key=expr %}` overrides.
@@ -548,8 +558,9 @@ fn compile_expr(expr: &str) -> Result<Segment, TemplateError> {
 /// Resolve a filter name to a strongly-typed [`FilterKind`].
 pub(crate) fn parse_filter_kind(name: &str) -> Result<FilterKind, TemplateError> {
     use crate::consts::{
-        FILTER_ADD, FILTER_FIXED, FILTER_JOIN, FILTER_LIMIT, FILTER_LOWER, FILTER_SUB, FILTER_TRIM,
-        FILTER_UPPER,
+        FILTER_ADD, FILTER_ESCAPE_JSON, FILTER_ESCAPE_XML, FILTER_FENCE, FILTER_FIXED, FILTER_JOIN,
+        FILTER_JSON, FILTER_LIMIT, FILTER_LOWER, FILTER_QUARANTINE, FILTER_SANITIZE_TOKENS,
+        FILTER_SUB, FILTER_TRIM, FILTER_UPPER, FILTER_XML,
     };
     match name {
         FILTER_UPPER => Ok(FilterKind::Upper),
@@ -560,6 +571,11 @@ pub(crate) fn parse_filter_kind(name: &str) -> Result<FilterKind, TemplateError>
         FILTER_LIMIT => Ok(FilterKind::Limit),
         FILTER_ADD => Ok(FilterKind::Add),
         FILTER_SUB => Ok(FilterKind::Sub),
+        FILTER_ESCAPE_XML | FILTER_XML => Ok(FilterKind::EscapeXml),
+        FILTER_ESCAPE_JSON | FILTER_JSON => Ok(FilterKind::EscapeJson),
+        FILTER_SANITIZE_TOKENS => Ok(FilterKind::SanitizeTokens),
+        FILTER_FENCE => Ok(FilterKind::Fence),
+        FILTER_QUARANTINE => Ok(FilterKind::Quarantine),
         _ => Err(TemplateError::UnknownFilter(name.to_string())),
     }
 }

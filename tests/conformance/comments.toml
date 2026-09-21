@@ -6,29 +6,65 @@
 [[cases]]
 name = "comment_space_hash_after_closing_quote"
 note = "C1: ` #` after the closing quote is a trailing comment"
-source = "---\nallow_unused: true\n\nparams:\n  - s = str := \"hi\" # trailing comment\n---\nx"
+source = '''
+---
+allow_unused: true
+
+params:
+  - s = str := "hi" # trailing comment
+---
+x'''
 expect = { kind = "default", defaults = { s = "hi" } }
 
 [[cases]]
 name = "comment_nospace_hash_is_literal"
 note = "C2: a `#` with no preceding whitespace is a literal character"
-source = "---\nallow_unused: true\n\nparams:\n  - s = str := \"a#b\"\n---\nx"
+source = '''
+---
+allow_unused: true
+
+params:
+  - s = str := "a#b"
+---
+x'''
 expect = { kind = "default", defaults = { s = "a#b" } }
 
 [[cases]]
 name = "comment_space_hash_splits_unquoted"
 note = "C3: ` #` inside an unquoted scalar truncates the default (not string-aware)"
-source = "---\nallow_unused: true\n\nparams:\n  - s = str := \"a # b\"\n---\nx"
+source = '''
+---
+allow_unused: true
+
+params:
+  - s = str := "a # b"
+---
+x'''
 expect = { kind = "error", phase = "compile", error_contains = "must be quoted" }
 
 [[cases]]
 name = "comment_space_hash_after_number"
 note = "C4: ` #` after a numeric default is a trailing comment"
-source = "---\nallow_unused: true\n\nparams:\n  - n = int := 5 # five\n---\nx"
+source = '''
+---
+allow_unused: true
+
+params:
+  - n = int := 5 # five
+---
+x'''
 expect = { kind = "default", defaults = { n = 5 } }
 
 [[cases]]
 name = "comment_full_line_ignored"
 note = "C5: a full-line `#` comment inside a block is ignored"
-source = "---\nallow_unused: true\n\nparams:\n  # a documentation comment\n  - s = str := \"ok\"\n---\nx"
+source = '''
+---
+allow_unused: true
+
+params:
+  # a documentation comment
+  - s = str := "ok"
+---
+x'''
 expect = { kind = "default", defaults = { s = "ok" } }

@@ -1325,21 +1325,158 @@ Attempting to use an unrecognized filter name is rejected with a syntax error at
 {{ items | join(", ") }}
 ```
 
-| Filter        | Input  | Output | Description                       |
-| ------------- | ------ | ------ | --------------------------------- |
-| `upper`       | str    | str    | UPPERCASE                         |
-| `lower`       | str    | str    | lowercase                         |
-| `trim`        | str    | str    | Strip leading/trailing whitespace |
-| `fixed(N)`    | number | str    | Format with N decimal places      |
-| `join("sep")` | list   | str    | Join list items with separator    |
-| `limit(N)`    | list   | list   | Take first N elements             |
-| `add(N)`      | number | number | Add N to the value                |
-| `sub(N)`      | number | number | Subtract N from the value         |
+| Filter                             | Input  | Output | Description                                                               |
+| ---------------------------------- | ------ | ------ | ------------------------------------------------------------------------- |
+| `upper`                            | str    | str    | UPPERCASE                                                                 |
+| `lower`                            | str    | str    | lowercase                                                                 |
+| `trim`                             | str    | str    | Strip leading/trailing whitespace                                         |
+| `fixed(N)`                         | number | str    | Format with N decimal places                                              |
+| `join("sep")`                      | list   | str    | Join list items with separator                                            |
+| `limit(N)`                         | list   | list   | Take first N elements                                                     |
+| `add(N)`                           | number | number | Add N to the value                                                        |
+| `sub(N)`                           | number | number | Subtract N from the value                                                 |
+| `escape_xml` / `xml`               | str    | str    | Escape XML entities (`&`, `<`, `>`, `"`, `'`) and strip control chars     |
+| `escape_json` / `json`             | str    | str    | Escape JSON string body (`"`, `\`, `/`, control chars, `U+2028`/`U+2029`) |
+| `sanitize_tokens`                  | str    | str    | Neutralize LLM special tokens and chat turn delimiters                    |
+| `fence` / `fence("lang")`          | str    | str    | Wrap in Markdown code fences with adaptive backtick count                 |
+| `quarantine` / `quarantine("tag")` | str    | str    | Wrap in XML boundary tags and neutralize breakout tags                    |
 
 > **Note:** `join()` is designed for **scalar lists** (`list(str)`, `list(int)`,
 > etc.). Applying `join()` to a struct-typed list (e.g., `list(name = str,
 score = int)`) produces a render-time error — use `{% for %}` and render
 > fields individually instead.
+
+### `escape_xml` / `xml`
+
+Escape XML/HTML special characters and strip illegal control characters from a string value.
+
+- **Syntax:** `{{ expr | escape_xml }}` or `{{ expr | xml }}`
+- **Input:** `str`
+- **Output:** `str`
+- **Arguments:** None
+
+Replaces the five predefined XML entities:
+
+- `&` → `&amp;`
+- `<` → `&lt;`
+- `>` → `&gt;`
+- `"` → `&quot;`
+- `'` → `&apos;`
+
+In addition, strips all XML 1.0 illegal control characters (`U+0000..U+0008`, `U+000B`, `U+000C`, `U+000E..U+001F`) while preserving standard whitespace characters (`\t`, `\n`, `\r`).
+
+#### Security Considerations for XML
+
+- Stripping illegal control characters prevents downstream XML and HTML parsers from crashing or rejecting payloads.
+- When embedding values inside XML/HTML attribute quotes, ensure the attribute in the template uses matching quotes (e.g., `attr="{{ val | xml }}"`).
+
+```markdown
+{{ user_bio | escape_xml }}
+{{ user_bio | xml }}
+```
+
+### `escape_json` / `json`
+
+Escape characters for safe inclusion inside a JSON string literal.
+
+- **Syntax:** `{{ expr | escape_json }}` or `{{ expr | json }}`
+- **Input:** `str`
+- **Output:** `str`
+- **Arguments:** None
+
+Escapes standard JSON string characters:
+
+- `\` → `\\`
+- `"` → `\"`
+- `/` → `\/` (forward slash escaped for HTML `<script>` tag safety)
+- `\n` → `\n`, `\r` → `\r`, `\t` → `\t`, `\x08` → `\b`, `\x0C` → `\f`
+- Line separators `U+2028` → `\u2028` and `U+2029` → `\u2029`
+- Other control characters below `0x20` → `\u00xx`
+
+#### Security Considerations for JSON
+
+- **Quote behavior:** This filter escapes only the inner characters of a JSON string. It does **not** surround the output with double quotes; the template author supplies the enclosing quotes: `"{{ value | json }}"`.
+- **HTML script safety:** Forward slashes `/` are escaped to `\/` to prevent HTML parser breakouts (e.g., embedding `</script>` inside a JSON string in an HTML page).
+- **JavaScript line terminators:** `U+2028` (LINE SEPARATOR) and `U+2029` (PARAGRAPH SEPARATOR) are valid in JSON but cause syntax errors in ECMAScript strings; escaping them to `\u2028` and `\u2029` ensures safe embedding in JavaScript contexts.
+
+```markdown
+"{{ file_path | escape_json }}"
+"{{ user_input | json }}"
+```
+
+### `sanitize_tokens`
+
+Neutralize LLM special control tokens and chat role turn delimiters in untrusted content.
+
+- **Syntax:** `{{ expr | sanitize_tokens }}`
+- **Input:** `str`
+- **Output:** `str`
+- **Arguments:** None
+
+Neutralizes well-known special tokens by replacing special delimiter characters with HTML/XML entity equivalents or inert representations so LLM tokenizers do not treat untrusted inputs as control instructions:
+
+- **ChatML / OpenAI:** `<|im_start|>`, `<|im_end|>`, `<|endoftext|>`
+- **Llama 3:** `<|start_header_id|>`, `<|end_header_id|>`, `<|eot_id|>`
+- **Tool Calling:** `<tool_call>`, `</tool_call>`, `<tool_response>`, `</tool_response>`, `<untrusted_tool_output>`, `</untrusted_tool_output>`
+- **Llama 2:** `[INST]`, `[/INST]`, `<<SYS>>`, `<</SYS>>`
+- **Gemma:** `<start_of_turn>`, `<end_of_turn>`
+- **Reasoning / DeepSeek:** `<think>`, `</think>`, `<｜begin▁of▁sentence｜>`, `<｜end▁of▁sentence｜>`, `<｜User｜>`, `<｜Assistant｜>`, `<｜tool▁calls▁begin｜>`
+- **Phi-3/4:** `<|user|>`, `<|assistant|>`, `<|system|>`, `<|end|>`
+- **Command-R:** `<|START_OF_TURN_TOKEN|>`, `<|END_OF_TURN_TOKEN|>`
+- **Mistral:** `[TOOL_CALLS]`, `[AVAILABLE_TOOLS]`, `[/TOOL_CALLS]`, `[/AVAILABLE_TOOLS]`
+- **Anthropic:** `\n\nHuman:`, `\n\nAssistant:`
+- **Harmony / Edge0:** `<role>`, `</role>`, `<|role_end|>`, `<|channel|>`, `<|message|>`
+- **Quarantine:** `<untrusted_content>`, `</untrusted_content>`
+
+#### Security Considerations for Tokens
+
+- Use this filter on raw user prompts, external search results, or model outputs before placing them into prompt templates where control token injection could alter conversational roles or trigger unauthorized tool calls.
+
+```markdown
+{{ user_query | sanitize_tokens }}
+```
+
+### `fence`
+
+Wrap a string value in Markdown code fences with adaptive backtick counts.
+
+- **Syntax:** `{{ expr | fence }}` or `{{ expr | fence("lang") }}`
+- **Input:** `str`
+- **Output:** `str`
+- **Arguments:** `lang` (optional string): the language identifier for the code block (e.g., `"rust"`, `"python"`, `"json"`).
+
+Dynamically scans the input for consecutive backticks and selects a fence length of at least 3 backticks, or `max_backticks + 1`, guaranteeing that inner code blocks do not prematurely close the fence. A trailing newline is added if the content does not already end with one.
+
+#### Security Considerations for Fence
+
+- **Info-string validation:** The `lang` argument is strictly validated. Any backticks, spaces, tabs, or newlines in `lang` are rejected with a syntax error, preventing CommonMark info-string breakout attacks.
+
+```markdown
+{{ code_snippet | fence }}
+{{ code_snippet | fence("rust") }}
+```
+
+### `quarantine`
+
+Encapsulate untrusted content in XML boundary tags and neutralize embedded breakout tags.
+
+- **Syntax:** `{{ expr | quarantine }}` or `{{ expr | quarantine("tag_name") }}`
+- **Input:** `str`
+- **Output:** `str`
+- **Arguments:** `tag` (optional string): XML boundary tag name. Defaults to `untrusted_content`. Must be a valid XML `NCName`.
+
+Wraps the input in `<tag>\n...\n</tag>`. Inside the payload, all occurrences of `<tag>` (opening) and `</tag>` (closing) matching `tag` (ASCII case-insensitively, tolerating optional XML whitespace before `>`) are escaped to `&lt;tag&gt;` and `&lt;/tag&gt;`.
+
+#### Security Considerations for Quarantine
+
+- **XML NCName validation:** Tag names must be valid XML non-colonized names (starting with an ASCII letter or underscore, containing only letters, digits, underscores, hyphens, and periods, with no `<`, `>`, `:`, or whitespace).
+- **Case-insensitive & whitespace close tag neutralization:** Attackers attempting container breakouts using `</UNTRUSTED_CONTENT>`, `</untrusted_content >`, or `</untrusted_content\n>` are neutralized.
+- **Nested opening tag neutralization:** Nested opening tags `<untrusted_content>` are also escaped, preventing spoofed internal container boundaries.
+
+```markdown
+{{ web_search_result | quarantine }}
+{{ tool_result | quarantine("tool_output") }}
+```
 
 ---
 

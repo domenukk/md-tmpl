@@ -283,17 +283,22 @@ Expert: {{ name }}
 
 ### Filters
 
-```
-{{ name | upper }}        → ALICE
-{{ name | lower }}        → alice
-{{ name | trim }}         → (strips whitespace)
-{{ score | fixed(2) }}    → 3.14
-{{ items | join(", ") }}  → a, b, c
-{{ items | limit(2) }}    → first 2 elements
-{{ count | add(1) }}      → 43
-{{ count | sub(1) }}      → 41
-{{ name | trim | upper }} → chains work
-```
+````
+{{ name | upper }}            → ALICE
+{{ name | lower }}            → alice
+{{ name | trim }}             → (strips whitespace)
+{{ score | fixed(2) }}        → 3.14
+{{ items | join(", ") }}      → a, b, c
+{{ items | limit(2) }}        → first 2 elements
+{{ count | add(1) }}          → 43
+{{ count | sub(1) }}          → 41
+{{ name | trim | upper }}     → chains work
+{{ val | escape_xml }}        → &lt;tag&gt; (or | xml)
+{{ val | escape_json }}       → safe\/json (or | json)
+{{ text | sanitize_tokens }}  → neutralizes LLM control tokens
+{{ code | fence("ts") }}      → ```ts\ncode\n``` (adaptive)
+{{ input | quarantine }}      → <untrusted_content>...</untrusted_content>
+````
 
 ### Built-in Functions
 
@@ -459,7 +464,7 @@ just bench-ts-compare   # vs Handlebars & Mustache
 ## Testing
 
 ```bash
-just test-ts    # 935 tests
+just test-ts    # 1,723 tests
 just lint-ts    # strict type-check with tsc
 just fmt-ts     # format with prettier
 ```
