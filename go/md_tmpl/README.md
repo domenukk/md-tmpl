@@ -333,17 +333,22 @@ result, _ := tmpl.RenderMap(map[string]any{"name": "Alice"})
 
 ### Filters
 
-```
+````
 {{ name | upper }}        → ALICE
 {{ name | lower }}        → alice
 {{ name | trim }}         → (strips whitespace)
 {{ score | fixed(2) }}    → 3.14
 {{ items | join(", ") }}  → a, b, c
 {{ items | limit(2) }}    → first 2 elements
-{{ count | add(1) }}      → 43
-{{ count | sub(1) }}      → 41
-{{ name | trim | upper }} → chains work
-```
+{{ count | add(1) }}          → 43
+{{ count | sub(1) }}          → 41
+{{ name | trim | upper }}     → chains work
+{{ val | escape_xml }}        → &lt;tag&gt; (or | xml)
+{{ val | escape_json }}       → safe\/json (or | json)
+{{ text | sanitize_tokens }}  → neutralizes LLM control tokens
+{{ code | fence("go") }}      → ```go\ncode\n``` (adaptive)
+{{ input | quarantine }}      → <untrusted_content>...</untrusted_content>
+````
 
 ### Built-in Functions
 

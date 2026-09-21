@@ -23,7 +23,7 @@ immediately diagnosable.
 
 | File                 | What it asserts                                        | Cases |
 | -------------------- | ------------------------------------------------------ | ----- |
-| `render.toml`        | `source` + `params` → exact rendered `output`          | 42    |
+| `render.toml`        | `source` + `params` → exact rendered `output`          | 50    |
 | `frontmatter.toml`   | `source` → `defaults()` object                         | 18    |
 | `errors.toml`        | `source` (+`params`) → an error at a given phase       | 14    |
 | `escapes.toml`       | string-escape (`S`) matrix → `defaults()`              | 8     |
@@ -31,7 +31,7 @@ immediately diagnosable.
 | `interpolation.toml` | `{{ }}` interpolation inside statement string contexts | 2     |
 | `literals.toml`      | literals usable in every general expression position   | 32    |
 
-Total: **121** cases, every one satisfied by **all four** backends.
+Total: **129** cases, every one satisfied by **all four** backends.
 
 ## Format: TOML
 

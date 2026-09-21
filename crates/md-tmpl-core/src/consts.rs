@@ -45,6 +45,20 @@ pub(crate) const FILTER_LIMIT: &str = "limit";
 pub(crate) const FILTER_ADD: &str = "add";
 /// Name of the `sub` filter.
 pub(crate) const FILTER_SUB: &str = "sub";
+/// Name of the `escape_xml` filter.
+pub(crate) const FILTER_ESCAPE_XML: &str = "escape_xml";
+/// Short alias for the `escape_xml` filter: `xml`.
+pub(crate) const FILTER_XML: &str = "xml";
+/// Name of the `escape_json` filter.
+pub(crate) const FILTER_ESCAPE_JSON: &str = "escape_json";
+/// Short alias for the `escape_json` filter: `json`.
+pub(crate) const FILTER_JSON: &str = "json";
+/// Name of the `sanitize_tokens` filter.
+pub(crate) const FILTER_SANITIZE_TOKENS: &str = "sanitize_tokens";
+/// Name of the `fence` filter.
+pub(crate) const FILTER_FENCE: &str = "fence";
+/// Name of the `quarantine` filter.
+pub(crate) const FILTER_QUARANTINE: &str = "quarantine";
 
 // -- Enum tag key -------------------------------------------------------------
 

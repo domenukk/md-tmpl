@@ -182,6 +182,11 @@ pub(crate) fn codegen_filter_kind(
         FilterKind::Limit => quote! { #cp::compiled::FilterKind::Limit },
         FilterKind::Add => quote! { #cp::compiled::FilterKind::Add },
         FilterKind::Sub => quote! { #cp::compiled::FilterKind::Sub },
+        FilterKind::EscapeXml => quote! { #cp::compiled::FilterKind::EscapeXml },
+        FilterKind::EscapeJson => quote! { #cp::compiled::FilterKind::EscapeJson },
+        FilterKind::SanitizeTokens => quote! { #cp::compiled::FilterKind::SanitizeTokens },
+        FilterKind::Fence => quote! { #cp::compiled::FilterKind::Fence },
+        FilterKind::Quarantine => quote! { #cp::compiled::FilterKind::Quarantine },
     }
 }
 
