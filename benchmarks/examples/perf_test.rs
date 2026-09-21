@@ -15,7 +15,12 @@ const MEASURED_ITERS: usize = 100_000;
 
 fn main() {
     let tmpl = Template::from_source(
-        "---\nparams:\n  - name = str\n  - place = str\n---\nHello {{ name }}, welcome to {{ place }}!",
+        "---
+params:
+  - name = str
+  - place = str
+---
+Hello {{ name }}, welcome to {{ place }}!",
     )
     .unwrap();
     let context = ctx! { name: "Alice", place: "Wonderland" };

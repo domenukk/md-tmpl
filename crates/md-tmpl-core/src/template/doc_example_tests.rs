@@ -279,16 +279,35 @@ More text
 
     #[test]
     fn has_empty_body_detects_frontmatter_only() {
-        assert!(has_empty_body("---\nparams:\n  - x = str\n---\n"));
-        assert!(has_empty_body("---\nparams:\n  - x = str\n---"));
+        assert!(has_empty_body(
+            "---
+params:
+  - x = str
+---
+"
+        ));
+        assert!(has_empty_body(
+            "---
+params:
+  - x = str
+---"
+        ));
         assert!(!has_empty_body(
-            "---\nparams:\n  - x = str\n---\nHello {{ x }}"
+            "---
+params:
+  - x = str
+---
+Hello {{ x }}"
         ));
     }
 
     #[test]
     fn inject_allow_unused_inserts_correctly() {
-        let src = "---\nparams:\n  - x = str\n---\n";
+        let src = "---
+params:
+  - x = str
+---
+";
         let injected = inject_allow_unused(src);
         assert!(injected.contains("allow_unused: true"));
         assert!(injected.contains("params:"));

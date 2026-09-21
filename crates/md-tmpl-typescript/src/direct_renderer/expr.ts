@@ -8,6 +8,8 @@ import { TemplateSyntaxError, UnknownFilterError } from "../errors.js";
 import {
   ENUM_TAG_KEY,
   EXPR_START,
+  LIT_FALSE,
+  LIT_TRUE,
   OPTION_NONE,
   OPTION_SOME,
   unescapeStringLiteral,
@@ -18,10 +20,15 @@ import {
   sanitizeTokensString,
   fenceString,
   quarantineString,
+  parseFilter,
+  stripQuotes,
 } from "../filters.js";
+import { splitPipes } from "../evaluator.js";
 import { DirectScope } from "./scope.js";
 import { directDisplay } from "./display.js";
 import { interpolateDirectString } from "./condition.js";
+
+const DIRECT_NUM_LITERAL_RE = /^-?[0-9]+(?:\.[0-9]+)?$/;
 
 // ---------------------------------------------------------------------------
 // Direct expression resolution
@@ -62,6 +69,13 @@ export function resolveDirectExpr(expr: string, scope: DirectScope): unknown {
       return interpolateDirectString(inner, scope);
     }
     return inner;
+  }
+
+  // Bare boolean and numeric literals
+  if (expr === LIT_TRUE) return true;
+  if (expr === LIT_FALSE) return false;
+  if (DIRECT_NUM_LITERAL_RE.test(expr)) {
+    return Number(expr);
   }
 
   // Function calls (must end with ')')
@@ -126,7 +140,6 @@ export function resolveDirectFunction(
     case "has": {
       const arg = resolveDirectExpr(argStr, scope);
       if (arg === null || arg === undefined) return false;
-      if (typeof arg === "string" && arg === OPTION_NONE) return false;
       if (typeof arg === "object" && !Array.isArray(arg)) {
         const obj = arg as Record<string, unknown>;
         if (obj[ENUM_TAG_KEY] === OPTION_NONE) return false;
@@ -147,43 +160,28 @@ export function findLoopBinding(scope: DirectScope): string | undefined {
 // Direct filters
 // ---------------------------------------------------------------------------
 
-/**
- * Coerce arbitrary filter input to a string, mirroring JS default `String()`
- * coercion while staying explicit enough to satisfy `no-base-to-string`.
- *
- * Primitives convert exactly as `String()` would; `null`/`undefined` become the
- * empty string; arrays are comma-joined via recursive coercion (matching
- * `Array.prototype.toString`); and objects/symbols/functions fall through to
- * their native `toString`, keeping the emitted output identical to `String()`.
- */
-function coerceFilterInput(value: unknown): string {
-  if (value === null || value === undefined) return "";
-  if (typeof value === "string") return value;
-  if (
-    typeof value === "number" ||
-    typeof value === "boolean" ||
-    typeof value === "bigint"
-  ) {
-    return String(value);
+function parseDirectNumArg(
+  arg: string | undefined,
+  filterName: string,
+): number {
+  if (arg === undefined) {
+    throw new TemplateSyntaxError(`'${filterName}' requires a number argument`);
   }
-  if (Array.isArray(value)) {
-    return value.map((element) => coerceFilterInput(element)).join(",");
+  const n = Number(arg);
+  if (Number.isNaN(n)) {
+    throw new TemplateSyntaxError(
+      `'${filterName}' argument must be a number: ${arg}`,
+    );
   }
-  // Objects, symbols, and functions each expose a native `toString`; casting to
-  // an explicit signature avoids a base-to-string on plain objects while
-  // preserving the exact `String(value)` output.
-  return (value as { toString(): string }).toString();
+  return n;
 }
 
 /** Apply a filter to a direct JS value. */
 export function applyDirectFilter(
   value: unknown,
   filterName: string,
-  filterArgs: string[],
+  rawArg: string | undefined,
 ): unknown {
-  const strVal = typeof value === "string" ? value : coerceFilterInput(value);
-  const numVal = typeof value === "number" ? value : Number(value);
-
   switch (filterName) {
     case "upper":
       if (typeof value !== "string")
@@ -198,34 +196,58 @@ export function applyDirectFilter(
         throw new TemplateSyntaxError("'trim' requires a string");
       return value.trim();
     case "fixed": {
-      const first = filterArgs[0];
-      const digits = first !== undefined ? parseInt(first, 10) : 2;
-      return (typeof value === "number" ? value : numVal).toFixed(digits);
+      if (rawArg === undefined) {
+        throw new TemplateSyntaxError("'fixed' requires precision arg");
+      }
+      const digits = parseInt(rawArg, 10);
+      if (Number.isNaN(digits)) {
+        throw new TemplateSyntaxError(
+          `'fixed' precision must be an integer: ${rawArg}`,
+        );
+      }
+      if (typeof value !== "number") {
+        throw new TemplateSyntaxError("'fixed' requires a number");
+      }
+      if (digits === 0 && Number.isInteger(value)) {
+        return String(value);
+      }
+      return value.toFixed(digits);
     }
     case "join": {
-      const sep = filterArgs[0] ?? ", ";
-      if (Array.isArray(value)) {
-        return value.map((v) => directDisplay(v)).join(sep);
+      const sep = rawArg !== undefined ? stripQuotes(rawArg) : "";
+      if (!Array.isArray(value)) {
+        throw new TemplateSyntaxError("'join' requires a list");
       }
-      return strVal;
+      return value.map((v) => directDisplay(v)).join(sep);
     }
     case "limit": {
-      const first = filterArgs[0];
-      const max = first !== undefined ? parseInt(first, 10) : 100;
+      if (rawArg === undefined) {
+        throw new TemplateSyntaxError("'limit' requires a limit argument");
+      }
+      const max = parseInt(rawArg, 10);
+      if (Number.isNaN(max)) {
+        throw new TemplateSyntaxError(
+          `'limit' argument must be an integer: ${rawArg}`,
+        );
+      }
       if (!Array.isArray(value)) {
         throw new TemplateSyntaxError("'limit' requires a list");
       }
       return value.slice(0, max);
     }
     case "add": {
-      const first = filterArgs[0];
-      const n = first !== undefined ? parseInt(first, 10) : 0;
-      return (typeof value === "number" ? value : numVal) + n;
+      const n = parseDirectNumArg(rawArg, "add");
+      if (typeof value !== "number") {
+        throw new TemplateSyntaxError("'add' requires a number");
+      }
+      return value + n;
     }
     case "sub": {
-      const first = filterArgs[0];
-      const n = first !== undefined ? parseInt(first, 10) : 0;
-      return (typeof value === "number" ? value : numVal) - n;
+      const n = parseDirectNumArg(rawArg, "sub");
+      if (typeof value !== "number") {
+        throw new TemplateSyntaxError("'sub' requires a number");
+      }
+      return value - n;
     }
     case "escape_xml":
     case "xml":
@@ -248,12 +270,12 @@ export function applyDirectFilter(
       if (typeof value !== "string") {
         throw new TemplateSyntaxError("'fence' requires a string");
       }
-      return fenceString(value, filterArgs[0]);
+      return fenceString(value, rawArg);
     case "quarantine":
       if (typeof value !== "string") {
         throw new TemplateSyntaxError("'quarantine' requires a string");
       }
-      return quarantineString(value, filterArgs[0]);
+      return quarantineString(value, rawArg);
     default:
       throw new UnknownFilterError(filterName);
   }
@@ -261,45 +283,13 @@ export function applyDirectFilter(
 
 /** Parse a filter expression like "fixed(2)" into [name, args]. */
 export function parseDirectFilter(filterStr: string): [string, string[]] {
-  const parenIdx = filterStr.indexOf("(");
-  if (parenIdx < 0) return [filterStr, []];
-
-  const name = filterStr.slice(0, parenIdx).trim();
-  const argsStr = filterStr.slice(parenIdx + 1, filterStr.length - 1).trim();
-  if (argsStr.length === 0) return [name, []];
-
-  // Strip quotes from arguments
-  const args = argsStr.split(",").map((a) => {
-    const trimmed = a.trim();
-    if (
-      (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
-      (trimmed.startsWith("'") && trimmed.endsWith("'"))
-    ) {
-      return unescapeStringLiteral(trimmed.slice(1, -1));
-    }
-    return trimmed;
-  });
-  return [name, args];
+  const [name, rawArg] = parseFilter(filterStr);
+  return [name, rawArg !== undefined ? [rawArg] : []];
 }
 
-/** Split by pipe, respecting parentheses. Uses slice instead of char-by-char concatenation. */
+/** Split by pipe, respecting quotes and parentheses. */
 export function splitDirectPipes(expr: string): string[] {
-  const parts: string[] = [];
-  let depth = 0;
-  let start = 0;
-  for (let i = 0; i < expr.length; i++) {
-    const ch = expr.charCodeAt(i);
-    if (ch === 40 /* ( */) depth++;
-    else if (ch === 41 /* ) */) depth--;
-    else if (ch === 124 /* | */ && depth === 0) {
-      parts.push(expr.slice(start, i));
-      start = i + 1;
-    }
-  }
-  if (start < expr.length) {
-    parts.push(expr.slice(start));
-  }
-  return parts;
+  return splitPipes(expr);
 }
 
 /** Evaluate an expression with filters, returning a JS value. */
@@ -321,8 +311,8 @@ export function evaluateDirectExpr(expr: string, scope: DirectScope): unknown {
 
   // Apply filter chain
   for (const part of parts.slice(1)) {
-    const [filterName, filterArgs] = parseDirectFilter(part.trim());
-    value = applyDirectFilter(value, filterName, filterArgs);
+    const [filterName, rawArg] = parseFilter(part.trim());
+    value = applyDirectFilter(value, filterName, rawArg);
   }
 
   return value;

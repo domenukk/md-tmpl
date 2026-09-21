@@ -51,49 +51,85 @@ hello";
 
 #[test]
 fn adv_negative_prohibited_brackets() {
-    let bad1 = "---\nparams: [x = list[str]]\n---\nhello";
+    let bad1 = "---
+params:
+  - x = list[str]
+---
+hello";
     assert!(
         Template::from_source(bad1).is_err(),
         "list[str] should fail"
     );
 
-    let bad2 = "---\nparams: [x = list<str>]\n---\nhello";
+    let bad2 = "---
+params:
+  - x = list<str>
+---
+hello";
     assert!(
         Template::from_source(bad2).is_err(),
         "list<str> should fail"
     );
 
-    let bad3 = "---\nparams: [x = struct<name = str>]\n---\nhello";
+    let bad3 = "---
+params:
+  - x = struct<name = str>
+---
+hello";
     assert!(
         Template::from_source(bad3).is_err(),
         "struct<name = str> should fail"
     );
 
-    let bad4 = "---\nparams: [x = struct[name = str]]\n---\nhello";
+    let bad4 = "---
+params:
+  - x = struct[name = str]
+---
+hello";
     assert!(
         Template::from_source(bad4).is_err(),
         "struct[name = str] should fail"
     );
 
-    let bad5 = "---\ntypes: [E = enum<A, B>]\nparams: [x = E]\n---\nhello";
+    let bad5 = "---
+types:
+  - E = enum<A, B>
+params:
+  - x = E
+---
+hello";
     assert!(
         Template::from_source(bad5).is_err(),
         "enum<A, B> should fail"
     );
 
-    let bad6 = "---\ntypes: [E = enum[A, B]]\nparams: [x = E]\n---\nhello";
+    let bad6 = "---
+types:
+  - E = enum[A, B]
+params:
+  - x = E
+---
+hello";
     assert!(
         Template::from_source(bad6).is_err(),
         "enum[A, B] should fail"
     );
 
-    let bad7 = "---\nparams: [x = tmpl<name = str>]\n---\nhello";
+    let bad7 = "---
+params:
+  - x = tmpl<name = str>
+---
+hello";
     assert!(
         Template::from_source(bad7).is_err(),
         "tmpl<name = str> should fail"
     );
 
-    let bad8 = "---\nparams: [x = tmpl[name = str]]\n---\nhello";
+    let bad8 = "---
+params:
+  - x = tmpl[name = str]
+---
+hello";
     assert!(
         Template::from_source(bad8).is_err(),
         "tmpl[name = str] should fail"
@@ -102,25 +138,43 @@ fn adv_negative_prohibited_brackets() {
 
 #[test]
 fn adv_negative_mismatched_delimiters() {
-    let bad1 = "---\nparams: [x = list(str]]\n---\nhello";
+    let bad1 = "---
+params:
+  - x = list(str]
+---
+hello";
     assert!(
         Template::from_source(bad1).is_err(),
         "list(str] should fail"
     );
 
-    let bad2 = "---\nparams: [x = struct(name = str]]\n---\nhello";
+    let bad2 = "---
+params:
+  - x = struct(name = str]
+---
+hello";
     assert!(
         Template::from_source(bad2).is_err(),
         "struct(name = str] should fail"
     );
 
-    let bad3 = "---\nparams: [x = option(int]]\n---\nhello";
+    let bad3 = "---
+params:
+  - x = option(int]
+---
+hello";
     assert!(
         Template::from_source(bad3).is_err(),
         "option(int] should fail"
     );
 
-    let bad4 = "---\ntypes: [E = enum(A, B]]\nparams: [x = E]\n---\nhello";
+    let bad4 = "---
+types:
+  - E = enum(A, B]
+params:
+  - x = E
+---
+hello";
     assert!(
         Template::from_source(bad4).is_err(),
         "enum(A, B] should fail"

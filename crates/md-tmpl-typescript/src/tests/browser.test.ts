@@ -361,7 +361,11 @@ Hi {{ name }}`,
 
   it("exposes the underlying Template via the .template getter", async () => {
     const { fetch } = fakeFetch({
-      [`${ORIGIN}/t14/main.tmpl.md`]: `---\nparams: [x = str]\n---\n{{ x }}`,
+      [`${ORIGIN}/t14/main.tmpl.md`]: `---
+params:
+  - x = str
+---
+{{ x }}`,
     });
 
     const tmpl = await loadTemplate("/t14/main.tmpl.md", {
@@ -376,7 +380,10 @@ Hi {{ name }}`,
 
   it("propagates real (non-missing-file) errors without retrying", async () => {
     const { fetch } = fakeFetch({
-      [`${ORIGIN}/t15/main.tmpl.md`]: `---\nparams: []\n---\n{{ undefined_var }}`,
+      [`${ORIGIN}/t15/main.tmpl.md`]: `---
+params: []
+---
+{{ undefined_var }}`,
     });
 
     await assert.rejects(

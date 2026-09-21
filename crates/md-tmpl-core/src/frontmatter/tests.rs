@@ -808,7 +808,12 @@ body"#;
 /// Helper: extract the sole declaration's default value from a template whose
 /// `params:` line is `params: [<decl>]`.
 fn default_of(decl: &str) -> Value {
-    let source = format!("---\nparams: [{decl}]\n---\nbody");
+    let source = format!(
+        "---
+params: [{decl}]
+---
+body"
+    );
     let (fm, _) = parse_frontmatter(&source)
         .unwrap_or_else(|e| panic!("failed to parse frontmatter for `{decl}`: {e}"));
     fm.declarations[0]
@@ -1211,7 +1216,11 @@ fn c3_outer_yaml_quotes_protect_hash() {
 fn c4_trailing_comment_stripped_and_default_parses() {
     // C4: a trailing explanatory comment is stripped so the numeric default
     // still parses to its value.
-    let source = "---\nparams:\n  - x = int := 3 # the retry count\n---\nbody";
+    let source = "---
+params:
+  - x = int := 3 # the retry count
+---
+body";
     let (fm, _) =
         parse_frontmatter(source).expect("frontmatter with trailing comment should parse");
     assert_eq!(fm.declarations[0].default_value, Some(Value::Int(3)));

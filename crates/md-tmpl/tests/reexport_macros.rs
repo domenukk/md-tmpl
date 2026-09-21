@@ -58,7 +58,14 @@ fn core_types_via_facade() {
     assert_eq!(val.as_str(), Some("test"));
 
     let ctx = md_tmpl::ctx! { x: "hello" };
-    let tmpl = md_tmpl::Template::from_source("---\nparams: [x = str]\n---\n{{ x }}").unwrap();
+    let tmpl = md_tmpl::Template::from_source(
+        "---
+params:
+  - x = str
+---
+{{ x }}",
+    )
+    .unwrap();
     let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(output, "hello");
 }

@@ -281,6 +281,14 @@ CHECKS: list[Check] = [
         exts=TS_EXTS,
         message="Tests must never be skipped or focused — remove .skip/.only/.todo.",
     ),
+    Check(
+        name="Template source: single-line \\n-escaped frontmatter",
+        pattern=re.compile(r"""['"`]---\\n"""),
+        dirs=ALL_DIRS,
+        exts=ALL_EXTS,
+        message="NEVER use single-line \\n-escaped frontmatter strings; always use proper multiline strings.",
+        no_nolint=True,
+    ),
 ]
 
 

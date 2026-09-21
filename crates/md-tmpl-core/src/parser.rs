@@ -455,8 +455,19 @@ pub(crate) fn split_pipe_aware(expr: &str) -> (&str, &str) {
 
     let mut depth: u32 = 0;
     let mut in_quote: Option<char> = None;
+    let mut escaped = false;
 
     for (i, ch) in expr.char_indices() {
+        if in_quote.is_some() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+        }
         match ch {
             QUOTE_DOUBLE | QUOTE_SINGLE if in_quote == Some(ch) => in_quote = None,
             QUOTE_DOUBLE | QUOTE_SINGLE if in_quote.is_none() => in_quote = Some(ch),
@@ -480,8 +491,19 @@ pub(crate) fn split_filters_aware(chain: &str) -> Vec<&str> {
     let mut start = 0;
     let mut depth: u32 = 0;
     let mut in_quote: Option<char> = None;
+    let mut escaped = false;
 
     for (i, ch) in chain.char_indices() {
+        if in_quote.is_some() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+        }
         match ch {
             QUOTE_DOUBLE | QUOTE_SINGLE if in_quote == Some(ch) => in_quote = None,
             QUOTE_DOUBLE | QUOTE_SINGLE if in_quote.is_none() => in_quote = Some(ch),

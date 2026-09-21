@@ -990,7 +990,11 @@ params: [name = str, count = int]
     #[test]
     fn d3_undeclared_variable_is_compile_error() {
         let err = Template::from_source(
-            "---\nparams: [declared = str]\n---\n{{ declared }} {{ missing }}",
+            "---
+params:
+  - declared = str
+---
+{{ declared }} {{ missing }}",
         )
         .expect_err("undeclared variable must be rejected at compile time");
         assert!(
@@ -2627,7 +2631,12 @@ fn compile_parent_with_child(
 ) -> (Template, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("child.tmpl.md"), child).unwrap();
-    let src = format!("---\nparams: {parent_params}\n---\n{parent_body}");
+    let src = format!(
+        "---
+params: {parent_params}
+---
+{parent_body}"
+    );
     let (tmpl, _) =
         Template::compile(&src, CompileOptions::default().base_dir(dir.path())).unwrap();
     (tmpl, dir)
@@ -2691,7 +2700,11 @@ fn i2_include_with_escaped_quote_and_interpolation() {
     let (tmpl, _dir) = compile_parent_with_child(
         "[name = str]",
         r#"> {% include [child](./child.tmpl.md) with title="{{ name }}: \"quoted\"" %}"#,
-        "---\nparams: [title = str]\n---\n{{ title }}",
+        "---
+params:
+  - title = str
+---
+{{ title }}",
     );
     let mut ctx = Context::new();
     ctx.set("name", "Ada");
@@ -2784,7 +2797,11 @@ params:
     let (with_tmpl, _dir) = compile_parent_with_child(
         "[name = str]",
         r#"> {% include [child](./child.tmpl.md) with title="hello {{ name }}" %}"#,
-        "---\nparams: [title = str]\n---\n{{ title }}",
+        "---
+params:
+  - title = str
+---
+{{ title }}",
     );
     let mut with_ctx = Context::new();
     with_ctx.set("name", "Ada");

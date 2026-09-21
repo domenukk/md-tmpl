@@ -723,17 +723,35 @@ function coerceForComparison(v: Value): string | number | boolean {
   }
 }
 
-/** Split expression by pipe, respecting parentheses. Uses slice instead of char-by-char concatenation. */
+/** Split expression by pipe, respecting quotes (with backslash escapes) and parentheses. */
 export function splitPipes(expr: string): string[] {
   const result: string[] = [];
   let depth = 0;
+  let inQuote = 0;
+  let escaped = false;
   let start = 0;
 
   for (let i = 0; i < expr.length; i++) {
     const ch = expr.charCodeAt(i);
-    if (ch === 40 /* ( */ || ch === 60 /* < */) {
+    if (inQuote !== 0) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === 92 /* \ */) {
+        escaped = true;
+        continue;
+      }
+      if (ch === inQuote) {
+        inQuote = 0;
+      }
+      continue;
+    }
+    if (ch === 34 /* " */ || ch === 39 /* ' */) {
+      inQuote = ch;
+    } else if (ch === 40 /* ( */) {
       depth++;
-    } else if (ch === 41 /* ) */ || ch === 62 /* > */) {
+    } else if (ch === 41 /* ) */ && depth > 0) {
       depth--;
     } else if (ch === 124 /* | */ && depth === 0) {
       result.push(expr.slice(start, i));

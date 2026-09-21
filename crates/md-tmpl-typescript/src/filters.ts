@@ -28,7 +28,7 @@ export function parseFilter(filter: string): [string, string | undefined] {
 }
 
 /** Strip surrounding quotes from a filter argument and unescape its content. */
-function stripQuotes(s: string): string {
+export function stripQuotes(s: string): string {
   if (s.length >= 2) {
     if (
       (s.startsWith('"') && s.endsWith('"')) ||
@@ -409,6 +409,40 @@ function isValidNcname(name: string): boolean {
   return /^[a-zA-Z_][a-zA-Z0-9._-]*$/.test(name);
 }
 
+function isNcnameContinueChar(ch: string): boolean {
+  return ch.length === 1 && /[a-zA-Z0-9._-]/.test(ch);
+}
+
+function isAsciiWhitespace(ch: string): boolean {
+  return ch === " " || ch === "\t" || ch === "\r" || ch === "\n";
+}
+
+function matchQuarantineTagPrefix(
+  s: string,
+  i: number,
+  tagLower: string,
+): number | undefined {
+  let pos = i + 1;
+  while (pos < s.length && isAsciiWhitespace(s[pos] ?? "")) {
+    pos++;
+  }
+  if (pos < s.length && s.charCodeAt(pos) === 47 /* '/' */) {
+    pos++;
+    while (pos < s.length && isAsciiWhitespace(s[pos] ?? "")) {
+      pos++;
+    }
+  }
+  const afterTag = pos + tagLower.length;
+  if (
+    afterTag <= s.length &&
+    s.slice(pos, afterTag).toLowerCase() === tagLower &&
+    !(afterTag < s.length && isNcnameContinueChar(s[afterTag] ?? ""))
+  ) {
+    return afterTag;
+  }
+  return undefined;
+}
+
 /** Sanitize embedded open/close quarantine tags inside payload. */
 export function sanitizeQuarantinePayload(s: string, tagName: string): string {
   let out = "";
@@ -416,53 +450,24 @@ export function sanitizeQuarantinePayload(s: string, tagName: string): string {
   let i = 0;
   while (i < s.length) {
     if (s.charCodeAt(i) === 60 /* '<' */) {
-      if (i + 1 < s.length && s.charCodeAt(i + 1) === 47 /* '/' */) {
-        const afterSlash = i + 2;
-        if (
-          s.slice(afterSlash, afterSlash + tagName.length).toLowerCase() ===
-          tagLower
+      const afterTag = matchQuarantineTagPrefix(s, i, tagLower);
+      if (afterTag !== undefined) {
+        let j = afterTag;
+        while (
+          j < s.length &&
+          s.charCodeAt(j) !== 62 /* '>' */ &&
+          s.charCodeAt(j) !== 60 /* '<' */
         ) {
-          const afterTag = afterSlash + tagName.length;
-          const nextChar = s[afterTag] ?? "";
-          const isNcnameChar =
-            afterTag < s.length && /[a-zA-Z0-9._-]/.test(nextChar);
-          if (!isNcnameChar) {
-            let j = afterTag;
-            while (j < s.length && /[\s]/.test(s[j] ?? "")) {
-              j++;
-            }
-            if (j < s.length && s.charCodeAt(j) === 62 /* '>' */) {
-              out += `&lt;/${s.slice(afterSlash, j)}&gt;`;
-              i = j + 1;
-              continue;
-            }
-          }
+          j++;
         }
-      } else {
-        const afterLt = i + 1;
-        if (
-          s.slice(afterLt, afterLt + tagName.length).toLowerCase() === tagLower
-        ) {
-          const afterTag = afterLt + tagName.length;
-          const nextChar = s[afterTag] ?? "";
-          const isNcnameChar =
-            afterTag < s.length && /[a-zA-Z0-9._-]/.test(nextChar);
-          if (!isNcnameChar) {
-            let j = afterTag;
-            while (
-              j < s.length &&
-              s.charCodeAt(j) !== 62 /* '>' */ &&
-              s.charCodeAt(j) !== 60 /* '<' */
-            ) {
-              j++;
-            }
-            if (j < s.length && s.charCodeAt(j) === 62 /* '>' */) {
-              out += `&lt;${s.slice(afterLt, j)}&gt;`;
-              i = j + 1;
-              continue;
-            }
-          }
+        if (j < s.length && s.charCodeAt(j) === 62 /* '>' */) {
+          out += `&lt;${s.slice(i + 1, j)}&gt;`;
+          i = j + 1;
+          continue;
         }
+        out += "&lt;";
+        i++;
+        continue;
       }
     }
     out += s[i] ?? "";
@@ -473,12 +478,11 @@ export function sanitizeQuarantinePayload(s: string, tagName: string): string {
 
 /** Wrap untrusted content in XML boundary tags. */
 export function quarantineString(s: string, tagArg?: string): string {
-  const tag =
+  const tagName =
     tagArg !== undefined ? stripQuotes(tagArg) : DEFAULT_QUARANTINE_TAG;
-  const tagName = tag.length === 0 ? DEFAULT_QUARANTINE_TAG : tag;
   if (!isValidNcname(tagName)) {
     throw new TemplateSyntaxError(
-      `'quarantine' tag name must be a valid XML NCName: '${tag}'`,
+      `'quarantine' tag name must be a valid XML NCName: '${tagName}'`,
     );
   }
   const sanitized = sanitizeQuarantinePayload(s, tagName);

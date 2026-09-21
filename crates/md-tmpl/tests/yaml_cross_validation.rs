@@ -43,7 +43,13 @@ fn serde_yaml_parsed_params(yaml_block: &str) -> Vec<(String, String)> {
     // Each raw param is "name = type" — parse the same way our frontmatter does.
     // We re-use the public API by constructing a full template source.
     let params_inline: Vec<&str> = raw_params.iter().map(String::as_str).collect();
-    let source = format!("---\nparams: [{}]\n---\nbody", params_inline.join(", "));
+    let source = format!(
+        "---
+params: [{}]
+---
+body",
+        params_inline.join(", ")
+    );
     let (fm, _) = parse_frontmatter(&source).expect("re-parse through our parser failed");
     fm.declarations
         .iter()
@@ -53,7 +59,12 @@ fn serde_yaml_parsed_params(yaml_block: &str) -> Vec<(String, String)> {
 
 /// Helper: build a template source from a YAML frontmatter block + minimal body.
 fn source_from_yaml(yaml_block: &str) -> String {
-    format!("---\n{yaml_block}\n---\nbody")
+    format!(
+        "---
+{yaml_block}
+---
+body"
+    )
 }
 
 // ---------------------------------------------------------------------------

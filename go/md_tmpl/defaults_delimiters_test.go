@@ -260,7 +260,13 @@ allow_unused: true
 // exact literal shape that regressed.
 func parseSingleDefault(t *testing.T, decl string) any {
 	t.Helper()
-	src := "---\nparams:\n  - " + decl + "\n\nallow_unused: true\n---\nbody"
+	src := `---
+params:
+  - ` + decl + `
+
+allow_unused: true
+---
+body`
 	tmpl, err := FromSource(src)
 	if err != nil {
 		t.Fatalf("FromSource(%q) failed: %v", decl, err)
@@ -322,7 +328,13 @@ func TestDefaultHashWithoutLeadingSpaceIsLiteral(t *testing.T) {
 // Wrap the whole declaration in outer YAML quotes to keep a literal ' #'
 // (see TestDefaultOuterYamlQuotesProtectHash).
 func TestDefaultSpaceHashStartsYamlComment(t *testing.T) {
-	src := "---\nparams:\n  - x = str := \"a # b, c\"\n\nallow_unused: true\n---\nbody"
+	src := `---
+params:
+  - x = str := "a # b, c"
+
+allow_unused: true
+---
+body`
 	tmpl, err := FromSource(src)
 	if err == nil {
 		tmpl.Close()

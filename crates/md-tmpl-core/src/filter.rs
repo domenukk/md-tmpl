@@ -382,6 +382,9 @@ fn apply_escape_json(value: &Value) -> Result<Value, TemplateError> {
 fn apply_sanitize_tokens(value: &Value) -> Result<Value, TemplateError> {
     match value {
         Value::Str(s) => {
+            if !TOKEN_DELIMITERS.iter().any(|&(token, _)| s.contains(token)) {
+                return Ok(value.clone());
+            }
             let mut out = s.clone();
             for &(token, replacement) in TOKEN_DELIMITERS {
                 if out.contains(token) {
@@ -433,82 +436,78 @@ fn apply_fence(value: &Value, args: Option<&str>) -> Result<Value, TemplateError
     }
 }
 
-/// Validate whether an XML tag name is a valid XML `NCName`.
+/// Check whether a byte is a valid ASCII XML `NCName` continuation character.
+const fn is_ncname_continue_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.'
+}
+
+/// Validate whether an XML tag name is a valid ASCII XML `NCName`.
 fn is_valid_ncname(name: &str) -> bool {
-    let mut chars = name.chars();
-    match chars.next() {
-        Some(c) if c.is_alphabetic() || c == '_' => {}
+    let mut bytes = name.bytes();
+    match bytes.next() {
+        Some(b) if b.is_ascii_alphabetic() || b == b'_' => {}
         _ => return false,
     }
-    chars.all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.')
+    bytes.all(is_ncname_continue_byte)
+}
+
+/// Check if `bytes[i..]` (where `bytes[i] == b'<'`) starts an opening or closing
+/// tag matching `tag_bytes` (ASCII case-insensitively), tolerating optional ASCII
+/// whitespace after `<` and after `/`.
+///
+/// Returns `Some(after_tag_idx)` when the tag name matches and is not immediately
+/// followed by another `NCName` continuation character.
+fn match_quarantine_tag_prefix(bytes: &[u8], i: usize, tag_bytes: &[u8]) -> Option<usize> {
+    let mut pos = i + 1;
+    while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+        pos += 1;
+    }
+    if pos < bytes.len() && bytes[pos] == b'/' {
+        pos += 1;
+        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
+            pos += 1;
+        }
+    }
+    let after_tag = pos.checked_add(tag_bytes.len())?;
+    if after_tag <= bytes.len()
+        && bytes[pos..after_tag].eq_ignore_ascii_case(tag_bytes)
+        && !(after_tag < bytes.len() && is_ncname_continue_byte(bytes[after_tag]))
+    {
+        Some(after_tag)
+    } else {
+        None
+    }
 }
 
 /// Sanitize untrusted content within quarantine boundaries.
 ///
-/// Escapes opening `<tag>` and closing `</tag>` occurrences of `tag_name`
-/// (ASCII case-insensitive, permitting optional XML whitespace before `>`)
-/// to prevent delimiter collision or container breakout.
+/// Escapes opening `<tag...>` and closing `</tag...>` occurrences of `tag_name`
+/// (ASCII case-insensitive, permitting optional whitespace after `<` / `/`,
+/// trailing attributes, self-closing `/>`, or unclosed tag prefixes) to prevent
+/// delimiter collision or container breakout.
 fn sanitize_quarantine_payload(s: &str, tag_name: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let bytes = s.as_bytes();
     let tag_bytes = tag_name.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'<' {
-            // Check for closing tag: </tag_name\s*>
-            if i + 1 < bytes.len() && bytes[i + 1] == b'/' {
-                let after_slash = i + 2;
-                if after_slash + tag_bytes.len() <= bytes.len()
-                    && bytes[after_slash..after_slash + tag_bytes.len()]
-                        .eq_ignore_ascii_case(tag_bytes)
-                {
-                    let after_tag = after_slash + tag_bytes.len();
-                    let is_ncname_char = after_tag < bytes.len()
-                        && (bytes[after_tag].is_ascii_alphanumeric()
-                            || bytes[after_tag] == b'_'
-                            || bytes[after_tag] == b'-'
-                            || bytes[after_tag] == b'.');
-                    if !is_ncname_char {
-                        let mut j = after_tag;
-                        while j < bytes.len() && matches!(bytes[j], b' ' | b'\t' | b'\r' | b'\n') {
-                            j += 1;
-                        }
-                        if j < bytes.len() && bytes[j] == b'>' {
-                            out.push_str("&lt;/");
-                            out.push_str(&s[after_slash..j]);
-                            out.push_str("&gt;");
-                            i = j + 1;
-                            continue;
-                        }
-                    }
-                }
-            } else {
-                // Check for opening tag: <tag_name\s*> or <tag_name ...>
-                let after_lt = i + 1;
-                if after_lt + tag_bytes.len() <= bytes.len()
-                    && bytes[after_lt..after_lt + tag_bytes.len()].eq_ignore_ascii_case(tag_bytes)
-                {
-                    let after_tag = after_lt + tag_bytes.len();
-                    let is_ncname_char = after_tag < bytes.len()
-                        && (bytes[after_tag].is_ascii_alphanumeric()
-                            || bytes[after_tag] == b'_'
-                            || bytes[after_tag] == b'-'
-                            || bytes[after_tag] == b'.');
-                    if !is_ncname_char {
-                        let mut j = after_tag;
-                        while j < bytes.len() && bytes[j] != b'>' && bytes[j] != b'<' {
-                            j += 1;
-                        }
-                        if j < bytes.len() && bytes[j] == b'>' {
-                            out.push_str("&lt;");
-                            out.push_str(&s[after_lt..j]);
-                            out.push_str("&gt;");
-                            i = j + 1;
-                            continue;
-                        }
-                    }
-                }
+        if bytes[i] == b'<'
+            && let Some(after_tag) = match_quarantine_tag_prefix(bytes, i, tag_bytes)
+        {
+            let mut j = after_tag;
+            while j < bytes.len() && bytes[j] != b'>' && bytes[j] != b'<' {
+                j += 1;
             }
+            if j < bytes.len() && bytes[j] == b'>' {
+                out.push_str("&lt;");
+                out.push_str(&s[i + 1..j]);
+                out.push_str("&gt;");
+                i = j + 1;
+                continue;
+            }
+            out.push_str("&lt;");
+            i += 1;
+            continue;
         }
         let ch = s[i..].chars().next().expect("valid utf-8 character");
         out.push(ch);
@@ -519,17 +518,19 @@ fn sanitize_quarantine_payload(s: &str, tag_name: &str) -> String {
 
 /// Wrap a string value in boundary XML tags, escaping any embedded opening/closing tags.
 fn apply_quarantine(value: &Value, args: Option<&str>) -> Result<Value, TemplateError> {
-    let tag = strip_quotes(args.unwrap_or(DEFAULT_QUARANTINE_TAG));
-    let tag_name = if tag.is_empty() {
-        DEFAULT_QUARANTINE_TAG
-    } else {
-        if !is_valid_ncname(&tag) {
-            return Err(TemplateError::syntax(alloc::format!(
-                "'quarantine' tag name must be a valid XML NCName: '{tag}'"
-            )));
+    let tag_cow = match args {
+        Some(raw_arg) => {
+            let unquoted = strip_quotes(raw_arg);
+            if !is_valid_ncname(&unquoted) {
+                return Err(TemplateError::syntax(alloc::format!(
+                    "'quarantine' tag name must be a valid XML NCName: '{unquoted}'"
+                )));
+            }
+            unquoted
         }
-        &tag
+        None => alloc::borrow::Cow::Borrowed(DEFAULT_QUARANTINE_TAG),
     };
+    let tag_name = tag_cow.as_ref();
     match value {
         Value::Str(s) => {
             let sanitized = sanitize_quarantine_payload(s, tag_name);
@@ -919,13 +920,13 @@ mod tests {
     #[test]
     fn quarantine_adversarial_nested_and_whitespace() {
         let val = Value::Str(
-            "nested <untrusted_content> inside <UNTRUSTED_CONTENT > and </UNTRUSTED_CONTENT> and </untrusted_content > and </untrusted_content\n>".into()
+            "nested <untrusted_content> inside <UNTRUSTED_CONTENT > and </UNTRUSTED_CONTENT> and </untrusted_content > and </untrusted_content\n> and </untrusted_content/> and </untrusted_content foo=\"1\"> and < /untrusted_content> and <untrusted_content a=\"<\">".into()
         );
         let result = apply_filter(&val, "quarantine", None).unwrap();
         assert_eq!(
             result,
             Value::Str(
-                "<untrusted_content>\nnested &lt;untrusted_content&gt; inside &lt;UNTRUSTED_CONTENT &gt; and &lt;/UNTRUSTED_CONTENT&gt; and &lt;/untrusted_content &gt; and &lt;/untrusted_content\n&gt;\n</untrusted_content>".into()
+                "<untrusted_content>\nnested &lt;untrusted_content&gt; inside &lt;UNTRUSTED_CONTENT &gt; and &lt;/UNTRUSTED_CONTENT&gt; and &lt;/untrusted_content &gt; and &lt;/untrusted_content\n&gt; and &lt;/untrusted_content/&gt; and &lt;/untrusted_content foo=\"1\"&gt; and &lt; /untrusted_content&gt; and &lt;untrusted_content a=\"<\">\n</untrusted_content>".into()
             )
         );
     }
@@ -939,6 +940,10 @@ mod tests {
         assert!(matches!(err2, TemplateError::Syntax(_)));
         let err3 = apply_filter(&val, "quarantine", Some("\"123start\"")).unwrap_err();
         assert!(matches!(err3, TemplateError::Syntax(_)));
+        let err_empty = apply_filter(&val, "quarantine", Some("\"\"")).unwrap_err();
+        assert!(matches!(err_empty, TemplateError::Syntax(_)));
+        let err_unicode = apply_filter(&val, "quarantine", Some("\"täg\"")).unwrap_err();
+        assert!(matches!(err_unicode, TemplateError::Syntax(_)));
     }
 
     #[test]

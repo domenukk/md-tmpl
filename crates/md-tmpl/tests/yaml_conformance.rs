@@ -24,7 +24,12 @@ fn assert_valid_yaml(yaml_block: &str) -> serde_yaml::Value {
 
 /// Build a template source from a YAML frontmatter block.
 fn source_from_yaml(yaml_block: &str) -> String {
-    format!("---\n{yaml_block}\n---\nbody")
+    format!(
+        "---
+{yaml_block}
+---
+body"
+    )
 }
 
 /// Parse frontmatter via our custom parser and return type alias names.
@@ -846,7 +851,12 @@ body";
 #[test]
 fn reserved_keyword_as_param_name_rejected() {
     for keyword in &["list", "struct", "enum", "str", "int", "float", "bool"] {
-        let source = format!("---\nparams: [{keyword} = str]\n---\nbody");
+        let source = format!(
+            "---
+params: [{keyword} = str]
+---
+body"
+        );
         let err = parse_frontmatter(&source)
             .unwrap_err_or_else(|| panic!("param named '{keyword}' should be rejected"));
         assert!(

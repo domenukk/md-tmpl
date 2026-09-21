@@ -37,7 +37,10 @@ function render(
   fmLines: readonly string[] = ["params: []"],
   ctx: Record<string, unknown> = {},
 ): string {
-  const src = `---\n${fmLines.join("\n")}\n---\n${body}`;
+  const src = `---
+${fmLines.join("\n")}
+---
+${body}`;
   return Template.fromSource(src).render(ctx).trim();
 }
 

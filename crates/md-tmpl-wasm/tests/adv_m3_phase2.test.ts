@@ -9,7 +9,11 @@ import { Template as WasmTemplate } from "../pkg/md_tmpl_wasm.js";
 describe("Tier 5 Phase 2 White-box Adversarial Coverage — WASM", () => {
   describe("1. Include Depth Configuration API", () => {
     it("WasmTemplate instances support setMaxIncludeDepth", () => {
-      const tmpl = WasmTemplate.fromSource("---\nparams:\n  - x = int\n---\nHello world {{ x }}");
+      const tmpl = WasmTemplate.fromSource(`---
+params:
+  - x = int
+---
+Hello world {{ x }}`);
       assert.strictEqual(
         // NOLINT: testing WASM binding name variants requires dynamic property access
         typeof (tmpl as any).setMaxIncludeDepth,

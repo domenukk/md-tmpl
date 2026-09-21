@@ -306,10 +306,15 @@ params: [outcome = struct(evidence = str)]
 fn kind_key_rejected_in_condition() {
     // __kind__ access in conditions should also be rejected at compile time.
     let err = crate::Template::from_source(
-        "---\nparams: [x = struct(name = str)]\n---\n\
-         > {% if x.__kind__ == \"foo\" %}\n\n\
-         yes\n\n\
-         > {% /if %}",
+        "---
+params:
+  - x = struct(name = str)
+---
+> {% if x.__kind__ == \"foo\" %}
+
+yes
+
+> {% /if %}",
     )
     .unwrap_err();
     assert!(
@@ -549,10 +554,15 @@ fn push_loop_binding_reuses_string_alloc() {
 fn for_loop_string_items_render_correctly() {
     // End-to-end test: loop over strings renders each one correctly.
     let tmpl = crate::Template::from_source(
-        "---\nparams: [items = list(str)]\n---\n\
-         > {% for item in items %}\n\n\
-         - {{ item }}\n\n\
-         > {% /for %}",
+        "---
+params:
+  - items = list(str)
+---
+> {% for item in items %}
+
+- {{ item }}
+
+> {% /for %}",
     )
     .unwrap();
     let mut ctx = Context::new();

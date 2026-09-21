@@ -2427,8 +2427,12 @@ fn option_struct_decls() -> Vec<VarDecl> {
     }]
 }
 
-const OPTION_STRUCT_HEADER: &str =
-    "---\nname: t\nparams:\n  - o = option(struct(title = str))\n---\n";
+const OPTION_STRUCT_HEADER: &str = "---
+name: t
+params:
+  - o = option(struct(title = str))
+---
+";
 
 fn assert_field_option_error(errors: &[String]) {
     assert_eq!(errors.len(), 1, "expected 1 error, got: {errors:?}");
@@ -2792,21 +2796,27 @@ params:
 
 #[test]
 fn scalar_and_collection_types_in_if_condition_are_allowed() {
-    let tmpl_str = "---\n---\n> {% if name %}hello{% /if %}";
+    let tmpl_str = "---
+---
+> {% if name %}hello{% /if %}";
     let errors = compile_and_check(tmpl_str, &[str_decl("name")]);
     assert!(
         errors.is_empty(),
         "str in if condition should succeed: {errors:?}"
     );
 
-    let tmpl_int = "---\n---\n> {% if count %}hello{% /if %}";
+    let tmpl_int = "---
+---
+> {% if count %}hello{% /if %}";
     let errors = compile_and_check(tmpl_int, &[int_decl("count")]);
     assert!(
         errors.is_empty(),
         "int in if condition should succeed: {errors:?}"
     );
 
-    let tmpl_list = "---\n---\n> {% if items %}hello{% /if %}";
+    let tmpl_list = "---
+---
+> {% if items %}hello{% /if %}";
     let errors = compile_and_check(
         tmpl_list,
         &[VarDecl {

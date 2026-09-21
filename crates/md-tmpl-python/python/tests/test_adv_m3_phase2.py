@@ -10,7 +10,11 @@ import md_tmpl
 
 def test_adv_unchecked_render_api() -> None:
     """Verify that Python bindings support unchecked rendering methods."""
-    src = "---\nparams:\n  - x = int\n---\n{{ x }}"
+    src = """---
+params:
+  - x = int
+---
+{{ x }}"""
     tmpl = md_tmpl.Template.from_source(src)
     assert hasattr(
         tmpl, "render_unchecked"
@@ -45,7 +49,11 @@ params:
 
 def test_adv_large_integer_overflow() -> None:
     """Verify behavior when passing Python integers exceeding C i64 bounds."""
-    src = "---\nparams:\n  - count = int\n---\n{{ count }}"
+    src = """---
+params:
+  - count = int
+---
+{{ count }}"""
     tmpl = md_tmpl.Template.from_source(src)
 
     with pytest.raises(OverflowError):

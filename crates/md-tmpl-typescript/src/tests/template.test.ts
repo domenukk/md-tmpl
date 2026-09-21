@@ -1146,7 +1146,11 @@ describe("Frontmatter: delimiters inside quoted strings (regression)", () => {
 
   // Parse a single-param frontmatter and return that param's parsed default.
   const paramDefault = (decl: string): Value => {
-    const [fm] = parseFrontmatter(`---\nparams:\n  - ${decl}\n---\nbody`);
+    const [fm] = parseFrontmatter(`---
+params:
+  - ${decl}
+---
+body`);
     assert.strictEqual(fm.params.length, 1, "expected exactly one param");
     return defined(
       defined(fm.params[0]).defaultValue,

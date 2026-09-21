@@ -2053,7 +2053,10 @@ params: [name = str, age = int]
         assert excinfo.value.extra == ["bogus"]
 
     def test_panic_error(self) -> None:
-        tmpl = Template.from_source('---\nparams: []\n---\n> {% panic("halt") %}')
+        tmpl = Template.from_source("""---
+params: []
+---
+> {% panic("halt") %}""")
         with pytest.raises(TemplatePanicError) as excinfo:
             tmpl.render()
         assert excinfo.value.kind == "panic"
@@ -2069,7 +2072,10 @@ params: [name = str, age = int]
 
     def test_include_not_found_error(self, tmp_path: Path) -> None:
         tmpl = Template.from_source_with_base_dir(
-            "---\nparams: []\n---\n> {% include [x](./nope.tmpl.md) %}",
+            """---
+params: []
+---
+> {% include [x](./nope.tmpl.md) %}""",
             str(tmp_path),
         )
         with pytest.raises(IncludeNotFoundError) as excinfo:

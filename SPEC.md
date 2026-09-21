@@ -243,8 +243,18 @@ layout.render({ greeting: widget });
 use std::sync::Arc;
 use md_tmpl::{Template, Value};
 
-let widget = Template::from_source("---\nparams:\n  - name = str\n---\nHello {{ name }}!").unwrap();
-let layout = Template::from_source("---\nparams:\n  - greeting = tmpl(name = str)\n---\n> {% include greeting with name=\"World\" %}").unwrap();
+let widget = Template::from_source(
+"---
+params:
+  - name = str
+---
+Hello {{ name }}!").unwrap();
+let layout = Template::from_source(
+"---
+params:
+  - greeting = tmpl(name = str)
+---
+> {% include greeting with name=\"World\" %}").unwrap();
 
 let mut ctx = md_tmpl::Context::new();
 ctx.set("greeting", Value::Tmpl(Arc::new(widget)));
@@ -975,7 +985,12 @@ Env values are provided at compile time via `CompileOptions`:
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
 use md_tmpl::{CompileOptions, Template, Value};
 
-let source = "---\nenv:\n  - PROMPTS_DIR = str\n  - MAX_RETRIES = int := 3\n---\nRetries: {{ MAX_RETRIES }}";
+let source = "---
+env:
+  - PROMPTS_DIR = str
+  - MAX_RETRIES = int := 3
+---
+Retries: {{ MAX_RETRIES }}";
 let env_vars = [
     ("PROMPTS_DIR", Value::Str("/path/to/prompts".into())),
     ("MAX_RETRIES", Value::Int(5)),
@@ -1463,15 +1478,15 @@ Encapsulate untrusted content in XML boundary tags and neutralize embedded break
 - **Syntax:** `{{ expr | quarantine }}` or `{{ expr | quarantine("tag_name") }}`
 - **Input:** `str`
 - **Output:** `str`
-- **Arguments:** `tag` (optional string): XML boundary tag name. Defaults to `untrusted_content`. Must be a valid XML `NCName`.
+- **Arguments:** `tag` (optional string): XML boundary tag name. Defaults to `untrusted_content` when omitted. When provided, must be a non-empty valid ASCII XML `NCName` (an explicit empty string `quarantine("")` is rejected with a syntax error).
 
-Wraps the input in `<tag>\n...\n</tag>`. Inside the payload, all occurrences of `<tag>` (opening) and `</tag>` (closing) matching `tag` (ASCII case-insensitively, tolerating optional XML whitespace before `>`) are escaped to `&lt;tag&gt;` and `&lt;/tag&gt;`.
+Wraps the input in `<tag>\n...\n</tag>`. Inside the payload, all opening `<tag...>` and closing `</tag...>` occurrences matching `tag` (ASCII case-insensitively, tolerating optional whitespace after `<` or `/`, trailing attributes, self-closing `/>`, or unclosed `<tag` prefixes) are escaped to `&lt;...&gt;` (or `&lt;` for unclosed prefixes).
 
 #### Security Considerations for Quarantine
 
-- **XML NCName validation:** Tag names must be valid XML non-colonized names (starting with an ASCII letter or underscore, containing only letters, digits, underscores, hyphens, and periods, with no `<`, `>`, `:`, or whitespace).
-- **Case-insensitive & whitespace close tag neutralization:** Attackers attempting container breakouts using `</UNTRUSTED_CONTENT>`, `</untrusted_content >`, or `</untrusted_content\n>` are neutralized.
-- **Nested opening tag neutralization:** Nested opening tags `<untrusted_content>` are also escaped, preventing spoofed internal container boundaries.
+- **XML NCName validation:** Tag names must be valid ASCII XML non-colonized names (starting with an ASCII letter or underscore, containing only ASCII letters, digits, underscores, hyphens, and periods, with no `<`, `>`, `:`, or whitespace).
+- **Case-insensitive, whitespace, & attribute close tag neutralization:** Attackers attempting container breakouts using `</UNTRUSTED_CONTENT>`, `</untrusted_content >`, `</untrusted_content\n>`, `</untrusted_content/>`, `</untrusted_content foo="1">`, or `< /untrusted_content>` are neutralized.
+- **Nested & unclosed opening tag neutralization:** Nested opening tags `<untrusted_content>` and unclosed `<untrusted_content` prefixes (e.g. `<untrusted_content a="<">`) are also escaped, preventing spoofed internal container boundaries.
 
 ```markdown
 {{ web_search_result | quarantine }}

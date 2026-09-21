@@ -244,8 +244,13 @@ fn write_fixed_float_matches_std() {
 /// Build a template `{{ val | fixed(n) }}` and render it with a given i64.
 fn render_fixed_int(int_val: i64, precision: usize) -> String {
     use crate::{Template, ctx};
-    let src =
-        alloc::format!("---\nparams:\n  - val = int\n---\n{{{{ val | fixed({precision}) }}}}");
+    let src = alloc::format!(
+        "---
+params:
+  - val = int
+---
+{{{{ val | fixed({precision}) }}}}"
+    );
     let tmpl = Template::from_source(&src).expect("compile");
     tmpl.render_ctx(&ctx! { val: int_val }).expect("render")
 }

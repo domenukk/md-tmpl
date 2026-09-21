@@ -54,7 +54,11 @@ describe("CRLF normalization", () => {
   });
 
   it("pure \\n source is unchanged (no allocation overhead)", () => {
-    const source = "---\nparams: [x = str]\n---\n{{ x }}";
+    const source = `---
+params:
+  - x = str
+---
+{{ x }}`;
     const tmpl = Template.fromSource(source);
     assert.strictEqual(tmpl.render({ x: "ok" }), "ok");
   });

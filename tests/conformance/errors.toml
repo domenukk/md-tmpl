@@ -215,3 +215,63 @@ params:
 > {% if opt %}yes{% /if %}'''
 params = {}
 expect = { kind = "error", phase = "any", error_contains = "cannot evaluate truthiness of option" }
+
+[[cases]]
+name = "err_filter_fence_whitespace_lang"
+note = "fence filter rejects language identifiers containing whitespace"
+source = '''
+---
+params:
+  - code = str
+---
+{{ code | fence("rust inject") }}'''
+params = { code = "let x = 1;" }
+expect = { kind = "error", phase = "any", error_contains = "fence" }
+
+[[cases]]
+name = "err_filter_fence_backtick_lang"
+note = "fence filter rejects language identifiers containing backticks"
+source = '''
+---
+params:
+  - code = str
+---
+{{ code | fence("rust`inject") }}'''
+params = { code = "let x = 1;" }
+expect = { kind = "error", phase = "any", error_contains = "fence" }
+
+[[cases]]
+name = "err_filter_quarantine_invalid_ncname"
+note = "quarantine filter rejects tag names that are not valid ASCII XML NCNames"
+source = '''
+---
+params:
+  - text = str
+---
+{{ text | quarantine("<bad>") }}'''
+params = { text = "hello" }
+expect = { kind = "error", phase = "any", error_contains = "NCName" }
+
+[[cases]]
+name = "err_filter_quarantine_empty_ncname"
+note = "quarantine filter rejects an explicit empty tag name"
+source = '''
+---
+params:
+  - text = str
+---
+{{ text | quarantine("") }}'''
+params = { text = "hello" }
+expect = { kind = "error", phase = "any", error_contains = "NCName" }
+
+[[cases]]
+name = "err_filter_escape_xml_non_string"
+note = "escape_xml filter rejects non-string values"
+source = '''
+---
+params:
+  - n = int
+---
+{{ n | escape_xml }}'''
+params = { n = 42 }
+expect = { kind = "error", phase = "any", error_contains = "requires a string" }

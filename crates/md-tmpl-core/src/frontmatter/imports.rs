@@ -715,7 +715,12 @@ mod tests {
         std::fs::write(
             base.join("env.tmpl.md"),
             format!(
-                "---\nname: env\nconsts:\n  - PROMPTS_DIR = str := \"{}\"\n---\n",
+                "---
+name: env
+consts:
+  - PROMPTS_DIR = str := \"{}\"
+---
+",
                 sub.display()
             ),
         )
@@ -724,7 +729,12 @@ mod tests {
         // Create the target template in the subdirectory.
         std::fs::write(
             sub.join("layout.tmpl.md"),
-            "---\nname: layout\nconsts:\n  - MAX = int := 42\n---\n",
+            "---
+name: layout
+consts:
+  - MAX = int := 42
+---
+",
         )
         .expect("write layout");
 
