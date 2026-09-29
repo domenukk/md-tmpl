@@ -270,10 +270,10 @@ params:
 Template path: {{ PROMPTS_DIR }}/{{ agent_name }}.tmpl.md
 Version: v{{ AGENT_VERSION }}'''
 expected_output = '''
-Template path: /home/user/prompts/architect.tmpl.md
+Template path: workspace/prompts/architect.tmpl.md
 Version: v2'''
 [tests.env]
-PROMPTS_DIR = "/home/user/prompts"
+PROMPTS_DIR = "workspace/prompts"
 AGENT_VERSION = "2"
 [tests.params]
 agent_name = "architect"

@@ -19,24 +19,42 @@ use crate::{
 /// After pushing a scope layer and inserting the binding variable,
 /// call this to associate `{{ idx(binding) }}` metadata.
 #[inline]
-pub(crate) fn register_loop_meta(scope: &mut Scope<'_>, binding: &str, i: usize) {
+pub(crate) fn register_loop_meta(scope: &mut Scope<'_>, binding: &str, i: usize, len: usize) {
     let index = i64::try_from(i).expect("loop index exceeds i64::MAX");
-    scope.set_loop_meta(binding, crate::scope::LoopMeta { index });
+    scope.set_loop_meta(binding, crate::scope::LoopMeta { index, len });
+}
+
+/// Borrowed view of a [`Segment::ForLoop`] for rendering.
+#[derive(Copy, Clone)]
+pub(super) struct ForLoopRef<'a> {
+    pub binding: &'a str,
+    pub list_expr: &'a CompiledExpr,
+    pub filters: &'a [crate::compiled::ParsedFilter],
+    pub body: &'a [Segment],
+    pub else_body: &'a [Segment],
 }
 
 /// Render a compiled for-loop.
 #[cfg(feature = "std")]
 #[inline]
 pub(super) fn render_for_loop(
-    binding: &str,
-    list_expr: &CompiledExpr,
-    body: &[Segment],
-    else_body: &[Segment],
+    for_loop: ForLoopRef<'_>,
     scope: &mut Scope<'_>,
     base_dir: Option<&std::path::Path>,
     output: &mut String,
 ) -> Result<(), TemplateError> {
-    let list_ref = eval_compiled_expr_val(list_expr, scope)?;
+    let ForLoopRef {
+        binding,
+        list_expr,
+        filters,
+        body,
+        else_body,
+    } = for_loop;
+    let mut list_ref = eval_compiled_expr_val(list_expr, scope)?;
+    for f in filters {
+        let filtered = crate::filter::apply_filter_parsed(f, &list_ref)?;
+        list_ref = alloc::borrow::Cow::Owned(filtered);
+    }
     let items = if let Value::List(items) = &*list_ref {
         Arc::clone(items)
     } else {
@@ -54,16 +72,23 @@ pub(super) fn render_for_loop(
         )));
     };
 
-    if items.is_empty() && !else_body.is_empty() {
-        return render_segments_into(else_body, scope, base_dir, output);
+    if items.is_empty() {
+        if !else_body.is_empty() {
+            return render_segments_into(else_body, scope, base_dir, output);
+        }
+        return Ok(());
     }
 
+    let slot_idx = scope.begin_loop(binding);
     for (i, item) in items.iter().enumerate() {
-        scope.push_loop_binding(binding, item);
-        register_loop_meta(scope, binding, i);
-        render_segments_into(body, scope, base_dir, output)?;
-        scope.pop_loop_binding();
+        let index = i64::try_from(i).expect("loop index exceeds i64::MAX");
+        scope.update_loop_slot(slot_idx, item, index, items.len());
+        if let Err(err) = render_segments_into(body, scope, base_dir, output) {
+            scope.pop_loop_binding();
+            return Err(err);
+        }
     }
+    scope.pop_loop_binding();
 
     Ok(())
 }
@@ -71,14 +96,22 @@ pub(super) fn render_for_loop(
 /// Render a compiled for-loop (`no_std` variant).
 #[cfg(not(feature = "std"))]
 pub(super) fn render_for_loop_no_std(
-    binding: &str,
-    list_expr: &CompiledExpr,
-    body: &[Segment],
-    else_body: &[Segment],
+    for_loop: ForLoopRef<'_>,
     scope: &mut Scope<'_>,
     output: &mut String,
 ) -> Result<(), TemplateError> {
-    let list_ref = eval_compiled_expr_val(list_expr, scope)?;
+    let ForLoopRef {
+        binding,
+        list_expr,
+        filters,
+        body,
+        else_body,
+    } = for_loop;
+    let mut list_ref = eval_compiled_expr_val(list_expr, scope)?;
+    for f in filters {
+        let filtered = crate::filter::apply_filter_parsed(f, &list_ref)?;
+        list_ref = alloc::borrow::Cow::Owned(filtered);
+    }
     let items = if let Value::List(items) = &*list_ref {
         Arc::clone(items)
     } else {
@@ -96,16 +129,23 @@ pub(super) fn render_for_loop_no_std(
         )));
     };
 
-    if items.is_empty() && !else_body.is_empty() {
-        return render_segments_into_no_std(else_body, scope, output);
+    if items.is_empty() {
+        if !else_body.is_empty() {
+            return render_segments_into_no_std(else_body, scope, output);
+        }
+        return Ok(());
     }
 
+    let slot_idx = scope.begin_loop(binding);
     for (i, item) in items.iter().enumerate() {
-        scope.push_loop_binding(binding, item);
-        register_loop_meta(scope, binding, i);
-        render_segments_into_no_std(body, scope, output)?;
-        scope.pop_loop_binding();
+        let index = i64::try_from(i).expect("loop index exceeds i64::MAX");
+        scope.update_loop_slot(slot_idx, item, index, items.len());
+        if let Err(err) = render_segments_into_no_std(body, scope, output) {
+            scope.pop_loop_binding();
+            return Err(err);
+        }
     }
+    scope.pop_loop_binding();
 
     Ok(())
 }

@@ -512,16 +512,14 @@ fn run_loader_thread(
     successful_loads: &AtomicUsize,
 ) {
     use std::sync::atomic::Ordering;
-    // NOLINT: Err is acceptable — clear() may have raced with load()
-    if let Ok(tmpl) = cache.load(path) {
-        // Verify the loaded template is functional.
-        assert!(
-            !tmpl.declarations().is_empty(),
-            "loaded template must have declarations"
-        );
-        successful_loads.fetch_add(1, Ordering::Relaxed);
-    }
-    // Err is acceptable — clear() may have raced.
+    let tmpl = cache
+        .load(path)
+        .expect("concurrent cache.load must succeed");
+    assert!(
+        !tmpl.declarations().is_empty(),
+        "loaded template must have declarations"
+    );
+    successful_loads.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Helper for [`concurrent_load_render_clear`]: renderer thread logic.
@@ -532,23 +530,23 @@ fn run_renderer_thread(
     successful_renders: &AtomicUsize,
 ) {
     use std::sync::atomic::Ordering;
-    // NOLINT: Err is acceptable — clear() may have raced with load()
-    if let Ok(tmpl) = cache.load(path) {
-        let mut ctx = crate::Context::new();
-        ctx.set("x", "hello");
-        // NOLINT: render may fail if clear() raced — expected in stress test
-        if let Ok(output) = tmpl.render_ctx_cached(&ctx, cache) {
-            assert!(
-                output.contains("hello"),
-                "rendered output must contain 'hello', got: {output}"
-            );
-            assert!(
-                output.contains(&format!("template{expected_idx}")),
-                "rendered output must contain template index, got: {output}"
-            );
-            successful_renders.fetch_add(1, Ordering::Relaxed);
-        }
-    }
+    let tmpl = cache
+        .load(path)
+        .expect("concurrent cache.load must succeed");
+    let mut ctx = crate::Context::new();
+    ctx.set("x", "hello");
+    let output = tmpl
+        .render_ctx_cached(&ctx, cache)
+        .expect("concurrent render_ctx_cached must succeed");
+    assert!(
+        output.contains("hello"),
+        "rendered output must contain 'hello', got: {output}"
+    );
+    assert!(
+        output.contains(&format!("template{expected_idx}")),
+        "rendered output must contain template index, got: {output}"
+    );
+    successful_renders.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Helper for [`concurrent_load_render_clear`]: clear thread logic.
@@ -563,14 +561,14 @@ fn run_clear_thread(
         cache.clear();
     }
     // Load after clear to verify cache rebuilds correctly.
-    // NOLINT: Err is acceptable — load after clear may race
-    if let Ok(tmpl) = cache.load(path) {
-        assert!(
-            !tmpl.declarations().is_empty(),
-            "reloaded template must have declarations"
-        );
-        successful_loads.fetch_add(1, Ordering::Relaxed);
-    }
+    let tmpl = cache
+        .load(path)
+        .expect("cache.load after clear must succeed");
+    assert!(
+        !tmpl.declarations().is_empty(),
+        "reloaded template must have declarations"
+    );
+    successful_loads.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Helper for [`concurrent_load_render_clear`]: reader thread logic.
@@ -586,14 +584,14 @@ fn run_reader_thread(
     let ic = cache.include_count();
     assert!(tc <= paths_len, "template count {tc} exceeds file count");
     assert!(ic <= 100, "include count {ic} unexpectedly large");
-    // NOLINT: Err is acceptable — clear() may have raced with load()
-    if let Ok(tmpl) = cache.load(path) {
-        assert!(
-            !tmpl.declarations().is_empty(),
-            "loaded template must have declarations"
-        );
-        successful_loads.fetch_add(1, Ordering::Relaxed);
-    }
+    let tmpl = cache
+        .load(path)
+        .expect("concurrent cache.load must succeed");
+    assert!(
+        !tmpl.declarations().is_empty(),
+        "loaded template must have declarations"
+    );
+    successful_loads.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Stress-test `TemplateCache` under concurrent access.

@@ -94,13 +94,7 @@ pub(super) fn validate_blockquote_prefix(input: &str) -> Result<(), TemplateErro
             // Truncate for a clean error message.
             let snippet = if trimmed.len() > SNIPPET_MAX_DISPLAY_LEN {
                 // Find a safe truncation point at a char boundary.
-                let end = trimmed
-                    .char_indices()
-                    .map(|(i, _)| i)
-                    .take_while(|&i| i <= SNIPPET_TRUNCATION_BOUNDARY)
-                    .last()
-                    // NOLINT: empty iterator means string has no chars — 0 is the correct truncation point
-                    .unwrap_or(0);
+                let end = crate::error::floor_char_boundary(trimmed, SNIPPET_TRUNCATION_BOUNDARY);
                 format!("{}…", &trimmed[..end])
             } else {
                 trimmed.to_string()
@@ -461,12 +455,8 @@ OFF
 > {{ title }}
 
 > {% /if %}";
-        let result = validate_blockquote_prefix(input);
-        assert!(
-            // NOLINT: test assertion — we only care about Ok/Err, the error value is checked elsewhere
-            result.is_ok(),
-            "> {{ }} content line should not require blank lines beyond what tags need"
-        );
+        validate_blockquote_prefix(input)
+            .expect("> {{ }} content line should not require blank lines beyond what tags need");
     }
 
     #[test]
@@ -481,12 +471,8 @@ OFF
 
 > {% /if %}
 ";
-        let result = validate_blockquote_prefix(input);
-        assert!(
-            // NOLINT: test assertion — we only care about Ok/Err, the error value is checked elsewhere
-            result.is_ok(),
-            "> {{{{ }}}} adjacent to > {{%...%}} via blank line should be accepted"
-        );
+        validate_blockquote_prefix(input)
+            .expect("> {{ }} adjacent to > {%...%} via blank line should be accepted");
     }
 
     #[test]

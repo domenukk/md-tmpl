@@ -19,6 +19,7 @@
 
 mod imports;
 mod params;
+mod sanitize_decl;
 mod type_aliases;
 mod validation;
 
@@ -40,11 +41,11 @@ use crate::{
     consts::{
         FM_ALLOW_UNUSED_PREFIX, FM_CONSTS_PREFIX, FM_DELIMITER, FM_DELIMITER_NEWLINE,
         FM_DESC_PREFIX, FM_ENV_PREFIX, FM_IMPORTS_PREFIX, FM_NAME_PREFIX, FM_PARAMS_PREFIX,
-        FM_TYPES_PREFIX,
+        FM_SANITIZE_NOTICE_PREFIX, FM_TYPES_PREFIX,
     },
     error::TemplateError,
-    frontmatter::params::parse_declarations,
-    types::{VarDecl, VarType},
+    frontmatter::params::{parse_declarations, parse_declarations_with_sanitize},
+    types::{SanitizeSpec, VarDecl, VarType},
 };
 
 /// A template import declaration: `[stem](path.tmpl.md)`.
@@ -127,6 +128,14 @@ pub struct Frontmatter {
     /// imported, already-generated type directly instead of emitting a
     /// duplicate per-template copy. Empty when no such params exist.
     pub imported_type_params: HashMap<String, (String, String)>,
+    /// Optional template-wide override for the untrusted-data boundary notice
+    /// inserted by `sanitize("tag")` blocks (from `sanitize_notice:` in frontmatter).
+    pub sanitize_notice: Option<String>,
+    /// Declarative parameter/field sanitization rules (`params: - x = str | sanitize(...)`),
+    /// keyed by dotted parameter/field path (e.g. `"bio"`, `"user.bio"`, `"items.body"`).
+    pub param_sanitize: HashMap<String, SanitizeSpec>,
+    /// Sanitization rules declared on `types:` aliases, keyed by alias name -> relative field path.
+    pub type_alias_sanitize: HashMap<String, HashMap<String, SanitizeSpec>>,
 }
 
 impl Frontmatter {
@@ -372,7 +381,8 @@ fn extract_yaml_logical_lines(
             || line.starts_with(FM_PARAMS_PREFIX)
             || line.starts_with(FM_CONSTS_PREFIX)
             || line.starts_with(FM_ENV_PREFIX)
-            || line.starts_with(FM_ALLOW_UNUSED_PREFIX);
+            || line.starts_with(FM_ALLOW_UNUSED_PREFIX)
+            || line.starts_with(FM_SANITIZE_NOTICE_PREFIX);
 
         if starts_with_section {
             if in_block_list && !had_blank_line {
@@ -432,6 +442,29 @@ fn validate_env_value(
     }
 }
 
+/// Pre-extracts constant default values before imports are resolved so import
+/// path interpolations (e.g. `foo: "./{{ dir }}/bar.tmpl.md"`) can reference
+/// local `consts` that do not depend on imported modules. Declarations that
+/// reference not-yet-loaded imports are deferred to the second pass after
+/// imports resolve.
+fn populate_preliminary_consts(
+    raw: &str,
+    merged_aliases: &HashMap<String, VarType>,
+    empty_imports: &HashMap<String, ImportedNamespace>,
+    prelim_consts: &mut HashMap<String, crate::value::Value>,
+) {
+    let Ok((decls, _)) =
+        parse_declarations(raw, merged_aliases, empty_imports, true, prelim_consts)
+    else {
+        return;
+    };
+    for decl in decls {
+        if let Some(val) = decl.default_value {
+            prelim_consts.insert(decl.name, val);
+        }
+    }
+}
+
 fn resolve_fm_consts_and_imports(
     fm: &mut Frontmatter,
     consts_raw: Option<&str>,
@@ -475,16 +508,10 @@ fn resolve_fm_consts_and_imports(
         fm.env = env_decls;
     }
 
-    if let Some(raw) = consts_raw {
-        // NOLINT: const parsing failure here is non-fatal — full validation catches errors later
-        if let Ok((decls, _)) =
-            parse_declarations(raw, &merged_aliases, &empty_imports, true, &prelim_consts)
-        {
-            let const_map = build_available_consts(&decls, &HashMap::new());
-            for (k, v) in const_map {
-                prelim_consts.insert(k, v);
-            }
-        }
+    if !fm.imports.is_empty()
+        && let Some(raw) = consts_raw
+    {
+        populate_preliminary_consts(raw, &merged_aliases, &empty_imports, &mut prelim_consts);
     }
 
     #[cfg(feature = "std")]
@@ -563,7 +590,9 @@ fn parse_frontmatter_impl<'a>(
         } else if let Some(rest) = line.strip_prefix(FM_DESC_PREFIX) {
             fm.description = Some(rest.trim().to_string());
         } else if let Some(rest) = line.strip_prefix(FM_TYPES_PREFIX) {
-            fm.type_aliases = parse_types_value(rest)?;
+            let (aliases, alias_sanitize) = parse_types_value_with_sanitize(rest)?;
+            fm.type_aliases = aliases;
+            fm.type_alias_sanitize = alias_sanitize;
         } else if let Some(rest) = line.strip_prefix(FM_IMPORTS_PREFIX) {
             fm.imports = parse_imports_value(rest)?;
         } else if let Some(rest) = line.strip_prefix(FM_PARAMS_PREFIX) {
@@ -574,6 +603,8 @@ fn parse_frontmatter_impl<'a>(
             env_raw = Some(rest.to_string());
         } else if let Some(rest) = line.strip_prefix(FM_ALLOW_UNUSED_PREFIX) {
             fm.allow_unused = rest.trim() == crate::consts::LIT_TRUE;
+        } else if let Some(rest) = line.strip_prefix(FM_SANITIZE_NOTICE_PREFIX) {
+            fm.sanitize_notice = Some(sanitize_decl::parse_sanitize_notice_value(rest));
         }
     }
 
@@ -588,9 +619,10 @@ fn parse_frontmatter_impl<'a>(
     )?;
 
     if let Some(raw) = params_raw {
-        let (decls, import_refs) = parse_declarations(
+        let (decls, import_refs, param_sanitize) = parse_declarations_with_sanitize(
             &raw,
             &merged_aliases,
+            &fm.type_alias_sanitize,
             &resolved_imports,
             false,
             &available_consts,
@@ -599,6 +631,7 @@ fn parse_frontmatter_impl<'a>(
         fm.declarations = decls;
         fm.has_params = true;
         fm.imported_type_params = import_refs;
+        fm.param_sanitize = param_sanitize;
     }
 
     validate_collision_rules(&fm)?;

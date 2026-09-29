@@ -164,6 +164,7 @@ impl VarType {
     }
 
     /// Fast check for `List` types: each item must match the declared fields.
+    #[inline]
     fn check_fast_list(fields: &[VarDecl], value: &Value) -> bool {
         let Value::List(items) = value else {
             return false;
@@ -171,13 +172,11 @@ impl VarType {
         if fields.is_empty() {
             return true;
         }
+        if fields.len() == 1 && fields[0].name.is_empty() {
+            let elem_type = &fields[0].var_type;
+            return items.iter().all(|item| elem_type.check_fast(item));
+        }
         for item in items.iter() {
-            if fields.len() == 1 && fields[0].name.is_empty() {
-                if !fields[0].var_type.check_fast(item) {
-                    return false;
-                }
-                continue;
-            }
             let Value::Struct(map) = item else {
                 return false;
             };
@@ -189,6 +188,7 @@ impl VarType {
     }
 
     /// Fast check for `Struct` types: extract the map and delegate to field checking.
+    #[inline]
     fn check_fast_struct(fields: &[VarDecl], value: &Value) -> bool {
         let Value::Struct(map) = value else {
             return false;
@@ -198,6 +198,7 @@ impl VarType {
 
     /// Shared struct field checking: every declared field must be present with a
     /// matching value type (recursive).
+    #[inline]
     fn check_fast_struct_fields(
         fields: &[VarDecl],
         map: &crate::compat::HashMap<String, Value>,
@@ -542,13 +543,7 @@ impl TypeCheckError {
         let preview = value.to_string();
         let actual_value = if preview.len() > MAX_PREVIEW_LEN {
             // Truncate at a character boundary to avoid panicking on multi-byte UTF-8.
-            let truncate_at = preview
-                .char_indices()
-                .map(|(i, _)| i)
-                .take_while(|&i| i <= MAX_PREVIEW_LEN - 3)
-                .last()
-                // NOLINT: empty iterator means string has no chars — 0 is the correct truncation point
-                .unwrap_or(0);
+            let truncate_at = crate::error::floor_char_boundary(&preview, MAX_PREVIEW_LEN - 3);
             format!("{}…", &preview[..truncate_at])
         } else {
             preview
@@ -580,6 +575,20 @@ impl fmt::Display for TypeCheckError {
     }
 }
 
+/// Declarative sanitization policy attached to a template parameter or field in frontmatter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SanitizeSpec {
+    /// In-place control-token + enclosing-XML-tag sanitization (`| sanitize`).
+    Inline,
+    /// Boundary-wrapped XML block sanitization (`| sanitize("tag")` or `| sanitize("tag", "notice")`).
+    Block {
+        /// Validated XML `NCName` tag specification (`"tag"` or `"tag,outer"`).
+        tag: String,
+        /// Optional custom boundary notice (`Some("")` omits notice; `None` uses template/default notice).
+        notice: Option<String>,
+    },
+}
+
 /// A variant declaration inside an enum type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VariantDecl {
@@ -609,6 +618,22 @@ impl VarDecl {
 }
 
 impl VarType {
+    /// Returns `true` if a declarative `| sanitize` policy can be attached directly to this type
+    /// (`str`, `option(str)`, or scalar `list(str)`).
+    #[must_use]
+    pub fn allows_sanitize(&self) -> bool {
+        match self {
+            Self::Str => true,
+            Self::Option(inner) => inner.allows_sanitize(),
+            Self::List(fields) => {
+                fields.len() == 1
+                    && fields[0].name.is_empty()
+                    && fields[0].var_type.allows_sanitize()
+            }
+            _ => false,
+        }
+    }
+
     /// Returns `true` if this type is an `option(T)`.
     ///
     /// `option` is a first-class type: a literal `enum(Some(val = T), None)`
@@ -616,6 +641,21 @@ impl VarType {
     #[must_use]
     pub fn is_option(&self) -> bool {
         matches!(self, VarType::Option(_))
+    }
+
+    /// Returns `true` if this type or any nested field/variant type contains `option(T)`.
+    #[must_use]
+    pub(crate) fn contains_option(&self) -> bool {
+        match self {
+            Self::Option(_) => true,
+            Self::List(fields) | Self::Struct(fields) | Self::Tmpl(fields) => {
+                fields.iter().any(|d| d.var_type.contains_option())
+            }
+            Self::Enum(variants) => variants
+                .iter()
+                .any(|v| v.fields.iter().any(|d| d.var_type.contains_option())),
+            Self::Str | Self::Bool | Self::Int | Self::Float => false,
+        }
     }
 
     /// If this type is `option(T)`, returns the inner `T` type.

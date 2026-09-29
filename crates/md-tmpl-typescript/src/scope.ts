@@ -152,6 +152,19 @@ export class Scope {
       return root;
     }
 
+    if (pathStr.startsWith("loop.")) {
+      const prop = pathStr.slice(5).trim();
+      const loopVal = this.resolve("loop");
+      if (loopVal !== undefined) {
+        const field = getField(loopVal, prop);
+        if (field !== undefined) return field;
+        throw new UndefinedVariableError(`field '${prop}' not found on loop`);
+      }
+      throw new UndefinedVariableError(
+        "loop metadata is only available inside a for loop",
+      );
+    }
+
     // Check if pathStr directly matches a constant (e.g. imported constant like 'child.MAX' or 'child.Stage')
     const exactConst = this.consts.get(pathStr);
     if (exactConst !== undefined) return exactConst;

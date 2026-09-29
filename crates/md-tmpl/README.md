@@ -85,21 +85,21 @@ cargo add md-tmpl
 
 ## Template Syntax & Features
 
-| Feature                    | Syntax / Example                                                                                                                                                          |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Typed parameters**       | `str`, `int`, `float`, `bool`, `list(…)`, `struct(…)`, `enum(…)`, `option(…)`, `tmpl(…)`                                                                                  |
-| **Type aliases**           | `types:` block defines reusable named types (`Priority = enum(High, Low)`)                                                                                                |
-| **Cross-template imports** | `imports:` pulls types via dotted paths (`stem.TypeName`)                                                                                                                 |
-| **Constants**              | `consts:` block for file-scoped immutable values                                                                                                                          |
-| **Environment variables**  | `env:` block for compile-time injection from the build environment                                                                                                        |
-| **String interpolation**   | `{{ expr }}` inside all quoted strings — conditions, includes, panic messages                                                                                             |
-| **For loops & else**       | `> {% for task in tasks %} … > {% else %} empty > {% /for %}`                                                                                                             |
-| **Conditionals**           | `> {% if count > 0 %} … > {% elif active %} … > {% else %} … > {% /if %}`                                                                                                 |
-| **Enum dispatch**          | `> {% match status %} > {% case Approved %} … > {% case Rejected %} … > {% /match %}`                                                                                     |
-| **Includes as links**      | `> {% include [widget](widget.tmpl.md) with title = "Hello" %}`                                                                                                           |
-| **Inline templates**       | `> {% tmpl header %} … > {% /tmpl %}` (call with `{% include header %}`)                                                                                                  |
-| **Built-in functions**     | `idx(b)`, `len(x)`, `kind(x)`, `kinds(Type)`, `has(x)`                                                                                                                    |
-| **Filters**                | `upper`, `lower`, `trim`, `fixed(N)`, `join(sep)`, `limit(N)`, `add(N)`, `sub(N)`, `escape_xml` (`xml`), `escape_json` (`json`), `sanitize_tokens`, `fence`, `quarantine` |
+| Feature                    | Syntax / Example                                                                                                                                                                                       |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Typed parameters**       | `str`, `int`, `float`, `bool`, `list(…)`, `struct(…)`, `enum(…)`, `option(…)`, `tmpl(…)`                                                                                                               |
+| **Type aliases**           | `types:` block defines reusable named types (`Priority = enum(High, Low)`)                                                                                                                             |
+| **Cross-template imports** | `imports:` pulls types via dotted paths (`stem.TypeName`)                                                                                                                                              |
+| **Constants**              | `consts:` block for file-scoped immutable values                                                                                                                                                       |
+| **Environment variables**  | `env:` block for compile-time injection from the build environment                                                                                                                                     |
+| **String interpolation**   | `{{ expr }}` inside all quoted strings — conditions, includes, panic messages                                                                                                                          |
+| **For loops & else**       | `> {% for task in tasks %} … > {% else %} empty > {% /for %}`                                                                                                                                          |
+| **Conditionals**           | `> {% if count > 0 %} … > {% elif active %} … > {% else %} … > {% /if %}`                                                                                                                              |
+| **Enum dispatch**          | `> {% match status %} > {% case Approved %} … > {% case Rejected %} … > {% /match %}`                                                                                                                  |
+| **Includes as links**      | `> {% include [widget](widget.tmpl.md) with title = "Hello" %}`                                                                                                                                        |
+| **Inline templates**       | `> {% tmpl header %} … > {% /tmpl %}` (call with `{% include header %}`)                                                                                                                               |
+| **Built-in functions**     | `idx(b)`, `len(x)`, `kind(x)`, `kinds(Type)`, `has(x)`                                                                                                                                                 |
+| **Filters**                | `upper`, `lower`, `trim`, `fixed(N)`, `join(sep)`, `limit(N)`, `add(N)`, `sub(N)`, `escape_xml` (`xml`), `escape_json` (`json`), `sanitize([tag], [notice])`, `sanitize_tokens([tags])`, `fence(lang)` |
 
 ## Build-Time Typed Structs
 
@@ -404,18 +404,28 @@ assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Alice (5)");
 
 ### vs Competitors
 
-Criterion benchmarks, render only (pre-parsed template + data → output).
+Criterion benchmarks comparing pre-parsed render time as well as full end-to-end (serde struct serialization + context validation + render) time.
 ([source](../../benchmarks/benches/comparison.rs))
 
-| Scenario        |        md-tmpl |           Tera | `MiniJinja` | Handlebars |
-| --------------- | -------------: | -------------: | ----------: | ---------: |
-| **simple**      |  **168 ns** 🏆 |         289 ns |      575 ns |     744 ns |
-| **loop**        |  **583 ns** 🏆 |         648 ns |     2.30 µs |    4.09 µs |
-| **conditional** |  **264 ns** 🏆 |         326 ns |      639 ns |    1.19 µs |
-| **hero**        |        2.22 µs | **2.14 µs** 🏆 |     7.97 µs |   22.00 µs |
-| **mega**        | **8.84 µs** 🏆 |       11.10 µs |    38.47 µs |  109.76 µs |
+#### Render Only (Pre-built Context / Typed Params)
 
-_Intel Xeon @ 2.60 GHz, 3 runs × 100 Criterion samples._
+| Scenario        | md-tmpl (macro) | md-tmpl |     Tera | `MiniJinja` | Handlebars |
+| --------------- | --------------: | ------: | -------: | ----------: | ---------: |
+| **simple**      |    **22 ns** 🏆 |  162 ns |   207 ns |      561 ns |     701 ns |
+| **loop**        |    **38 ns** 🏆 |  426 ns |   598 ns |     1.94 µs |    3.45 µs |
+| **conditional** |    **20 ns** 🏆 |  212 ns |   327 ns |      623 ns |    1.13 µs |
+| **hero**        |   **156 ns** 🏆 | 1.81 µs |  2.09 µs |     7.45 µs |   21.03 µs |
+| **mega**        |   **634 ns** 🏆 | 7.32 µs | 10.35 µs |    30.26 µs |   90.98 µs |
+
+#### End-to-End (`_e2e`: Struct → Context → Render → String)
+
+| Scenario (E2E) | md-tmpl (macro) |  md-tmpl |     Tera | `MiniJinja` | Handlebars |
+| -------------- | --------------: | -------: | -------: | ----------: | ---------: |
+| **hero (e2e)** |   **152 ns** 🏆 |  5.83 µs |  5.45 µs |     7.64 µs |   30.43 µs |
+| **mega (e2e)** |   **625 ns** 🏆 | 27.94 µs | 24.85 µs |    30.80 µs |  143.86 µs |
+
+- **md-tmpl (macro)** (`include_template!` / `template!`) compiles the template body directly into native Rust statements on the generated `Params` struct — zero `Context` construction, zero `HashMap` lookups, and zero runtime AST interpretation.
+- **md-tmpl** (`render_ctx`) performs runtime frontmatter schema validation and rejects unknown parameters.
 
 ```bash
 just bench-rust          # run Criterion benchmarks

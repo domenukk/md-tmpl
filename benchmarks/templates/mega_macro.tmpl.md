@@ -49,11 +49,10 @@ Skills:
 
 > {% for skill in member.skills %}
 
-- {{ skill.name }}
+  - {{ skill.name }}
 
 > {% /for %}
 > {% /for %}
 
 ---
-
 > {% /for %}

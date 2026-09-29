@@ -1,6 +1,6 @@
 [package]
 name = "md-tmpl-core"
-version = "0.10.2"
+version = "0.10.3"
 edition = "2024"
 rust-version = "1.85"
 description = "Core template engine for md-tmpl — parsing, compilation, and rendering"
@@ -39,6 +39,7 @@ ciborium = { version = "0.2.2", default-features = false, optional = true }
 [dev-dependencies]
 tempfile = "3"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 serde_yaml = "0.9"
 toml = "0.8"
 flexbuffers = "25.12"

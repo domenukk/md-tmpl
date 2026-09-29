@@ -21,9 +21,22 @@ use crate::{compat::HashMap, value::Value};
 ///
 /// assert!(ctx.get("name").is_some());
 /// ```
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct Context {
     pub(crate) values: HashMap<String, Value>,
+    pub(crate) validated_token: core::sync::atomic::AtomicUsize,
+}
+
+impl Clone for Context {
+    fn clone(&self) -> Self {
+        Self {
+            values: self.values.clone(),
+            validated_token: core::sync::atomic::AtomicUsize::new(
+                self.validated_token
+                    .load(core::sync::atomic::Ordering::Relaxed),
+            ),
+        }
+    }
 }
 
 impl Context {
@@ -38,6 +51,7 @@ impl Context {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             values: HashMap::with_capacity(capacity),
+            validated_token: core::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -83,6 +97,7 @@ impl Context {
              use enum types in the template frontmatter instead",
             crate::consts::ENUM_TAG_KEY,
         );
+        *self.validated_token.get_mut() = 0;
         self.values.insert(key, value.into());
     }
 
@@ -135,7 +150,10 @@ impl Context {
                 // if it was just deserialized or serialized.
                 let values =
                     alloc::sync::Arc::try_unwrap(arc_map).unwrap_or_else(|arc| (*arc).clone());
-                Ok(Self { values })
+                Ok(Self {
+                    values,
+                    validated_token: core::sync::atomic::AtomicUsize::new(0),
+                })
             }
             other => Err(crate::error::TemplateError::syntax(format!(
                 "expected struct/map, got {}",
@@ -152,10 +170,9 @@ impl Context {
     pub fn from_serialize<T: serde::Serialize>(
         value: &T,
     ) -> Result<Self, crate::error::TemplateError> {
-        let val = crate::serde_support::to_value(value).map_err(|e| {
+        crate::serde_support::to_context(value).map_err(|e| {
             crate::error::TemplateError::syntax(format!("serde conversion failed: {e}"))
-        })?;
-        Self::from_value(val)
+        })
     }
 }
 

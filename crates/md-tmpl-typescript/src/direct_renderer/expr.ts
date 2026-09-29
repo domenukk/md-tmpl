@@ -17,12 +17,18 @@ import {
 import {
   escapeXmlString,
   escapeJsonString,
-  sanitizeTokensString,
+  sanitizeTokensWithArgs,
   fenceString,
   quarantineString,
+  quarantineUntrustedString,
+  truncateMiddleString,
+  DEFAULT_LIST_TRUNCATE_MARKER,
+  TRUNCATE_PLACEHOLDER_SKIPPED,
+  TRUNCATE_PLACEHOLDER_COUNT,
   parseFilter,
   stripQuotes,
 } from "../filters.js";
+import { applySanitizeFilterStr } from "../sanitize_pass.js";
 import { splitPipes } from "../evaluator.js";
 import { DirectScope } from "./scope.js";
 import { directDisplay } from "./display.js";
@@ -81,6 +87,32 @@ export function resolveDirectExpr(expr: string, scope: DirectScope): unknown {
   // Function calls (must end with ')')
   if (expr.charCodeAt(expr.length - 1) === 41 /* ')' */) {
     return resolveDirectFunction(expr, scope);
+  }
+
+  // Loop metadata (loop.<prop>)
+  if (expr.startsWith("loop.")) {
+    const prop = expr.slice(5).trim();
+    const meta = scope.getLastLoopMeta();
+    if (!meta) {
+      throw new TemplateSyntaxError(
+        "loop metadata is only available inside a for loop",
+      );
+    }
+    switch (prop) {
+      case "first":
+        return meta.index === 0;
+      case "last":
+        return meta.len > 0 && meta.index + 1 === meta.len;
+      case "index0":
+        return meta.index;
+      case "index":
+        return meta.index + 1;
+      case "length":
+      case "len":
+        return meta.len;
+      default:
+        throw new TemplateSyntaxError(`field '${prop}' not found on loop`);
+    }
   }
 
   // Dotted path: "task.title"
@@ -256,16 +288,30 @@ export function applyDirectFilter(
       }
       return escapeXmlString(value);
     case "escape_json":
-    case "json":
       if (typeof value !== "string") {
         throw new TemplateSyntaxError("'escape_json' requires a string");
       }
       return escapeJsonString(value);
+    case "tojson":
+    case "to_json":
+    case "json": {
+      let indent: number | undefined;
+      if (rawArg !== undefined && rawArg.trim().length > 0) {
+        const parsed = Number(rawArg.trim());
+        if (!Number.isInteger(parsed) || parsed < 0) {
+          throw new TemplateSyntaxError(
+            `'${filterName}' indent argument must be a non-negative integer, got '${rawArg.trim()}'`,
+          );
+        }
+        indent = parsed;
+      }
+      return directToJson(value, indent);
+    }
     case "sanitize_tokens":
       if (typeof value !== "string") {
         throw new TemplateSyntaxError("'sanitize_tokens' requires a string");
       }
-      return sanitizeTokensString(value);
+      return sanitizeTokensWithArgs(value, rawArg);
     case "fence":
       if (typeof value !== "string") {
         throw new TemplateSyntaxError("'fence' requires a string");
@@ -276,6 +322,62 @@ export function applyDirectFilter(
         throw new TemplateSyntaxError("'quarantine' requires a string");
       }
       return quarantineString(value, rawArg);
+    case "sanitize":
+      if (typeof value !== "string") {
+        throw new TemplateSyntaxError("'sanitize' requires a string");
+      }
+      return applySanitizeFilterStr(value, rawArg);
+    case "truncate":
+    case "truncate_middle": {
+      if (rawArg === undefined || rawArg.trim().length === 0) {
+        throw new TemplateSyntaxError(
+          "'truncate' requires at least a limit argument",
+        );
+      }
+      const commaIdx = rawArg.indexOf(",");
+      const limitStr = (
+        commaIdx !== -1 ? rawArg.slice(0, commaIdx) : rawArg
+      ).trim();
+      const markerArg =
+        commaIdx !== -1
+          ? stripQuotes(rawArg.slice(commaIdx + 1).trim())
+          : undefined;
+      const limit = Number(limitStr);
+      if (Number.isNaN(limit) || !Number.isInteger(limit) || limit < 0) {
+        throw new TemplateSyntaxError(
+          `'truncate' limit must be an integer: ${limitStr}`,
+        );
+      }
+      if (typeof value === "string") {
+        return truncateMiddleString(value, limit, markerArg);
+      }
+      if (Array.isArray(value)) {
+        const total = value.length;
+        if (total <= limit) return value;
+        if (limit === 0) return [];
+        const skippedItems = total - limit;
+        const headCount = Math.floor(limit / 2);
+        const tailCount = limit - headCount;
+        let markerItem: string | undefined;
+        if (markerArg === undefined) {
+          markerItem = DEFAULT_LIST_TRUNCATE_MARKER.replaceAll(
+            TRUNCATE_PLACEHOLDER_SKIPPED,
+            String(skippedItems),
+          ).replaceAll(TRUNCATE_PLACEHOLDER_COUNT, String(skippedItems));
+        } else if (markerArg.length > 0) {
+          markerItem = markerArg
+            .replaceAll(TRUNCATE_PLACEHOLDER_SKIPPED, String(skippedItems))
+            .replaceAll(TRUNCATE_PLACEHOLDER_COUNT, String(skippedItems));
+        }
+        const items = value as unknown[];
+        const head = items.slice(0, headCount);
+        const tail = items.slice(total - tailCount);
+        return markerItem !== undefined
+          ? [...head, markerItem, ...tail]
+          : [...head, ...tail];
+      }
+      throw new TemplateSyntaxError("'truncate' requires a string or a list");
+    }
     default:
       throw new UnknownFilterError(filterName);
   }
@@ -309,11 +411,59 @@ export function evaluateDirectExpr(expr: string, scope: DirectScope): unknown {
 
   let value = resolveDirectExpr(pathPart, scope);
 
-  // Apply filter chain
-  for (const part of parts.slice(1)) {
+  // Apply filter chain (fusing adjacent sanitize_tokens | quarantine into 1 pass)
+  for (let i = 1; i < parts.length; i++) {
+    const part = parts[i];
+    if (part === undefined) continue;
     const [filterName, rawArg] = parseFilter(part.trim());
+    if (
+      filterName === "sanitize_tokens" &&
+      rawArg === undefined &&
+      typeof value === "string" &&
+      i + 1 < parts.length
+    ) {
+      const nextPart = parts[i + 1];
+      if (nextPart !== undefined) {
+        const [nextName, nextArg] = parseFilter(nextPart.trim());
+        if (nextName === "quarantine") {
+          value = quarantineUntrustedString(value, nextArg);
+          i++;
+          continue;
+        }
+      }
+    }
     value = applyDirectFilter(value, filterName, rawArg);
   }
 
   return value;
+}
+
+function directSortKeys(val: unknown): unknown {
+  if (val === null || val === undefined) return null;
+  if (Array.isArray(val)) return val.map(directSortKeys);
+  if (typeof val === "object") {
+    if (
+      typeof (val as { renderForInclude?: unknown }).renderForInclude ===
+      "function"
+    ) {
+      throw new TemplateSyntaxError("cannot serialize template to JSON");
+    }
+    const keys = Object.keys(val).sort();
+    const sorted: Record<string, unknown> = {};
+    for (const k of keys) {
+      if (k === ENUM_TAG_KEY) continue;
+      const v = (val as Record<string, unknown>)[k];
+      sorted[k] = directSortKeys(v);
+    }
+    return sorted;
+  }
+  return val;
+}
+
+export function directToJson(value: unknown, indent?: number): string {
+  if (typeof value === "function") {
+    throw new TemplateSyntaxError("cannot serialize template to JSON");
+  }
+  const sorted = directSortKeys(value);
+  return JSON.stringify(sorted, null, indent);
 }

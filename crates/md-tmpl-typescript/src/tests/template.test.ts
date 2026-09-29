@@ -2531,7 +2531,8 @@ describe("End-to-end type workflow", () => {
         readonly done: boolean;
       }[];
       readonly outcome:
-        { readonly __kind__: "Success"; readonly msg: string } | "Failure";
+        | { readonly __kind__: "Success"; readonly msg: string }
+        | "Failure";
     }
 
     const tmpl = TypedTemplate.fromSource<Params>(TEMPLATE_SRC);
@@ -4278,22 +4279,24 @@ params:
     );
   });
 
-  it("limit filter on list throws at render", () => {
-    // {{ items | limit(2) }} passes compile-time check (filtered expressions
-    // are skipped). At render time, limit() returns a list, display() rejects.
-    const tmpl = Template.fromSourceAllowingUnused(
-      `---
+  it("limit and truncate filters on list throw at compile time without join or tojson", () => {
+    const srcLimit = `---
 params:
   - items = list(name = str)
 ---
-{{ items | limit(2) }}`,
-    );
+{{ items | limit(2) }}`;
     assert.throws(
-      () =>
-        tmpl.render({
-          items: [{ name: "a" }, { name: "b" }, { name: "c" }],
-        }),
-      /cannot display list/,
+      () => Template.fromSourceAllowingUnused(srcLimit),
+      /cannot display value of type list/,
+    );
+    const srcTruncate = `---
+params:
+  - items = list(name = str)
+---
+{{ items | truncate(2) }}`;
+    assert.throws(
+      () => Template.fromSourceAllowingUnused(srcTruncate),
+      /cannot display value of type list/,
     );
   });
 

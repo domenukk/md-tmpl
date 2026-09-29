@@ -93,7 +93,12 @@ pub fn extract_inline_templates(
             // Parse frontmatter with parent scope for type alias inheritance.
             let (fm, tmpl_body) =
                 frontmatter::parse_frontmatter_with_parent_scope(body, parent_type_aliases)?;
-            let segments = compile_body(tmpl_body)?;
+            let mut segments = compile_body(tmpl_body)?;
+            super::apply_frontmatter_sanitization(
+                &mut segments,
+                &fm.param_sanitize,
+                fm.sanitize_notice.as_deref(),
+            );
 
             // Build const values map from inline template's own consts.
             let mut inline_consts = HashMap::new();

@@ -350,21 +350,25 @@ function collectRefsInner(
         break;
       }
 
-      case NODE_FOR:
+      case NODE_FOR: {
         // Collect refs from the list expression
-        {
-          const iterRoot = extractRootVariable(node.iterExpr, loopBindings);
-          if (iterRoot) refs.add(iterRoot);
-        }
-        // The binding is local — track it to exclude from refs
+        const iterRoot = extractRootVariable(node.iterExpr, loopBindings);
+        if (iterRoot) refs.add(iterRoot);
+        // The binding and `loop` are local — track them to exclude from refs
         loopBindings.add(node.binding);
+        const hadLoop = loopBindings.has("loop");
+        loopBindings.add("loop");
         collectRefsInner(node.body, refs, loopBindings);
+        if (!hadLoop) {
+          loopBindings.delete("loop");
+        }
         loopBindings.delete(node.binding);
         // else_body runs when the list is empty — binding NOT in scope
         if (node.elseBody) {
           collectRefsInner(node.elseBody, refs, loopBindings);
         }
         break;
+      }
 
       case NODE_IF:
         for (const branch of node.branches) {
@@ -534,10 +538,12 @@ function collectLabelsInner(nodes: readonly Node[], labels: Set<string>): void {
       for (const arm of node.arms) {
         for (const variant of arm.variants) {
           // Only collect unquoted labels (not quoted strings)
-          if (!(
-            (variant.startsWith('"') && variant.endsWith('"')) ||
-            (variant.startsWith("'") && variant.endsWith("'"))
-          )) {
+          if (
+            !(
+              (variant.startsWith('"') && variant.endsWith('"')) ||
+              (variant.startsWith("'") && variant.endsWith("'"))
+            )
+          ) {
             labels.add(variant);
           }
         }

@@ -178,13 +178,11 @@ fn shared_include_tests() {
         let env_owned: Vec<(String, crate::Value)> = tc
             .get("env")
             .and_then(|v| v.as_table())
-            .map(|t| {
+            .map_or_else(Vec::new, |t| {
                 t.iter()
                     .map(|(k, v)| (k.clone(), toml_to_value(v)))
                     .collect()
-            })
-            // NOLINT: missing [env] table means no env vars — empty vec is correct
-            .unwrap_or_default();
+            });
         let env_pairs: Vec<(&str, crate::Value)> = env_owned
             .iter()
             .map(|(k, v)| (k.as_str(), v.clone()))
@@ -406,13 +404,11 @@ fn shared_env_tests() {
         let env_owned: Vec<(String, crate::Value)> = tc
             .get("env")
             .and_then(|v| v.as_table())
-            .map(|tbl| {
+            .map_or_else(Vec::new, |tbl| {
                 tbl.iter()
                     .map(|(k, v)| (k.clone(), toml_to_value(v)))
                     .collect()
-            })
-            // NOLINT: missing [env] table means no env vars — empty vec is correct
-            .unwrap_or_default();
+            });
         let env_pairs: Vec<(&str, crate::Value)> = env_owned
             .iter()
             .map(|(k, v)| (k.as_str(), v.clone()))

@@ -311,6 +311,8 @@ export function getLoc(
   return pos !== undefined && lineMap ? getLocation(pos, lineMap) : undefined;
 }
 
+import { parseSanitizeFilterArgs } from "./sanitize_pass.js";
+
 export const VALID_FILTERS = new Set([
   "upper",
   "lower",
@@ -323,10 +325,15 @@ export const VALID_FILTERS = new Set([
   "escape_xml",
   "xml",
   "escape_json",
+  "tojson",
+  "to_json",
   "json",
   "sanitize_tokens",
   "fence",
   "quarantine",
+  "sanitize",
+  "truncate",
+  "truncate_middle",
 ]);
 
 export function validateFilters(expr: string): void {
@@ -337,9 +344,12 @@ export function validateFilters(expr: string): void {
       if (part === undefined) continue;
       const filterStr = part.trim();
       if (!filterStr) continue;
-      const [filterName] = parseFilter(filterStr);
+      const [filterName, rawArg] = parseFilter(filterStr);
       if (!VALID_FILTERS.has(filterName)) {
         throw new UnknownFilterError(filterName);
+      }
+      if (filterName === "sanitize") {
+        parseSanitizeFilterArgs(rawArg);
       }
     }
   }

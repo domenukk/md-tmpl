@@ -1,16 +1,12 @@
 //! Template lifecycle FFI: constructors, destructor, and declaration
 //! validation.
 
-use std::{
-    ffi::{CString, c_char},
-    path::Path,
-    ptr,
-};
+use std::{ffi::c_char, path::Path, ptr};
 
 use md_tmpl::{CompileOptions, Template, Value};
 
 use crate::{
-    PtTemplate, cstr_to_str, err_to_cstring,
+    EMPTY_STR, ERR_NULL_TEMPLATE, PtTemplate, cstr_to_str, err_to_cstring, into_cstring_raw,
     json::{parse_json_env_object, parse_json_string_pairs},
     terr_to_cstring,
 };
@@ -371,19 +367,19 @@ pub unsafe extern "C" fn pt_template_from_source_with_frontmatter(
             let handle = Box::new(PtTemplate { inner: tmpl });
             unsafe { *out_tmpl = Box::into_raw(handle) };
 
-            let name_escaped = fm
-                .name
-                // NOLINT: missing name defaults to empty string for JSON output
-                .unwrap_or_default()
-                .replace('\\', "\\\\")
-                .replace('"', "\\\"");
-            let desc_escaped = fm
-                .description
-                // NOLINT: missing description defaults to empty string for JSON output
-                .unwrap_or_default()
-                .replace('\\', "\\\\")
-                .replace('"', "\\\"");
-            let params: Vec<String> = fm.params.iter().map(|p| format!("\"{p}\"")).collect();
+            let name_escaped = fm.name.as_deref().map_or(
+                std::borrow::Cow::Borrowed(EMPTY_STR),
+                md_tmpl::escape_json_str,
+            );
+            let desc_escaped = fm.description.as_deref().map_or(
+                std::borrow::Cow::Borrowed(EMPTY_STR),
+                md_tmpl::escape_json_str,
+            );
+            let params: Vec<String> = fm
+                .params
+                .iter()
+                .map(|p| format!("\"{}\"", md_tmpl::escape_json_str(p)))
+                .collect();
 
             let json = format!(
                 "{{\"name\":\"{name_escaped}\",\"description\":\"{desc_escaped}\",\"has_params\":{},\"allow_unused\":{},\"params\":[{}]}}",
@@ -392,9 +388,7 @@ pub unsafe extern "C" fn pt_template_from_source_with_frontmatter(
                 params.join(",")
             );
             unsafe {
-                *out_fm = CString::new(json)
-                    .unwrap_or_else(|_| CString::new("<NUL byte in output>").unwrap())
-                    .into_raw();
+                *out_fm = into_cstring_raw(json);
             }
             ptr::null_mut()
         }
@@ -423,7 +417,7 @@ pub unsafe extern "C" fn pt_template_validate_declarations(
     expected_json: *const c_char,
 ) -> *mut c_char {
     let Some(tmpl) = (unsafe { tmpl.as_ref() }) else {
-        return err_to_cstring("null template");
+        return err_to_cstring(ERR_NULL_TEMPLATE);
     };
     let json_str = match unsafe { cstr_to_str(expected_json) } {
         Ok(s) => s,

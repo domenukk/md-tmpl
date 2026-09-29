@@ -249,6 +249,16 @@ pub(crate) fn levenshtein_distance(a: &str, b: &str) -> usize {
     prev[b_len]
 }
 
+/// Return the largest valid UTF-8 character boundary `<= max_bytes` in `s`.
+#[inline]
+pub(crate) fn floor_char_boundary(s: &str, max_bytes: usize) -> usize {
+    let mut idx = max_bytes.min(s.len());
+    while idx > 0 && !s.is_char_boundary(idx) {
+        idx -= 1;
+    }
+    idx
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::string::ToString;

@@ -173,14 +173,12 @@ fn resolve_include_inner_into(
     }
 
     // 1b. Check if path is a variable resolving to a template (higher-order).
-    // NOLINT: resolution failure means path is not a tmpl() param — fall through to filesystem
-    if let Ok(Value::Tmpl(tmpl)) = scope.resolve_path_str(directive.path) {
-        let tmpl = tmpl.clone();
-        return resolve_from_tmpl_value(&tmpl, directive, scope, output);
-    }
-
-    // 2. Fall through to filesystem lookup.
-    resolve_from_filesystem(directive, scope, base_dir, output)
+    let Ok(Value::Tmpl(tmpl)) = scope.resolve_path_str(directive.path) else {
+        // 2. Fall through to filesystem lookup.
+        return resolve_from_filesystem(directive, scope, base_dir, output);
+    };
+    let tmpl = tmpl.clone();
+    resolve_from_tmpl_value(&tmpl, directive, scope, output)
 }
 
 /// Resolve an include from a precompiled inline template.
@@ -279,7 +277,13 @@ fn resolve_from_filesystem(
         .collect();
     let (fm, body) =
         crate::frontmatter::parse_frontmatter_with_base_dir(&source, include_base, &env_pairs)?;
-    let (segments, included_inline_templates) = crate::compiled::compile(body, &fm.type_aliases)?;
+    let (mut segments, included_inline_templates) =
+        crate::compiled::compile(body, &fm.type_aliases)?;
+    crate::compiled::apply_frontmatter_sanitization(
+        &mut segments,
+        &fm.param_sanitize,
+        fm.sanitize_notice.as_deref(),
+    );
 
     // Scope the included file's own inline templates: push them for rendering,
     // then pop after. This ensures each file's {% tmpl %} definitions are
@@ -404,7 +408,7 @@ fn render_iterated_include_into(
             // Inject defaults for declared params not explicitly provided.
             inject_defaults_into_layer(layer, ctx.declarations, ctx.overrides);
         }
-        crate::compiled::register_loop_meta(scope, binding, i);
+        crate::compiled::register_loop_meta(scope, binding, i, items.len());
         crate::compiled::render_segments_into(ctx.segments, scope, ctx.include_base, output)?;
         scope.pop_layer();
     }

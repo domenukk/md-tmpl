@@ -13,6 +13,7 @@ import {
   TYPE_ALIAS,
   TYPE_SCALAR_LIST,
   TYPE_UNTYPED_LIST,
+  FILTER_SANITIZE,
   PIPE,
   QUOTE_DOUBLE,
   QUOTE_SINGLE,
@@ -25,6 +26,7 @@ import {
   NODE_MATCH,
   NODE_FOR,
 } from "./consts.js";
+import { splitPipes } from "./evaluator.js";
 
 // ---------------------------------------------------------------------------
 // Type environment for flow-sensitive narrowing
@@ -155,10 +157,34 @@ class TypeEnv {
    * can be statically typed.
    */
   resolveExprType(expr: string): VarType | undefined {
-    // If filters are applied, skip — filters may transform the type.
-    if (expr.includes(PIPE)) return undefined;
-
-    const pathStr = expr.trim();
+    let pathStr = expr.trim();
+    if (expr.includes(PIPE)) {
+      const parts = splitPipes(expr);
+      const base = parts[0];
+      const filterStrs = parts.slice(1);
+      const allTypePreserving =
+        filterStrs.length > 0 &&
+        filterStrs.every((s) => {
+          const trimmed = s.trim();
+          return (
+            trimmed === FILTER_SANITIZE ||
+            trimmed.startsWith("sanitize(") ||
+            trimmed === "quarantine" ||
+            trimmed.startsWith("quarantine(") ||
+            trimmed.startsWith("limit(") ||
+            trimmed === "limit" ||
+            trimmed.startsWith("truncate(") ||
+            trimmed === "truncate" ||
+            trimmed.startsWith("truncate_middle(") ||
+            trimmed === "truncate_middle"
+          );
+        });
+      if (allTypePreserving && base !== undefined) {
+        pathStr = base.trim();
+      } else {
+        return undefined;
+      }
+    }
 
     // Skip string/numeric literals
     if (
@@ -651,6 +677,26 @@ function walkNodesWithNarrowing(
       }
 
       case NODE_FOR: {
+        if (node.iterExpr.includes(PIPE)) {
+          const filterParts = splitPipes(node.iterExpr).slice(1);
+          for (const rawFilter of filterParts) {
+            const trimmedFilter = rawFilter.trim();
+            const parenIdx = trimmedFilter.indexOf("(");
+            const fname = (
+              parenIdx === -1 ? trimmedFilter : trimmedFilter.slice(0, parenIdx)
+            ).trim();
+            if (
+              fname !== "limit" &&
+              fname !== "truncate" &&
+              fname !== "truncate_middle"
+            ) {
+              errors.push({
+                message: `for-loop iterable '${node.iterExpr.trim()}': filter '${fname}' does not return a list (only 'limit' and 'truncate' are valid on for-loop iterables)`,
+                loc: node.loc,
+              });
+            }
+          }
+        }
         // Resolve the iterator expression type to determine element type
         const iterType = env.resolveExprType(node.iterExpr);
         if (iterType) {

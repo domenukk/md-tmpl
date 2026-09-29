@@ -22,9 +22,11 @@ pub(crate) fn codegen_segment(seg: &md_tmpl_core::compiled::Segment) -> proc_mac
         Segment::ForLoop {
             binding,
             list_expr,
+            filters,
             body,
             else_body,
         } => {
+            let filters_tokens = filters.iter().map(codegen_parsed_filter);
             let body_tokens = body.iter().map(codegen_segment);
             let else_body_tokens = else_body.iter().map(codegen_segment);
             let list_expr_tokens = codegen_compiled_expr(list_expr);
@@ -32,6 +34,7 @@ pub(crate) fn codegen_segment(seg: &md_tmpl_core::compiled::Segment) -> proc_mac
                 #cp::compiled::Segment::ForLoop {
                     binding: #cp::__private::Cow::Borrowed(#binding),
                     list_expr: #list_expr_tokens,
+                    filters: #cp::__private::vec![#(#filters_tokens),*],
                     body: #cp::__private::vec![#(#body_tokens),*],
                     else_body: #cp::__private::vec![#(#else_body_tokens),*],
                 }
@@ -149,6 +152,7 @@ fn codegen_segment_match(
 pub(crate) fn codegen_parsed_filter(
     f: &md_tmpl_core::compiled::ParsedFilter,
 ) -> proc_macro2::TokenStream {
+    use md_tmpl_core::compiled::SanitizeFilterMode;
     let cp = crate_path();
     let kind = codegen_filter_kind(f.kind);
     let args = f.args.as_ref().map_or_else(
@@ -159,11 +163,40 @@ pub(crate) fn codegen_parsed_filter(
         || quote! { ::core::option::Option::None },
         |n| quote! { ::core::option::Option::Some(#n) },
     );
+    let sanitize_mode = f.sanitize_mode.as_ref().map_or_else(
+        || quote! { ::core::option::Option::None },
+        |mode| match mode {
+            SanitizeFilterMode::Inline { enclosing_tags } => {
+                let extra = enclosing_tags.as_ref().map_or_else(
+                    || quote! { ::core::option::Option::None },
+                    |t| quote! { ::core::option::Option::Some(#cp::__private::Cow::Borrowed(#t)) },
+                );
+                quote! {
+                    ::core::option::Option::Some(#cp::compiled::SanitizeFilterMode::Inline {
+                        enclosing_tags: #extra,
+                    })
+                }
+            }
+            SanitizeFilterMode::Block { tag_spec, notice } => {
+                let notice_tok = notice.as_ref().map_or_else(
+                    || quote! { ::core::option::Option::None },
+                    |n| quote! { ::core::option::Option::Some(#cp::__private::Cow::Borrowed(#n)) },
+                );
+                quote! {
+                    ::core::option::Option::Some(#cp::compiled::SanitizeFilterMode::Block {
+                        tag_spec: #cp::__private::Cow::Borrowed(#tag_spec),
+                        notice: #notice_tok,
+                    })
+                }
+            }
+        },
+    );
     quote! {
         #cp::compiled::ParsedFilter {
             kind: #kind,
             args: #args,
             parsed_num: #parsed_num,
+            sanitize_mode: #sanitize_mode,
         }
     }
 }
@@ -184,9 +217,12 @@ pub(crate) fn codegen_filter_kind(
         FilterKind::Sub => quote! { #cp::compiled::FilterKind::Sub },
         FilterKind::EscapeXml => quote! { #cp::compiled::FilterKind::EscapeXml },
         FilterKind::EscapeJson => quote! { #cp::compiled::FilterKind::EscapeJson },
+        FilterKind::ToJson => quote! { #cp::compiled::FilterKind::ToJson },
         FilterKind::SanitizeTokens => quote! { #cp::compiled::FilterKind::SanitizeTokens },
         FilterKind::Fence => quote! { #cp::compiled::FilterKind::Fence },
         FilterKind::Quarantine => quote! { #cp::compiled::FilterKind::Quarantine },
+        FilterKind::Sanitize => quote! { #cp::compiled::FilterKind::Sanitize },
+        FilterKind::Truncate => quote! { #cp::compiled::FilterKind::Truncate },
     }
 }
 
@@ -414,7 +450,10 @@ pub(crate) fn codegen_value(v: &md_tmpl_core::Value) -> proc_macro2::TokenStream
             quote! { #cp::Value::Str(#cp::__private::String::from(#s)) }
         }
         Value::Int(i) => quote! { #cp::Value::Int(#i) },
-        Value::Float(f) => quote! { #cp::Value::Float(#f) },
+        Value::Float(f) => {
+            let bits = f.to_bits();
+            quote! { #cp::Value::Float(::core::primitive::f64::from_bits(#bits)) }
+        }
         Value::Bool(b) => quote! { #cp::Value::Bool(#b) },
         Value::List(l) => {
             let items = l.iter().map(codegen_value);
@@ -553,7 +592,10 @@ pub(crate) fn codegen_value_as_rust_literal(
     match (v, t) {
         (Value::Str(s), VarType::Str) => quote! { #cp::__private::String::from(#s) },
         (Value::Int(i), VarType::Int) => quote! { #i },
-        (Value::Float(f), VarType::Float) => quote! { #f },
+        (Value::Float(f), VarType::Float) => {
+            let bits = f.to_bits();
+            quote! { ::core::primitive::f64::from_bits(#bits) }
+        }
         (Value::Bool(b), VarType::Bool) => quote! { #b },
         (Value::List(items), VarType::List(fields)) => {
             codegen_list_literal(items, fields, parent_struct, field_name)

@@ -275,3 +275,115 @@ params:
 {{ n | escape_xml }}'''
 params = { n = 42 }
 expect = { kind = "error", phase = "any", error_contains = "requires a string" }
+
+[[cases]]
+name = "err_filter_quarantine_multi_tag_invalid_second"
+note = "quarantine filter rejects comma-separated tag spec when any tag is not a valid ASCII XML NCName"
+source = '''
+---
+params:
+  - text = str
+---
+{{ text | quarantine("untrusted_tool_output,<bad>") }}'''
+params = { text = "hello" }
+expect = { kind = "error", phase = "any", error_contains = "NCName" }
+
+[[cases]]
+name = "err_filter_quarantine_multi_tag_trailing_comma"
+note = "quarantine filter rejects comma-separated tag spec with a trailing comma"
+source = '''
+---
+params:
+  - text = str
+---
+{{ text | quarantine("untrusted_tool_output,") }}'''
+params = { text = "hello" }
+expect = { kind = "error", phase = "any", error_contains = "NCName" }
+
+[[cases]]
+name = "err_filter_sanitize_tokens_invalid_ncname"
+note = "sanitize_tokens filter rejects tag names that are not valid ASCII XML NCNames"
+source = '''
+---
+params:
+  - text = str
+---
+{{ text | sanitize_tokens("<bad>") }}'''
+params = { text = "hello" }
+expect = { kind = "error", phase = "any", error_contains = "NCName" }
+
+[[cases]]
+name = "err_filter_sanitize_tokens_empty_ncname"
+note = "sanitize_tokens filter rejects an explicit empty tag name"
+source = '''
+---
+params:
+  - text = str
+---
+{{ text | sanitize_tokens("") }}'''
+params = { text = "hello" }
+expect = { kind = "error", phase = "any", error_contains = "NCName" }
+
+[[cases]]
+name = "err_filter_sanitize_invalid_tag"
+note = "sanitize filter rejects tag names that are not valid ASCII XML NCNames"
+source = '''
+---
+params:
+  - text = str
+---
+{{ text | sanitize("<bad>") }}'''
+params = { text = "hello" }
+expect = { kind = "error", phase = "any", error_contains = "NCName" }
+
+[[cases]]
+name = "err_cannot_display_struct_with_sanitize"
+note = "cannot display non-displayable struct through sanitize filter"
+source = '''
+---
+params:
+  - cfg = struct(host = str)
+---
+{{ cfg | sanitize }}'''
+params = { cfg = { host = "localhost" } }
+expect = { kind = "error", phase = "any" }
+
+[[cases]]
+name = "err_cannot_display_list_with_limit"
+note = "cannot display non-displayable list through limit filter without join or tojson"
+source = '''
+---
+params:
+  - items = list(str)
+---
+{{ items | limit(3) }}'''
+params = { items = ["a", "b", "c", "d"] }
+expect = { kind = "error", phase = "any", error_contains = "cannot display value of type" }
+
+[[cases]]
+name = "err_cannot_display_list_with_truncate"
+note = "cannot display non-displayable list through truncate filter without join or tojson"
+source = '''
+---
+params:
+  - items = list(str)
+---
+{{ items | truncate(2) }}'''
+params = { items = ["a", "b", "c", "d"] }
+expect = { kind = "error", phase = "any", error_contains = "cannot display value of type" }
+
+[[cases]]
+name = "err_for_loop_non_list_filter"
+note = "for-loop iterable rejects filters that do not return a list"
+source = '''
+---
+params:
+  - items = list(str)
+---
+> {% for item in items | join(", ") %}
+
+{{ item }}
+
+> {% /for %}'''
+params = { items = ["a", "b"] }
+expect = { kind = "error", phase = "compile", error_contains = "does not return a list" }

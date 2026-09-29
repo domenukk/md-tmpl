@@ -103,14 +103,18 @@ pub(crate) fn render_segments_into(
             Segment::ForLoop {
                 binding,
                 list_expr,
+                filters,
                 body,
                 else_body,
             } => {
                 render_for_loop(
-                    binding.as_ref(),
-                    list_expr,
-                    body,
-                    else_body,
+                    super::control::ForLoopRef {
+                        binding: binding.as_ref(),
+                        list_expr,
+                        filters,
+                        body,
+                        else_body,
+                    },
                     scope,
                     base_dir,
                     output,
@@ -162,14 +166,18 @@ pub(crate) fn render_segments_into_no_std(
             Segment::ForLoop {
                 binding,
                 list_expr,
+                filters,
                 body,
                 else_body,
             } => {
                 render_for_loop_no_std(
-                    binding.as_ref(),
-                    list_expr,
-                    body,
-                    else_body,
+                    super::control::ForLoopRef {
+                        binding: binding.as_ref(),
+                        list_expr,
+                        filters,
+                        body,
+                        else_body,
+                    },
                     scope,
                     output,
                 )?;

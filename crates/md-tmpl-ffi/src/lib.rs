@@ -28,6 +28,7 @@ mod cache;
 mod context;
 mod metadata;
 mod render;
+mod security;
 mod template;
 
 // Re-export the full `pt_*` FFI surface at the crate root so the public API is
@@ -36,6 +37,7 @@ pub use cache::*;
 pub use context::*;
 pub use metadata::*;
 pub use render::*;
+pub use security::*;
 pub use template::*;
 
 // ---------------------------------------------------------------------------
@@ -58,8 +60,31 @@ pub struct PtContext {
 }
 
 // ---------------------------------------------------------------------------
-// Helper: C string → Rust string conversion
+// Shared FFI constants & CString helpers
 // ---------------------------------------------------------------------------
+
+pub(crate) const EMPTY_STR: &str = "";
+pub(crate) const EMPTY_JSON_ARRAY: &str = "[]";
+pub(crate) const EMPTY_JSON_OBJECT: &str = "{}";
+pub(crate) const ERR_NULL_POINTER: &str = "null pointer";
+pub(crate) const ERR_NULL_TEMPLATE: &str = "null template";
+pub(crate) const ERR_NULL_CONTEXT: &str = "null context";
+pub(crate) const ERR_NULL_CACHE: &str = "null cache";
+pub(crate) const JSON_BOOL_TRUE: &str = "true";
+pub(crate) const JSON_BOOL_FALSE: &str = "false";
+pub(crate) const JSON_NULL: &str = "null";
+pub(crate) const JSON_TEMPLATE_PLACEHOLDER: &str = "\"<template>\"";
+
+/// Convert an owned string or byte vector into a NUL-free `*mut c_char`,
+/// stripping any interior NUL bytes if present.
+pub(crate) fn into_cstring_raw(s: impl Into<Vec<u8>>) -> *mut c_char {
+    CString::new(s)
+        .unwrap_or_else(|e| {
+            let cleaned: Vec<u8> = e.into_vec().into_iter().filter(|&b| b != 0).collect();
+            CString::new(cleaned).expect("filtered out NUL bytes")
+        })
+        .into_raw()
+}
 
 /// Convert a C string pointer to a Rust `&str`.
 ///
@@ -69,7 +94,7 @@ pub struct PtContext {
 /// string.
 unsafe fn cstr_to_str<'a>(ptr: *const c_char) -> Result<&'a str, String> {
     if ptr.is_null() {
-        return Err("null pointer".to_string());
+        return Err(ERR_NULL_POINTER.to_string());
     }
     // SAFETY: caller guarantees non-null, NUL-terminated.
     let cstr = unsafe { CStr::from_ptr(ptr) };
@@ -78,9 +103,7 @@ unsafe fn cstr_to_str<'a>(ptr: *const c_char) -> Result<&'a str, String> {
 
 /// Allocate a C error string. Returns null on success (no error).
 fn err_to_cstring(msg: &str) -> *mut c_char {
-    CString::new(msg)
-        .unwrap_or_else(|_| CString::new("error message contained NUL byte").unwrap())
-        .into_raw()
+    into_cstring_raw(msg)
 }
 
 /// Separator between the stable error-kind id and the human-readable message

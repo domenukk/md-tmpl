@@ -3,6 +3,7 @@
 
 mod codegen;
 mod compile;
+mod native_codegen;
 mod struct_gen;
 mod type_gen;
 
@@ -422,6 +423,33 @@ pub fn include_template(input: TokenStream) -> TokenStream {
         Ok(v) => v,
         Err(e) => return err_tokens(parsed.path.span(), &rel_path, &e),
     };
+    let mod_ident = match parsed.custom_name {
+        Some(ident) => ident,
+        None => make_ident(&stem_from_path(&rel_path)),
+    };
+    let path_str = full_path.to_string_lossy().to_string();
+
+    emit_template_module(
+        ast,
+        &mod_ident,
+        &rel_path,
+        Some(&path_str),
+        parsed.struct_name,
+        parsed.crate_path,
+        &parsed.import_paths,
+    )
+}
+
+/// Shared module token emitter for [`include_template!`] and [`template!`].
+fn emit_template_module(
+    ast: CompiledTemplateAst,
+    mod_ident: &syn::Ident,
+    doc_path: &str,
+    primary_file_path: Option<&str>,
+    struct_name: Option<syn::Ident>,
+    crate_path: Option<syn::Path>,
+    import_paths: &[(String, syn::Path)],
+) -> TokenStream {
     let CompiledTemplateAst {
         frontmatter: fm,
         segments,
@@ -429,22 +457,11 @@ pub fn include_template(input: TokenStream) -> TokenStream {
         source_hash,
         dependency_paths,
     } = ast;
-    let path_str = full_path.to_string_lossy().to_string();
     let dep_paths_str = dep_paths_to_strings(&dependency_paths);
-
-    // Module name: custom or derived from file stem.
-    let mod_ident = match parsed.custom_name {
-        Some(ident) => ident,
-        None => make_ident(&stem_from_path(&rel_path)),
-    };
-
-    // Crate path: custom or default `::md_tmpl`.
-    let crate_path = parsed
-        .crate_path
-        .map_or_else(|| quote! { ::md_tmpl }, |p| quote! { #p });
+    let primary_include = primary_file_path.map(|p| quote! { const _: &str = include_str!(#p); });
+    let crate_path = crate_path.map_or_else(|| quote! { ::md_tmpl }, |p| quote! { #p });
 
     with_crate_path(crate_path.clone(), || {
-        // Template AST codegen.
         let segments_tokens = segments.iter().map(codegen_segment);
         let decls_tokens = fm.declarations.iter().map(codegen_var_decl);
         let inline_templates_tokens = inline_templates.iter().map(|(k, v)| {
@@ -463,34 +480,25 @@ pub fn include_template(input: TokenStream) -> TokenStream {
             quote! { (#k, #val_tokens) }
         });
 
-        // Params struct codegen.
-        let struct_name = parsed
-            .struct_name
-            .unwrap_or_else(|| format_ident!("Params"));
-        let source = StructGenSource::Module {
-            doc_path: &rel_path,
-        };
-        let imported_type_paths = build_imported_type_paths(&fm, &parsed.import_paths);
+        let struct_name = struct_name.unwrap_or_else(|| format_ident!("Params"));
+        let source = StructGenSource::Module { doc_path };
+        let imported_type_paths = build_imported_type_paths(&fm, import_paths);
         let struct_tokens =
-            generate_struct_tokens(&fm, &struct_name, &source, &imported_type_paths);
-
-        // Type alias codegen.
+            generate_struct_tokens(&fm, &segments, &struct_name, &source, &imported_type_paths);
         let type_alias_tokens = generate_type_alias_tokens(&fm.type_aliases);
 
-        let name_token = if let Some(n) = &fm.name {
-            quote! { Some(#n) }
-        } else {
-            quote! { None }
-        };
-        let desc_token = if let Some(d) = &fm.description {
-            quote! { Some(#d) }
-        } else {
-            quote! { None }
-        };
+        let name_token = fm
+            .name
+            .as_ref()
+            .map_or_else(|| quote! { None }, |n| quote! { Some(#n) });
+        let desc_token = fm
+            .description
+            .as_ref()
+            .map_or_else(|| quote! { None }, |d| quote! { Some(#d) });
 
-        let expanded = quote! {
+        quote! {
             pub mod #mod_ident {
-                const _: &str = include_str!(#path_str);
+                #primary_include
                 #(const _: &str = include_str!(#dep_paths_str);)*
 
                 fn __init_template() -> #crate_path::Template {
@@ -516,8 +524,8 @@ pub fn include_template(input: TokenStream) -> TokenStream {
                 #struct_tokens
                 #(#type_alias_tokens)*
             }
-        };
-        expanded.into()
+        }
+        .into()
     })
 }
 
@@ -561,8 +569,15 @@ pub fn template(input: TokenStream) -> TokenStream {
     let source = parsed.source.value();
     let mod_ident = parsed.name;
 
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-    let base_dir = std::path::Path::new(&manifest_dir);
+    let manifest_dir = match compile::cargo_manifest_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            return syn::Error::new(parsed.source.span(), e)
+                .to_compile_error()
+                .into();
+        }
+    };
+    let base_dir = manifest_dir.as_path();
 
     // Evaluate env expressions at macro expansion time.
     let env_values: Vec<(String, md_tmpl_core::Value)> = parsed
@@ -587,91 +602,14 @@ pub fn template(input: TokenStream) -> TokenStream {
                 .into();
         }
     };
-    let CompiledTemplateAst {
-        frontmatter: fm,
-        segments,
-        inline_templates,
-        source_hash,
-        dependency_paths,
-    } = ast;
-    let dep_paths_str = dep_paths_to_strings(&dependency_paths);
 
-    // Crate path: custom or default `::md_tmpl`.
-    let crate_path = parsed
-        .crate_path
-        .map_or_else(|| quote! { ::md_tmpl }, |p| quote! { #p });
-
-    with_crate_path(crate_path.clone(), || {
-        // Template AST codegen.
-        let segments_tokens = segments.iter().map(codegen_segment);
-        let decls_tokens = fm.declarations.iter().map(codegen_var_decl);
-        let inline_templates_tokens = inline_templates.iter().map(|(k, v)| {
-            let v_tokens = codegen_compiled_inline_template(v);
-            quote! { (#k, #v_tokens) }
-        });
-        let consts_tokens = fm.consts.iter().chain(fm.env.iter()).filter_map(|d| {
-            d.default_value.as_ref().map(|v| {
-                let name = &d.name;
-                let val_tokens = codegen_value(v);
-                quote! { (#name, #val_tokens) }
-            })
-        });
-        let imported_consts_tokens = fm.imported_consts.iter().map(|(k, v)| {
-            let val_tokens = codegen_value(v);
-            quote! { (#k, #val_tokens) }
-        });
-
-        // Params struct codegen — uses Module so render() calls super::template().
-        let struct_name = parsed
-            .struct_name
-            .clone()
-            .unwrap_or_else(|| format_ident!("Params"));
-        let source = StructGenSource::Module {
-            doc_path: "<inline>",
-        };
-        let imported_type_paths = build_imported_type_paths(&fm, &parsed.import_paths);
-        let struct_tokens =
-            generate_struct_tokens(&fm, &struct_name, &source, &imported_type_paths);
-
-        // Type alias codegen.
-        let type_alias_tokens = generate_type_alias_tokens(&fm.type_aliases);
-
-        let name_token = fm
-            .name
-            .as_ref()
-            .map_or_else(|| quote! { None }, |n| quote! { Some(#n) });
-        let desc_token = fm
-            .description
-            .as_ref()
-            .map_or_else(|| quote! { None }, |d| quote! { Some(#d) });
-
-        let expanded = quote! {
-            pub mod #mod_ident {
-                #(const _: &str = include_str!(#dep_paths_str);)*
-                fn __init_template() -> #crate_path::Template {
-                    #crate_path::Template::from_precompiled(&#crate_path::PrecompiledTemplateData {
-                        segments: &[#(#segments_tokens),*],
-                        declared_variables: &[#(#decls_tokens),*],
-                        inline_templates: &[#(#inline_templates_tokens),*],
-                        source_hash: #source_hash,
-                        consts: &[#(#consts_tokens),*],
-                        imported_consts: &[#(#imported_consts_tokens),*],
-                        name: #name_token,
-                        description: #desc_token,
-                    })
-                }
-                static __TEMPLATE: #crate_path::__private::LazyLock<#crate_path::Template> =
-                    #crate_path::__private::LazyLock::new(__init_template);
-
-                /// Get a reference to the compile-time validated, pre-compiled template.
-                pub fn template() -> &'static #crate_path::Template {
-                    &*__TEMPLATE
-                }
-
-                #struct_tokens
-                #(#type_alias_tokens)*
-            }
-        };
-        expanded.into()
-    })
+    emit_template_module(
+        ast,
+        &mod_ident,
+        "<inline>",
+        None,
+        parsed.struct_name,
+        parsed.crate_path,
+        &parsed.import_paths,
+    )
 }

@@ -149,6 +149,32 @@ void pt_cache_clear(const PtCache *cache);
 size_t pt_cache_template_count(const PtCache *cache);
 size_t pt_cache_include_count(const PtCache *cache);
 
+/* ---- Security & sanitization primitives --------------------------------- */
+
+char *pt_token_delimiters_json(void);
+char *pt_role_token_delimiters_json(void);
+char *pt_escape_xml(const uint8_t *data, size_t len, char **out_err);
+char *pt_escape_json(const uint8_t *data, size_t len, char **out_err);
+bool pt_has_control_tokens(const uint8_t *data, size_t len);
+bool pt_has_role_control_tokens(const uint8_t *data, size_t len);
+char *pt_sanitize_tokens(const uint8_t *data, size_t len, char **out_err);
+char *pt_sanitize_role_tokens(const uint8_t *data, size_t len, char **out_err);
+char *pt_fence(const uint8_t *data, size_t len, const char *lang,
+               char **out_err);
+bool pt_has_quarantine_tag_breakout(const uint8_t *data, size_t len,
+                                    const char *tag_spec);
+bool pt_has_untrusted_breakout(const uint8_t *data, size_t len,
+                               const char *tag_spec);
+char *pt_sanitize_quarantine_payload(const uint8_t *data, size_t len,
+                                     const char *tag_spec, char **out_err);
+char *pt_sanitize_untrusted(const uint8_t *data, size_t len,
+                            const char *tag_spec, char **out_err);
+char *pt_quarantine(const uint8_t *data, size_t len, const char *tag_spec,
+                    char **out_err);
+char *pt_quarantine_untrusted(const uint8_t *data, size_t len,
+                              const char *tag_spec, char **out_err);
+bool pt_is_quarantined(const uint8_t *data, size_t len, const char *tag_spec);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

@@ -1,28 +1,23 @@
 //! Template rendering FFI: context-, JSON-, and `FlexBuffers`-driven render
 //! entry points.
 
-use std::{
-    ffi::{CString, c_char},
-    ptr,
-};
+use std::{ffi::c_char, ptr};
 
 use md_tmpl::{Context, Value};
 
 use crate::{
-    PtCache, PtContext, PtTemplate, cstr_to_str, err_to_cstring, json::json_to_value,
-    terr_to_cstring,
+    ERR_NULL_CACHE, ERR_NULL_CONTEXT, ERR_NULL_TEMPLATE, PtCache, PtContext, PtTemplate,
+    cstr_to_str, err_to_cstring, into_cstring_raw, json::json_to_value, terr_to_cstring,
 };
+
+const ERR_RENDER_JSON_NOT_OBJECT: &str = "pt_template_render_json: JSON must be an object";
+const ERR_RENDER_FLEXBUFFERS_NULL: &str = "pt_template_render_flexbuffers: null pointer passed";
 
 /// Render a template with the given context (strict mode).
 ///
 /// Returns the rendered output as a C string (caller must free with
 /// `pt_free_string`). On error, writes the error string to `*out_err`
 /// and returns null.
-///
-/// # Panics
-///
-/// Panics if the rendered output contains a NUL byte (should not happen in
-/// practice with valid template output).
 ///
 /// # Safety
 ///
@@ -36,19 +31,17 @@ pub unsafe extern "C" fn pt_template_render(
     out_err: *mut *mut c_char,
 ) -> *mut c_char {
     let Some(tmpl) = (unsafe { tmpl.as_ref() }) else {
-        unsafe { *out_err = err_to_cstring("null template") };
+        unsafe { *out_err = err_to_cstring(ERR_NULL_TEMPLATE) };
         return ptr::null_mut();
     };
     let Some(ctx) = (unsafe { ctx.as_ref() }) else {
-        unsafe { *out_err = err_to_cstring("null context") };
+        unsafe { *out_err = err_to_cstring(ERR_NULL_CONTEXT) };
         return ptr::null_mut();
     };
     match tmpl.inner.render_ctx(&ctx.inner) {
         Ok(rendered) => {
             unsafe { *out_err = ptr::null_mut() };
-            CString::new(rendered)
-                .unwrap_or_else(|_| CString::new("<output contained NUL byte>").unwrap())
-                .into_raw()
+            into_cstring_raw(rendered)
         }
         Err(e) => {
             unsafe { *out_err = terr_to_cstring(&e) };
@@ -58,11 +51,6 @@ pub unsafe extern "C" fn pt_template_render(
 }
 
 /// Render a template, allowing extra (undeclared) parameters.
-///
-/// # Panics
-///
-/// Panics if the rendered output contains a NUL byte (should not happen in
-/// practice with valid template output).
 ///
 /// # Safety
 ///
@@ -74,19 +62,17 @@ pub unsafe extern "C" fn pt_template_render_allowing_extra(
     out_err: *mut *mut c_char,
 ) -> *mut c_char {
     let Some(tmpl) = (unsafe { tmpl.as_ref() }) else {
-        unsafe { *out_err = err_to_cstring("null template") };
+        unsafe { *out_err = err_to_cstring(ERR_NULL_TEMPLATE) };
         return ptr::null_mut();
     };
     let Some(ctx) = (unsafe { ctx.as_ref() }) else {
-        unsafe { *out_err = err_to_cstring("null context") };
+        unsafe { *out_err = err_to_cstring(ERR_NULL_CONTEXT) };
         return ptr::null_mut();
     };
     match tmpl.inner.render_ctx_allowing_extra(&ctx.inner) {
         Ok(rendered) => {
             unsafe { *out_err = ptr::null_mut() };
-            CString::new(rendered)
-                .unwrap_or_else(|_| CString::new("<output contained NUL byte>").unwrap())
-                .into_raw()
+            into_cstring_raw(rendered)
         }
         Err(e) => {
             unsafe { *out_err = terr_to_cstring(&e) };
@@ -103,11 +89,6 @@ pub unsafe extern "C" fn pt_template_render_allowing_extra(
 /// `pt_free_string`). On error, writes the error string to `*out_err`
 /// and returns null.
 ///
-/// # Panics
-///
-/// Panics if the rendered output contains a NUL byte (should not happen in
-/// practice with valid template output).
-///
 /// # Safety
 ///
 /// - `tmpl` must be a valid template handle.
@@ -118,15 +99,13 @@ pub unsafe extern "C" fn pt_template_render_empty(
     out_err: *mut *mut c_char,
 ) -> *mut c_char {
     let Some(tmpl) = (unsafe { tmpl.as_ref() }) else {
-        unsafe { *out_err = err_to_cstring("null template") };
+        unsafe { *out_err = err_to_cstring(ERR_NULL_TEMPLATE) };
         return ptr::null_mut();
     };
     match tmpl.inner.render_empty() {
         Ok(rendered) => {
             unsafe { *out_err = ptr::null_mut() };
-            CString::new(rendered)
-                .unwrap_or_else(|_| CString::new("<output contained NUL byte>").unwrap())
-                .into_raw()
+            into_cstring_raw(rendered)
         }
         Err(e) => {
             unsafe { *out_err = terr_to_cstring(&e) };
@@ -145,11 +124,6 @@ pub unsafe extern "C" fn pt_template_render_empty(
 /// `pt_free_string`). On error, writes the error string to `*out_err`
 /// and returns null.
 ///
-/// # Panics
-///
-/// Panics if the rendered output contains a NUL byte (should not happen in
-/// practice with valid template output).
-///
 /// # Safety
 ///
 /// - `tmpl` must be a valid template handle.
@@ -162,19 +136,17 @@ pub unsafe extern "C" fn pt_template_render_unchecked(
     out_err: *mut *mut c_char,
 ) -> *mut c_char {
     let Some(tmpl) = (unsafe { tmpl.as_ref() }) else {
-        unsafe { *out_err = err_to_cstring("null template") };
+        unsafe { *out_err = err_to_cstring(ERR_NULL_TEMPLATE) };
         return ptr::null_mut();
     };
     let Some(ctx) = (unsafe { ctx.as_ref() }) else {
-        unsafe { *out_err = err_to_cstring("null context") };
+        unsafe { *out_err = err_to_cstring(ERR_NULL_CONTEXT) };
         return ptr::null_mut();
     };
     match tmpl.inner.render_ctx_unchecked(&ctx.inner) {
         Ok(rendered) => {
             unsafe { *out_err = ptr::null_mut() };
-            CString::new(rendered)
-                .unwrap_or_else(|_| CString::new("<output contained NUL byte>").unwrap())
-                .into_raw()
+            into_cstring_raw(rendered)
         }
         Err(e) => {
             unsafe { *out_err = terr_to_cstring(&e) };
@@ -193,11 +165,6 @@ pub unsafe extern "C" fn pt_template_render_unchecked(
 /// `pt_free_string`). On error, writes the error string to `*out_err`
 /// and returns null.
 ///
-/// # Panics
-///
-/// Panics if the rendered output contains a NUL byte (should not happen in
-/// practice with valid template output).
-///
 /// # Safety
 ///
 /// - `tmpl` must be a valid template handle.
@@ -212,23 +179,21 @@ pub unsafe extern "C" fn pt_template_render_cached(
     out_err: *mut *mut c_char,
 ) -> *mut c_char {
     let Some(tmpl) = (unsafe { tmpl.as_ref() }) else {
-        unsafe { *out_err = err_to_cstring("null template") };
+        unsafe { *out_err = err_to_cstring(ERR_NULL_TEMPLATE) };
         return ptr::null_mut();
     };
     let Some(ctx) = (unsafe { ctx.as_ref() }) else {
-        unsafe { *out_err = err_to_cstring("null context") };
+        unsafe { *out_err = err_to_cstring(ERR_NULL_CONTEXT) };
         return ptr::null_mut();
     };
     let Some(cache) = (unsafe { cache.as_ref() }) else {
-        unsafe { *out_err = err_to_cstring("null cache") };
+        unsafe { *out_err = err_to_cstring(ERR_NULL_CACHE) };
         return ptr::null_mut();
     };
     match tmpl.inner.render_ctx_cached(&ctx.inner, &*cache.inner) {
         Ok(rendered) => {
             unsafe { *out_err = ptr::null_mut() };
-            CString::new(rendered)
-                .unwrap_or_else(|_| CString::new("<output contained NUL byte>").unwrap())
-                .into_raw()
+            into_cstring_raw(rendered)
         }
         Err(e) => {
             unsafe { *out_err = terr_to_cstring(&e) };
@@ -248,11 +213,6 @@ pub unsafe extern "C" fn pt_template_render_cached(
 /// `pt_free_string`). On error, writes the error string to `*out_err`
 /// and returns null.
 ///
-/// # Panics
-///
-/// Panics if the rendered output contains a NUL byte (should not happen in
-/// practice with valid template output).
-///
 /// # Safety
 ///
 /// - `tmpl` must be a valid template handle.
@@ -266,7 +226,7 @@ pub unsafe extern "C" fn pt_template_render_json(
     out_err: *mut *mut c_char,
 ) -> *mut c_char {
     let Some(tmpl) = (unsafe { tmpl.as_ref() }) else {
-        unsafe { *out_err = err_to_cstring("null template") };
+        unsafe { *out_err = err_to_cstring(ERR_NULL_TEMPLATE) };
         return ptr::null_mut();
     };
     let json_str = match unsafe { cstr_to_str(json) } {
@@ -286,7 +246,7 @@ pub unsafe extern "C" fn pt_template_render_json(
         }
     };
     let Value::Struct(map) = obj else {
-        unsafe { *out_err = err_to_cstring("pt_template_render_json: JSON must be an object") };
+        unsafe { *out_err = err_to_cstring(ERR_RENDER_JSON_NOT_OBJECT) };
         return ptr::null_mut();
     };
 
@@ -305,9 +265,7 @@ pub unsafe extern "C" fn pt_template_render_json(
     match result {
         Ok(rendered) => {
             unsafe { *out_err = ptr::null_mut() };
-            CString::new(rendered)
-                .unwrap_or_else(|_| CString::new("<output contained NUL byte>").unwrap())
-                .into_raw()
+            into_cstring_raw(rendered)
         }
         Err(e) => {
             unsafe { *out_err = terr_to_cstring(&e) };
@@ -317,10 +275,6 @@ pub unsafe extern "C" fn pt_template_render_json(
 }
 
 /// Render a template directly from a `FlexBuffers` map binary buffer, in a single FFI call.
-///
-/// # Panics
-///
-/// Panics if the rendered output contains a NUL byte.
 ///
 /// # Safety
 ///
@@ -336,11 +290,11 @@ pub unsafe extern "C" fn pt_template_render_flexbuffers(
     out_err: *mut *mut c_char,
 ) -> *mut c_char {
     let Some(tmpl) = (unsafe { tmpl.as_ref() }) else {
-        unsafe { *out_err = err_to_cstring("null template") };
+        unsafe { *out_err = err_to_cstring(ERR_NULL_TEMPLATE) };
         return ptr::null_mut();
     };
     if data.is_null() {
-        unsafe { *out_err = err_to_cstring("pt_template_render_flexbuffers: null pointer passed") };
+        unsafe { *out_err = err_to_cstring(ERR_RENDER_FLEXBUFFERS_NULL) };
         return ptr::null_mut();
     }
     let slice = unsafe { std::slice::from_raw_parts(data, len) };
@@ -360,9 +314,7 @@ pub unsafe extern "C" fn pt_template_render_flexbuffers(
     match result {
         Ok(rendered) => {
             unsafe { *out_err = ptr::null_mut() };
-            CString::new(rendered)
-                .unwrap_or_else(|_| CString::new("<output contained NUL byte>").unwrap())
-                .into_raw()
+            into_cstring_raw(rendered)
         }
         Err(e) => {
             unsafe { *out_err = terr_to_cstring(&e) };

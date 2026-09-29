@@ -18,7 +18,11 @@ import {
   TemplateSyntaxError,
   TypeMismatchError,
 } from "./errors.js";
-import { applyFilter, parseFilter } from "./filters.js";
+import {
+  applyFilter,
+  parseFilter,
+  quarantineUntrustedString,
+} from "./filters.js";
 import { type VarDecl, type VarType } from "./frontmatter.js";
 import {
   TokKind,
@@ -77,12 +81,27 @@ export function evaluateExpression(expr: string, scope: Scope): Value {
 
   let value = resolveExpr(pathPart, scope);
 
-  // Apply filter chain
+  // Apply filter chain (fusing adjacent sanitize_tokens | quarantine into 1 pass)
   for (let i = 1; i < parts.length; i++) {
     const part = parts[i];
     if (part === undefined) continue;
-    const filterStr = part.trim();
-    const [filterName, filterArgs] = parseFilter(filterStr);
+    const [filterName, filterArgs] = parseFilter(part.trim());
+    if (
+      filterName === "sanitize_tokens" &&
+      filterArgs === undefined &&
+      value.type === TYPE_STR &&
+      i + 1 < parts.length
+    ) {
+      const nextPart = parts[i + 1];
+      if (nextPart !== undefined) {
+        const [nextName, nextArgs] = parseFilter(nextPart.trim());
+        if (nextName === "quarantine") {
+          value = str(quarantineUntrustedString(value.value, nextArgs));
+          i++;
+          continue;
+        }
+      }
+    }
     value = applyFilter(value, filterName, filterArgs);
   }
 

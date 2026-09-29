@@ -68,6 +68,7 @@ CHECKS: list[Check] = [
         dirs=RUST_DIRS,
         exts=RUST_EXTS,
         message="Fix the underlying issue instead of suppressing the lint.",
+        no_nolint=True,
     ),
     Check(
         name="Rust: #[expect(...)]",
@@ -162,13 +163,11 @@ CHECKS: list[Check] = [
         exclude_path=re.compile(r"md-tmpl-ffi/"),
     ),
     Check(
-        name="Rust: Err(_) (error value discarded in match)",
-        pattern=re.compile(r"\bErr\(_\)"),
+        name="Rust: Err(_) / Err(_err) (error value discarded in match)",
+        pattern=re.compile(r"\bErr\(_\w*\)"),
         dirs=RUST_DIRS,
         exts=RUST_EXTS,
         message="Error value is discarded in pattern match. Capture and log/propagate it.",
-        # Python bindings translate errors to PyO3 exceptions.
-        exclude_path=re.compile(r"md-tmpl-python/"),
     ),
     Check(
         name="Rust: .unwrap_or(()) / .unwrap_or(0) (silent swallow)",

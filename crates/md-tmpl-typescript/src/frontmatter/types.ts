@@ -89,6 +89,18 @@ export interface Frontmatter {
     string,
     { text: string; varType: VarType }
   >;
+  /** Parameter sanitization rules declared in `params:` or inherited from `types:`. Maps canonical param path -> SanitizeSpec. */
+  readonly paramSanitize: ReadonlyMap<
+    string,
+    import("../sanitize_pass.js").SanitizeSpec
+  >;
+  /** Type alias sanitization rules declared in `types:`. Maps alias name -> (relative path -> SanitizeSpec). */
+  readonly typeAliasSanitize: ReadonlyMap<
+    string,
+    ReadonlyMap<string, import("../sanitize_pass.js").SanitizeSpec>
+  >;
+  /** Optional template-level untrusted-data boundary notice from `sanitize_notice:`. */
+  readonly sanitizeNotice?: string;
   readonly bodyStartLine?: number;
 }
 

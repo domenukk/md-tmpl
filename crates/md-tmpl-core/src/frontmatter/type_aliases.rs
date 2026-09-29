@@ -11,17 +11,38 @@ use alloc::{
     vec::Vec,
 };
 
-use super::params::{find_char_at_depth_zero, parse_type_annotation, split_at_depth_zero};
-use crate::{compat::HashMap, error::TemplateError, types::VarType};
+use super::{
+    params::{find_char_at_depth_zero, parse_type_annotation, split_at_depth_zero},
+    sanitize_decl::{
+        collect_inherited_alias_sanitize, extract_type_sanitize_specs,
+        validate_sanitize_specs_on_type,
+    },
+};
+use crate::{
+    compat::HashMap,
+    error::TemplateError,
+    types::{SanitizeSpec, VarType},
+};
+
+/// Map from type-alias name to relative field path -> [`SanitizeSpec`].
+pub(crate) type TypeAliasSanitizeMap = HashMap<String, HashMap<String, SanitizeSpec>>;
 
 /// Parse the value part after `types:` into a map of alias name → [`VarType`].
-///
-/// Format: `[Priority = enum(High, Medium, Low), Items = list(text = str)]`
-/// or block list format similar to `params:`. Uses `=` as separator.
+#[cfg(test)]
 pub(crate) fn parse_types_value(rest: &str) -> Result<HashMap<String, VarType>, TemplateError> {
+    parse_types_value_with_sanitize(rest).map(|(aliases, _)| aliases)
+}
+
+/// Parse the value part after `types:` into `(aliases, alias_sanitize_specs)`.
+///
+/// Format: `[Priority = enum(High, Medium, Low), Items = list(text = str | sanitize)]`
+/// or block list format similar to `params:`. Uses `=` as separator.
+pub(crate) fn parse_types_value_with_sanitize(
+    rest: &str,
+) -> Result<(HashMap<String, VarType>, TypeAliasSanitizeMap), TemplateError> {
     let rest = rest.trim();
     if rest.is_empty() {
-        return Ok(HashMap::new());
+        return Ok((HashMap::new(), HashMap::new()));
     }
 
     let inner = rest
@@ -31,6 +52,7 @@ pub(crate) fn parse_types_value(rest: &str) -> Result<HashMap<String, VarType>, 
 
     let entries = split_type_entries(inner);
     let mut aliases = HashMap::new();
+    let mut alias_sanitize: TypeAliasSanitizeMap = HashMap::new();
     let empty_imports = HashMap::new();
 
     for entry in &entries {
@@ -78,14 +100,23 @@ pub(crate) fn parse_types_value(rest: &str) -> Result<HashMap<String, VarType>, 
             )));
         }
 
+        let (cleaned_expr, mut rel_specs) = extract_type_sanitize_specs(type_expr)
+            .map_err(|err| TemplateError::syntax(format!("type '{type_name}': {err}")))?;
+        collect_inherited_alias_sanitize(&cleaned_expr, "", &alias_sanitize, &mut rel_specs);
+
         // Parse the type expression using already-defined aliases for chained refs.
-        let var_type = parse_type_annotation(type_expr, &aliases, &empty_imports)
+        let var_type = parse_type_annotation(&cleaned_expr, &aliases, &empty_imports)
             .map_err(|e| TemplateError::syntax(format!("type '{type_name}': {e}")))?;
+
+        if !rel_specs.is_empty() {
+            validate_sanitize_specs_on_type(&type_name, &var_type, &rel_specs)?;
+            alias_sanitize.insert(type_name.clone(), rel_specs);
+        }
 
         aliases.insert(type_name, var_type);
     }
 
-    Ok(aliases)
+    Ok((aliases, alias_sanitize))
 }
 
 /// Split type entries, handling depth-aware comma splitting.

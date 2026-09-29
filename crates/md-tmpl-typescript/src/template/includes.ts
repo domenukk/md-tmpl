@@ -6,6 +6,7 @@
 
 import { parseFrontmatter } from "../frontmatter.js";
 import { parseBody } from "../parser.js";
+import { applySanitizeAstPass } from "../sanitize_pass.js";
 import { type Value, fromJs, valueToJs } from "../value.js";
 import { type CachedInclude, type IncludeCacheEntry } from "./types.js";
 import { getFs, getPath, hashString } from "./utils.js";
@@ -74,6 +75,7 @@ export function resolveIncludeEntry(
     }
 
     const nodes = parseBody(body, false, fm.bodyStartLine ?? 1);
+    applySanitizeAstPass(nodes, fm.paramSanitize, fm.sanitizeNotice);
     const consts = new Map<string, Value>();
     for (const decl of fm.consts) {
       if (decl.defaultValue !== undefined) {

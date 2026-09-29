@@ -15,20 +15,17 @@ params:
 ---
 Hello world {{ x }}`);
       assert.strictEqual(
-        // NOLINT: testing WASM binding name variants requires dynamic property access
-        typeof (tmpl as any).setMaxIncludeDepth,
+        typeof tmpl.setMaxIncludeDepth,
         "function",
         "WasmTemplate should have setMaxIncludeDepth method",
       );
       // The snake_case alias was intentionally removed; only camelCase remains.
       assert.strictEqual(
-        // NOLINT: testing WASM binding name variants requires dynamic property access
-        typeof (tmpl as any).set_max_include_depth,
-        "undefined",
+        "set_max_include_depth" in tmpl,
+        false,
         "WasmTemplate should NOT expose the snake_case set_max_include_depth alias",
       );
-      // NOLINT: testing WASM binding name variants requires dynamic property access
-      (tmpl as any).setMaxIncludeDepth(10);
+      tmpl.setMaxIncludeDepth(10);
     });
   });
 

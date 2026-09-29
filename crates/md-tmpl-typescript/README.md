@@ -295,9 +295,9 @@ Expert: {{ name }}
 {{ name | trim | upper }}     → chains work
 {{ val | escape_xml }}        → &lt;tag&gt; (or | xml)
 {{ val | escape_json }}       → safe\/json (or | json)
-{{ text | sanitize_tokens }}  → neutralizes LLM control tokens
+{{ text | sanitize_tokens }}  → neutralizes LLM control tokens (or sanitize_tokens("tag"))
 {{ code | fence("ts") }}      → ```ts\ncode\n``` (adaptive)
-{{ input | quarantine }}      → <untrusted_content>...</untrusted_content>
+{{ input | quarantine }}      → <untrusted_content>...</untrusted_content> (or quarantine("tag"))
 ````
 
 ### Built-in Functions

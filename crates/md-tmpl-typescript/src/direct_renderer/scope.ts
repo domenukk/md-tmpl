@@ -12,7 +12,8 @@
 export class DirectScope {
   private readonly layers: Map<string, unknown>[] = [];
   private readonly consts: ReadonlyMap<string, unknown>;
-  private readonly loopMeta = new Map<string, { index: number }>();
+  private readonly loopMeta = new Map<string, { index: number; len: number }>();
+  private readonly loopMetaStack: { index: number; len: number }[] = [];
   private lastLoopBinding: string | undefined;
 
   constructor(
@@ -46,9 +47,15 @@ export class DirectScope {
     this.layers.pop();
   }
 
-  setLoopIndex(binding: string, index: number): void {
-    this.loopMeta.set(binding, { index });
+  setLoopIndex(binding: string, index: number, len = 0): void {
+    const meta = { index, len };
+    this.loopMeta.set(binding, meta);
     this.lastLoopBinding = binding;
+    this.loopMetaStack.push(meta);
+  }
+
+  popLoopMeta(): void {
+    this.loopMetaStack.pop();
   }
 
   getLoopIndex(binding: string): number | undefined {
@@ -57,5 +64,9 @@ export class DirectScope {
 
   getLastLoopBinding(): string | undefined {
     return this.lastLoopBinding;
+  }
+
+  getLastLoopMeta(): { index: number; len: number } | undefined {
+    return this.loopMetaStack[this.loopMetaStack.length - 1];
   }
 }

@@ -421,7 +421,12 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
         // Cache miss — compile.
         let (fm, body) = frontmatter::parse_frontmatter(&source)?;
         let body_str = body.to_string();
-        let (segments, inline_templates) = compiled::compile(&body_str, &fm.type_aliases)?;
+        let (mut segments, inline_templates) = compiled::compile(&body_str, &fm.type_aliases)?;
+        compiled::apply_frontmatter_sanitization(
+            &mut segments,
+            &fm.param_sanitize,
+            fm.sanitize_notice.as_deref(),
+        );
 
         let consts: HashMap<String, crate::value::Value> = fm
             .consts
@@ -535,7 +540,12 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
             env.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
         let (fm, body) =
             frontmatter::parse_frontmatter_with_base_dir(&source, &base_dir, &env_pairs)?;
-        let (segments, _inline_templates) = compiled::compile(body, &fm.type_aliases)?;
+        let (mut segments, _inline_templates) = compiled::compile(body, &fm.type_aliases)?;
+        compiled::apply_frontmatter_sanitization(
+            &mut segments,
+            &fm.param_sanitize,
+            fm.sanitize_notice.as_deref(),
+        );
 
         let mut include_consts = HashMap::new();
         for d in &fm.consts {

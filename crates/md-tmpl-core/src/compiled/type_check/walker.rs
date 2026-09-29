@@ -54,7 +54,18 @@ fn walk_segment(
         Segment::Expr { expr, filters, .. } => match expr {
             CompiledExpr::Path(path) => {
                 validate_compiled_path(path, env, errors);
-                if env.check_displayability && filters.is_empty() {
+                if env.check_displayability
+                    && (filters.is_empty()
+                        || filters.iter().all(|f| {
+                            matches!(
+                                f.kind,
+                                crate::compiled::FilterKind::Sanitize
+                                    | crate::compiled::FilterKind::Quarantine
+                                    | crate::compiled::FilterKind::Limit
+                                    | crate::compiled::FilterKind::Truncate
+                            )
+                        }))
+                {
                     if let Some(resolved) = resolve_compiled_path_type(path, env) {
                         if !resolved.is_displayable() {
                             let hint = match resolved {
@@ -93,10 +104,22 @@ fn walk_segment(
         Segment::ForLoop {
             binding,
             list_expr,
+            filters,
             body,
             else_body,
         } => {
-            validate_for_loop(binding, list_expr, body, else_body, env, errors, visited);
+            validate_for_loop(
+                ForLoopNode {
+                    binding,
+                    list_expr,
+                    filters,
+                    body,
+                    else_body,
+                },
+                env,
+                errors,
+                visited,
+            );
         }
 
         Segment::If {
@@ -116,33 +139,109 @@ fn walk_segment(
     }
 }
 
-fn validate_for_loop(
+#[derive(Copy, Clone)]
+struct ForLoopNode<'a> {
+    binding: &'a str,
+    list_expr: &'a CompiledExpr,
+    filters: &'a [crate::compiled::ParsedFilter],
+    body: &'a [Segment],
+    else_body: &'a [Segment],
+}
+
+fn validate_for_loop_list_body(
     binding: &str,
-    list_expr: &CompiledExpr,
+    fields: &[crate::types::VarDecl],
     body: &[Segment],
-    else_body: &[Segment],
     env: &mut TypeEnv<'_>,
     errors: &mut Vec<String>,
     visited: &mut HashSet<String>,
 ) {
+    let elem_ty = if fields.len() == 1 && fields[0].name.is_empty() {
+        fields[0].var_type.clone()
+    } else {
+        VarType::Struct(fields.to_vec())
+    };
+    let prev = env.narrow(binding, elem_ty);
+    let loop_ty = VarType::Struct(alloc::vec![
+        crate::types::VarDecl {
+            name: "first".into(),
+            var_type: VarType::Bool,
+            default_value: None,
+        },
+        crate::types::VarDecl {
+            name: "last".into(),
+            var_type: VarType::Bool,
+            default_value: None,
+        },
+        crate::types::VarDecl {
+            name: "index0".into(),
+            var_type: VarType::Int,
+            default_value: None,
+        },
+        crate::types::VarDecl {
+            name: "index".into(),
+            var_type: VarType::Int,
+            default_value: None,
+        },
+        crate::types::VarDecl {
+            name: "length".into(),
+            var_type: VarType::Int,
+            default_value: None,
+        },
+        crate::types::VarDecl {
+            name: "len".into(),
+            var_type: VarType::Int,
+            default_value: None,
+        },
+    ]);
+    let prev_loop = env.narrow(crate::consts::LOOP, loop_ty);
+    walk_segments(body, env, errors, visited);
+    match prev_loop {
+        Some(t) => {
+            env.narrow(crate::consts::LOOP, t);
+        }
+        None => {
+            env.unnarrow(crate::consts::LOOP);
+        }
+    }
+    match prev {
+        Some(t) => {
+            env.narrow(binding, t);
+        }
+        None => {
+            env.unnarrow(binding);
+        }
+    }
+}
+
+fn validate_for_loop(
+    node: ForLoopNode<'_>,
+    env: &mut TypeEnv<'_>,
+    errors: &mut Vec<String>,
+    visited: &mut HashSet<String>,
+) {
+    let ForLoopNode {
+        binding,
+        list_expr,
+        filters,
+        body,
+        else_body,
+    } = node;
+    for f in filters {
+        if !matches!(
+            f.kind,
+            crate::compiled::FilterKind::Limit | crate::compiled::FilterKind::Truncate
+        ) {
+            errors.push(format!(
+                "for-loop iterable: filter '{}' does not return a list (only 'limit' and 'truncate' are valid on for-loop iterables)",
+                f.kind.as_str()
+            ));
+        }
+    }
     let resolved = resolve_compiled_expr_type(list_expr, env, errors);
     match resolved {
         Some(VarType::List(ref fields)) => {
-            let elem_ty = if fields.len() == 1 && fields[0].name.is_empty() {
-                fields[0].var_type.clone()
-            } else {
-                VarType::Struct(fields.clone())
-            };
-            let prev = env.narrow(binding, elem_ty);
-            walk_segments(body, env, errors, visited);
-            match prev {
-                Some(t) => {
-                    env.narrow(binding, t);
-                }
-                None => {
-                    env.unnarrow(binding);
-                }
-            }
+            validate_for_loop_list_body(binding, fields, body, env, errors, visited);
         }
         Some(other) => {
             let expr_str = match list_expr {

@@ -12,7 +12,11 @@ use crate::{
 ///
 /// Decomposes the `f64` into its integer and fractional parts using IEEE 754 bit
 /// manipulation, then compares using only integer arithmetic.
-pub(super) fn cmp_int_float(i: i64, f: f64) -> Option<core::cmp::Ordering> {
+#[must_use]
+pub fn cmp_int_float(i: i64, f: f64) -> Option<core::cmp::Ordering> {
+    if let Ok(small) = i32::try_from(i) {
+        return f64::from(small).partial_cmp(&f);
+    }
     if f.is_nan() {
         return None;
     }

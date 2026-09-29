@@ -6,7 +6,6 @@
 use alloc::{
     boxed::Box,
     string::{String, ToString},
-    sync::Arc,
     vec::Vec,
 };
 
@@ -174,17 +173,13 @@ pub(crate) type ImportedTypeRefs = HashMap<String, ImportedTypeRef>;
 /// E.g. a param typed `role = artist.WorkRole` yields `("artist", "WorkRole")`.
 pub(crate) type ImportedTypeRef = (String, String);
 
-/// A parsed declaration paired with the optional imported-enum reference for
-/// its top-level type (see [`imported_enum_type_ref`]).
-type ParsedDeclaration = (VarDecl, Option<ImportedTypeRef>);
+type ParsedDeclaration = (
+    VarDecl,
+    Option<ImportedTypeRef>,
+    HashMap<String, crate::types::SanitizeSpec>,
+);
 
 /// Parse the value part after `params:` or `consts:`.
-///
-/// Supports both inline and block list formats:
-/// - Inline: `[name = str, count = int]`
-///
-/// Returns the parsed declarations plus a map of any params whose top-level
-/// type is a dotted import reference to an enum (see [`ImportedTypeRefs`]).
 pub(crate) fn parse_declarations(
     rest: &str,
     type_aliases: &HashMap<String, VarType>,
@@ -192,23 +187,44 @@ pub(crate) fn parse_declarations(
     is_constant: bool,
     available_consts: &HashMap<String, Value>,
 ) -> Result<(Vec<VarDecl>, ImportedTypeRefs), TemplateError> {
+    let empty_alias_sanitize = HashMap::new();
+    let (decls, import_refs, _) = parse_declarations_with_sanitize(
+        rest,
+        type_aliases,
+        &empty_alias_sanitize,
+        resolved_imports,
+        is_constant,
+        available_consts,
+    )?;
+    Ok((decls, import_refs))
+}
+
+pub(crate) type ParsedDeclarationsWithSanitize = (
+    Vec<VarDecl>,
+    ImportedTypeRefs,
+    HashMap<String, crate::types::SanitizeSpec>,
+);
+
+/// Parse `params:` or `consts:` along with declarative `| sanitize(...)` policies.
+pub(crate) fn parse_declarations_with_sanitize(
+    rest: &str,
+    type_aliases: &HashMap<String, VarType>,
+    type_alias_sanitize: &super::type_aliases::TypeAliasSanitizeMap,
+    resolved_imports: &HashMap<String, ImportedNamespace>,
+    is_constant: bool,
+    available_consts: &HashMap<String, Value>,
+) -> Result<ParsedDeclarationsWithSanitize, TemplateError> {
     let rest = rest.trim();
     if rest.is_empty() {
-        // `params:` with no value and no continuation lines → empty params.
-        return Ok((vec![], HashMap::new()));
+        return Ok((vec![], HashMap::new(), HashMap::new()));
     }
 
-    // Strip only the outermost `[` and `]` (inline YAML flow sequence).
     let inner = rest
         .strip_prefix(crate::consts::BRACKET_OPEN)
         .and_then(|s| s.strip_suffix(crate::consts::BRACKET_CLOSE))
         .unwrap_or(rest);
 
-    // Handle block list format: entries are `- name = type` joined by spaces
-    // (after continuation line joining, the `- ` markers are preserved).
     let entries = if inner.contains("- ") {
-        // Split on ` - ` to separate entries, then strip leading `- ` from
-        // the first entry if present.
         let mut result = Vec::new();
         for part in inner.split(" - ") {
             let part = part.trim().strip_prefix('-').unwrap_or(part).trim();
@@ -218,7 +234,6 @@ pub(crate) fn parse_declarations(
         }
         result
     } else {
-        // Inline format: split on commas at bracket-depth 0.
         split_at_depth_zero(inner)
             .into_iter()
             .map(ToString::to_string)
@@ -227,25 +242,30 @@ pub(crate) fn parse_declarations(
 
     let mut decls = Vec::new();
     let mut import_refs = ImportedTypeRefs::new();
+    let mut param_sanitize = HashMap::new();
     let mut seen_names = crate::compat::HashSet::new();
     let mut current_consts = available_consts.clone();
     for entry in &entries {
         let e = entry.trim();
-        // A decl may be wrapped in an outer YAML quoted scalar
-        // (e.g. `"name = str := \"a # b\""`). Strip those quotes and apply YAML
-        // double-quote unescaping so the inner md-tmpl declaration is recovered
-        // (this protects `#` inside the outer quotes from comment stripping).
         let unescaped =
             crate::consts::strip_string_literal(e).map(crate::consts::unescape_string_literal);
         let trimmed = unescaped.as_deref().map_or(e, str::trim);
-        if let Some((decl, import_ref)) = parse_single_declaration(
+        if let Some((decl, import_ref, rel_specs)) = parse_single_declaration(
             trimmed,
             type_aliases,
+            type_alias_sanitize,
             resolved_imports,
             is_constant,
             &mut current_consts,
             &mut seen_names,
         )? {
+            if !rel_specs.is_empty() {
+                super::sanitize_decl::register_decl_sanitize_specs(
+                    &decl,
+                    rel_specs,
+                    &mut param_sanitize,
+                )?;
+            }
             if let Some(r) = import_ref {
                 import_refs.insert(decl.name.clone(), r);
             }
@@ -253,7 +273,7 @@ pub(crate) fn parse_declarations(
         }
     }
 
-    Ok((decls, import_refs))
+    Ok((decls, import_refs, param_sanitize))
 }
 
 /// If `type_str` is a bare dotted import reference (`stem.TypeName`) resolving
@@ -280,78 +300,19 @@ fn imported_enum_type_ref(
     matches!(var_type, VarType::Enum(_)).then(|| (stem.to_string(), type_name.to_string()))
 }
 
-/// Parse a single declaration entry (e.g. `name = str := "default"`) into a
-/// [`VarDecl`], plus the optional imported-enum reference for its top-level
-/// type (see [`imported_enum_type_ref`]).
-fn parse_single_declaration(
-    trimmed: &str,
-    type_aliases: &HashMap<String, VarType>,
-    resolved_imports: &HashMap<String, ImportedNamespace>,
+fn resolve_declaration_default(
+    name: &str,
+    cleaned_default_part: Option<&str>,
+    var_type: &VarType,
     is_constant: bool,
     current_consts: &mut HashMap<String, Value>,
-    seen_names: &mut crate::compat::HashSet<String>,
-) -> Result<Option<ParsedDeclaration>, TemplateError> {
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-
-    // Find `=` at depth 0 to split name from type+default.
-    let Some(eq_pos) = find_char_at_depth_zero(trimmed, crate::consts::EQUALS) else {
-        let label = if is_constant { "constant" } else { "param" };
-        return Err(TemplateError::syntax(format!(
-            "{label} '{trimmed}' is missing a type annotation (expected 'name = type')"
-        )));
-    };
-
-    let name = trimmed[..eq_pos].trim().to_string();
-    let type_and_default = trimmed[eq_pos + 1..].trim();
-
-    // If the matched `=` is actually the `=` of a `:=` operator, the declaration
-    // supplies a default but no explicit type (e.g. `x := "hello"`).
-    if eq_pos > 0 && trimmed.as_bytes()[eq_pos - 1] == crate::consts::COLON_BYTE {
-        let label = if is_constant { "constant" } else { "param" };
-        let bare_name = trimmed[..eq_pos - 1].trim();
-        return Err(TemplateError::syntax(format!(
-            "{label} '{bare_name}' must have an explicit type (expected 'name = type := value')"
-        )));
-    }
-
-    // Check duplicate names.
-    if !seen_names.insert(name.clone()) {
-        let err = if is_constant {
-            crate::consts::ERR_DUPLICATE_CONST
-        } else {
-            crate::consts::ERR_DUPLICATE_PARAM
-        };
-        return Err(TemplateError::syntax(format!("{err}: '{name}'")));
-    }
-
-    // Check reserved keywords.
-    if crate::consts::RESERVED_NAMES.contains(&name.as_str()) {
-        return Err(TemplateError::syntax(format!(
-            "{}: '{name}'",
-            crate::consts::ERR_RESERVED_KEYWORD
-        )));
-    }
-
-    // Find `:=` at depth 0 to split type from default value.
-    let (type_str, default_part) =
-        if let Some(assign_pos) = find_assign_default_at_depth_zero(type_and_default) {
-            (
-                type_and_default[..assign_pos].trim(),
-                Some(type_and_default[assign_pos + 2..].trim()),
-            )
-        } else {
-            (type_and_default, None)
-        };
-
-    let var_type = parse_type_annotation(type_str, type_aliases, resolved_imports)
-        .map_err(|e| TemplateError::syntax(format!("declaration '{name}': {e}")))?;
-
-    let default_value = if let Some(dp) = default_part {
+    type_aliases: &HashMap<String, VarType>,
+    resolved_imports: &HashMap<String, ImportedNamespace>,
+) -> Result<Option<Value>, TemplateError> {
+    let default_value = if let Some(dp) = cleaned_default_part {
         let default = parse_default_value_full(
             dp,
-            &var_type,
+            var_type,
             current_consts,
             type_aliases,
             resolved_imports,
@@ -359,29 +320,25 @@ fn parse_single_declaration(
         .or_else(|| resolve_const_default(dp, current_consts))
         .or_else(|| resolve_kinds_default(dp, type_aliases, resolved_imports))
         .ok_or_else(|| {
-            // A qualified `Type.Variant` reference is only valid in expression
-            // position; in a default it must be the bare variant name.
-            if let Some(msg) = qualified_variant_default_error(dp, &var_type) {
+            if let Some(msg) = qualified_variant_default_error(dp, var_type) {
                 return TemplateError::syntax(format!("declaration '{name}': {msg}"));
             }
             TemplateError::syntax(format!(
                 "invalid default value '{dp}' for declaration '{name}' (strings must be quoted)"
             ))
         })?;
-        current_consts.insert(name.clone(), default.clone());
+        current_consts.insert(name.to_string(), default.clone());
         Some(default)
     } else {
         None
     };
 
-    // For constants, the default value is mandatory.
     if is_constant && default_value.is_none() {
         return Err(TemplateError::syntax(format!(
             "constant '{name}' is missing a value (expected 'name = type := value')"
         )));
     }
 
-    // Validate that the default value matches the declared type.
     if let Some(ref default) = default_value
         && !var_type.matches(default)
     {
@@ -392,7 +349,89 @@ fn parse_single_declaration(
         )));
     }
 
-    // Only params (not consts) benefit from imported-type reuse in codegen.
+    Ok(default_value)
+}
+
+fn parse_single_declaration(
+    trimmed: &str,
+    type_aliases: &HashMap<String, VarType>,
+    type_alias_sanitize: &super::type_aliases::TypeAliasSanitizeMap,
+    resolved_imports: &HashMap<String, ImportedNamespace>,
+    is_constant: bool,
+    current_consts: &mut HashMap<String, Value>,
+    seen_names: &mut crate::compat::HashSet<String>,
+) -> Result<Option<ParsedDeclaration>, TemplateError> {
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+
+    let Some(eq_pos) = find_char_at_depth_zero(trimmed, crate::consts::EQUALS) else {
+        let label = if is_constant { "constant" } else { "param" };
+        return Err(TemplateError::syntax(format!(
+            "{label} '{trimmed}' is missing a type annotation (expected 'name = type')"
+        )));
+    };
+
+    let name = trimmed[..eq_pos].trim().to_string();
+    let type_and_default = trimmed[eq_pos + 1..].trim();
+
+    if eq_pos > 0 && trimmed.as_bytes()[eq_pos - 1] == crate::consts::COLON_BYTE {
+        let label = if is_constant { "constant" } else { "param" };
+        let bare_name = trimmed[..eq_pos - 1].trim();
+        return Err(TemplateError::syntax(format!(
+            "{label} '{bare_name}' must have an explicit type (expected 'name = type := value')"
+        )));
+    }
+
+    if !seen_names.insert(name.clone()) {
+        let err = if is_constant {
+            crate::consts::ERR_DUPLICATE_CONST
+        } else {
+            crate::consts::ERR_DUPLICATE_PARAM
+        };
+        return Err(TemplateError::syntax(format!("{err}: '{name}'")));
+    }
+
+    if crate::consts::RESERVED_NAMES.contains(&name.as_str()) {
+        return Err(TemplateError::syntax(format!(
+            "{}: '{name}'",
+            crate::consts::ERR_RESERVED_KEYWORD
+        )));
+    }
+
+    let (raw_type_str, raw_default_part) =
+        if let Some(assign_pos) = find_assign_default_at_depth_zero(type_and_default) {
+            (
+                type_and_default[..assign_pos].trim(),
+                Some(type_and_default[assign_pos + 2..].trim()),
+            )
+        } else {
+            (type_and_default, None)
+        };
+
+    let (cleaned_type_str, cleaned_default_part, rel_specs) =
+        super::sanitize_decl::extract_declaration_sanitize(
+            &name,
+            raw_type_str,
+            raw_default_part,
+            is_constant,
+            type_alias_sanitize,
+        )?;
+    let type_str = cleaned_type_str.as_str();
+
+    let var_type = parse_type_annotation(type_str, type_aliases, resolved_imports)
+        .map_err(|e| TemplateError::syntax(format!("declaration '{name}': {e}")))?;
+
+    let default_value = resolve_declaration_default(
+        &name,
+        cleaned_default_part.as_deref(),
+        &var_type,
+        is_constant,
+        current_consts,
+        type_aliases,
+        resolved_imports,
+    )?;
+
     let import_ref = if is_constant {
         None
     } else {
@@ -406,6 +445,7 @@ fn parse_single_declaration(
             default_value,
         },
         import_ref,
+        rel_specs,
     )))
 }
 
@@ -584,6 +624,12 @@ pub fn parse_type_annotation(
                 return Ok(ty.clone());
             }
             return Err(format!("import '{stem}' has no type '{type_name}'"));
+        }
+    }
+
+    if let Some(rest) = s.strip_prefix(crate::consts::TYPE_UNTRUSTED) {
+        if rest.starts_with(' ') || rest.starts_with('\t') {
+            return parse_type_annotation(rest.trim_start(), type_aliases, resolved_imports);
         }
     }
 
@@ -809,357 +855,9 @@ fn parse_field_declarations(
     Ok(decls)
 }
 
-/// Parse the *inner* content of a `{key = value, ...}` struct default into
-/// a [`Value::Struct`].
-///
-/// Uses `=` as the key-value separator (not `:`) and curly braces for
-/// delimiters.
-fn parse_struct_default(
-    inner: &str,
-    fields: &[VarDecl],
-    available_consts: &HashMap<String, Value>,
-    type_aliases: &HashMap<String, VarType>,
-    resolved_imports: &HashMap<String, ImportedNamespace>,
-) -> Value {
-    let entries = split_at_depth_zero(inner);
-    let mut map = HashMap::new();
-    for e in entries {
-        let e = e.trim();
-        if e.is_empty() {
-            continue;
-        }
-        if let Some(eq_pos) = find_char_at_depth_zero(e, crate::consts::EQUALS) {
-            let key = e[..eq_pos].trim();
-            let val_str = e[eq_pos + 1..].trim();
-            let field_type = fields
-                .iter()
-                .find(|d| d.name == key)
-                .map_or(&VarType::Str, |d| &d.var_type);
-            if let Some(v) = parse_default_value_full(
-                val_str,
-                field_type,
-                available_consts,
-                type_aliases,
-                resolved_imports,
-            ) {
-                map.insert(key.to_string(), v);
-            }
-        }
-    }
-    Value::Struct(Arc::new(map))
-}
-
-/// Resolve a const name used as a default value.
-///
-/// Looks up `name` in the available constants map, supporting both local
-/// const names (e.g. `MAX`) and imported const names (e.g. `lib.LIMIT`).
-/// Returns a clone of the const value if found.
-fn resolve_const_default(name: &str, available_consts: &HashMap<String, Value>) -> Option<Value> {
-    let name = name.trim();
-    if name.is_empty() {
-        return None;
-    }
-    available_consts.get(name).cloned()
-}
-
-/// Resolve a function expression default like `kinds(EnumType)` into a [`Value::List`].
-fn resolve_kinds_default(
-    expr: &str,
-    type_aliases: &HashMap<String, VarType>,
-    resolved_imports: &HashMap<String, ImportedNamespace>,
-) -> Option<Value> {
-    let s = expr.trim();
-    let inner = s
-        .strip_prefix(crate::consts::FN_KINDS)?
-        .strip_prefix(crate::consts::PAREN_OPEN)?
-        .strip_suffix(crate::consts::PAREN_CLOSE)?
-        .trim();
-    if inner.is_empty() {
-        return None;
-    }
-    let var_type = if let Some(dot_pos) = inner.find(crate::consts::PATH_SEP) {
-        let ns_name = &inner[..dot_pos];
-        let type_name = &inner[dot_pos + 1..];
-        resolved_imports.get(ns_name)?.type_aliases.get(type_name)
-    } else {
-        type_aliases.get(inner)
-    };
-    if let Some(VarType::Enum(variants)) = var_type {
-        let list: Vec<Value> = variants
-            .iter()
-            .map(|v| Value::Str(v.name.clone()))
-            .collect();
-        Some(Value::List(Arc::new(list)))
-    } else {
-        None
-    }
-}
-
-/// Parse a default value string into a [`Value`].
-///
-/// Supports:
-/// - Inline lists: `[1, 2, 3]` or `['a', 'b']`
-/// - Inline structs: `{key = value, key2 = value2}`
-/// - List of structs: `[{k = v1}, {k = v2}]`
-/// - Quoted strings: `"hello"` or `'hello'`
-/// - Integers, floats, booleans
-///
-/// Lists use `[]` and structs use `{}` with `=` as the key-value separator.
-#[cfg(test)]
-pub(crate) fn parse_default_value_with_type(
-    s: &str,
-    var_type: &VarType,
-    available_consts: &HashMap<String, Value>,
-) -> Option<Value> {
-    let empty_aliases = HashMap::new();
-    let empty_imports = HashMap::new();
-    parse_default_value_full(
-        s,
-        var_type,
-        available_consts,
-        &empty_aliases,
-        &empty_imports,
-    )
-}
-
-pub(crate) fn parse_default_value_full(
-    s: &str,
-    var_type: &VarType,
-    available_consts: &HashMap<String, Value>,
-    type_aliases: &HashMap<String, VarType>,
-    resolved_imports: &HashMap<String, ImportedNamespace>,
-) -> Option<Value> {
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-
-    // Handle list defaults: [a, b, c]
-    if s.starts_with(crate::consts::BRACKET_OPEN) && s.ends_with(crate::consts::BRACKET_CLOSE) {
-        let inner = &s[1..s.len() - 1];
-        if inner.trim().is_empty() {
-            return Some(Value::List(Arc::new(Vec::new())));
-        }
-        let entries = split_at_depth_zero(inner);
-        let mut list = Vec::new();
-        let elem_type = match var_type {
-            VarType::List(fields) => {
-                if fields.len() == 1 && fields[0].name.is_empty() {
-                    &fields[0].var_type
-                } else {
-                    var_type
-                }
-            }
-            _ => var_type,
-        };
-        for e in entries {
-            if let Some(v) = parse_default_value_full(
-                e,
-                elem_type,
-                available_consts,
-                type_aliases,
-                resolved_imports,
-            ) {
-                list.push(v);
-            }
-        }
-        return Some(Value::List(Arc::new(list)));
-    }
-
-    // Handle struct defaults: {key = value, ...}
-    if s.starts_with('{') && s.ends_with('}') {
-        let inner = &s[1..s.len() - 1].trim();
-        if inner.is_empty() {
-            return match var_type {
-                VarType::Struct(_) => Some(Value::Struct(Arc::new(HashMap::new()))),
-                _ => None,
-            };
-        }
-
-        let fields = match var_type {
-            VarType::Struct(f) | VarType::List(f) => f.as_slice(),
-            _ => &[],
-        };
-        return Some(parse_struct_default(
-            inner,
-            fields,
-            available_consts,
-            type_aliases,
-            resolved_imports,
-        ));
-    }
-
-    // Quoted string
-    if let Some(inner) = crate::consts::strip_string_literal(s) {
-        return Some(Value::Str(crate::consts::unescape_string_literal(inner)));
-    }
-
-    // Boolean
-    if s == crate::consts::LIT_TRUE {
-        return Some(Value::Bool(true));
-    }
-    if s == crate::consts::LIT_FALSE {
-        return Some(Value::Bool(false));
-    }
-
-    // Integer
-    if let Ok(n) = s.parse::<i64>() {
-        return Some(Value::Int(n));
-    }
-
-    // Float
-    if let Ok(n) = s.parse::<f64>() {
-        return Some(Value::Float(n));
-    }
-
-    // Handle option(T) defaults: None maps to Value::None, otherwise delegate
-    // to the inner type.
-    if let VarType::Option(inner) = var_type {
-        if s == crate::consts::OPTION_NONE {
-            return Some(Value::None);
-        }
-        return parse_default_value_full(
-            s,
-            inner,
-            available_consts,
-            type_aliases,
-            resolved_imports,
-        );
-    }
-
-    // If the expected type is an Enum, handle variant identifiers.
-    if let VarType::Enum(variants) = var_type {
-        return parse_enum_default_value(
-            s,
-            variants,
-            available_consts,
-            type_aliases,
-            resolved_imports,
-        );
-    }
-
-    if let Some(val) = resolve_const_default(s, available_consts) {
-        return Some(val);
-    }
-    if let Some(val) = resolve_kinds_default(s, type_aliases, resolved_imports) {
-        return Some(val);
-    }
-
-    // Intentional removal of fallback: unquoted strings are no longer allowed
-    // as default values. All string defaults must be explicitly quoted.
-    None
-}
-
-/// Return the enum variants for `var_type`, transparently unwrapping
-/// `option(T)` so `option(Stage)` is treated like `Stage`. Returns `None` for
-/// non-enum types.
-fn enum_variants_of(var_type: &VarType) -> Option<&[crate::types::VariantDecl]> {
-    match var_type {
-        VarType::Enum(variants) => Some(variants),
-        VarType::Option(inner) => enum_variants_of(inner),
-        _ => None,
-    }
-}
-
-/// If `default` is a qualified `Type.Variant` reference for an enum-typed (or
-/// `option(enum)`) declaration whose suffix names a real variant, return a
-/// helpful error message. Qualified references are only valid in expression
-/// position; defaults must use the bare variant name.
-///
-/// Returns `None` when the type is not an enum or the default is not a
-/// qualified reference to one of its variants, so const/other fallbacks keep
-/// their generic error.
-fn qualified_variant_default_error(default: &str, var_type: &VarType) -> Option<String> {
-    let variants = enum_variants_of(var_type)?;
-    let (_, suffix) = default.rsplit_once(crate::consts::PATH_SEP)?;
-    let suffix = suffix.trim();
-    if variants.iter().any(|v| v.name == suffix) {
-        Some(alloc::format!(
-            "invalid enum default '{default}': use the bare variant name '{suffix}' \
-             (a qualified 'Type.Variant' is only valid in expressions)"
-        ))
-    } else {
-        None
-    }
-}
-
-/// Parse a default value for an enum variant — either a unit variant name
-/// (e.g. `Active`) or a struct variant with fields (e.g. `Error(msg = "oops")`).
-fn parse_enum_default_value(
-    s: &str,
-    variants: &[crate::types::VariantDecl],
-    available_consts: &HashMap<String, Value>,
-    type_aliases: &HashMap<String, VarType>,
-    resolved_imports: &HashMap<String, ImportedNamespace>,
-) -> Option<Value> {
-    // Check for struct variant default: VariantName(field = value, ...)
-    // Uses () to match the type declaration syntax and avoid ambiguity
-    // with <> which is used for struct/list defaults.
-    if let Some(open_pos) = s.find(crate::consts::PAREN_OPEN) {
-        if s.ends_with(crate::consts::PAREN_CLOSE) {
-            let variant_name = s[..open_pos].trim();
-            let inner = &s[open_pos + 1..s.len() - 1];
-            // Find the variant declaration.
-            let variant = variants.iter().find(|v| v.name == variant_name);
-            match variant {
-                Some(v) if v.fields.is_empty() => {
-                    return None; // Unit variant can't have fields
-                }
-                Some(v) => {
-                    // Parse field values and build a tagged dict.
-                    let entries = split_at_depth_zero(inner);
-                    let mut map = HashMap::new();
-                    map.insert(
-                        crate::consts::ENUM_TAG_KEY.to_string(),
-                        Value::Str(variant_name.to_string()),
-                    );
-                    for e in entries {
-                        let e = e.trim();
-                        if e.is_empty() {
-                            continue;
-                        }
-                        if let Some(eq_pos) = find_char_at_depth_zero(e, crate::consts::EQUALS) {
-                            let key = e[..eq_pos].trim();
-                            let val_str = e[eq_pos + 1..].trim();
-                            let field_type = v
-                                .fields
-                                .iter()
-                                .find(|f| f.name == key)
-                                .map_or(&VarType::Str, |f| &f.var_type);
-                            if let Some(val) = parse_default_value_full(
-                                val_str,
-                                field_type,
-                                available_consts,
-                                type_aliases,
-                                resolved_imports,
-                            ) {
-                                map.insert(key.to_string(), val);
-                            }
-                        }
-                    }
-                    return Some(Value::Struct(Arc::new(map)));
-                }
-                None => return None, // Unknown variant
-            }
-        }
-    }
-
-    // Bare identifier — must be a known unit variant.
-    let variant = variants.iter().find(|v| v.name == s);
-    match variant {
-        Some(v) if !v.fields.is_empty() => {
-            // Struct variant without fields — reject.
-            None
-        }
-        Some(_) => Some(Value::Str(s.to_string())),
-        None => None, // Unknown variant name
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn parse_default_value(s: &str) -> Option<Value> {
-    parse_default_value_with_type(s, &VarType::Str, &HashMap::new())
-}
+#[path = "param_defaults.rs"]
+mod param_defaults;
+pub(crate) use param_defaults::*;
 
 #[cfg(test)]
 #[path = "params_tests.rs"]

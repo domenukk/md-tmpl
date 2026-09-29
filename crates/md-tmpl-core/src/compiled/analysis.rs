@@ -108,11 +108,16 @@ fn collect_refs_inner(
                 list_expr,
                 body,
                 else_body,
+                ..
             } => {
                 extract_expr_variables(list_expr, vars, loop_bindings);
-                // The binding is local — exclude from "referenced" set.
+                // The binding and `loop` are local — exclude from "referenced" set.
                 loop_bindings.insert(binding.to_string());
+                let had_loop = !loop_bindings.insert(crate::consts::LOOP.to_string());
                 collect_refs_inner(body, vars, loop_bindings);
+                if !had_loop {
+                    loop_bindings.remove(crate::consts::LOOP);
+                }
                 loop_bindings.remove(binding.as_ref());
                 // else_body runs when the list is empty — the loop binding is NOT in scope.
                 collect_refs_inner(else_body, vars, loop_bindings);

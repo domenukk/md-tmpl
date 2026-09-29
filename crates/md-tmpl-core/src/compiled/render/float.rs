@@ -20,21 +20,46 @@ const POW10: [f64; 19] = {
     table
 };
 
+/// Pre-computed integer powers of 10 for precision 0..=18.
+const POW10_U64: [u64; 19] = {
+    let mut table = [1u64; 19];
+    let mut i = 1;
+    while i < 19 {
+        table[i] = table[i - 1] * 10;
+        i += 1;
+    }
+    table
+};
+
 /// Write a float with fixed precision into `output`, avoiding the heavy
 /// `std::fmt::float_to_decimal_common_exact` machinery.
 ///
 /// For precision ≤ 18, this uses multiply-round-truncate + `itoa`, which
 /// is ~3× faster than `write!("{f:.precision$}")`.
 #[inline]
-pub(super) fn write_fixed_float(f: f64, precision: usize, output: &mut String) {
-    /// Convert a known-positive, bounded f64 to u64.
-    ///
-    /// Callers guarantee `v` is in `[0, u64::MAX as f64]`.
-    // NOLINT: caller guarantees v is non-negative and within u64 range; truncation/sign-loss is intentional
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub fn write_fixed_float(f: f64, precision: usize, output: &mut String) {
+    /// Convert a known-positive, finite `f64` to `u64` via IEEE-754 bit extraction.
+    #[inline]
     fn positive_f64_to_u64(v: f64) -> u64 {
         debug_assert!(v >= 0.0 && v.is_finite());
-        v as u64
+        let bits = v.to_bits();
+        if (bits >> 63) != 0 || v.is_nan() {
+            return 0;
+        }
+        let biased_exp = ((bits >> 52) & 0x7ff) as u32;
+        if biased_exp < 1023 {
+            return 0;
+        }
+        let exp = biased_exp - 1023;
+        if exp >= 64 {
+            return u64::MAX;
+        }
+        let mantissa = (bits & ((1u64 << 52) - 1)) | (1u64 << 52);
+        if exp >= 52 {
+            mantissa << (exp - 52)
+        } else {
+            mantissa >> (52 - exp)
+        }
     }
 
     if precision > MAX_FAST_FIXED_PRECISION || !f.is_finite() {
@@ -60,8 +85,8 @@ pub(super) fn write_fixed_float(f: f64, precision: usize, output: &mut String) {
         return;
     }
 
-    // Split into integer and fractional parts.
-    let divisor = positive_f64_to_u64(scale);
+    // Split into integer and fractional parts using precomputed u64 power of 10.
+    let divisor = POW10_U64[precision];
     let int_part = scaled / divisor;
     let frac_part = scaled % divisor;
 
@@ -73,12 +98,11 @@ pub(super) fn write_fixed_float(f: f64, precision: usize, output: &mut String) {
     output.push_str(buf.format(int_part));
     output.push('.');
 
-    // Pad fractional part with leading zeros.
-    let mut frac_buf = itoa::Buffer::new();
-    let frac_str = frac_buf.format(frac_part);
-    let pad = precision - frac_str.len();
-    for _ in 0..pad {
-        output.push('0');
+    let frac_str = buf.format(frac_part);
+    if precision > frac_str.len() {
+        for _ in 0..(precision - frac_str.len()) {
+            output.push('0');
+        }
     }
     output.push_str(frac_str);
 }

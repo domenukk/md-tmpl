@@ -135,30 +135,27 @@ fn render_include_no_std_inner(
     }
 
     // 2. Value::Tmpl parameter.
-    // NOLINT: resolution failure means path is not a tmpl() param — fall through to filesystem
-    if let Ok(Value::Tmpl(tmpl)) = scope.resolve_path_str(directive.path) {
-        let tmpl = tmpl.clone();
-        scope.push_inline_templates(tmpl.inline_templates().clone());
-        scope.push_consts((*tmpl.consts()).clone(), (*tmpl.imported_consts()).clone());
+    let Ok(Value::Tmpl(tmpl)) = scope.resolve_path_str(directive.path) else {
+        return Err(TemplateError::IncludeNotFound(alloc::format!(
+            "cannot resolve '{}': filesystem includes require the `std` feature",
+            directive.path
+        )));
+    };
+    let tmpl = tmpl.clone();
+    scope.push_inline_templates(tmpl.inline_templates().clone());
+    scope.push_consts((*tmpl.consts()).clone(), (*tmpl.imported_consts()).clone());
 
-        let result = validate_and_render_no_std(
-            tmpl.segments(),
-            tmpl.declarations(),
-            &directive,
-            scope,
-            output,
-        );
+    let result = validate_and_render_no_std(
+        tmpl.segments(),
+        tmpl.declarations(),
+        &directive,
+        scope,
+        output,
+    );
 
-        scope.pop_consts();
-        scope.pop_inline_templates();
-        return result;
-    }
-
-    // 3. No match — filesystem includes not available under no_std.
-    Err(TemplateError::IncludeNotFound(alloc::format!(
-        "cannot resolve '{}': filesystem includes require the `std` feature",
-        directive.path
-    )))
+    scope.pop_consts();
+    scope.pop_inline_templates();
+    result
 }
 
 /// Common validation + render path for `no_std` includes.
@@ -203,7 +200,7 @@ fn validate_and_render_no_std(
                 }
                 inject_defaults_into_layer(layer, declarations, &overrides);
             }
-            super::control::register_loop_meta(scope, binding, i);
+            super::control::register_loop_meta(scope, binding, i, items.len());
             super::segments::render_segments_into_no_std(segments, scope, output)?;
             scope.pop_layer();
         }

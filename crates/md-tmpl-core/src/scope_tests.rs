@@ -352,8 +352,10 @@ fn get_field_unchecked_debug_asserts_on_tag_key() {
         Value::Str("Variant".into()),
     )])));
     // This should trigger the debug_assert.
-    // NOLINT: test asserts the field exists without using the value
-    let _ = dict.get_field_unchecked(crate::consts::ENUM_TAG_KEY);
+    assert!(
+        dict.get_field_unchecked(crate::consts::ENUM_TAG_KEY)
+            .is_some()
+    );
 }
 
 #[test]
@@ -578,4 +580,107 @@ params:
     assert!(output.contains("- alpha"), "missing alpha: {output}");
     assert!(output.contains("- beta"), "missing beta: {output}");
     assert!(output.contains("- gamma"), "missing gamma: {output}");
+}
+
+#[test]
+fn for_loop_metadata_all_properties() {
+    let tmpl = crate::Template::from_source(
+        "---
+params:
+  - items = list(str)
+---
+> {% for item in items %}
+
+[{{ loop.index0 }}, {{ loop.index }}/{{ loop.length }}] {{ item }} (first: {{ loop.first }}, last: {{ loop.last }}, len: {{ loop.len }})
+
+> {% /for %}",
+    )
+    .unwrap();
+    let mut ctx = Context::new();
+    ctx.set(
+        "items",
+        Value::List(std::sync::Arc::new(vec![
+            Value::Str("a".into()),
+            Value::Str("b".into()),
+            Value::Str("c".into()),
+        ])),
+    );
+    let output = tmpl.render_ctx(&ctx).unwrap();
+    assert!(output.contains("[0, 1/3] a (first: true, last: false, len: 3)"));
+    assert!(output.contains("[1, 2/3] b (first: false, last: false, len: 3)"));
+    assert!(output.contains("[2, 3/3] c (first: false, last: true, len: 3)"));
+}
+
+#[test]
+fn for_loop_metadata_in_conditions() {
+    let tmpl = crate::Template::from_source(
+        "---
+params:
+  - items = list(str)
+---
+> {% for item in items %}
+
+> {% if !loop.first %}, {% /if %}{{ item }}{% if loop.last %}!{% /if %}
+
+> {% /for %}",
+    )
+    .unwrap();
+    let mut ctx = Context::new();
+    ctx.set(
+        "items",
+        Value::List(std::sync::Arc::new(vec![
+            Value::Str("one".into()),
+            Value::Str("two".into()),
+            Value::Str("three".into()),
+        ])),
+    );
+    let output = tmpl.render_ctx(&ctx).unwrap();
+    assert_eq!(output.trim(), "one, two, three!");
+}
+
+#[test]
+fn template_render_tojson_filter() {
+    let tmpl = crate::Template::from_source(
+        "---
+params:
+  - user = struct(name = str, age = int)
+  - tags = list(str)
+---
+user: {{ user | tojson }}
+tags: {{ tags | json }}
+pretty:
+{{ user | tojson(2) }}",
+    )
+    .unwrap();
+    let mut ctx = Context::new();
+    let mut user_map = crate::compat::HashMap::new();
+    user_map.insert("name".to_string(), Value::Str("Alice".into()));
+    user_map.insert("age".to_string(), Value::Int(30));
+    ctx.set("user", Value::Struct(std::sync::Arc::new(user_map)));
+    ctx.set(
+        "tags",
+        Value::List(std::sync::Arc::new(vec![
+            Value::Str("dev".into()),
+            Value::Str("admin".into()),
+        ])),
+    );
+    let output = tmpl.render_ctx(&ctx).unwrap();
+    assert!(output.contains("user: {\"age\":30,\"name\":\"Alice\"}"));
+    assert!(output.contains("tags: [\"dev\",\"admin\"]"));
+    assert!(output.contains("pretty:\n{\n  \"age\": 30,\n  \"name\": \"Alice\"\n}"));
+}
+
+#[test]
+#[cfg(feature = "serde")]
+fn test_value_serde_serialize_roundtrip() {
+    let mut map = crate::compat::HashMap::new();
+    map.insert("name".to_string(), Value::Str("Alice".into()));
+    map.insert("score".to_string(), Value::Int(99));
+    let val = Value::Struct(std::sync::Arc::new(map));
+
+    let json_str = serde_json::to_string(&val).unwrap();
+    assert_eq!(json_str, "{\"name\":\"Alice\",\"score\":99}");
+
+    let deserialized: Value = serde_json::from_str(&json_str).unwrap();
+    assert_eq!(val, deserialized);
 }

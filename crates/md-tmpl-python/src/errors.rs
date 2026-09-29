@@ -142,7 +142,7 @@ pub(crate) fn template_error_to_py(err: &TemplateError) -> PyErr {
 
         match constructed {
             Ok(instance) => PyErr::from_value(instance),
-            Err(_) => pyo3::exceptions::PyValueError::new_err(msg),
+            Err(py_err) => py_err,
         }
     })
 }

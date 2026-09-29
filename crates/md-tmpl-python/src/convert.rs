@@ -144,18 +144,16 @@ fn try_convert_enum_member(
         return Ok(Some(Value::Str(name)));
     };
 
-    match value_attr.cast::<PyDict>() {
-        Ok(dict) => {
-            let mut map = HashMap::with_capacity(dict.len() + 1);
-            map.insert(ENUM_TAG_KEY.to_string(), Value::Str(name));
-            for (k, v) in dict.iter() {
-                let key: String = k.extract()?;
-                map.insert(key, py_to_value_inner(&v, visited, depth)?);
-            }
-            Ok(Some(Value::Struct(Arc::new(map))))
-        }
-        Err(_) => Ok(Some(Value::Str(name))),
+    let Ok(dict) = value_attr.cast::<PyDict>() else {
+        return Ok(Some(Value::Str(name)));
+    };
+    let mut map = HashMap::with_capacity(dict.len() + 1);
+    map.insert(ENUM_TAG_KEY.to_string(), Value::Str(name));
+    for (k, v) in dict.iter() {
+        let key: String = k.extract()?;
+        map.insert(key, py_to_value_inner(&v, visited, depth)?);
     }
+    Ok(Some(Value::Struct(Arc::new(map))))
 }
 
 fn try_convert_dict_object(
@@ -167,10 +165,10 @@ fn try_convert_dict_object(
         return Ok(None);
     };
 
-    match dict_attr.cast::<PyDict>() {
-        Ok(dict) => py_dict_to_value(dict, visited, depth).map(Some),
-        Err(_) => Ok(None),
-    }
+    let Ok(dict) = dict_attr.cast::<PyDict>() else {
+        return Ok(None);
+    };
+    py_dict_to_value(dict, visited, depth).map(Some)
 }
 
 fn py_dict_to_value(

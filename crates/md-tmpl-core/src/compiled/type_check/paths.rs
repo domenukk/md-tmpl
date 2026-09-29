@@ -122,10 +122,10 @@ pub(crate) fn resolve_field<'a>(ty: &'a VarType, field: &str) -> FieldResult<'a>
                         best = Some((*candidate, dist));
                     }
                 }
-                let suggestion = best
-                    .map(|(s, _)| format!(" Did you mean '{s}'?"))
-                    // NOLINT: None means no close match found — empty suggestion is intentional
-                    .unwrap_or_default();
+                let suggestion = match best {
+                    Some((s, _)) => format!(" Did you mean '{s}'?"),
+                    None => String::new(),
+                };
                 FieldResult::NotAvailable {
                     reason: format!(
                         "field '{field}' does not exist on dict.{suggestion} \
@@ -214,10 +214,10 @@ fn resolve_enum_field<'a>(variants: &'a [VariantDecl], field: &str) -> FieldResu
                 best = Some((*candidate, dist));
             }
         }
-        let suggestion = best
-            .map(|(s, _)| format!(" Did you mean '{s}'?"))
-            // NOLINT: None means no close match found — empty suggestion is intentional
-            .unwrap_or_default();
+        let suggestion = match best {
+            Some((s, _)) => format!(" Did you mean '{s}'?"),
+            None => String::new(),
+        };
         let variant_names: Vec<&str> = variants.iter().map(|v| v.name.as_str()).collect();
         FieldResult::NotAvailable {
             reason: format!(

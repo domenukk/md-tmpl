@@ -5,8 +5,13 @@ use std::{ffi::c_char, ptr};
 use md_tmpl::{Context, Value};
 
 use crate::{
-    PtContext, PtTemplate, cstr_to_str, err_to_cstring, json::json_to_value, terr_to_cstring,
+    ERR_NULL_CONTEXT, ERR_NULL_TEMPLATE, PtContext, PtTemplate, cstr_to_str, err_to_cstring,
+    json::json_to_value, terr_to_cstring,
 };
+
+const ERR_MERGE_JSON_NOT_OBJECT: &str = "pt_context_merge_json: JSON must be an object";
+const ERR_SET_FLEXBUFFERS_NULL: &str = "pt_context_set_flexbuffers: null pointer passed";
+const ERR_MERGE_FLEXBUFFERS_NULL: &str = "pt_context_merge_flexbuffers: null pointer passed";
 
 /// Create a new empty rendering context.
 #[unsafe(no_mangle)]
@@ -42,7 +47,7 @@ pub unsafe extern "C" fn pt_context_set_str(
     value: *const c_char,
 ) -> *mut c_char {
     let Some(ctx) = (unsafe { ctx.as_mut() }) else {
-        return err_to_cstring("null context");
+        return err_to_cstring(ERR_NULL_CONTEXT);
     };
     let key = match unsafe { cstr_to_str(key) } {
         Ok(s) => s,
@@ -68,7 +73,7 @@ pub unsafe extern "C" fn pt_context_set_int(
     value: i64,
 ) -> *mut c_char {
     let Some(ctx) = (unsafe { ctx.as_mut() }) else {
-        return err_to_cstring("null context");
+        return err_to_cstring(ERR_NULL_CONTEXT);
     };
     let key = match unsafe { cstr_to_str(key) } {
         Ok(s) => s,
@@ -90,7 +95,7 @@ pub unsafe extern "C" fn pt_context_set_float(
     value: f64,
 ) -> *mut c_char {
     let Some(ctx) = (unsafe { ctx.as_mut() }) else {
-        return err_to_cstring("null context");
+        return err_to_cstring(ERR_NULL_CONTEXT);
     };
     let key = match unsafe { cstr_to_str(key) } {
         Ok(s) => s,
@@ -112,7 +117,7 @@ pub unsafe extern "C" fn pt_context_set_bool(
     value: bool,
 ) -> *mut c_char {
     let Some(ctx) = (unsafe { ctx.as_mut() }) else {
-        return err_to_cstring("null context");
+        return err_to_cstring(ERR_NULL_CONTEXT);
     };
     let key = match unsafe { cstr_to_str(key) } {
         Ok(s) => s,
@@ -135,7 +140,7 @@ pub unsafe extern "C" fn pt_context_set_none(
     key: *const c_char,
 ) -> *mut c_char {
     let Some(ctx) = (unsafe { ctx.as_mut() }) else {
-        return err_to_cstring("null context");
+        return err_to_cstring(ERR_NULL_CONTEXT);
     };
     let key = match unsafe { cstr_to_str(key) } {
         Ok(s) => s,
@@ -160,7 +165,7 @@ pub unsafe extern "C" fn pt_context_set_json(
     json: *const c_char,
 ) -> *mut c_char {
     let Some(ctx) = (unsafe { ctx.as_mut() }) else {
-        return err_to_cstring("null context");
+        return err_to_cstring(ERR_NULL_CONTEXT);
     };
     let key = match unsafe { cstr_to_str(key) } {
         Ok(s) => s,
@@ -197,14 +202,14 @@ pub unsafe extern "C" fn pt_context_set_tmpl(
     tmpl: *const PtTemplate,
 ) -> *mut c_char {
     let Some(ctx) = (unsafe { ctx.as_mut() }) else {
-        return err_to_cstring("null context");
+        return err_to_cstring(ERR_NULL_CONTEXT);
     };
     let key = match unsafe { cstr_to_str(key) } {
         Ok(s) => s,
         Err(e) => return err_to_cstring(&e),
     };
     let Some(tmpl) = (unsafe { tmpl.as_ref() }) else {
-        return err_to_cstring("null template");
+        return err_to_cstring(ERR_NULL_TEMPLATE);
     };
     ctx.inner.set(key, Value::from(&tmpl.inner));
     ptr::null_mut()
@@ -228,7 +233,7 @@ pub unsafe extern "C" fn pt_context_merge_json(
     json: *const c_char,
 ) -> *mut c_char {
     let Some(ctx) = (unsafe { ctx.as_mut() }) else {
-        return err_to_cstring("null context");
+        return err_to_cstring(ERR_NULL_CONTEXT);
     };
     let json_str = match unsafe { cstr_to_str(json) } {
         Ok(s) => s,
@@ -239,7 +244,7 @@ pub unsafe extern "C" fn pt_context_merge_json(
         Err(e) => return err_to_cstring(&e),
     };
     let Value::Struct(map) = obj else {
-        return err_to_cstring("pt_context_merge_json: JSON must be an object");
+        return err_to_cstring(ERR_MERGE_JSON_NOT_OBJECT);
     };
     for (key, val) in map.iter() {
         ctx.inner.set(key, val.clone());
@@ -262,14 +267,14 @@ pub unsafe extern "C" fn pt_context_set_flexbuffers(
     len: usize,
 ) -> *mut c_char {
     let Some(ctx) = (unsafe { ctx.as_mut() }) else {
-        return err_to_cstring("null context");
+        return err_to_cstring(ERR_NULL_CONTEXT);
     };
     let key = match unsafe { cstr_to_str(key) } {
         Ok(s) => s,
         Err(e) => return err_to_cstring(&e),
     };
     if data.is_null() {
-        return err_to_cstring("pt_context_set_flexbuffers: null pointer passed");
+        return err_to_cstring(ERR_SET_FLEXBUFFERS_NULL);
     }
     let slice = unsafe { std::slice::from_raw_parts(data, len) };
     match Value::from_flexbuffers(slice) {
@@ -294,10 +299,10 @@ pub unsafe extern "C" fn pt_context_merge_flexbuffers(
     len: usize,
 ) -> *mut c_char {
     let Some(ctx) = (unsafe { ctx.as_mut() }) else {
-        return err_to_cstring("null context");
+        return err_to_cstring(ERR_NULL_CONTEXT);
     };
     if data.is_null() {
-        return err_to_cstring("pt_context_merge_flexbuffers: null pointer passed");
+        return err_to_cstring(ERR_MERGE_FLEXBUFFERS_NULL);
     }
     let slice = unsafe { std::slice::from_raw_parts(data, len) };
     let new_ctx = match Context::from_flexbuffers(slice) {

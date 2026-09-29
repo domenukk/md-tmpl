@@ -37,14 +37,20 @@ pub(crate) struct CompiledTemplateAst {
     pub(crate) dependency_paths: Vec<PathBuf>,
 }
 
+pub(crate) fn cargo_manifest_dir() -> Result<PathBuf, String> {
+    std::env::var("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .map_err(|e| format!("CARGO_MANIFEST_DIR is not set or invalid UTF-8: {e}"))
+}
+
 /// Read a template file relative to `CARGO_MANIFEST_DIR`, compile it,
 /// and return both the resolved full path and the compiled AST.
 pub(crate) fn load_and_compile(
     rel_path: &str,
     env_values: &[(&str, md_tmpl_core::Value)],
 ) -> Result<(std::path::PathBuf, CompiledTemplateAst), String> {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
-    let full_path = std::path::Path::new(&manifest_dir).join(rel_path);
+    let manifest_dir = cargo_manifest_dir()?;
+    let full_path = manifest_dir.join(rel_path);
     let source = std::fs::read_to_string(&full_path)
         .map_err(|e| format!("failed to read template '{}': {e}", full_path.display()))?;
     let base_dir = full_path.parent().unwrap_or(std::path::Path::new("."));
@@ -71,6 +77,11 @@ pub(crate) fn compile_template_to_ast(
 
     let (mut segments, inline_templates) =
         md_tmpl_core::compiled::compile(body, &fm.type_aliases).map_err(|e| e.to_string())?;
+    md_tmpl_core::compiled::apply_frontmatter_sanitization(
+        &mut segments,
+        &fm.param_sanitize,
+        fm.sanitize_notice.as_deref(),
+    );
 
     // Static analysis: Enforce that all parameters referenced in the body are declared.
     check_undeclared_variables(&fm, &inline_templates, &segments)?;
@@ -240,12 +251,16 @@ fn validate_types(
 /// `MD_TMPL_MAX_INCLUDE_DEPTH` environment variable.
 const DEFAULT_MAX_COMPILE_INCLUDE_DEPTH: usize = 64;
 
-pub(crate) fn max_compile_include_depth() -> usize {
-    std::env::var("MD_TMPL_MAX_INCLUDE_DEPTH")
-        // NOLINT: missing or invalid env var is expected — fall back to compiled default
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_MAX_COMPILE_INCLUDE_DEPTH)
+pub(crate) fn max_compile_include_depth() -> Result<usize, String> {
+    match std::env::var("MD_TMPL_MAX_INCLUDE_DEPTH") {
+        Ok(v) => v.parse::<usize>().map_err(|e| {
+            format!("invalid MD_TMPL_MAX_INCLUDE_DEPTH '{v}': expected non-negative integer ({e})")
+        }),
+        Err(std::env::VarError::NotPresent) => Ok(DEFAULT_MAX_COMPILE_INCLUDE_DEPTH),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            Err("MD_TMPL_MAX_INCLUDE_DEPTH contains invalid UTF-8".to_string())
+        }
+    }
 }
 
 pub(crate) fn resolve_includes_recursive(
@@ -257,7 +272,7 @@ pub(crate) fn resolve_includes_recursive(
     deps: &mut Vec<PathBuf>,
     depth: usize,
 ) -> Result<(), String> {
-    let max_depth = max_compile_include_depth();
+    let max_depth = max_compile_include_depth()?;
     if depth > max_depth {
         return Err(format!(
             "compile-time include depth ({depth}) exceeds maximum ({max_depth}). \
@@ -282,7 +297,7 @@ pub(crate) fn resolve_includes_recursive(
                 let include_path = base_dir.join(inc.path.as_ref());
                 let canonical = include_path
                     .canonicalize()
-                    .unwrap_or_else(|_| include_path.clone());
+                    .map_err(|e| format!("cannot read include {}: {e}", include_path.display()))?;
 
                 if !visited_paths.insert(canonical.clone()) {
                     // Cycle detected — load declarations for boundary checking
@@ -373,13 +388,18 @@ pub(crate) fn load_include_declarations(
         md_tmpl_core::parse_frontmatter_with_base_dir(&included_source, included_base_dir, &[])
             .map_err(|e| format!("syntax error in include {}: {e}", include_path.display()))?;
     collect_import_deps(&included_fm, included_base_dir, deps);
-    let (included_segments, _) =
+    let (mut included_segments, _) =
         md_tmpl_core::compiled::compile(included_body, &included_fm.type_aliases).map_err(|e| {
             format!(
                 "compilation error in include {}: {e}",
                 include_path.display()
             )
         })?;
+    md_tmpl_core::compiled::apply_frontmatter_sanitization(
+        &mut included_segments,
+        &included_fm.param_sanitize,
+        included_fm.sanitize_notice.as_deref(),
+    );
     // Build const values map from included file's own consts.
     let mut included_consts = hashbrown::HashMap::new();
     for d in &included_fm.consts {
@@ -429,6 +449,11 @@ pub(crate) fn resolve_single_include(
                 include_path.display()
             )
         })?;
+    md_tmpl_core::compiled::apply_frontmatter_sanitization(
+        &mut included_segments,
+        &included_fm.param_sanitize,
+        included_fm.sanitize_notice.as_deref(),
+    );
 
     let child_base_dir = include_path.parent().unwrap_or(base_dir);
     // Use the INCLUDED FILE'S own inline templates, not the parent's.

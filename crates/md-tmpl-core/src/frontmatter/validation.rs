@@ -244,6 +244,9 @@ mod tests {
             imported_enum_type_keys: vec![],
             imported_namespace_types: HashMap::new(),
             imported_type_params: HashMap::new(),
+            sanitize_notice: None,
+            param_sanitize: HashMap::new(),
+            type_alias_sanitize: HashMap::new(),
         }
     }
 

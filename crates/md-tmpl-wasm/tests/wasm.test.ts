@@ -1799,8 +1799,7 @@ params:
 Hello {{ name }}!`,
     );
     assert.strictEqual(
-      // NOLINT: verifying the binding name is present
-      typeof (t as any).renderAllowingExtraFlexbuffers,
+      typeof t.renderAllowingExtraFlexbuffers,
       "function",
     );
     assert.throws(

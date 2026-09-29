@@ -155,14 +155,14 @@ impl Template {
         let ctx = self.inject_defaults(ctx);
         let mut scope = Scope::new(&ctx)
             .with_max_include_depth(self.max_include_depth)
-            .with_declarations(&self.declared_variables);
+            .with_root_declarations(&self.declared_variables, self.has_options);
         if !self.consts.is_empty() || !self.imported_consts.is_empty() {
-            scope.set_consts(&self.consts, &self.imported_consts);
+            scope.set_root_consts(&self.consts, &self.imported_consts);
         }
         scope.set_inline_templates(&self.inline_templates);
         #[cfg(feature = "std")]
         if !self.env_values.is_empty() {
-            scope.set_compile_env(self.env_values.clone());
+            scope.set_compile_env_slice(&self.env_values);
         }
         #[cfg(feature = "std")]
         return compiled::render::render_segments_into(
@@ -232,13 +232,13 @@ impl Template {
         let ctx = self.inject_defaults(ctx);
         let mut scope = Scope::with_cache(&ctx, cache)
             .with_max_include_depth(self.max_include_depth)
-            .with_declarations(&self.declared_variables);
+            .with_root_declarations(&self.declared_variables, self.has_options);
         if !self.consts.is_empty() || !self.imported_consts.is_empty() {
-            scope.set_consts(&self.consts, &self.imported_consts);
+            scope.set_root_consts(&self.consts, &self.imported_consts);
         }
         scope.set_inline_templates(&self.inline_templates);
         if !self.env_values.is_empty() {
-            scope.set_compile_env(self.env_values.clone());
+            scope.set_compile_env_slice(&self.env_values);
         }
         compiled::render_segments(&self.segments, &mut scope, self.base_dir.as_deref())
     }
@@ -262,13 +262,13 @@ impl Template {
         let ctx = self.inject_defaults(ctx);
         let mut scope = Scope::with_cache(&ctx, cache)
             .with_max_include_depth(self.max_include_depth)
-            .with_declarations(&self.declared_variables);
+            .with_root_declarations(&self.declared_variables, self.has_options);
         if !self.consts.is_empty() || !self.imported_consts.is_empty() {
-            scope.set_consts(&self.consts, &self.imported_consts);
+            scope.set_root_consts(&self.consts, &self.imported_consts);
         }
         scope.set_inline_templates(&self.inline_templates);
         if !self.env_values.is_empty() {
-            scope.set_compile_env(self.env_values.clone());
+            scope.set_compile_env_slice(&self.env_values);
         }
         compiled::render_segments(&self.segments, &mut scope, self.base_dir.as_deref())
     }

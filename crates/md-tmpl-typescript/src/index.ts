@@ -150,3 +150,50 @@ export {
 
 // Validation
 export { validateFrontmatter, toPascalCase } from "./validation.js";
+
+// Security filter helpers
+export {
+  DEFAULT_QUARANTINE_TAG,
+  ROLE_TOKEN_DELIMITERS,
+  TOKEN_DELIMITERS,
+  escapeXmlString,
+  escapeJsonString,
+  hasControlTokens,
+  hasRoleControlTokens,
+  sanitizeTokensString,
+  sanitizeRoleTokensString,
+  fenceString,
+  hasQuarantineTagBreakout,
+  hasUntrustedBreakout,
+  sanitizeQuarantinePayload,
+  sanitizeUntrustedString,
+  quarantineString,
+  quarantineUntrustedString,
+  isQuarantinedString,
+  DEFAULT_TRUNCATE_MARKER,
+  DEFAULT_TRUNCATE_MARKER_COMPACT,
+  DEFAULT_LIST_TRUNCATE_MARKER,
+  TRUNCATE_PLACEHOLDER_SKIPPED,
+  TRUNCATE_PLACEHOLDER_COUNT,
+  truncateMiddleString,
+} from "./filters.js";
+export {
+  FILTER_SANITIZE,
+  DEFAULT_SANITIZE_TAG,
+  DEFAULT_SANITIZE_NOTICE,
+  SANITIZE_NOTICE_TAG_PLACEHOLDER,
+  FM_SANITIZE_NOTICE_PREFIX,
+} from "./consts.js";
+export {
+  type SanitizeSpec,
+  type SanitizeFilterArgs,
+  formatSanitizeNotice,
+  sanitizeString,
+  sanitizeBlockString,
+  unsanitizeBlockString,
+  isSanitizedBlockString,
+  validateSanitizeTagSpec,
+  parseSanitizeFilterArgs,
+  parseSanitizeNoticeValue,
+  applySanitizeAstPass,
+} from "./sanitize_pass.js";

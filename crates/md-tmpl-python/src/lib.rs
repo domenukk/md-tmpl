@@ -14,6 +14,7 @@
 mod convert;
 mod errors;
 mod pyclass_builder;
+mod security;
 mod template;
 mod typegen;
 
@@ -21,8 +22,8 @@ use pyo3::prelude::*;
 
 /// Native extension module for `md_tmpl`.
 ///
-/// Exposes `Template`, `TemplateCache`, and helper functions to
-/// the pure-Python `md_tmpl` package.
+/// Exposes `Template`, `TemplateCache`, security filter functions, and helper
+/// functions to the pure-Python `md_tmpl` package.
 #[pymodule]
 fn _md_tmpl(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<template::PyTemplate>()?;
@@ -32,5 +33,6 @@ fn _md_tmpl(m: &Bound<'_, PyModule>) -> PyResult<()> {
         typegen::generate_python_source_for_template,
         m
     )?)?;
+    security::register(m)?;
     Ok(())
 }

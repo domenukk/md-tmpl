@@ -13,7 +13,15 @@ import {
 } from "./evaluator.js";
 import { parseBody } from "./parser.js";
 import { parseFrontmatter } from "./frontmatter.js";
-import { type Value, type TmplRef, display, TYPE_TMPL } from "./value.js";
+import {
+  type Value,
+  type TmplRef,
+  display,
+  TYPE_TMPL,
+  structVal,
+  bool,
+  int,
+} from "./value.js";
 import {
   TemplateError,
   TemplateSyntaxError,
@@ -241,11 +249,28 @@ export function renderNodes(
         } else {
           const layer = scope.pushLayer();
           try {
-            for (let idx = 0; idx < listVal.items.length; idx++) {
+            const len = listVal.items.length;
+            for (let idx = 0; idx < len; idx++) {
               const item = listVal.items[idx];
               if (item === undefined) continue;
               layer.set(node.binding, item);
-              scope.setLoopMeta(node.binding, { index: idx });
+              scope.setLoopMeta(node.binding, {
+                index: idx,
+                len,
+                first: idx === 0,
+                last: idx === len - 1,
+              });
+              layer.set(
+                "loop",
+                structVal([
+                  ["first", bool(idx === 0)],
+                  ["last", bool(idx === len - 1)],
+                  ["index0", int(idx)],
+                  ["index", int(idx + 1)],
+                  ["length", int(len)],
+                  ["len", int(len)],
+                ]),
+              );
               parts.push(renderNodes(node.body, scope, options));
             }
           } finally {

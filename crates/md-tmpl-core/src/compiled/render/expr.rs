@@ -2,7 +2,10 @@
 
 use alloc::{borrow::Cow, string::String};
 
-use super::{float::write_fixed_float, value::render_value_into};
+use super::{
+    float::write_fixed_float,
+    value::{render_value_into, write_fixed_int},
+};
 use crate::{
     compiled::{FilterKind, ParsedFilter},
     error::TemplateError,
@@ -89,17 +92,7 @@ fn try_fast_path_fixed_filter(
                         return Ok(true);
                     }
                     Value::Int(i) => {
-                        // Use itoa for the integer part to avoid
-                        // i64→f64 precision loss for values > 2^53.
-                        let mut buf = itoa::Buffer::new();
-                        let int_str = buf.format(*i);
-                        output.push_str(int_str);
-                        if precision > 0 {
-                            output.push('.');
-                            for _ in 0..precision {
-                                output.push('0');
-                            }
-                        }
+                        write_fixed_int(*i, precision, output);
                         return Ok(true);
                     }
                     _ => {}
@@ -228,15 +221,36 @@ fn apply_filters_and_render(
 ) -> Result<(), TemplateError> {
     if filters.is_empty() {
         render_value_into(&value, output)
+    } else if let Value::Str(s) = value.as_ref()
+        && crate::filter::try_apply_str_filters_into(s, filters, output)?
+    {
+        Ok(())
     } else {
         let mut owned_value = value.into_owned();
-        for f in filters {
-            owned_value = crate::filter::apply_filter_typed(
-                f.kind,
-                &owned_value,
-                f.args.as_ref().map(AsRef::as_ref),
-            )?;
+        for (idx, f) in filters.iter().enumerate() {
+            if let Value::Str(s) = &owned_value
+                && crate::filter::try_apply_str_filters_into(s, &filters[idx..], output)?
+            {
+                return Ok(());
+            }
+            owned_value = crate::filter::apply_filter_parsed(f, &owned_value)?;
         }
         render_value_into(&owned_value, output)
+    }
+}
+
+/// Apply a slice of [`ParsedFilter`]s to a borrowed string `s` and write directly into `output`.
+pub fn render_str_filters(
+    s: &str,
+    filters: &[ParsedFilter],
+    output: &mut String,
+) -> Result<(), TemplateError> {
+    if filters.is_empty() {
+        output.push_str(s);
+        Ok(())
+    } else if crate::filter::try_apply_str_filters_into(s, filters, output)? {
+        Ok(())
+    } else {
+        apply_filters_and_render(Cow::Owned(Value::Str(String::from(s))), filters, output)
     }
 }

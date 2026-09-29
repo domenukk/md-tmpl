@@ -159,12 +159,10 @@ fn process_test_case(tc: &toml::Table, output: &mut String) -> Option<bool> {
     // Skip tests explicitly marked for runtime-only execution (e.g.,
     // templates with nested type aliases that generate typed Rust structs
     // which can't be populated by toml_to_context).
-    if tc
-        .get("skip_compile_time")
-        .and_then(toml::Value::as_bool)
-        // NOLINT: optional TOML field — absent means "don't skip", so false is the correct default
-        .unwrap_or(false)
-    {
+    if matches!(
+        tc.get("skip_compile_time").and_then(toml::Value::as_bool),
+        Some(true)
+    ) {
         return Some(false);
     }
 
@@ -196,8 +194,26 @@ fn generate_test_module(
     tc: &toml::Table,
     output: &mut String,
 ) {
-    // Generate a unique module name from the test name.
-    let mod_name = format!("ct_{name}");
+    // Generate a unique snake_case module name from the test name, preserving
+    // distinction between lowercase and uppercase identifiers (e.g. `self` vs `Self`).
+    let snake_name = if name.bytes().any(|b| b.is_ascii_uppercase()) {
+        let mut s = String::with_capacity(name.len() + 8);
+        for ch in name.chars() {
+            if ch.is_ascii_uppercase() {
+                if !s.is_empty() && !s.ends_with('_') {
+                    s.push('_');
+                }
+                s.push_str("upper_");
+                s.push(ch.to_ascii_lowercase());
+            } else {
+                s.push(ch);
+            }
+        }
+        s
+    } else {
+        name.to_owned()
+    };
+    let mod_name = format!("ct_{snake_name}");
 
     // Serialize params to a TOML string for runtime use.
     let params_toml = match tc.get("params") {
@@ -216,15 +232,7 @@ fn generate_test_module(
     // Each module also contains its test function.
     writeln!(
         output,
-        // Emitted into generated test modules:
-        // - `non_snake_case`: module names come from fixture keys and may contain
-        //   uppercase (e.g. Self).
-        // - `clippy::approx_constant`: float test data like `{{ 3.14 }}` expands to a
-        //   `3.14f64` literal, which clippy misreads as an approximation of PI —
-        //   a false positive on deliberate fixture values.
-        // NOLINT: generated test-only allow(...), justified above.
-        r#"#[allow(non_snake_case, clippy::approx_constant)]
-mod test_{name} {{
+        r#"mod test_{snake_name} {{
     use super::*;
 
     md_tmpl::template!(

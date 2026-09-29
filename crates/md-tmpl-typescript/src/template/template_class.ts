@@ -31,6 +31,7 @@ import {
   validateDisplayability,
   validateFrontmatter,
 } from "../validation.js";
+import { applySanitizeAstPass } from "../sanitize_pass.js";
 import {
   type Node,
   type RenderOptions,
@@ -292,6 +293,7 @@ export class Template implements ITemplate, TmplRef {
       fm.typeAliases,
       fm.importedNamespaceTypes,
     );
+    applySanitizeAstPass(nodes, fm.paramSanitize, fm.sanitizeNotice);
     return tmpl;
   }
 
@@ -347,6 +349,11 @@ export class Template implements ITemplate, TmplRef {
       resolvedFm.typeAliases,
       resolvedFm.importedNamespaceTypes,
     );
+    applySanitizeAstPass(
+      nodes,
+      resolvedFm.paramSanitize,
+      resolvedFm.sanitizeNotice,
+    );
     return tmpl;
   }
 
@@ -389,6 +396,7 @@ export class Template implements ITemplate, TmplRef {
       fm.typeAliases,
       fm.importedNamespaceTypes,
     );
+    applySanitizeAstPass(nodes, fm.paramSanitize, fm.sanitizeNotice);
     return tmpl;
   }
 
@@ -419,6 +427,11 @@ export class Template implements ITemplate, TmplRef {
       resolvedFm.consts,
       resolvedFm.typeAliases,
       resolvedFm.importedNamespaceTypes,
+    );
+    applySanitizeAstPass(
+      nodes,
+      resolvedFm.paramSanitize,
+      resolvedFm.sanitizeNotice,
     );
     return tmpl;
   }
@@ -488,6 +501,11 @@ export class Template implements ITemplate, TmplRef {
       resolvedFm.consts,
       resolvedFm.typeAliases,
       resolvedFm.importedNamespaceTypes,
+    );
+    applySanitizeAstPass(
+      nodes,
+      resolvedFm.paramSanitize,
+      resolvedFm.sanitizeNotice,
     );
     return tmpl;
   }
@@ -1017,15 +1035,23 @@ params:
               inlineConsts.set(decl.name, valueToJs(decl.defaultValue));
             }
           }
+          const inlineNodes = parseBody(inlineBody, true);
+          applySanitizeAstPass(
+            inlineNodes,
+            inlineFm.paramSanitize,
+            inlineFm.sanitizeNotice,
+          );
           inlineTemplates.set(n.name, {
             declarations: inlineFm.params,
-            nodes: parseBody(inlineBody, true),
+            nodes: inlineNodes,
             consts: inlineConsts,
           });
         } else {
+          const rawNodes = parseBody(n.source, true);
+          applySanitizeAstPass(rawNodes, undefined, undefined);
           inlineTemplates.set(n.name, {
             declarations: [],
-            nodes: parseBody(n.source, true),
+            nodes: rawNodes,
             consts: new Map(),
           });
         }

@@ -28,14 +28,105 @@ pub(crate) const MAX_INCLUDE_DEPTH: usize = 16;
 static EMPTY_INLINE_TEMPLATES: crate::compat::LazyLock<HashMap<String, CompiledInlineTemplate>> =
     crate::compat::LazyLock::new(HashMap::new);
 
+/// Maximum inline byte length for loop binding variable names before falling back to heap `String`.
+const INLINE_KEY_CAP: usize = 23;
+
+/// Number of nested `{% for %}` loop bindings stored inline on the `Scope` stack without heap allocation.
+const INLINE_LOOP_SLOTS: usize = 4;
+
+/// Compact loop variable name stored inline on the stack for identifiers up to 23 bytes.
+#[derive(Debug, Clone)]
+enum LoopKey {
+    Inline { buf: [u8; INLINE_KEY_CAP], len: u8 },
+    Heap(String),
+}
+
+impl LoopKey {
+    const EMPTY: Self = Self::Inline {
+        buf: [0u8; INLINE_KEY_CAP],
+        len: 0,
+    };
+
+    #[inline]
+    fn set(&mut self, s: &str) {
+        let bytes = s.as_bytes();
+        if let Ok(len) = u8::try_from(bytes.len())
+            && bytes.len() <= INLINE_KEY_CAP
+        {
+            if let Self::Inline { buf, len: cur_len } = self {
+                if usize::from(*cur_len) != bytes.len() || &buf[..bytes.len()] != bytes {
+                    buf[..bytes.len()].copy_from_slice(bytes);
+                    *cur_len = len;
+                }
+            } else {
+                let mut buf = [0u8; INLINE_KEY_CAP];
+                buf[..bytes.len()].copy_from_slice(bytes);
+                *self = Self::Inline { buf, len };
+            }
+        } else if let Self::Heap(existing) = self {
+            if existing != s {
+                existing.clear();
+                existing.push_str(s);
+            }
+        } else {
+            *self = Self::Heap(s.to_string());
+        }
+    }
+
+    #[inline]
+    fn eq_str(&self, s: &str) -> bool {
+        match self {
+            Self::Inline { buf, len } => {
+                let l = usize::from(*len);
+                l == s.len() && &buf[..l] == s.as_bytes()
+            }
+            Self::Heap(h) => h == s,
+        }
+    }
+}
+
 /// Loop metadata for a for-loop binding.
 ///
-/// Stored per-binding in the scope so that  works
+/// Stored per-binding in the scope so that `idx()` works
 /// correctly even from deeply nested loops.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct LoopMeta {
     /// 0-based iteration index.
     pub index: i64,
+    /// Total number of items in the iterated collection.
+    pub len: usize,
+}
+
+#[derive(Debug, Clone)]
+struct LoopSlot {
+    key: LoopKey,
+    value: Value,
+    meta: Option<LoopMeta>,
+    val_index0: Value,
+    val_index: Value,
+    val_len: Value,
+}
+
+impl LoopSlot {
+    const EMPTY: Self = Self {
+        key: LoopKey::EMPTY,
+        value: Value::None,
+        meta: None,
+        val_index0: Value::Int(0),
+        val_index: Value::Int(1),
+        val_len: Value::Int(0),
+    };
+
+    #[inline]
+    fn set_value(&mut self, value: &Value) {
+        match (&mut self.value, value) {
+            (Value::Str(old), Value::Str(new)) if old.capacity() > 0 => {
+                old.clear();
+                old.push_str(new);
+            }
+            _ => self.value = value.clone(),
+        }
+    }
 }
 
 /// Layered scope for variable resolution during rendering.
@@ -48,19 +139,20 @@ pub struct Scope<'a> {
     layers: Vec<HashMap<String, Value>>,
     /// Loop metadata keyed by binding name, parallel to `layers`.
     loop_metas: Vec<HashMap<String, LoopMeta>>,
+    /// Fallback loop values for HashMap-based include `for_each` iterations.
+    fallback_loop_vals: Option<(LoopMeta, Value, Value, Value)>,
     active_len: usize,
-    /// Lightweight stack-based loop bindings.
-    ///
-    /// For-loops push `(binding_name, item, loop_meta)` here instead of into
-    /// a `HashMap` layer.  `resolve()` checks this stack first (innermost-out),
-    /// so loop variables are resolved in O(depth) with no hashing overhead.
+    /// Number of active loop bindings across `inline_loops` and `overflow_loops`.
     active_loop_bindings: usize,
-    loop_bindings: Vec<(String, Value, Option<LoopMeta>)>,
+    /// Inline stack-allocated loop bindings for the first 4 nesting levels (zero heap allocation).
+    inline_loops: [LoopSlot; INLINE_LOOP_SLOTS],
+    /// Overflow loop bindings when loop nesting exceeds `INLINE_LOOP_SLOTS`.
+    overflow_loops: Vec<LoopSlot>,
     include_depth: usize,
     max_include_depth: usize,
     /// Pre-compiled inline template definitions (borrowed from top-level `Template`).
     inline_templates: &'a HashMap<String, CompiledInlineTemplate>,
-    /// Stack of owned inline templates from included files. Each file push its
+    /// Stack of owned inline templates from included files. Each file pushes its
     /// own `{% tmpl %}` definitions when entered, and pops them when exited.
     /// `get_inline_template` checks this stack (innermost first) before
     /// falling back to the top-level `inline_templates`.
@@ -68,20 +160,29 @@ pub struct Scope<'a> {
     /// Optional include resolver for cached include resolution.
     #[cfg(feature = "std")]
     cache: Option<&'a dyn crate::cache::IncludeResolver>,
-    /// stack of local constants from the template frontmatter.
+    /// Borrowed root constants from the top-level `Template`.
+    root_consts: Option<&'a HashMap<String, Value>>,
+    /// Borrowed root imported constants from the top-level `Template`.
+    root_imported_consts: Option<&'a HashMap<String, Value>>,
+    /// Stack of local constants from included templates.
     consts_stack: Vec<Arc<HashMap<String, Value>>>,
-    /// Stack of imported constants keyed by `stem.NAME`.
+    /// Stack of imported constants keyed by `stem.NAME` from included templates.
     imported_consts_stack: Vec<Arc<HashMap<String, Value>>>,
-    /// Stack of parameter declarations (used to check option types).
+    /// Borrowed parameter declarations from the root `Template`.
+    root_declarations: &'a [crate::types::VarDecl],
+    /// Stack of parameter declarations from included templates.
     declarations_stack: Vec<Arc<[crate::types::VarDecl]>>,
+    /// Fast flag: `true` if any active declaration in `root_declarations` or
+    /// `declarations_stack` contains an `option(T)` type.
+    has_options: bool,
     /// Option params that have been narrowed to Some (unwrapped) in an
     /// enclosing match/if-has arm.  `is_option_path` returns `false` for
     /// narrowed params so that `kind()` and inner `match` blocks see the
     /// unwrapped enum value.
     narrowed_options: Vec<String>,
-    /// Compile-time environment values for propagation to included files.
+    /// Borrowed compile-time environment values from the root `Template`.
     #[cfg(feature = "std")]
-    env_values: Arc<[(String, Value)]>,
+    root_compile_env: &'a [(String, Value)],
 }
 
 impl<'a> Scope<'a> {
@@ -92,21 +193,27 @@ impl<'a> Scope<'a> {
             ctx,
             layers: Vec::new(),
             loop_metas: Vec::new(),
+            fallback_loop_vals: None,
             active_len: 0,
             active_loop_bindings: 0,
-            loop_bindings: Vec::with_capacity(4),
+            inline_loops: [LoopSlot::EMPTY; INLINE_LOOP_SLOTS],
+            overflow_loops: Vec::new(),
             include_depth: 0,
             max_include_depth: MAX_INCLUDE_DEPTH,
             inline_templates: &EMPTY_INLINE_TEMPLATES,
             inline_template_stack: Vec::new(),
             #[cfg(feature = "std")]
             cache: None,
+            root_consts: None,
+            root_imported_consts: None,
             consts_stack: Vec::new(),
             imported_consts_stack: Vec::new(),
+            root_declarations: &[],
             declarations_stack: Vec::new(),
+            has_options: false,
             narrowed_options: Vec::new(),
             #[cfg(feature = "std")]
-            env_values: Arc::from([]),
+            root_compile_env: &[],
         }
     }
 
@@ -133,18 +240,20 @@ impl<'a> Scope<'a> {
         self.cache
     }
 
-    /// Set compile-time environment values for propagation to included files.
+    /// Borrow compile-time environment values directly from the root `Template` without atomic cloning.
     #[cfg(feature = "std")]
-    pub(crate) fn set_compile_env(&mut self, env: Arc<[(String, Value)]>) {
-        self.env_values = env;
+    #[inline]
+    pub(crate) fn set_compile_env_slice(&mut self, env: &'a [(String, Value)]) {
+        self.root_compile_env = env;
     }
 
     /// Get the compile-time environment values.
     #[cfg(feature = "std")]
     #[must_use]
     pub(crate) fn compile_env(&self) -> &[(String, Value)] {
-        &self.env_values
+        self.root_compile_env
     }
+
     /// Push a new empty layer, returning a mutable reference to populate it.
     pub fn push_layer(&mut self) -> &mut HashMap<String, Value> {
         if self.active_len < self.layers.len() {
@@ -162,43 +271,76 @@ impl<'a> Scope<'a> {
     pub fn pop_layer(&mut self) {
         if self.active_len > 0 {
             self.active_len -= 1;
+            if self.active_len == 0 {
+                self.fallback_loop_vals = None;
+            }
         }
+    }
+
+    #[inline]
+    fn loop_slot_mut(&mut self, idx: usize) -> &mut LoopSlot {
+        if idx < INLINE_LOOP_SLOTS {
+            &mut self.inline_loops[idx]
+        } else {
+            &mut self.overflow_loops[idx - INLINE_LOOP_SLOTS]
+        }
+    }
+
+    #[inline]
+    fn loop_slot_ref(&self, idx: usize) -> &LoopSlot {
+        if idx < INLINE_LOOP_SLOTS {
+            &self.inline_loops[idx]
+        } else {
+            &self.overflow_loops[idx - INLINE_LOOP_SLOTS]
+        }
+    }
+
+    /// Acquire a loop binding slot for `key` once at the start of a `{% for %}` loop.
+    #[inline]
+    pub(crate) fn begin_loop(&mut self, key: &str) -> usize {
+        let idx = self.active_loop_bindings;
+        if idx < INLINE_LOOP_SLOTS {
+            self.inline_loops[idx].key.set(key);
+        } else {
+            let overflow_idx = idx - INLINE_LOOP_SLOTS;
+            if overflow_idx < self.overflow_loops.len() {
+                self.overflow_loops[overflow_idx].key.set(key);
+            } else {
+                let mut slot = LoopSlot::EMPTY;
+                slot.key.set(key);
+                self.overflow_loops.push(slot);
+            }
+        }
+        self.active_loop_bindings = idx + 1;
+        idx
+    }
+
+    /// Update the value and iteration metadata of an active loop slot in-place.
+    #[inline]
+    pub(crate) fn update_loop_slot(
+        &mut self,
+        slot_idx: usize,
+        value: &Value,
+        index: i64,
+        len: usize,
+    ) {
+        let slot = self.loop_slot_mut(slot_idx);
+        slot.set_value(value);
+        slot.meta = Some(LoopMeta { index, len });
+        slot.val_index0 = Value::Int(index);
+        slot.val_index = Value::Int(index + 1);
+        slot.val_len = Value::Int(i64::try_from(len).expect("loop length fits i64"));
     }
 
     /// Push a loop binding from a reference, reusing the existing string
     /// allocation when both old and new values are strings.
-    ///
-    /// In a loop of N iterations over strings, this avoids N-1 heap
-    /// allocations by clearing and reusing the buffer from iteration 0.
-    /// For non-string types (`Int`, `Bool`, `Arc`-wrapped `List`/`Struct`),
-    /// `clone()` is already cheap.
-    ///
-    /// Used by for-loops to avoid `HashMap` layer overhead. The binding is
-    /// checked before `HashMap` layers in `resolve()`.
+    #[cfg(test)]
     #[inline]
     pub(crate) fn push_loop_binding(&mut self, key: &str, value: &Value) {
-        if self.active_loop_bindings < self.loop_bindings.len() {
-            let slot = &mut self.loop_bindings[self.active_loop_bindings];
-            // Skip key update if it already matches (common in for-loops
-            // where the binding name is the same every iteration).
-            if slot.0 != key {
-                slot.0.clear();
-                slot.0.push_str(key);
-            }
-            // Reuse string allocation when both old and new are strings.
-            match (&mut slot.1, value) {
-                (Value::Str(old), Value::Str(new)) if old.capacity() > 0 => {
-                    old.clear();
-                    old.push_str(new);
-                }
-                _ => slot.1 = value.clone(),
-            }
-            slot.2 = None;
-        } else {
-            self.loop_bindings
-                .push((key.to_string(), value.clone(), None));
-        }
-        self.active_loop_bindings += 1;
+        let idx = self.begin_loop(key);
+        let slot = self.loop_slot_mut(idx);
+        slot.set_value(value);
+        slot.meta = None;
     }
 
     /// Pop the most recent loop binding.
@@ -214,28 +356,27 @@ impl<'a> Scope<'a> {
     /// Must be called after `push_loop_binding` or `push_layer` to associate
     /// metadata with the current binding.
     pub(crate) fn set_loop_meta(&mut self, binding: &str, meta: LoopMeta) {
-        // Fast path: the most common case is setting meta right after
-        // push_loop_binding, so the target is at the top of the stack.
-        if self.active_loop_bindings > 0 {
-            let top = &mut self.loop_bindings[self.active_loop_bindings - 1];
-            if top.0 == binding {
-                top.2 = Some(meta);
-                return;
-            }
-        }
-        // Slow path: search the rest of the stack (innermost first).
-        for (k, _, m) in self.loop_bindings[..self.active_loop_bindings]
-            .iter_mut()
-            .rev()
-        {
-            if k == binding {
-                *m = Some(meta);
+        let mut i = self.active_loop_bindings;
+        while i > 0 {
+            i -= 1;
+            let slot = self.loop_slot_mut(i);
+            if slot.key.eq_str(binding) {
+                slot.meta = Some(meta);
+                slot.val_index0 = Value::Int(meta.index);
+                slot.val_index = Value::Int(meta.index + 1);
+                slot.val_len = Value::Int(i64::try_from(meta.len).expect("loop length fits i64"));
                 return;
             }
         }
         // Fall back to HashMap-based layers (used by includes with for_each).
         if self.active_len > 0 {
             self.loop_metas[self.active_len - 1].insert(binding.to_string(), meta);
+            self.fallback_loop_vals = Some((
+                meta,
+                Value::Int(meta.index),
+                Value::Int(meta.index + 1),
+                Value::Int(i64::try_from(meta.len).expect("loop length fits i64")),
+            ));
         }
     }
 
@@ -244,10 +385,12 @@ impl<'a> Scope<'a> {
     /// Searches layers top-to-bottom, so the innermost loop with that binding
     /// wins — but outer bindings with different names remain accessible.
     pub(crate) fn get_loop_meta(&self, binding: &str) -> Option<&LoopMeta> {
-        // Check lightweight loop_bindings stack first.
-        for (k, _, m) in self.loop_bindings[..self.active_loop_bindings].iter().rev() {
-            if k == binding {
-                return m.as_ref();
+        let mut i = self.active_loop_bindings;
+        while i > 0 {
+            i -= 1;
+            let slot = self.loop_slot_ref(i);
+            if slot.key.eq_str(binding) {
+                return slot.meta.as_ref();
             }
         }
         // Fall back to HashMap-based layers.
@@ -259,9 +402,99 @@ impl<'a> Scope<'a> {
         None
     }
 
+    pub(crate) fn get_active_loop_slot(&self) -> Option<(&LoopMeta, &Value, &Value, &Value)> {
+        let mut i = self.active_loop_bindings;
+        while i > 0 {
+            i -= 1;
+            let slot = self.loop_slot_ref(i);
+            if let Some(ref meta) = slot.meta {
+                return Some((meta, &slot.val_index0, &slot.val_index, &slot.val_len));
+            }
+        }
+        None
+    }
+
+    pub(crate) fn resolve_loop_prop(&self, prop: &str) -> Result<&Value, TemplateError> {
+        static VAL_TRUE: Value = Value::Bool(true);
+        static VAL_FALSE: Value = Value::Bool(false);
+
+        if let Some((meta, val_index0, val_index, val_len)) = self.get_active_loop_slot() {
+            return match prop {
+                crate::consts::LOOP_FIRST => {
+                    if meta.index == 0 {
+                        Ok(&VAL_TRUE)
+                    } else {
+                        Ok(&VAL_FALSE)
+                    }
+                }
+                crate::consts::LOOP_LAST => {
+                    let is_last = meta.len > 0
+                        && meta.index + 1 == i64::try_from(meta.len).expect("len fits i64");
+                    if is_last {
+                        Ok(&VAL_TRUE)
+                    } else {
+                        Ok(&VAL_FALSE)
+                    }
+                }
+                crate::consts::LOOP_INDEX0 => Ok(val_index0),
+                crate::consts::LOOP_INDEX => Ok(val_index),
+                crate::consts::LOOP_LENGTH | crate::consts::LOOP_LEN => Ok(val_len),
+                _ => Err(TemplateError::UndefinedVariable(alloc::format!(
+                    "field '{prop}' not found on loop"
+                ))),
+            };
+        }
+
+        if let Some((meta, val_index0, val_index, val_len)) = &self.fallback_loop_vals {
+            return match prop {
+                crate::consts::LOOP_FIRST => {
+                    if meta.index == 0 {
+                        Ok(&VAL_TRUE)
+                    } else {
+                        Ok(&VAL_FALSE)
+                    }
+                }
+                crate::consts::LOOP_LAST => {
+                    let is_last = meta.len > 0
+                        && meta.index + 1 == i64::try_from(meta.len).expect("len fits i64");
+                    if is_last {
+                        Ok(&VAL_TRUE)
+                    } else {
+                        Ok(&VAL_FALSE)
+                    }
+                }
+                crate::consts::LOOP_INDEX0 => Ok(val_index0),
+                crate::consts::LOOP_INDEX => Ok(val_index),
+                crate::consts::LOOP_LENGTH | crate::consts::LOOP_LEN => Ok(val_len),
+                _ => Err(TemplateError::UndefinedVariable(alloc::format!(
+                    "field '{prop}' not found on loop"
+                ))),
+            };
+        }
+
+        Err(TemplateError::UndefinedVariable(
+            "loop metadata is only available inside a for loop".into(),
+        ))
+    }
+
     /// Set the inline template definitions for this scope.
     pub fn set_inline_templates(&mut self, templates: &'a HashMap<String, CompiledInlineTemplate>) {
         self.inline_templates = templates;
+    }
+
+    /// Borrow root constants directly from the top-level `Template` without heap/atomic overhead.
+    #[inline]
+    pub fn set_root_consts(
+        &mut self,
+        consts: &'a HashMap<String, Value>,
+        imported_consts: &'a HashMap<String, Value>,
+    ) {
+        if !consts.is_empty() {
+            self.root_consts = Some(consts);
+        }
+        if !imported_consts.is_empty() {
+            self.root_imported_consts = Some(imported_consts);
+        }
     }
 
     /// Set the constants for this scope.
@@ -294,17 +527,33 @@ impl<'a> Scope<'a> {
         self.imported_consts_stack.pop();
     }
 
-    /// Set parameter declarations for this scope.
-    pub fn with_declarations(mut self, decls: &Arc<[crate::types::VarDecl]>) -> Self {
-        if !decls.is_empty() {
-            self.declarations_stack.push(Arc::clone(decls));
-        }
+    /// Set parameter declarations for this scope (borrowing directly without heap allocation).
+    #[must_use]
+    pub fn with_declarations(mut self, decls: &'a [crate::types::VarDecl]) -> Self {
+        self.root_declarations = decls;
+        self.has_options = decls.iter().any(|d| d.var_type.contains_option());
+        self
+    }
+
+    /// Set parameter declarations with a precomputed `has_options` flag.
+    #[inline]
+    #[must_use]
+    pub fn with_root_declarations(
+        mut self,
+        decls: &'a [crate::types::VarDecl],
+        has_options: bool,
+    ) -> Self {
+        self.root_declarations = decls;
+        self.has_options = has_options;
         self
     }
 
     /// Push parameter declarations onto the stack.
     pub(crate) fn push_declarations(&mut self, decls: &[crate::types::VarDecl]) {
         if !decls.is_empty() {
+            if !self.has_options && decls.iter().any(|d| d.var_type.contains_option()) {
+                self.has_options = true;
+            }
             self.declarations_stack.push(Arc::from(decls));
         }
     }
@@ -316,39 +565,51 @@ impl<'a> Scope<'a> {
         }
     }
 
+    fn resolve_in_decl_slice<'d>(
+        decls: &'d [crate::types::VarDecl],
+        root: &str,
+        arg: &str,
+    ) -> Option<&'d crate::types::VarType> {
+        let decl = decls.iter().find(|d| d.name == root)?;
+        let mut current_type = &decl.var_type;
+        if arg == root {
+            return Some(current_type);
+        }
+        for part in arg.split(crate::consts::PATH_SEP).skip(1) {
+            match current_type {
+                crate::types::VarType::Struct(fields) | crate::types::VarType::List(fields) => {
+                    if let Some(f) = fields.iter().find(|d| d.name == part) {
+                        current_type = &f.var_type;
+                    } else {
+                        return None;
+                    }
+                }
+                crate::types::VarType::Option(inner) => {
+                    current_type = inner;
+                }
+                _ => return None,
+            }
+        }
+        Some(current_type)
+    }
+
     /// Look up the declared `VarType` for a dotted variable path from the declaration stack.
     pub(crate) fn resolve_declared_type(&self, arg: &str) -> Option<&crate::types::VarType> {
         let root = arg.split(crate::consts::PATH_SEP).next().unwrap_or(arg);
         for decls in self.declarations_stack.iter().rev() {
-            if let Some(decl) = decls.iter().find(|d| d.name == root) {
-                let mut current_type = &decl.var_type;
-                if arg == root {
-                    return Some(current_type);
-                }
-                for part in arg.split(crate::consts::PATH_SEP).skip(1) {
-                    match current_type {
-                        crate::types::VarType::Struct(fields)
-                        | crate::types::VarType::List(fields) => {
-                            if let Some(f) = fields.iter().find(|d| d.name == part) {
-                                current_type = &f.var_type;
-                            } else {
-                                return None;
-                            }
-                        }
-                        crate::types::VarType::Option(inner) => {
-                            current_type = inner;
-                        }
-                        _ => return None,
-                    }
-                }
-                return Some(current_type);
+            if let Some(ty) = Self::resolve_in_decl_slice(decls, root, arg) {
+                return Some(ty);
             }
         }
-        None
+        Self::resolve_in_decl_slice(self.root_declarations, root, arg)
     }
 
     /// Check if a dotted variable path resolves to an option type in declared parameters.
+    #[inline]
     pub(crate) fn is_option_path(&self, arg: &str) -> bool {
+        if !self.has_options {
+            return false;
+        }
         // If this path has been narrowed (unwrapped via case Some / if has()),
         // it is no longer an option for kind()/match purposes.
         if self.narrowed_options.iter().any(|s| s == arg) {
@@ -526,19 +787,6 @@ impl<'a> Scope<'a> {
     }
 
     /// Check if an option value is present (`Some`).
-    ///
-    /// Options use a **transparent** value representation: the absent case
-    /// (`None`) is always [`Value::None`], and every other value is the inner
-    /// `Some(T)` payload directly (e.g. `Some("x")` is `Value::Str("x")`,
-    /// `Some(Active{..})` is the enum struct-variant `Value::Struct`).
-    ///
-    /// Presence is therefore defined purely by *not* being [`Value::None`].
-    /// This is correct for **all** inner types — including `option(enum)` whose
-    /// `Some` payload is a `__kind__`-tagged struct variant — and matches the
-    /// `Value::None` discrimination used by `kind()` and `{% match %}`.
-    ///
-    /// Callers gate this on the type-driven [`Scope::is_option_path`], so it is
-    /// only consulted for values statically known to be `option(T)`.
     pub(crate) fn is_option_some(val: &Value) -> bool {
         !matches!(val, Value::None)
     }
@@ -574,41 +822,88 @@ impl<'a> Scope<'a> {
         self.include_depth = self.include_depth.saturating_sub(1);
     }
 
+    #[inline]
+    fn resolve_loop_binding(&self, key: &str) -> Option<&Value> {
+        let n = self.active_loop_bindings;
+        if n <= INLINE_LOOP_SLOTS {
+            let mut i = n;
+            while i > 0 {
+                i -= 1;
+                let slot = &self.inline_loops[i];
+                if slot.key.eq_str(key) {
+                    return Some(&slot.value);
+                }
+            }
+            None
+        } else {
+            let mut i = n;
+            while i > 0 {
+                i -= 1;
+                let slot = self.loop_slot_ref(i);
+                if slot.key.eq_str(key) {
+                    return Some(&slot.value);
+                }
+            }
+            None
+        }
+    }
+
+    #[inline]
+    fn has_any_imported_consts(&self) -> bool {
+        self.root_imported_consts.is_some() || !self.imported_consts_stack.is_empty()
+    }
+
+    #[inline]
+    fn get_imported_const(&self, stem_key: &str) -> Option<&Value> {
+        for imported in self.imported_consts_stack.iter().rev() {
+            if let Some(v) = imported.get(stem_key) {
+                return Some(v);
+            }
+        }
+        if let Some(root_imp) = self.root_imported_consts
+            && let Some(v) = root_imp.get(stem_key)
+        {
+            return Some(v);
+        }
+        None
+    }
+
     /// Resolve a simple (non-dotted) variable name.
     #[inline]
     #[must_use]
     pub fn resolve(&self, key: &str) -> Option<&Value> {
         // Fast path: no consts, no imported consts, and no layers — go straight to loop bindings + context.
-        if self.consts_stack.is_empty()
+        if self.root_consts.is_none()
+            && self.root_imported_consts.is_none()
+            && self.consts_stack.is_empty()
             && self.imported_consts_stack.is_empty()
             && self.active_len == 0
         {
-            // Check loop bindings (innermost first).
-            for (k, v, _) in self.loop_bindings[..self.active_loop_bindings].iter().rev() {
-                if k == key {
-                    return Some(v);
-                }
+            if self.active_loop_bindings > 0
+                && let Some(v) = self.resolve_loop_binding(key)
+            {
+                return Some(v);
             }
             return self.ctx.get(key);
         }
         // 1. Local constants (strictly immutable, highest priority).
-        // Search stack innermost first.
         for consts in self.consts_stack.iter().rev() {
             if let Some(v) = consts.get(key) {
                 return Some(v);
             }
         }
+        if let Some(root_c) = self.root_consts
+            && let Some(v) = root_c.get(key)
+        {
+            return Some(v);
+        }
         // 1b. Imported constants (type aliases, included template consts).
-        for imported in self.imported_consts_stack.iter().rev() {
-            if let Some(v) = imported.get(key) {
-                return Some(v);
-            }
+        if let Some(v) = self.get_imported_const(key) {
+            return Some(v);
         }
         // 2. Loop bindings (lightweight stack, checked before HashMap layers).
-        for (k, v, _) in self.loop_bindings[..self.active_loop_bindings].iter().rev() {
-            if k == key {
-                return Some(v);
-            }
+        if let Some(v) = self.resolve_loop_binding(key) {
+            return Some(v);
         }
         // 3. Layered bindings (from for-loops with includes, etc.).
         for layer in self.layers[..self.active_len].iter().rev() {
@@ -636,10 +931,41 @@ impl<'a> Scope<'a> {
                 .ok_or_else(|| TemplateError::UndefinedVariable(root_key.clone()));
         }
 
+        // Loop metadata fast path (`loop.<prop>`).
+        if path.parts[0] == crate::consts::LOOP {
+            if path.parts.len() == 2 {
+                return self.resolve_loop_prop(&path.parts[1]);
+            }
+            return Err(TemplateError::UndefinedVariable(alloc::format!(
+                "field '{}' not found on loop",
+                path.parts[1]
+            )));
+        }
+
+        // Fast path for 2-part dotted paths (`obj.field`) when no imported consts or options exist.
+        if path.parts.len() == 2 && !self.has_any_imported_consts() && !self.has_options {
+            let root_key = &path.parts[0];
+            let field_key = &path.parts[1];
+            let root = self
+                .resolve(root_key)
+                .ok_or_else(|| TemplateError::UndefinedVariable(root_key.clone()))?;
+            if let Some(val) = root.get_field_unchecked(field_key) {
+                return Ok(val);
+            }
+            let available = root.field_names_hint();
+            let hint = if available.is_empty() {
+                String::new()
+            } else {
+                format!(". Available fields: {}", available.join(", "))
+            };
+            return Err(TemplateError::UndefinedVariable(format!(
+                "field '{field_key}' not found on {} at path '{root_key}.{field_key}'{hint}",
+                root.type_name(),
+            )));
+        }
+
         // 1. Check if it's an imported constant (stem.NAME[.field]*).
-        if !self.imported_consts_stack.is_empty() && path.parts.len() >= 2 {
-            // Build the "stem.NAME" key without heap allocation when possible.
-            // Most const keys are short (< 128 bytes), so a stack buffer suffices.
+        if self.has_any_imported_consts() && path.parts.len() >= 2 {
             let p0 = &path.parts[0];
             let p1 = &path.parts[1];
             let needed = p0.len() + 1 + p1.len();
@@ -648,27 +974,22 @@ impl<'a> Scope<'a> {
                 stack_buf[..p0.len()].copy_from_slice(p0.as_bytes());
                 stack_buf[p0.len()] = b'.';
                 stack_buf[p0.len() + 1..needed].copy_from_slice(p1.as_bytes());
-                // Both parts are valid UTF-8 and '.' is ASCII, so this never fails.
                 core::str::from_utf8(&stack_buf[..needed]).unwrap_or(&path.raw)
             } else {
-                // Fallback for very long names: heap allocate.
-                // This branch is extremely rare in practice.
                 &path.raw
             };
 
-            for imported in self.imported_consts_stack.iter().rev() {
-                if let Some(v) = imported.get(stem_key) {
-                    let mut current = v;
-                    for part in &path.parts[2..] {
-                        current = current.get_field_unchecked(part).ok_or_else(|| {
-                            TemplateError::UndefinedVariable(format!(
-                                "field '{part}' not found on {}",
-                                current.type_name()
-                            ))
-                        })?;
-                    }
-                    return Ok(current);
+            if let Some(v) = self.get_imported_const(stem_key) {
+                let mut current = v;
+                for part in &path.parts[2..] {
+                    current = current.get_field_unchecked(part).ok_or_else(|| {
+                        TemplateError::UndefinedVariable(format!(
+                            "field '{part}' not found on {}",
+                            current.type_name()
+                        ))
+                    })?;
                 }
+                return Ok(current);
             }
         }
 
@@ -732,26 +1053,29 @@ impl<'a> Scope<'a> {
                 .ok_or_else(|| TemplateError::UndefinedVariable(path.to_string()));
         }
 
+        // Loop metadata fast path (e.g. `loop.first`, `loop.index`).
+        if let Some(prop) = path.strip_prefix("loop.") {
+            return self.resolve_loop_prop(prop.trim());
+        }
+
         // 1. Check if it's an imported constant (stem.NAME[.field]*).
-        if !self.imported_consts_stack.is_empty() {
-            for imported in self.imported_consts_stack.iter().rev() {
-                let mut parts = path.split(crate::consts::PATH_SEP);
-                let first = parts.next().unwrap_or("").trim();
-                if let Some(second) = parts.next() {
-                    let stem_name = format!("{}.{}", first, second.trim());
-                    if let Some(v) = imported.get(&stem_name) {
-                        let mut current = v;
-                        for part in parts {
-                            let part = part.trim();
-                            current = current.get_field(part).ok_or_else(|| {
-                                TemplateError::UndefinedVariable(format!(
-                                    "field '{part}' not found on {}",
-                                    current.type_name()
-                                ))
-                            })?;
-                        }
-                        return Ok(current);
+        if self.has_any_imported_consts() {
+            let mut parts = path.split(crate::consts::PATH_SEP);
+            let first = parts.next().unwrap_or("").trim();
+            if let Some(second) = parts.next() {
+                let stem_name = format!("{}.{}", first, second.trim());
+                if let Some(v) = self.get_imported_const(&stem_name) {
+                    let mut current = v;
+                    for part in parts {
+                        let part = part.trim();
+                        current = current.get_field(part).ok_or_else(|| {
+                            TemplateError::UndefinedVariable(format!(
+                                "field '{part}' not found on {}",
+                                current.type_name()
+                            ))
+                        })?;
                     }
+                    return Ok(current);
                 }
             }
         }

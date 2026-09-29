@@ -22,6 +22,10 @@ import { type ImportDecl, type VarDecl, type VarType } from "./types.js";
 import { isValidPathPrefix, stripStringLiteral } from "./paths.js";
 import { parseVarType } from "./var_type.js";
 import { parseLiteralOrConst, splitDefault } from "./literals.js";
+import {
+  extractDeclarationSanitize,
+  type SanitizeSpec,
+} from "../sanitize_pass.js";
 
 /**
  * Strip an outer YAML quoted scalar wrapping a whole declaration and unescape
@@ -78,15 +82,26 @@ export function parseParamDecl(
   raw: string,
   constValues?: ReadonlyMap<string, Value>,
   isConstant = false,
+  typeAliasSanitize?: ReadonlyMap<string, ReadonlyMap<string, SanitizeSpec>>,
 ): VarDecl {
-  return parseParamDeclDeferred(raw, constValues, isConstant)[0];
+  return parseParamDeclDeferred(
+    raw,
+    constValues,
+    isConstant,
+    typeAliasSanitize,
+  )[0];
 }
 
 export function parseParamDeclDeferred(
   raw: string,
   constValues?: ReadonlyMap<string, Value>,
   isConstant = false,
-): [VarDecl, { text: string; varType: VarType } | undefined] {
+  typeAliasSanitize?: ReadonlyMap<string, ReadonlyMap<string, SanitizeSpec>>,
+): [
+  VarDecl,
+  { text: string; varType: VarType } | undefined,
+  Map<string, SanitizeSpec>,
+] {
   const cleaned = stripOuterQuotedDecl(raw);
   const defaultSplit = splitDefault(cleaned);
   const [nameType, defaultLiteral] = defaultSplit;
@@ -112,11 +127,19 @@ export function parseParamDeclDeferred(
   const name = stripStringLiteral(nameType.slice(0, eqIdx).trim());
   const typeStr = nameType.slice(eqIdx + 1).trim();
 
-  const varType = parseVarType(typeStr);
-  if (defaultLiteral === undefined) {
-    return [{ name, varType }, undefined];
+  const [cleanedType, cleanedDefaultLit, relSpecs] = extractDeclarationSanitize(
+    name,
+    typeStr,
+    defaultLiteral,
+    isConstant,
+    typeAliasSanitize,
+  );
+
+  const varType = parseVarType(cleanedType);
+  if (cleanedDefaultLit === undefined) {
+    return [{ name, varType }, undefined, relSpecs];
   }
-  const trimmedDefault = defaultLiteral.trim();
+  const trimmedDefault = cleanedDefaultLit.trim();
 
   // Check first: if it looks like a dotted reference (stem.NAME), and it's
   // not resolvable as a local const, defer resolution for imported consts.
@@ -144,16 +167,13 @@ export function parseParamDeclDeferred(
         varType,
         constValues,
       );
-      return [{ name, varType, defaultValue }, undefined];
+      return [{ name, varType, defaultValue }, undefined, relSpecs];
     } catch (err: unknown) {
       if (!(err instanceof TemplateSyntaxError)) {
         throw err;
       }
       // Defer to imported const resolution
-      return [
-        { name, varType },
-        { text: trimmedDefault, varType },
-      ];
+      return [{ name, varType }, { text: trimmedDefault, varType }, relSpecs];
     }
   }
 
@@ -163,11 +183,14 @@ export function parseParamDeclDeferred(
     varType,
     constValues,
   );
-  return [{ name, varType, defaultValue }, undefined];
+  return [{ name, varType, defaultValue }, undefined, relSpecs];
 }
 
 /** Parse `Name = type` for type aliases. */
-export function parseTypeAlias(raw: string): [string, VarType] {
+export function parseTypeAlias(
+  raw: string,
+  typeAliasSanitize?: ReadonlyMap<string, ReadonlyMap<string, SanitizeSpec>>,
+): [string, VarType, Map<string, SanitizeSpec>] {
   const cleaned = stripStringLiteral(raw);
   const eqIdx = cleaned.indexOf(EQUALS);
   if (eqIdx === -1) {
@@ -177,7 +200,14 @@ export function parseTypeAlias(raw: string): [string, VarType] {
   }
   const name = stripStringLiteral(cleaned.slice(0, eqIdx).trim());
   const typeStr = cleaned.slice(eqIdx + 1).trim();
-  return [name, parseVarType(typeStr)];
+  const [cleanedType, , relSpecs] = extractDeclarationSanitize(
+    name,
+    typeStr,
+    undefined,
+    false,
+    typeAliasSanitize,
+  );
+  return [name, parseVarType(cleanedType), relSpecs];
 }
 
 /** Parse `NAME = type := value` for constants. */

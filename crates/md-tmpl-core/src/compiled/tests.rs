@@ -88,11 +88,13 @@ fn compile_for_loop() {
         Segment::ForLoop {
             binding,
             list_expr,
+            filters,
             body,
             else_body,
         } => {
             assert_eq!(binding, "item");
             assert!(matches!(list_expr, CompiledExpr::Path(p) if p.as_str() == "items"));
+            assert!(filters.is_empty());
             assert_eq!(body.len(), 1);
             assert!(else_body.is_empty());
         }
@@ -2297,11 +2299,13 @@ fn compile_for_else_parses_else_body() {
         Segment::ForLoop {
             binding,
             list_expr,
+            filters,
             body,
             else_body,
         } => {
             assert_eq!(binding, "item");
             assert!(matches!(list_expr, CompiledExpr::Path(p) if p.as_str() == "items"));
+            assert!(filters.is_empty());
             assert_eq!(body.len(), 1, "body should have expr segment");
             assert_eq!(else_body.len(), 1, "else_body should have static segment");
             assert!(

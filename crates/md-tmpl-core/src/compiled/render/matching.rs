@@ -28,8 +28,7 @@ pub(super) fn render_match(
     let active_variant = resolve_match_variant(expr, is_option, scope)?;
 
     for arm in arms {
-        let variant_matches = arm_matches(&active_variant, &arm.variants, scope);
-        if variant_matches {
+        if arm_matches(&active_variant, &arm.variants, scope)? {
             // Evaluate guard if present.
             if let Some(ref guard) = arm.guard {
                 if !eval_condition(guard, scope)? {
@@ -69,8 +68,7 @@ pub(super) fn render_match_no_std(
     let active_variant = resolve_match_variant(expr, is_option, scope)?;
 
     for arm in arms {
-        let variant_matches = arm_matches(&active_variant, &arm.variants, scope);
-        if variant_matches {
+        if arm_matches(&active_variant, &arm.variants, scope)? {
             if let Some(ref guard) = arm.guard {
                 if !eval_condition(guard, scope)? {
                     continue;
@@ -102,11 +100,15 @@ pub(super) fn render_match_no_std(
 /// - Unquoted label matching an enum variant: compare literally
 /// - Unquoted label (param-ref on str match): resolve the param value
 ///   from scope and compare the resolved value against `active_variant`
-fn arm_matches(active_variant: &str, variants: &[Cow<'_, str>], scope: &Scope<'_>) -> bool {
+fn arm_matches(
+    active_variant: &str,
+    variants: &[Cow<'_, str>],
+    scope: &Scope<'_>,
+) -> Result<bool, TemplateError> {
     for v in variants {
         let label = v.as_ref();
         if label == crate::consts::MATCH_DEFAULT {
-            return true;
+            return Ok(true);
         }
         // Quoted string literal: strip quotes, unescape, interpolate if needed,
         // and compare.
@@ -114,32 +116,28 @@ fn arm_matches(active_variant: &str, variants: &[Cow<'_, str>], scope: &Scope<'_
             let inner = crate::consts::unescape_string_literal(inner);
             if inner.contains(crate::consts::EXPR_START) {
                 // Contains {{ expr }} — compile and render the interpolated string.
-                // NOLINT: compile/render failure means the label doesn't match — fall through to literal comparison
-                if let Ok(segments) = crate::compiled::compile_body(&inner) {
-                    // NOLINT: render failure means the interpolated label is unresolvable — not a match
-                    if let Ok(rendered) = render_interpolated_str(&segments, scope) {
-                        if active_variant == rendered.as_str() {
-                            return true;
-                        }
-                    }
+                let segments = crate::compiled::compile_body(&inner)?;
+                let rendered = render_interpolated_str(&segments, scope)?;
+                if rendered == active_variant {
+                    return Ok(true);
                 }
             } else if active_variant == inner.as_str() {
-                return true;
+                return Ok(true);
             }
             continue;
         }
         // Direct comparison (enum variant name).
         if active_variant == label {
-            return true;
+            return Ok(true);
         }
         // Param-ref: resolve label as a variable and compare its string value.
         if let Some(Value::Str(s)) = scope.resolve(label) {
             if active_variant == s.as_str() {
-                return true;
+                return Ok(true);
             }
         }
     }
-    false
+    Ok(false)
 }
 
 /// Resolve the active variant name for a match expression.

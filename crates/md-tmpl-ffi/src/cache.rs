@@ -4,7 +4,7 @@ use std::{ffi::c_char, path::Path, ptr, sync::Arc};
 
 use md_tmpl::TemplateCache;
 
-use crate::{PtCache, PtTemplate, cstr_to_str, err_to_cstring, terr_to_cstring};
+use crate::{ERR_NULL_CACHE, PtCache, PtTemplate, cstr_to_str, err_to_cstring, terr_to_cstring};
 
 /// Create a new template cache.
 #[unsafe(no_mangle)]
@@ -40,7 +40,7 @@ pub unsafe extern "C" fn pt_cache_load(
     out: *mut *mut PtTemplate,
 ) -> *mut c_char {
     let Some(cache) = (unsafe { cache.as_ref() }) else {
-        return err_to_cstring("null cache");
+        return err_to_cstring(ERR_NULL_CACHE);
     };
     let path_str = match unsafe { cstr_to_str(path) } {
         Ok(s) => s,

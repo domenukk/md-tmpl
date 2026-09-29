@@ -91,6 +91,14 @@ impl<'a> CompileOptions<'a> {
     }
 }
 
+static NEXT_VALIDATION_TOKEN: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(2);
+
+#[inline]
+fn next_validation_token() -> usize {
+    NEXT_VALIDATION_TOKEN.fetch_add(2, core::sync::atomic::Ordering::Relaxed)
+}
+
 /// A parsed template ready for rendering.
 ///
 /// Templates can be loaded from files or parsed from in-memory strings.
@@ -116,6 +124,10 @@ pub struct Template {
     max_include_depth: usize,
     /// Pre-computed: true if any declared variable has a default value.
     has_defaults: bool,
+    /// Pre-computed: true if any declared variable (or nested field) is `Option`.
+    has_options: bool,
+    /// Monotonic even identifier for fast `Context` validation caching.
+    validation_token: usize,
     /// Constants defined in this template.
     consts: Arc<HashMap<String, crate::value::Value>>,
     /// Imported constants keyed by `stem.NAME`.
@@ -164,6 +176,8 @@ impl Clone for Template {
             source_hash: self.source_hash,
             max_include_depth: self.max_include_depth,
             has_defaults: self.has_defaults,
+            has_options: self.has_options,
+            validation_token: self.validation_token,
             consts: self.consts.clone(),
             imported_consts: self.imported_consts.clone(),
             estimated_capacity: self.estimated_capacity,
@@ -384,12 +398,18 @@ impl Template {
             frontmatter::parse_frontmatter_with_env(source, env_values)?
         };
         let body = body.to_string();
-        let (segments, inline_templates) = compiled::compile(&body, &fm.type_aliases)?;
+        let (mut segments, inline_templates) = compiled::compile(&body, &fm.type_aliases)?;
+        compiled::apply_frontmatter_sanitization(
+            &mut segments,
+            &fm.param_sanitize,
+            fm.sanitize_notice.as_deref(),
+        );
 
         // --- Static analysis ---
         run_static_analysis(&segments, &fm, &inline_templates, force_allow_unused)?;
 
         let has_defaults = fm.declarations.iter().any(|d| d.default_value.is_some());
+        let has_options = fm.declarations.iter().any(|d| d.var_type.contains_option());
         let mut consts: HashMap<String, Value> = fm
             .consts
             .iter()
@@ -421,6 +441,8 @@ impl Template {
             source_hash,
             max_include_depth: crate::scope::MAX_INCLUDE_DEPTH,
             has_defaults,
+            has_options,
+            validation_token: next_validation_token(),
             consts: Arc::new(consts),
             imported_consts: Arc::new(fm.imported_consts.clone()),
             estimated_capacity,
@@ -447,11 +469,17 @@ impl Template {
         let source_hash = hash_source_no_std(source);
         let (fm, body) = frontmatter::parse_frontmatter_with_env(source, env_values)?;
         let body = body.to_string();
-        let (segments, inline_templates) = compiled::compile(&body, &fm.type_aliases)?;
+        let (mut segments, inline_templates) = compiled::compile(&body, &fm.type_aliases)?;
+        compiled::apply_frontmatter_sanitization(
+            &mut segments,
+            &fm.param_sanitize,
+            fm.sanitize_notice.as_deref(),
+        );
 
         run_static_analysis(&segments, &fm, &inline_templates, force_allow_unused)?;
 
         let has_defaults = fm.declarations.iter().any(|d| d.default_value.is_some());
+        let has_options = fm.declarations.iter().any(|d| d.var_type.contains_option());
         let mut consts: HashMap<String, Value> = fm
             .consts
             .iter()
@@ -478,6 +506,8 @@ impl Template {
             source_hash,
             max_include_depth: crate::scope::MAX_INCLUDE_DEPTH,
             has_defaults,
+            has_options,
+            validation_token: next_validation_token(),
             consts: Arc::new(consts),
             imported_consts: Arc::new(fm.imported_consts.clone()),
             estimated_capacity,
@@ -498,6 +528,10 @@ impl Template {
             .declared_variables
             .iter()
             .any(|d| d.default_value.is_some());
+        let has_options = data
+            .declared_variables
+            .iter()
+            .any(|d| d.var_type.contains_option());
         let estimated_capacity = compiled::render::estimate_output_capacity(&data.segments);
         let declared_names = build_declared_names(&data.declared_variables, &data.consts);
         Self {
@@ -511,6 +545,8 @@ impl Template {
             source_hash: data.source_hash,
             max_include_depth: crate::scope::MAX_INCLUDE_DEPTH,
             has_defaults,
+            has_options,
+            validation_token: next_validation_token(),
             consts: data.consts,
             imported_consts: data.imported_consts,
             estimated_capacity,
@@ -543,6 +579,10 @@ impl Template {
             .declared_variables
             .iter()
             .any(|d| d.default_value.is_some());
+        let has_options = data
+            .declared_variables
+            .iter()
+            .any(|d| d.var_type.contains_option());
         let segments: Arc<[Segment]> = Arc::from(data.segments);
         let estimated_capacity = compiled::render::estimate_output_capacity(&segments);
         let declared_names = build_declared_names(data.declared_variables, &const_map);
@@ -558,6 +598,8 @@ impl Template {
             source_hash: data.source_hash,
             max_include_depth: crate::scope::MAX_INCLUDE_DEPTH,
             has_defaults,
+            has_options,
+            validation_token: next_validation_token(),
             consts: Arc::new(const_map),
             imported_consts: Arc::new(imported_const_map),
             estimated_capacity,
@@ -582,17 +624,34 @@ impl Template {
     /// wrong type, or [`TemplateError::ExtraParams`] if undeclared keys
     /// are present (and `allow_extra` is false).
     fn validate_context(&self, ctx: &Context, allow_extra: bool) -> Result<(), TemplateError> {
-        let mut missing = Vec::new();
+        let strict_tok = self.validation_token;
+        let target_tok = if allow_extra {
+            strict_tok | 1
+        } else {
+            strict_tok
+        };
+        let cached = ctx
+            .validated_token
+            .load(core::sync::atomic::Ordering::Relaxed);
+        if cached != 0 && (cached == target_tok || cached == strict_tok) {
+            return Ok(());
+        }
+
+        let mut missing: Option<Vec<&str>> = None;
         let mut mismatch: Option<(String, crate::types::TypeCheckError)> = None;
+        let mut found_count = 0usize;
         for decl in self.declared_variables.iter() {
             match ctx.get(&decl.name) {
                 None => {
                     // Skip params with defaults — they'll be injected.
                     if decl.default_value.is_none() {
-                        missing.push(decl.name.as_str());
+                        missing
+                            .get_or_insert_with(Vec::new)
+                            .push(decl.name.as_str());
                     }
                 }
                 Some(value) => {
+                    found_count += 1;
                     if mismatch.is_none()
                         && let Err(e) = decl.var_type.check(value)
                     {
@@ -602,7 +661,7 @@ impl Template {
             }
         }
         // Report missing params first (most fundamental).
-        if !missing.is_empty() {
+        if let Some(missing) = missing {
             return Err(TemplateError::MissingParams(
                 missing.into_iter().map(String::from).collect(),
             ));
@@ -621,20 +680,20 @@ impl Template {
             });
         }
         // Reject extra (undeclared) parameters unless explicitly allowed.
-        if !allow_extra
-            && ctx
-                .values
-                .keys()
-                .any(|k| !self.declared_names.contains(k.as_str()))
-        {
+        // If found_count == ctx.values.len(), all keys in ctx.values are declared params!
+        if !allow_extra && found_count != ctx.values.len() {
             let extra: Vec<String> = ctx
                 .values
                 .keys()
                 .filter(|k| !self.declared_names.contains(k.as_str()))
                 .cloned()
                 .collect();
-            return Err(TemplateError::ExtraParams(extra));
+            if !extra.is_empty() {
+                return Err(TemplateError::ExtraParams(extra));
+            }
         }
+        ctx.validated_token
+            .store(target_tok, core::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
 
@@ -912,8 +971,7 @@ impl serde::Serialize for Template {
 #[cfg(feature = "serde")]
 impl<'de> serde::Deserialize<'de> for Template {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        // NOLINT: serde's IgnoredAny pattern — the value is intentionally discarded to consume input
-        let _ = <serde::de::IgnoredAny as serde::Deserialize>::deserialize(deserializer)?;
+        <serde::de::IgnoredAny as serde::Deserialize>::deserialize(deserializer)?;
         Err(serde::de::Error::custom(
             "Template cannot be deserialized; construct from source with \
              Template::from_source() or Template::from_file()",

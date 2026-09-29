@@ -7,7 +7,8 @@
 pub(crate) mod analysis;
 mod blockquote;
 mod inline;
-pub(crate) mod render;
+pub mod render;
+pub(crate) mod sanitize_pass;
 pub(crate) mod type_check;
 pub(crate) mod type_resolve;
 
@@ -31,6 +32,9 @@ pub(crate) use render::render_segments;
 pub(crate) use render::render_segments_into;
 #[cfg(not(feature = "std"))]
 pub(crate) use render::render_segments_into_no_std;
+pub use sanitize_pass::{
+    SanitizeFilterMode, apply_enclosing_xml_tags, apply_frontmatter_sanitization,
+};
 pub use type_check::{
     validate_field_accesses, validate_field_accesses_full, validate_field_accesses_runtime,
     validate_field_accesses_with_opaque, validate_match_labels,
@@ -97,10 +101,11 @@ pub enum Segment {
         expr: CompiledExpr,
         filters: Vec<ParsedFilter>,
     },
-    /// `{% for binding in list_expr %}body{% /for %}`.
+    /// `{% for binding in list_expr | filter %}body{% /for %}`.
     ForLoop {
         binding: Cow<'static, str>,
         list_expr: CompiledExpr,
+        filters: Vec<ParsedFilter>,
         body: Vec<Segment>,
         else_body: Vec<Segment>,
     },
@@ -196,6 +201,8 @@ pub struct ParsedFilter {
     /// Pre-parsed numeric argument for filters like `fixed(n)`, `limit(n)`, `add(n)`, `sub(n)`.
     /// Avoids repeated `str::parse::<usize>()` on every render call.
     pub parsed_num: Option<usize>,
+    /// Pre-resolved execution mode for [`FilterKind::Sanitize`].
+    pub sanitize_mode: Option<SanitizeFilterMode>,
 }
 
 /// Strongly-typed filter names, resolved at compile time.
@@ -219,14 +226,45 @@ pub enum FilterKind {
     Sub,
     /// `| escape_xml` / `| xml` — escape XML entities.
     EscapeXml,
-    /// `| escape_json` / `| json` — escape JSON string characters.
+    /// `| escape_json` — escape JSON string characters.
     EscapeJson,
+    /// `| tojson` / `| json` — serialize value to valid JSON string with optional indentation.
+    ToJson,
     /// `| sanitize_tokens` — neutralize LLM control tokens.
     SanitizeTokens,
     /// `| fence(lang)` — wrap in adaptive $N$-backtick code fence.
     Fence,
     /// `| quarantine(tag)` — wrap in XML quarantine tags.
     Quarantine,
+    /// `| sanitize` / `| sanitize(tag)` / `| sanitize(tag, notice)` — unified untrusted-data sanitization.
+    Sanitize,
+    /// `| truncate(limit)` / `| truncate(limit, marker)` — middle-out truncation.
+    Truncate,
+}
+
+impl FilterKind {
+    /// Canonical filter name as used in template syntax.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Upper => crate::consts::FILTER_UPPER,
+            Self::Lower => crate::consts::FILTER_LOWER,
+            Self::Trim => crate::consts::FILTER_TRIM,
+            Self::Fixed => crate::consts::FILTER_FIXED,
+            Self::Join => crate::consts::FILTER_JOIN,
+            Self::Limit => crate::consts::FILTER_LIMIT,
+            Self::Add => crate::consts::FILTER_ADD,
+            Self::Sub => crate::consts::FILTER_SUB,
+            Self::EscapeXml => crate::consts::FILTER_ESCAPE_XML,
+            Self::EscapeJson => crate::consts::FILTER_ESCAPE_JSON,
+            Self::ToJson => crate::consts::FILTER_TOJSON,
+            Self::SanitizeTokens => crate::consts::FILTER_SANITIZE_TOKENS,
+            Self::Fence => crate::consts::FILTER_FENCE,
+            Self::Quarantine => crate::consts::FILTER_QUARANTINE,
+            Self::Sanitize => crate::consts::FILTER_SANITIZE,
+            Self::Truncate => crate::consts::FILTER_TRUNCATE,
+        }
+    }
 }
 
 /// A `(key, expression)` pair used in `{% include ... with key=expr %}` overrides.
@@ -271,7 +309,8 @@ pub fn compile(
     // Extract inline template definitions before compiling the body.
     let (cleaned, inline_templates) =
         inline::extract_inline_templates(&processed, parent_type_aliases)?;
-    let segments = compile_body(&cleaned).map_err(|e| enrich_error(e, &cleaned))?;
+    let mut segments = compile_body(&cleaned).map_err(|e| enrich_error(e, &cleaned))?;
+    apply_enclosing_xml_tags(&mut segments);
     Ok((segments, inline_templates))
 }
 
@@ -307,13 +346,8 @@ fn enrich_error(err: TemplateError, source: &str) -> TemplateError {
                 let line_text = extract_line(source, line_num).trim();
                 let snippet = if line_text.len() > SNIPPET_MAX_LEN {
                     // Truncate at a character boundary to avoid panicking on multi-byte UTF-8.
-                    let truncate_at = line_text
-                        .char_indices()
-                        .map(|(i, _)| i)
-                        .take_while(|&i| i <= SNIPPET_MAX_LEN - 3)
-                        .last()
-                        // NOLINT: empty iterator means string has no chars — 0 is the correct truncation point
-                        .unwrap_or(0);
+                    let truncate_at =
+                        crate::error::floor_char_boundary(line_text, SNIPPET_MAX_LEN - 3);
                     format!("{}…", &line_text[..truncate_at])
                 } else {
                     line_text.to_string()
@@ -373,7 +407,7 @@ fn extract_error_hint(msg: &str) -> Option<&str> {
 }
 /// Internal compilation — used for block bodies that have already been
 /// validated and stripped.
-pub(crate) fn compile_body(input: &str) -> Result<Vec<Segment>, TemplateError> {
+pub fn compile_body(input: &str) -> Result<Vec<Segment>, TemplateError> {
     let mut segments = Vec::new();
     let mut remaining: &str = input;
 
@@ -526,12 +560,9 @@ fn extract_comment_variable_refs(content: &str) -> Vec<Cow<'static, str>> {
     refs
 }
 
-/// Compile an expression tag into a `Segment::Expr`.
-fn compile_expr(expr: &str) -> Result<Segment, TemplateError> {
-    let (base_expr, filter_chain) = crate::parser::split_pipe_aware(expr);
-    let expr_obj = CompiledExpr::compile(base_expr)?;
+/// Parse a pipe-separated filter chain string into [`ParsedFilter`]s.
+fn parse_filter_chain(filter_chain: &str) -> Result<Vec<ParsedFilter>, TemplateError> {
     let mut filters = Vec::new();
-
     if !filter_chain.is_empty() {
         for filter_str in crate::parser::split_filters_aware(filter_chain) {
             let filter_str = filter_str.trim();
@@ -540,14 +571,17 @@ fn compile_expr(expr: &str) -> Result<Segment, TemplateError> {
             }
             let (name, args) = crate::filter::parse_filter(filter_str);
             let kind = parse_filter_kind(name)?;
-            let parsed_num = args.and_then(|a| a.parse::<usize>().ok());
-            filters.push(ParsedFilter {
-                kind,
-                args: args.map(|a| Cow::Owned(a.to_string())),
-                parsed_num,
-            });
+            filters.push(ParsedFilter::parse(kind, args)?);
         }
     }
+    Ok(filters)
+}
+
+/// Compile an expression tag into a `Segment::Expr`.
+fn compile_expr(expr: &str) -> Result<Segment, TemplateError> {
+    let (base_expr, filter_chain) = crate::parser::split_pipe_aware(expr);
+    let expr_obj = CompiledExpr::compile(base_expr)?;
+    let filters = parse_filter_chain(filter_chain)?;
 
     Ok(Segment::Expr {
         expr: expr_obj,
@@ -559,8 +593,9 @@ fn compile_expr(expr: &str) -> Result<Segment, TemplateError> {
 pub(crate) fn parse_filter_kind(name: &str) -> Result<FilterKind, TemplateError> {
     use crate::consts::{
         FILTER_ADD, FILTER_ESCAPE_JSON, FILTER_ESCAPE_XML, FILTER_FENCE, FILTER_FIXED, FILTER_JOIN,
-        FILTER_JSON, FILTER_LIMIT, FILTER_LOWER, FILTER_QUARANTINE, FILTER_SANITIZE_TOKENS,
-        FILTER_SUB, FILTER_TRIM, FILTER_UPPER, FILTER_XML,
+        FILTER_JSON, FILTER_LIMIT, FILTER_LOWER, FILTER_QUARANTINE, FILTER_SANITIZE,
+        FILTER_SANITIZE_TOKENS, FILTER_SUB, FILTER_TO_JSON, FILTER_TOJSON, FILTER_TRIM,
+        FILTER_UPPER, FILTER_XML,
     };
     match name {
         FILTER_UPPER => Ok(FilterKind::Upper),
@@ -572,10 +607,15 @@ pub(crate) fn parse_filter_kind(name: &str) -> Result<FilterKind, TemplateError>
         FILTER_ADD => Ok(FilterKind::Add),
         FILTER_SUB => Ok(FilterKind::Sub),
         FILTER_ESCAPE_XML | FILTER_XML => Ok(FilterKind::EscapeXml),
-        FILTER_ESCAPE_JSON | FILTER_JSON => Ok(FilterKind::EscapeJson),
+        FILTER_ESCAPE_JSON => Ok(FilterKind::EscapeJson),
+        FILTER_TOJSON | FILTER_TO_JSON | FILTER_JSON => Ok(FilterKind::ToJson),
         FILTER_SANITIZE_TOKENS => Ok(FilterKind::SanitizeTokens),
         FILTER_FENCE => Ok(FilterKind::Fence),
         FILTER_QUARANTINE => Ok(FilterKind::Quarantine),
+        FILTER_SANITIZE => Ok(FilterKind::Sanitize),
+        crate::consts::FILTER_TRUNCATE | crate::consts::FILTER_TRUNCATE_MIDDLE => {
+            Ok(FilterKind::Truncate)
+        }
         _ => Err(TemplateError::UnknownFilter(name.to_string())),
     }
 }
@@ -613,12 +653,11 @@ fn compile_statement<'a>(
         || stmt.starts_with(crate::consts::TAG_PANIC_PREFIX)
         || stmt == crate::consts::KW_PANIC
     {
-        let panic_arg = if stmt.strip_prefix(crate::consts::TAG_PANIC_PAREN).is_some() {
+        let panic_arg = if stmt.starts_with(crate::consts::TAG_PANIC_PAREN) {
             &stmt[5..]
         } else {
             stmt.strip_prefix(crate::consts::TAG_PANIC_PREFIX)
-                // NOLINT: missing prefix means stmt IS the panic arg — empty default is correct
-                .unwrap_or_default()
+                .unwrap_or("")
         };
         compile_panic(panic_arg, after_tag)
     } else if stmt == KW_ELSE
@@ -694,7 +733,17 @@ fn compile_for_loop<'a>(
     after_tag: &'a str,
 ) -> Result<(Segment, &'a str), TemplateError> {
     let (binding, list_path) = parser::parse_for_tag(stmt_body)?;
-    let list_compiled = CompiledExpr::compile(list_path)?;
+    let (base_path, filter_str) = parser::split_pipe_aware(list_path);
+    let list_compiled = CompiledExpr::compile(base_path.trim())?;
+    let filters = parse_filter_chain(filter_str)?;
+    for f in &filters {
+        if !matches!(f.kind, FilterKind::Limit | FilterKind::Truncate) {
+            return Err(TemplateError::syntax(format!(
+                "for-loop iterable: filter '{}' does not return a list (only 'limit' and 'truncate' are valid on for-loop iterables)",
+                f.kind.as_str()
+            )));
+        }
+    }
     let (body_text, rest) = parser::find_closing_block(after_tag, TAG_FOR_PREFIX, CLOSE_FOR)?;
 
     // Split body at {% else %} if present (respecting nesting).
@@ -709,6 +758,7 @@ fn compile_for_loop<'a>(
         Segment::ForLoop {
             binding: Cow::Owned(binding.to_string()),
             list_expr: list_compiled,
+            filters,
             body,
             else_body,
         },

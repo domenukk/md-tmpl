@@ -230,12 +230,7 @@ impl ConditionOperand {
                 }
                 let (name, args) = crate::filter::parse_filter(filter_str);
                 let kind = crate::compiled::parse_filter_kind(name)?;
-                let parsed_num = args.and_then(|a| a.parse::<usize>().ok());
-                filters.push(ParsedFilter {
-                    kind,
-                    args: args.map(|a| Cow::Owned(a.to_string())),
-                    parsed_num,
-                });
+                filters.push(ParsedFilter::parse(kind, args)?);
             }
         }
         Ok(Self::Path { path, filters })
@@ -263,11 +258,7 @@ impl ConditionOperand {
                 } else {
                     let mut owned_value = value.clone();
                     for f in filters {
-                        owned_value = crate::filter::apply_filter_typed(
-                            f.kind,
-                            &owned_value,
-                            f.args.as_ref().map(AsRef::as_ref),
-                        )?;
+                        owned_value = crate::filter::apply_filter_parsed(f, &owned_value)?;
                     }
                     Ok(Cow::Owned(owned_value))
                 }

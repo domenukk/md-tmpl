@@ -90,7 +90,7 @@ Templates can also be loaded and validated at runtime for dynamic or hot-reload 
 
 | Feature                    | Description                                                                                                                                               |
 | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Typed parameters**       | `str`, `int`, `float`, `bool`, `list(…)`, `struct(…)`, `enum(…)`, `option(…)`, `tmpl(…)`                                                                  |
+| **Typed parameters**       | `str`, `untrusted str`, `int`, `float`, `bool`, `list(…)`, `struct(…)`, `enum(…)`, `option(…)`, `tmpl(…)`                                                 |
 | **Type aliases**           | `types:` defines reusable named types                                                                                                                     |
 | **Cross-template imports** | `imports:` pulls types via dotted paths (`stem.TypeName`)                                                                                                 |
 | **Typed lists**            | `list(title = str, score = int)` — iterate with `{% for %}`, fields validated                                                                             |
@@ -100,7 +100,7 @@ Templates can also be loaded and validated at runtime for dynamic or hot-reload 
 | **Constants**              | `consts:` for file-scoped immutable values                                                                                                                |
 | **Environment variables**  | `env:` for compile-time injection from the build environment                                                                                              |
 | **String interpolation**   | `{{ expr }}` inside all quoted strings — conditions, includes, panic messages                                                                             |
-| **Built-in functions**     | `idx(b)`, `len(x)`, `kind(x)`, `kinds(t)`, `has(x)` + filters (`upper`, `lower`, `trim`, `join`, `xml`, `json`, `sanitize_tokens`, `fence`, `quarantine`) |
+| **Built-in functions**     | `idx(b)`, `len(x)`, `kind(x)`, `kinds(t)`, `has(x)` + filters (`upper`, `lower`, `trim`, `join`, `limit`, `truncate`, `xml`, `json`, `sanitize`, `fence`) |
 | **Readable as markdown**   | `> {% %}` blockquote prefix keeps control flow visually separated from prose                                                                              |
 | **Markdown-safe syntax**   | Valid YAML frontmatter, clean `()` type syntax — looks good even unrendered                                                                               |
 
@@ -139,13 +139,13 @@ Built for speed — the Rust core renders into a single pre-sized output buffer 
 
 ### Rust (render-only, pre-parsed)
 
-| Scenario        |        md-tmpl |           Tera | `MiniJinja` | Handlebars |
-| --------------- | -------------: | -------------: | ----------: | ---------: |
-| **simple**      |  **168 ns** 🏆 |         289 ns |      575 ns |     744 ns |
-| **loop**        |  **583 ns** 🏆 |         648 ns |     2.30 µs |    4.09 µs |
-| **conditional** |  **264 ns** 🏆 |         326 ns |      639 ns |    1.19 µs |
-| **hero**        |        2.22 µs | **2.14 µs** 🏆 |     7.97 µs |   22.00 µs |
-| **mega**        | **8.84 µs** 🏆 |       11.10 µs |    38.47 µs |  109.76 µs |
+| Scenario        | md-tmpl (macro) | md-tmpl |     Tera | `MiniJinja` | Handlebars |
+| --------------- | --------------: | ------: | -------: | ----------: | ---------: |
+| **simple**      |    **22 ns** 🏆 |  162 ns |   207 ns |      561 ns |     701 ns |
+| **loop**        |    **38 ns** 🏆 |  426 ns |   598 ns |     1.94 µs |    3.45 µs |
+| **conditional** |    **20 ns** 🏆 |  212 ns |   327 ns |      623 ns |    1.13 µs |
+| **hero**        |   **156 ns** 🏆 | 1.81 µs |  2.09 µs |     7.45 µs |   21.03 µs |
+| **mega**        |   **634 ns** 🏆 | 7.32 µs | 10.35 µs |    30.26 µs |   90.98 µs |
 
 See the language-specific READMEs or the [benchmarks suite](benchmarks/README.md) for full details and methodology.
 

@@ -29,13 +29,32 @@ pub(crate) enum StructGenSource<'a> {
     },
 }
 
-/// Generate the `render` / `render_reloaded` method tokens for the impl block.
-fn render_method_tokens() -> proc_macro2::TokenStream {
+/// Generate the `render` / `render_into` / `render_reloaded` method tokens for the impl block.
+fn render_method_tokens(
+    frontmatter: &md_tmpl_core::Frontmatter,
+    segments: &[md_tmpl_core::compiled::Segment],
+    struct_name: &syn::Ident,
+) -> proc_macro2::TokenStream {
     let cp = crate_path();
+    let estimated_capacity = md_tmpl_core::compiled::render::estimate_output_capacity(segments);
+    let render_into_body = if let Some(native_tokens) =
+        crate::native_codegen::try_codegen_native_render(frontmatter, segments, struct_name)
+    {
+        quote! {
+            #native_tokens
+            ::core::result::Result::Ok(())
+        }
+    } else {
+        quote! {
+            let ctx = self.to_context();
+            template().render_ctx_into_unchecked(&ctx, __out)
+        }
+    };
     quote! {
         /// Render using the embedded compile-time template.
         ///
-        /// This calls the sibling [`template()`] function internally.
+        /// This compiles directly to native Rust statements on the struct's
+        /// fields (with zero `Context` construction or runtime AST overhead).
         /// For hot-reload scenarios where you load a template from disk
         /// at runtime, use [`render_reloaded()`](Self::render_reloaded)
         /// instead.
@@ -44,7 +63,18 @@ fn render_method_tokens() -> proc_macro2::TokenStream {
         ///
         /// Returns [`TemplateError`] if rendering fails.
         pub fn render(&self) -> ::core::result::Result<#cp::__private::String, #cp::TemplateError> {
-            self.render_reloaded(template())
+            let mut __out = #cp::__private::String::with_capacity(#estimated_capacity);
+            self.render_into(&mut __out)?;
+            ::core::result::Result::Ok(__out)
+        }
+
+        /// Render using the embedded compile-time template directly into `__out`.
+        ///
+        /// # Errors
+        ///
+        /// Returns [`TemplateError`] if rendering fails.
+        pub fn render_into(&self, __out: &mut #cp::__private::String) -> ::core::result::Result<(), #cp::TemplateError> {
+            #render_into_body
         }
 
         /// Validate a reloaded template and render with this struct's fields.
@@ -73,6 +103,7 @@ fn render_method_tokens() -> proc_macro2::TokenStream {
 /// [`build_imported_type_paths`]: crate::build_imported_type_paths
 pub(crate) fn generate_struct_tokens(
     frontmatter: &md_tmpl_core::Frontmatter,
+    segments: &[md_tmpl_core::compiled::Segment],
     struct_name: &syn::Ident,
     source: &StructGenSource<'_>,
     imported_type_paths: &std::collections::HashMap<String, proc_macro2::TokenStream>,
@@ -131,7 +162,7 @@ pub(crate) fn generate_struct_tokens(
         .any(|d| matches!(d.var_type, md_tmpl_core::VarType::Tmpl(_)));
     let derive_attrs = struct_derive_attrs(has_tmpl_fields);
 
-    let render_methods = render_method_tokens();
+    let render_methods = render_method_tokens(frontmatter, segments, struct_name);
     let cp = crate_path();
 
     quote! {
@@ -142,8 +173,6 @@ pub(crate) fn generate_struct_tokens(
 
         #(#doc_attrs)*
         #derive_attrs
-        // NOLINT: emitted into generated structs; fields mangled from un-escapable keywords (self/Self/super) become pub `__self` etc. and must stay pub.
-        #[allow(clippy::pub_underscore_fields)]
         pub struct #struct_name {
             #(#fields),*
         }
@@ -198,7 +227,7 @@ pub(crate) fn generate_struct_tokens(
             /// Convert this struct into a [`Context`](::md_tmpl::Context).
             #[must_use]
             pub fn to_context(&self) -> #cp::Context {
-                let mut ctx = #cp::Context::new();
+                let mut ctx = #cp::Context::with_capacity(#expected_count);
                 #(#set_stmts)*
                 ctx
             }

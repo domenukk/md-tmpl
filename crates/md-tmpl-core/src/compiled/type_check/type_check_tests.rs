@@ -1519,6 +1519,7 @@ fn include_inside_for_loop() {
     let segments = vec![Segment::ForLoop {
         binding: "item".into(),
         list_expr: CompiledExpr::compile("items").unwrap(),
+        filters: vec![],
         body: vec![Segment::Include(inc)],
         else_body: vec![],
     }];

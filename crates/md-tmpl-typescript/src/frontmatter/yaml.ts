@@ -16,6 +16,7 @@ import {
   FM_IMPORTS_PREFIX,
   FM_NAME_PREFIX,
   FM_PARAMS_PREFIX,
+  FM_SANITIZE_NOTICE_PREFIX,
   FM_TYPES_PREFIX,
   LIT_TRUE,
   QUOTE_DOUBLE,
@@ -35,6 +36,11 @@ import {
   parseParamDeclDeferred,
 } from "./declarations.js";
 import { parseInlineList } from "./var_type.js";
+import {
+  parseSanitizeNoticeValue,
+  registerDeclSanitizeSpecs,
+  type SanitizeSpec,
+} from "../sanitize_pass.js";
 
 // ---------------------------------------------------------------------------
 // Parser
@@ -144,7 +150,8 @@ export function joinContinuationLines(lines: string[]): string[] {
       trimmed.startsWith(FM_PARAMS_PREFIX) ||
       trimmed.startsWith(FM_CONSTS_PREFIX) ||
       trimmed.startsWith(FM_ENV_PREFIX) ||
-      trimmed.startsWith(FM_ALLOW_UNUSED_PREFIX);
+      trimmed.startsWith(FM_ALLOW_UNUSED_PREFIX) ||
+      trimmed.startsWith(FM_SANITIZE_NOTICE_PREFIX);
     const isNewItem = trimmed.startsWith("- ");
     if (!isSection && !isNewItem && currentIdx !== -1) {
       // Continuation of the current logical line.
@@ -289,6 +296,7 @@ export function parseFrontmatterYaml(
       trimmed.startsWith(FM_PARAMS_PREFIX) ||
       trimmed.startsWith(FM_CONSTS_PREFIX) ||
       trimmed.startsWith(FM_ENV_PREFIX) ||
+      trimmed.startsWith(FM_SANITIZE_NOTICE_PREFIX) ||
       trimmed.startsWith(FM_ALLOW_UNUSED_PREFIX);
 
     if (startsWithSection) {
@@ -310,7 +318,12 @@ export function parseFrontmatterYaml(
   let name: string | undefined;
   let description: string | undefined;
   let allowUnused = false;
+  let sanitizeNotice: string | undefined;
   const typeAliases = new Map<string, VarType>();
+  const typeAliasSanitize = new Map<
+    string,
+    ReadonlyMap<string, SanitizeSpec>
+  >();
   const imports: ImportDecl[] = [];
 
   // Two-pass approach: first collect raw items per block, then resolve.
@@ -357,6 +370,13 @@ export function parseFrontmatterYaml(
         currentBlock = "none";
         continue;
       }
+      if (trimmed.startsWith(FM_SANITIZE_NOTICE_PREFIX)) {
+        sanitizeNotice = parseSanitizeNoticeValue(
+          trimmed.slice(FM_SANITIZE_NOTICE_PREFIX.length).trim(),
+        );
+        currentBlock = "none";
+        continue;
+      }
 
       // Block starts
       if (trimmed.startsWith(FM_PARAMS_PREFIX)) {
@@ -376,13 +396,19 @@ export function parseFrontmatterYaml(
         if (rest.startsWith("[")) {
           const items = parseInlineList(rest);
           for (const item of items) {
-            const [aliasName, aliasType] = parseTypeAlias(item);
+            const [aliasName, aliasType, relSpecs] = parseTypeAlias(
+              item,
+              typeAliasSanitize,
+            );
             if (typeAliases.has(aliasName)) {
               throw new TemplateSyntaxError(
                 `duplicate type alias '${aliasName}'`,
               );
             }
             typeAliases.set(aliasName, aliasType);
+            if (relSpecs.size > 0) {
+              typeAliasSanitize.set(aliasName, relSpecs);
+            }
           }
           currentBlock = "none";
         }
@@ -433,13 +459,19 @@ export function parseFrontmatterYaml(
             rawParams.push({ raw: item, loc });
             break;
           case "types": {
-            const [aliasName, aliasType] = parseTypeAlias(item);
+            const [aliasName, aliasType, relSpecs] = parseTypeAlias(
+              item,
+              typeAliasSanitize,
+            );
             if (typeAliases.has(aliasName)) {
               throw new TemplateSyntaxError(
                 `duplicate type alias '${aliasName}'`,
               );
             }
             typeAliases.set(aliasName, aliasType);
+            if (relSpecs.size > 0) {
+              typeAliasSanitize.set(aliasName, relSpecs);
+            }
             break;
           }
           case "consts":
@@ -516,6 +548,7 @@ export function parseFrontmatterYaml(
   // For imported consts (dotted names like stem.NAME), the default is
   // deferred — stored in unresolvedDefaults for later resolution.
   const params: VarDecl[] = [];
+  const paramSanitize = new Map<string, SanitizeSpec>();
   const unresolvedDefaults = new Map<
     string,
     { text: string; varType: VarType }
@@ -523,11 +556,17 @@ export function parseFrontmatterYaml(
   const allRawParams = inlineParamsRaw ?? rawParams;
   for (const item of allRawParams) {
     try {
-      const [decl, unresolved] = parseParamDeclDeferred(item.raw, constValues);
+      const [decl, unresolved, relSpecs] = parseParamDeclDeferred(
+        item.raw,
+        constValues,
+        false,
+        typeAliasSanitize,
+      );
       params.push({ ...decl, loc: item.loc });
       if (unresolved !== undefined) {
         unresolvedDefaults.set(decl.name, unresolved);
       }
+      registerDeclSanitizeSpecs(decl, relSpecs, paramSanitize, typeAliases);
     } catch (err) {
       if (err instanceof TemplateSyntaxError && err.line === undefined) {
         throw new TemplateSyntaxError(
@@ -553,5 +592,8 @@ export function parseFrontmatterYaml(
     importedConsts: {},
     importedNamespaceTypes: new Map(),
     unresolvedDefaults,
+    paramSanitize,
+    typeAliasSanitize,
+    sanitizeNotice,
   };
 }

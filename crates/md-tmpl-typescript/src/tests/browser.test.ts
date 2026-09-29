@@ -345,9 +345,11 @@ Hi {{ name }}`,
   });
 
   it("wraps non-Error fetch rejection values with String()", async () => {
-    // NOLINT: intentional non-Error rejection — this test verifies the string→Error wrapping branch
-    // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- intentional: testing the non-Error branch
-    const fetch: FetchLike = () => Promise.reject("plain string rejection");
+    const fetch: FetchLike = () =>
+      new Promise<never>((_, reject) => {
+        const rejectUnknown: (reason: unknown) => void = reject;
+        rejectUnknown("plain string rejection");
+      });
 
     await assert.rejects(
       () => loadTemplate("/t13/main.tmpl.md", { fetch, baseUrl: ORIGIN }),

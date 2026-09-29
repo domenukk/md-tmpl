@@ -143,6 +143,7 @@ export interface MatchArm {
 
 export interface LoopMeta {
   index: number;
+  len: number;
   first?: boolean;
   last?: boolean;
 }

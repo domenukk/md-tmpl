@@ -147,8 +147,17 @@ export function renderDirectNodes(
             const item: unknown = listVal[idx];
             const layer = scope.pushLayer();
             layer.set(node.binding, item);
-            scope.setLoopIndex(node.binding, idx);
+            layer.set("loop", {
+              first: idx === 0,
+              last: idx === listVal.length - 1,
+              index0: idx,
+              index: idx + 1,
+              length: listVal.length,
+              len: listVal.length,
+            });
+            scope.setLoopIndex(node.binding, idx, listVal.length);
             parts.push(renderDirectNodes(node.body, scope, options));
+            scope.popLoopMeta();
             scope.popLayer();
           }
         }

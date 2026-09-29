@@ -51,14 +51,40 @@ pub(crate) const FILTER_ESCAPE_XML: &str = "escape_xml";
 pub(crate) const FILTER_XML: &str = "xml";
 /// Name of the `escape_json` filter.
 pub(crate) const FILTER_ESCAPE_JSON: &str = "escape_json";
-/// Short alias for the `escape_json` filter: `json`.
+/// Name of the `tojson` filter.
+pub(crate) const FILTER_TOJSON: &str = "tojson";
+/// Underscore alias for the `tojson` filter: `to_json`.
+pub(crate) const FILTER_TO_JSON: &str = "to_json";
+/// Short alias for the `tojson` filter: `json`.
 pub(crate) const FILTER_JSON: &str = "json";
+/// Special loop variable name: `loop`.
+pub const LOOP: &str = "loop";
+/// `loop.first` property.
+pub const LOOP_FIRST: &str = "first";
+/// `loop.last` property.
+pub const LOOP_LAST: &str = "last";
+/// `loop.index0` property (0-based).
+pub const LOOP_INDEX0: &str = "index0";
+/// `loop.index` property (1-based).
+pub const LOOP_INDEX: &str = "index";
+/// `loop.length` property.
+pub const LOOP_LENGTH: &str = "length";
+/// `loop.len` alias for `loop.length`.
+pub const LOOP_LEN: &str = "len";
 /// Name of the `sanitize_tokens` filter.
 pub(crate) const FILTER_SANITIZE_TOKENS: &str = "sanitize_tokens";
 /// Name of the `fence` filter.
 pub(crate) const FILTER_FENCE: &str = "fence";
 /// Name of the `quarantine` filter.
 pub(crate) const FILTER_QUARANTINE: &str = "quarantine";
+/// Name of the unified `sanitize` filter.
+pub(crate) const FILTER_SANITIZE: &str = "sanitize";
+/// Name of the `truncate` filter.
+pub(crate) const FILTER_TRUNCATE: &str = "truncate";
+/// Name of the `truncate_middle` filter alias.
+pub(crate) const FILTER_TRUNCATE_MIDDLE: &str = "truncate_middle";
+/// Keyword prefix for untrusted type annotations: `untrusted`.
+pub(crate) const TYPE_UNTRUSTED: &str = "untrusted";
 
 // -- Enum tag key -------------------------------------------------------------
 
@@ -173,7 +199,7 @@ pub const EQUALS_BYTE: u8 = b'=';
 // -- Template tag delimiters -------------------------------------------------
 
 /// Delimiter indicating the start of an expression: `{{`.
-pub(crate) const EXPR_START: &str = "{{";
+pub const EXPR_START: &str = "{{";
 /// Delimiter indicating the end of an expression: `}}`.
 pub(crate) const EXPR_END: &str = "}}";
 
@@ -288,6 +314,8 @@ pub(crate) const FM_DESC_PREFIX: &str = "description:";
 pub(crate) const FM_PARAMS_PREFIX: &str = "params:";
 /// Frontmatter key to allow unused declared parameters: `allow_unused:`.
 pub(crate) const FM_ALLOW_UNUSED_PREFIX: &str = "allow_unused:";
+/// Frontmatter key for custom untrusted-data boundary notice: `sanitize_notice:`.
+pub(crate) const FM_SANITIZE_NOTICE_PREFIX: &str = "sanitize_notice:";
 /// Frontmatter key for local type aliases: `types:`.
 pub(crate) const FM_TYPES_PREFIX: &str = "types:";
 /// Frontmatter key for cross-template imports: `imports:`.

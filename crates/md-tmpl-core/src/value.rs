@@ -371,6 +371,44 @@ impl Value {
     }
 }
 
+#[cfg(feature = "serde")]
+impl serde::Serialize for Value {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Str(s) => serializer.serialize_str(s),
+            Self::Bool(b) => serializer.serialize_bool(*b),
+            Self::Int(i) => serializer.serialize_i64(*i),
+            Self::Float(f) => serializer.serialize_f64(*f),
+            Self::List(items) => {
+                use serde::ser::SerializeSeq;
+                let mut seq = serializer.serialize_seq(Some(items.len()))?;
+                for item in items.iter() {
+                    seq.serialize_element(item)?;
+                }
+                seq.end()
+            }
+            Self::Struct(map) => {
+                use serde::ser::SerializeMap;
+                let mut map_ser = serializer.serialize_map(Some(map.len()))?;
+                let mut entries: Vec<(&String, &Value)> = map.iter().collect();
+                entries.sort_unstable_by_key(|(k, _)| *k);
+                for (k, v) in entries {
+                    map_ser.serialize_entry(k, v)?;
+                }
+                map_ser.end()
+            }
+            Self::None => serializer.serialize_none(),
+            Self::Tmpl(_) => {
+                use serde::ser::Error;
+                Err(S::Error::custom("cannot serialize template to JSON"))
+            }
+        }
+    }
+}
+
 /// `FlexBuffers` support — behind the `flexbuffers` feature, which implies
 /// `std` and `serde` (the `flexbuffers` crate does not support `no_std`).
 #[cfg(feature = "flexbuffers")]

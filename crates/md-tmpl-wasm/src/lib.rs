@@ -12,6 +12,9 @@ use js_sys::{Array, Error, Object, Reflect};
 use md_tmpl::{Context, Value};
 use wasm_bindgen::prelude::*;
 
+mod security;
+pub use security::*;
+
 #[wasm_bindgen]
 extern "C" {
     /// A JS object typed as `Record<string, unknown>` in TypeScript.
