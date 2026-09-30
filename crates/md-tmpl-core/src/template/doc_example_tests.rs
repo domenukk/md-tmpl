@@ -156,6 +156,10 @@ fn is_expected_standalone_failure(err_msg: &str) -> bool {
 #[test]
 fn all_spec_examples_compile() {
     let blocks = extract_template_blocks(SPEC_MD, "SPEC.md");
+    for (i, b) in blocks.iter().enumerate() {
+        let preview: String = b.content.chars().take(40).collect();
+        eprintln!("Block {i}: line {} preview={:?}", b.line, preview);
+    }
     assert!(
         blocks.len() >= 15,
         "Expected at least 15 template blocks in SPEC.md, found {}",
