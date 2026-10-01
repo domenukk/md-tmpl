@@ -29,80 +29,45 @@ struct DocExample {
 /// frontmatter).
 fn extract_template_blocks(source: &str, file: &'static str) -> Vec<DocExample> {
     let mut blocks = Vec::new();
-    let mut chars = source.char_indices().peekable();
-    let mut line_num = 1usize;
+    let lines: Vec<&str> = source.split('\n').collect();
+    let mut idx = 0usize;
 
-    while let Some(&(pos, ch)) = chars.peek() {
-        if ch == '\n' {
-            line_num += 1;
-            chars.next();
-            continue;
-        }
-
-        // Look for ``` at the start (possibly with a language tag)
-        if source[pos..].starts_with("```") {
-            let fence_line = line_num;
-            // Skip past the opening ``` and any language tag
-            let after_backticks = pos + 3;
-            // Find end of this line
-            let eol = source[after_backticks..]
-                .find('\n')
-                .map_or(source.len(), |i| after_backticks + i);
-
-            // Advance chars past this line
-            for (_, c) in source[pos..=eol.min(source.len() - 1)].char_indices() {
-                if c == '\n' {
-                    line_num += 1;
-                }
-            }
-            // Skip the chars iterator forward
-            while let Some(&(i, _)) = chars.peek() {
-                if i > eol {
+    while idx < lines.len() {
+        let line = lines[idx].trim_end_matches('\r');
+        let trimmed_start = line.trim_start_matches(' ');
+        let backtick_count = trimmed_start.bytes().take_while(|&b| b == b'`').count();
+        if backtick_count >= 3 {
+            let fence_line = idx + 1;
+            let mut close_idx = idx + 1;
+            while close_idx < lines.len() {
+                let close_line = lines[close_idx]
+                    .trim_end_matches('\r')
+                    .trim_start_matches(' ');
+                let close_ticks = close_line.bytes().take_while(|&b| b == b'`').count();
+                if close_ticks >= backtick_count && close_line[close_ticks..].trim().is_empty() {
                     break;
                 }
-                chars.next();
+                close_idx += 1;
             }
-
-            // Now find the closing ```
-            let content_start = eol + 1;
-            if content_start >= source.len() {
+            if close_idx < lines.len() {
+                let block = lines[idx + 1..close_idx].join("\n");
+                let trimmed = block.trim();
+                if trimmed.starts_with("---")
+                    && trimmed[3..].contains("\n---")
+                    && !trimmed.contains("<frontmatter>")
+                    && !trimmed.contains("<body>")
+                {
+                    blocks.push(DocExample {
+                        content: trimmed.to_string(),
+                        line: fence_line,
+                        file,
+                    });
+                }
+                idx = close_idx + 1;
                 continue;
             }
-            let closing = source[content_start..].find("\n```");
-            if let Some(close_offset) = closing {
-                let content_end = content_start + close_offset;
-                let block = &source[content_start..content_end];
-                let trimmed = block.trim();
-
-                // Only keep blocks that look like templates (have frontmatter)
-                if trimmed.starts_with("---") && trimmed[3..].contains("\n---") {
-                    // Skip the generic format example
-                    if !trimmed.contains("<frontmatter>") && !trimmed.contains("<body>") {
-                        blocks.push(DocExample {
-                            content: trimmed.to_string(),
-                            line: fence_line,
-                            file,
-                        });
-                    }
-                }
-
-                // Count newlines in the block content + closing fence
-                let skip_to = content_end + 4; // +4 for \n```
-                for c in source[eol + 1..skip_to.min(source.len())].chars() {
-                    if c == '\n' {
-                        line_num += 1;
-                    }
-                }
-                while let Some(&(i, _)) = chars.peek() {
-                    if i >= skip_to {
-                        break;
-                    }
-                    chars.next();
-                }
-            }
-        } else {
-            chars.next();
         }
+        idx += 1;
     }
 
     blocks

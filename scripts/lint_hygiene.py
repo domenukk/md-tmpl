@@ -11,6 +11,7 @@ Bare `// NOLINT` without a reason is itself flagged as a violation.
 Stale NOLINTs (where the next line doesn't trigger any check) are also flagged.
 """
 
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -487,8 +488,8 @@ def run_empty_catch_check() -> bool:
 
 
 def run_long_file_check() -> bool:
-    """Flag non-test files exceeding MAX_FILE_LINES."""
-    print(f"=== Long files (>{MAX_FILE_LINES} lines) ===")
+    """Flag non-test files reaching or exceeding MAX_FILE_LINES."""
+    print(f"=== Long files (>={MAX_FILE_LINES} lines) ===")
     long_files: list[tuple[Path, int]] = []
     test_pattern = re.compile(r"tests?[/._]|_tests?\.|\.test\.|\.spec\.|correctness\.ts")
 
@@ -504,7 +505,7 @@ def run_long_file_check() -> bool:
             line_count = sum(1 for _ in path.open(errors="replace"))
         except OSError:
             continue
-        if line_count > MAX_FILE_LINES:
+        if line_count >= MAX_FILE_LINES:
             long_files.append((path, line_count))
 
     if long_files:
@@ -569,6 +570,7 @@ def run_packaging_invariant_check() -> bool:
 
 
 def main() -> int:
+    os.chdir(Path(__file__).resolve().parent.parent)
     failed = run_pattern_checks()
     failed = run_bare_nolint_check() or failed
     failed = run_empty_catch_check() or failed
@@ -585,3 +587,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
