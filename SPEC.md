@@ -803,17 +803,17 @@ Imported templates that themselves have imports are resolved
 transitively. However, transitive types are **not** re-exported — each
 template must directly import the templates whose types it uses:
 
-```yaml
-# base.tmpl.md
+```markdown
 ---
+# base.tmpl.md
 types:
   - Priority = enum(High, Medium, Low)
 ---
 ```
 
-```yaml
-# middle.tmpl.md — imports base, uses Priority
+```markdown
 ---
+# middle.tmpl.md — imports base, uses Priority
 imports:
   - "[base](./base.tmpl.md)"
 
@@ -822,9 +822,9 @@ params:
 ---
 ```
 
-```yaml
-# top.tmpl.md — must import base directly to use Priority
+```markdown
 ---
+# top.tmpl.md — must import base directly to use Priority
 imports:
   - "[base](./base.tmpl.md)"
   - "[middle](./middle.tmpl.md)"

@@ -36,7 +36,7 @@ fn extract_template_blocks(source: &str, file: &'static str) -> Vec<DocExample> 
         let line = lines[idx].trim_end_matches('\r');
         let trimmed_start = line.trim_start_matches(' ');
         let backtick_count = trimmed_start.bytes().take_while(|&b| b == b'`').count();
-        if backtick_count >= 3 {
+        if backtick_count >= 3 && !trimmed_start[backtick_count..].contains('`') {
             let fence_line = idx + 1;
             let mut close_idx = idx + 1;
             while close_idx < lines.len() {
