@@ -310,6 +310,11 @@ pub fn compile(
     let (cleaned, inline_templates) =
         inline::extract_inline_templates(&processed, parent_type_aliases)?;
     let mut segments = compile_body(&cleaned).map_err(|e| enrich_error(e, &cleaned))?;
+    inline::bind_inline_includes(
+        &mut segments,
+        &inline_templates,
+        &mut crate::compat::HashSet::new(),
+    );
     apply_enclosing_xml_tags(&mut segments);
     Ok((segments, inline_templates))
 }

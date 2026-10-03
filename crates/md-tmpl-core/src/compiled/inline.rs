@@ -234,3 +234,64 @@ fn parse_tmpl_open_tag(input: &str) -> Result<(String, &str), TemplateError> {
 
     Ok((name, rest))
 }
+
+/// Bind inline templates (`{% tmpl %}`) into matching [`super::Segment::Include`] nodes
+/// with cycle protection so compile-time AST passes (such as enclosing XML tag propagation)
+/// can traverse inline includes.
+pub(super) fn bind_inline_includes(
+    segments: &mut [super::Segment],
+    inline_templates: &HashMap<String, CompiledInlineTemplate>,
+    active_stack: &mut crate::compat::HashSet<String>,
+) {
+    if inline_templates.is_empty() {
+        return;
+    }
+    for seg in segments {
+        match seg {
+            super::Segment::Include(inc) => {
+                if inc.inline_compiled.is_none()
+                    && !active_stack.contains(inc.path.as_ref())
+                    && let Some(mut compiled) = inline_templates.get(inc.path.as_ref()).cloned()
+                {
+                    let name = inc.path.to_string();
+                    active_stack.insert(name.clone());
+                    bind_inline_includes(
+                        Arc::make_mut(&mut compiled.segments),
+                        inline_templates,
+                        active_stack,
+                    );
+                    active_stack.remove(&name);
+                    inc.inline_compiled = Some(compiled);
+                }
+            }
+            super::Segment::ForLoop {
+                body, else_body, ..
+            } => {
+                bind_inline_includes(body, inline_templates, active_stack);
+                bind_inline_includes(else_body, inline_templates, active_stack);
+            }
+            super::Segment::If {
+                branches,
+                else_body,
+            } => {
+                for (_, b) in branches {
+                    bind_inline_includes(b, inline_templates, active_stack);
+                }
+                bind_inline_includes(else_body, inline_templates, active_stack);
+            }
+            super::Segment::Match { arms, .. } => {
+                for arm in arms {
+                    bind_inline_includes(&mut arm.body, inline_templates, active_stack);
+                }
+            }
+            super::Segment::Panic(inner) => {
+                bind_inline_includes(inner, inline_templates, active_stack);
+            }
+            super::Segment::Static(_)
+            | super::Segment::Raw(_)
+            | super::Segment::Expr { .. }
+            | super::Segment::Comment(_) => {}
+        }
+    }
+}
+

@@ -16,13 +16,14 @@ import {
   NODE_IF,
   NODE_MATCH,
   NODE_PANIC,
+  NODE_RAW,
   NODE_TEXT,
   PREFIX_PARAMS_DOT,
   QUOTE_DOUBLE,
   QUOTE_SINGLE,
 } from "./consts.js";
 import { splitPipes } from "./evaluator.js";
-import { parseFilter } from "./filters.js";
+import { INLINE_HEADING_SENTINEL, parseFilter } from "./filters.js";
 import {
   type SanitizeSpec,
   parseSanitizeFilterArgs,
@@ -106,8 +107,9 @@ function resolveCanonicalPath(
 function mergeEnclosingTagsIntoSpec(
   existing: string | undefined,
   openTags: readonly string[],
+  inAtxHeading = false,
 ): string | undefined {
-  if (openTags.length === 0) {
+  if (openTags.length === 0 && !inAtxHeading) {
     return existing;
   }
   const combined: string[] = [];
@@ -131,6 +133,9 @@ function mergeEnclosingTagsIntoSpec(
       combined.push(tag);
     }
   }
+  if (inAtxHeading && !combined.includes(INLINE_HEADING_SENTINEL)) {
+    combined.push(INLINE_HEADING_SENTINEL);
+  }
   return combined.length === 0 ? undefined : combined.join(COMMA);
 }
 
@@ -140,6 +145,7 @@ function rewriteExprForSanitize(
   sanitizeNotice: string | undefined,
   loopAliases: ReadonlyMap<string, string>,
   openTags: readonly string[],
+  inAtxHeading = false,
 ): string {
   const parts = splitPipes(expr);
   const baseExpr = (parts[0] ?? "").trim();
@@ -181,8 +187,12 @@ function rewriteExprForSanitize(
     }
     const parsed = parseSanitizeFilterArgs(fArgs);
     if (parsed === undefined) {
-      // 0-arg `| sanitize`: if inside enclosing XML tags, rewrite to `sanitize_tokens("tags")`
-      const mergedTags = mergeEnclosingTagsIntoSpec(undefined, openTags);
+      // 0-arg `| sanitize`: if inside enclosing XML tags or ATX heading, rewrite to `sanitize_tokens("tags")`
+      const mergedTags = mergeEnclosingTagsIntoSpec(
+        undefined,
+        openTags,
+        inAtxHeading,
+      );
       if (mergedTags !== undefined) {
         modified = true;
         return `sanitize_tokens(${quoteFilterArg(mergedTags)})`;
@@ -191,7 +201,8 @@ function rewriteExprForSanitize(
     }
     // 1-arg or 2-arg `| sanitize("tag", ...)`: merge enclosing tags + template sanitizeNotice
     const mergedTagSpec =
-      mergeEnclosingTagsIntoSpec(parsed.tagSpec, openTags) ?? parsed.tagSpec;
+      mergeEnclosingTagsIntoSpec(parsed.tagSpec, openTags, false) ??
+      parsed.tagSpec;
     const effectiveNotice = parsed.notice ?? sanitizeNotice;
     if (mergedTagSpec !== parsed.tagSpec || effectiveNotice !== parsed.notice) {
       modified = true;
@@ -418,6 +429,46 @@ function updateOpenXmlTagsFromText(
   return undefined;
 }
 
+interface HeadingLineState {
+  inAtxHeading: boolean;
+  atLineStart: boolean;
+}
+
+function isAtxHeadingPrefix(line: string): boolean {
+  const trimmed = line.replace(/^[ \t]+/, "");
+  let hashes = 0;
+  while (
+    hashes < trimmed.length &&
+    trimmed.charCodeAt(hashes) === 35 /* '#' */
+  ) {
+    hashes++;
+  }
+  if (hashes < 1 || hashes > 6 || hashes >= trimmed.length) {
+    return false;
+  }
+  const next = trimmed.charCodeAt(hashes);
+  return next === 32 /* ' ' */ || next === 9 /* '\t' */;
+}
+
+function updateHeadingLineState(text: string, state: HeadingLineState): void {
+  if (text.length === 0) {
+    return;
+  }
+  const lastNl = text.lastIndexOf("\n");
+  if (lastNl !== -1) {
+    const tail = text.slice(lastNl + 1);
+    state.inAtxHeading = isAtxHeadingPrefix(tail);
+    state.atLineStart = tail.replace(/^[ \t]+|[ \t]+$/g, "").length === 0;
+  } else if (state.atLineStart) {
+    if (isAtxHeadingPrefix(text)) {
+      state.inAtxHeading = true;
+      state.atLineStart = false;
+    } else if (text.replace(/^[ \t]+|[ \t]+$/g, "").length > 0) {
+      state.atLineStart = false;
+    }
+  }
+}
+
 function applySanitizeNodesInner(
   nodes: Node[],
   paramSanitize: ReadonlyMap<string, SanitizeSpec> | undefined,
@@ -425,6 +476,7 @@ function applySanitizeNodesInner(
   closingTags: ReadonlySet<string>,
   loopAliases: Map<string, string>,
   openTags: string[],
+  headingState: HeadingLineState,
   initialPending?: string,
 ): string | undefined {
   let pendingTag = initialPending;
@@ -441,6 +493,10 @@ function applySanitizeNodesInner(
             pendingTag,
           );
         }
+        updateHeadingLineState(node.text, headingState);
+        break;
+      case NODE_RAW:
+        updateHeadingLineState(node.text, headingState);
         break;
       case NODE_EXPR: {
         const newExpr = rewriteExprForSanitize(
@@ -449,10 +505,12 @@ function applySanitizeNodesInner(
           sanitizeNotice,
           loopAliases,
           openTags,
+          headingState.inAtxHeading,
         );
         if (newExpr !== node.expr) {
           nodes[i] = { ...node, expr: newExpr };
         }
+        headingState.atLineStart = false;
         break;
       }
       case NODE_FOR: {
@@ -475,6 +533,7 @@ function applySanitizeNodesInner(
           closingTags,
           loopAliases,
           bodyTags,
+          { ...headingState },
           pendingTag,
         );
         if (hadAlias) {
@@ -493,6 +552,7 @@ function applySanitizeNodesInner(
             closingTags,
             loopAliases,
             elseTags,
+            { ...headingState },
             pendingTag,
           );
         }
@@ -508,6 +568,7 @@ function applySanitizeNodesInner(
             closingTags,
             loopAliases,
             branchTags,
+            { ...headingState },
             pendingTag,
           );
         }
@@ -520,6 +581,7 @@ function applySanitizeNodesInner(
             closingTags,
             loopAliases,
             elseTags,
+            { ...headingState },
             pendingTag,
           );
         }
@@ -535,6 +597,7 @@ function applySanitizeNodesInner(
             closingTags,
             loopAliases,
             armTags,
+            { ...headingState },
             pendingTag,
           );
         }
@@ -547,6 +610,7 @@ function applySanitizeNodesInner(
             closingTags,
             loopAliases,
             elseTags,
+            { ...headingState },
             pendingTag,
           );
         }
@@ -559,6 +623,7 @@ function applySanitizeNodesInner(
             closingTags,
             loopAliases,
             guardTags,
+            { ...headingState },
             pendingTag,
           );
         }
@@ -573,6 +638,7 @@ function applySanitizeNodesInner(
           closingTags,
           loopAliases,
           panicTags,
+          { ...headingState },
           pendingTag,
         );
         break;
@@ -606,5 +672,6 @@ export function applySanitizeAstPass(
     closingTags,
     loopAliases,
     openTags,
+    { inAtxHeading: false, atLineStart: true },
   );
 }

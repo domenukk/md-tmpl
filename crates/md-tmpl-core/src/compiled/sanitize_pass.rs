@@ -82,25 +82,47 @@ impl ParsedFilter {
     }
 }
 
-/// Scan `segments` for enclosing XML tags around `FilterKind::Sanitize` expressions and merge
-/// those tag names into each filter's [`SanitizeFilterMode`].
+/// Sentinel tag in `SanitizeFilterMode::Inline::enclosing_tags` indicating that the
+/// expression is interpolated on a Markdown ATX heading line (`# ...` .. `###### ...`)
+/// and must have line-break characters collapsed to spaces.
+pub(crate) const INLINE_HEADING_SENTINEL: &str = "#heading";
+
+#[derive(Clone)]
+struct EnclosingScanState {
+    open_tags: Vec<String>,
+    pending_open_tag: Option<String>,
+    in_atx_heading: bool,
+    at_line_start: bool,
+}
+
+impl Default for EnclosingScanState {
+    fn default() -> Self {
+        Self {
+            open_tags: Vec::new(),
+            pending_open_tag: None,
+            in_atx_heading: false,
+            at_line_start: true,
+        }
+    }
+}
+
+impl EnclosingScanState {
+    fn propagate_branch(&self, segments: &mut [Segment], closing_tags: &HashSet<String>) {
+        let mut branch_state = self.clone();
+        propagate_enclosing_xml_tags(segments, closing_tags, &mut branch_state);
+    }
+}
+
+/// Scan `segments` for enclosing XML tags and ATX Markdown heading contexts around
+/// `FilterKind::Sanitize` expressions and merge them into each filter's [`SanitizeFilterMode`].
 pub fn apply_enclosing_xml_tags(segments: &mut [Segment]) {
     if !has_any_sanitize_filter(segments) {
         return;
     }
     let mut closing_tags = HashSet::new();
     collect_closing_xml_tags(segments, &mut closing_tags);
-    if closing_tags.is_empty() {
-        return;
-    }
-    let mut open_tags: Vec<String> = Vec::new();
-    let mut pending_open_tag: Option<String> = None;
-    propagate_enclosing_xml_tags(
-        segments,
-        &closing_tags,
-        &mut open_tags,
-        &mut pending_open_tag,
-    );
+    let mut state = EnclosingScanState::default();
+    propagate_enclosing_xml_tags(segments, &closing_tags, &mut state);
 }
 
 /// Propagate frontmatter `params:` declarative sanitization (`param_sanitize`) and template-level
@@ -157,7 +179,14 @@ fn has_any_sanitize_filter(segments: &[Segment]) -> bool {
                     return true;
                 }
             }
-            Segment::Static(_) | Segment::Raw(_) | Segment::Include(_) | Segment::Comment(_) => {}
+            Segment::Include(inc) => {
+                if let Some(ic) = &inc.inline_compiled
+                    && has_any_sanitize_filter(&ic.segments)
+                {
+                    return true;
+                }
+            }
+            Segment::Static(_) | Segment::Raw(_) | Segment::Comment(_) => {}
         }
     }
     false
@@ -188,7 +217,12 @@ fn collect_closing_xml_tags(segments: &[Segment], out: &mut HashSet<String>) {
                 }
             }
             Segment::Panic(inner) => collect_closing_xml_tags(inner, out),
-            Segment::Expr { .. } | Segment::Raw(_) | Segment::Include(_) | Segment::Comment(_) => {}
+            Segment::Include(inc) => {
+                if let Some(ic) = &inc.inline_compiled {
+                    collect_closing_xml_tags(&ic.segments, out);
+                }
+            }
+            Segment::Expr { .. } | Segment::Raw(_) | Segment::Comment(_) => {}
         }
     }
 }
@@ -226,6 +260,34 @@ fn scan_closing_tags_in_text(text: &str, out: &mut HashSet<String>) {
             }
         }
         i += 1;
+    }
+}
+
+fn is_atx_heading_prefix(line: &str) -> bool {
+    let trimmed = line.trim_start_matches([' ', '\t']);
+    let hashes = trimmed.bytes().take_while(|&b| b == b'#').count();
+    (1..=6).contains(&hashes)
+        && trimmed
+            .as_bytes()
+            .get(hashes)
+            .is_some_and(|&b| b == b' ' || b == b'\t')
+}
+
+fn update_heading_line_state(text: &str, in_atx_heading: &mut bool, at_line_start: &mut bool) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(last_nl) = text.rfind('\n') {
+        let tail = &text[last_nl + 1..];
+        *in_atx_heading = is_atx_heading_prefix(tail);
+        *at_line_start = tail.trim_matches([' ', '\t']).is_empty();
+    } else if *at_line_start {
+        if is_atx_heading_prefix(text) {
+            *in_atx_heading = true;
+            *at_line_start = false;
+        } else if !text.trim_matches([' ', '\t']).is_empty() {
+            *at_line_start = false;
+        }
     }
 }
 
@@ -338,8 +400,12 @@ fn update_open_xml_tags_from_text(
     }
 }
 
-fn merge_enclosing_tags_into_spec(existing: Option<&str>, open_tags: &[String]) -> Option<String> {
-    if open_tags.is_empty() {
+fn merge_enclosing_tags_into_spec(
+    existing: Option<&str>,
+    open_tags: &[String],
+    in_atx_heading: bool,
+) -> Option<String> {
+    if open_tags.is_empty() && !in_atx_heading {
         return existing.map(ToString::to_string);
     }
     let mut combined: Vec<&str> = Vec::new();
@@ -355,6 +421,9 @@ fn merge_enclosing_tags_into_spec(existing: Option<&str>, open_tags: &[String]) 
         if !combined.iter().any(|c| c.eq_ignore_ascii_case(tag)) {
             combined.push(tag.as_str());
         }
+    }
+    if in_atx_heading && !combined.contains(&INLINE_HEADING_SENTINEL) {
+        combined.push(INLINE_HEADING_SENTINEL);
     }
     if combined.is_empty() {
         None
@@ -372,8 +441,12 @@ fn ensure_sanitize_mode(f: &mut ParsedFilter) {
     }
 }
 
-fn attach_open_tags_to_filters(filters: &mut [ParsedFilter], open_tags: &[String]) {
-    if open_tags.is_empty() {
+fn attach_open_tags_to_filters(
+    filters: &mut [ParsedFilter],
+    open_tags: &[String],
+    in_atx_heading: bool,
+) {
+    if open_tags.is_empty() && !in_atx_heading {
         return;
     }
     for f in filters {
@@ -383,14 +456,18 @@ fn attach_open_tags_to_filters(filters: &mut [ParsedFilter], open_tags: &[String
         ensure_sanitize_mode(f);
         match &mut f.sanitize_mode {
             Some(SanitizeFilterMode::Inline { enclosing_tags }) => {
-                if let Some(merged) =
-                    merge_enclosing_tags_into_spec(enclosing_tags.as_deref(), open_tags)
-                {
+                if let Some(merged) = merge_enclosing_tags_into_spec(
+                    enclosing_tags.as_deref(),
+                    open_tags,
+                    in_atx_heading,
+                ) {
                     *enclosing_tags = Some(Cow::Owned(merged));
                 }
             }
             Some(SanitizeFilterMode::Block { tag_spec, .. }) => {
-                if let Some(merged) = merge_enclosing_tags_into_spec(Some(tag_spec), open_tags) {
+                if let Some(merged) =
+                    merge_enclosing_tags_into_spec(Some(tag_spec), open_tags, false)
+                {
                     *tag_spec = Cow::Owned(merged);
                 }
             }
@@ -402,78 +479,58 @@ fn attach_open_tags_to_filters(filters: &mut [ParsedFilter], open_tags: &[String
 fn propagate_enclosing_xml_tags(
     segments: &mut [Segment],
     closing_tags: &HashSet<String>,
-    open_tags: &mut Vec<String>,
-    pending_open_tag: &mut Option<String>,
+    state: &mut EnclosingScanState,
 ) {
     for seg in segments {
         match seg {
             Segment::Static(text) => {
-                update_open_xml_tags_from_text(text, closing_tags, open_tags, pending_open_tag);
+                update_open_xml_tags_from_text(
+                    text,
+                    closing_tags,
+                    &mut state.open_tags,
+                    &mut state.pending_open_tag,
+                );
+                update_heading_line_state(text, &mut state.in_atx_heading, &mut state.at_line_start);
             }
             Segment::Expr { filters, .. } => {
-                attach_open_tags_to_filters(filters, open_tags);
+                attach_open_tags_to_filters(filters, &state.open_tags, state.in_atx_heading);
+                state.at_line_start = false;
             }
             Segment::ForLoop {
                 body, else_body, ..
             } => {
-                let mut body_tags = open_tags.clone();
-                let mut body_pending = pending_open_tag.clone();
-                propagate_enclosing_xml_tags(body, closing_tags, &mut body_tags, &mut body_pending);
-                let mut else_tags = open_tags.clone();
-                let mut else_pending = pending_open_tag.clone();
-                propagate_enclosing_xml_tags(
-                    else_body,
-                    closing_tags,
-                    &mut else_tags,
-                    &mut else_pending,
-                );
+                state.propagate_branch(body, closing_tags);
+                state.propagate_branch(else_body, closing_tags);
             }
             Segment::If {
                 branches,
                 else_body,
             } => {
                 for (_, branch_body) in branches {
-                    let mut branch_tags = open_tags.clone();
-                    let mut branch_pending = pending_open_tag.clone();
-                    propagate_enclosing_xml_tags(
-                        branch_body,
-                        closing_tags,
-                        &mut branch_tags,
-                        &mut branch_pending,
-                    );
+                    state.propagate_branch(branch_body, closing_tags);
                 }
-                let mut else_tags = open_tags.clone();
-                let mut else_pending = pending_open_tag.clone();
-                propagate_enclosing_xml_tags(
-                    else_body,
-                    closing_tags,
-                    &mut else_tags,
-                    &mut else_pending,
-                );
+                state.propagate_branch(else_body, closing_tags);
             }
             Segment::Match { arms, .. } => {
                 for arm in arms {
-                    let mut arm_tags = open_tags.clone();
-                    let mut arm_pending = pending_open_tag.clone();
-                    propagate_enclosing_xml_tags(
-                        &mut arm.body,
-                        closing_tags,
-                        &mut arm_tags,
-                        &mut arm_pending,
-                    );
+                    state.propagate_branch(&mut arm.body, closing_tags);
                 }
             }
             Segment::Panic(inner) => {
-                let mut panic_tags = open_tags.clone();
-                let mut panic_pending = pending_open_tag.clone();
-                propagate_enclosing_xml_tags(
-                    inner,
-                    closing_tags,
-                    &mut panic_tags,
-                    &mut panic_pending,
-                );
+                state.propagate_branch(inner, closing_tags);
             }
-            Segment::Raw(_) | Segment::Include(_) | Segment::Comment(_) => {}
+            Segment::Include(inc) => {
+                if let Some(ic) = &mut inc.inline_compiled {
+                    state.propagate_branch(
+                        alloc::sync::Arc::make_mut(&mut ic.segments),
+                        closing_tags,
+                    );
+                }
+            }
+            Segment::Raw(text) => {
+                update_heading_line_state(text, &mut state.in_atx_heading, &mut state.at_line_start);
+            }
+            Segment::Comment(_) => {}
         }
     }
 }

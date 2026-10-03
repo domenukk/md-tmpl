@@ -94,6 +94,7 @@ pub(crate) fn compile_template_to_ast(
         &inline_templates,
         &mut dependency_paths,
     )?;
+    md_tmpl_core::compiled::apply_enclosing_xml_tags(&mut segments);
 
     // Flow-sensitive type check: validate variant names and field access.
     validate_types(&fm, &segments)?;

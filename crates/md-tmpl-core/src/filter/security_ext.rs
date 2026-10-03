@@ -347,6 +347,23 @@ pub(crate) fn parse_sanitize_filter_mode(
     }
 }
 
+fn collapse_heading_line_breaks(cow: Cow<'_, str>) -> Cow<'_, str> {
+    let is_line_break = |c: char| {
+        matches!(
+            c,
+            '\n' | '\r' | '\u{000B}' | '\u{000C}' | '\u{0085}' | '\u{2028}' | '\u{2029}'
+        )
+    };
+    if !cow.chars().any(is_line_break) {
+        return cow;
+    }
+    Cow::Owned(
+        cow.chars()
+            .map(|c| if is_line_break(c) { ' ' } else { c })
+            .collect(),
+    )
+}
+
 pub(super) fn sanitize_cow_with_mode<'a>(
     input: Cow<'a, str>,
     mode: Option<&SanitizeFilterMode>,
@@ -368,13 +385,23 @@ pub(super) fn sanitize_cow_with_mode<'a>(
                     Cow::Owned(s) => Cow::Owned(s),
                 },
             }),
-            Some(tags) => Ok(match input {
-                Cow::Borrowed(b) => sanitize_untrusted_str(b, tags),
-                Cow::Owned(o) => match sanitize_untrusted_str(&o, tags) {
-                    Cow::Borrowed(_) => Cow::Owned(o),
-                    Cow::Owned(s) => Cow::Owned(s),
-                },
-            }),
+            Some(tags) => {
+                let sanitized = match input {
+                    Cow::Borrowed(b) => sanitize_untrusted_str(b, tags),
+                    Cow::Owned(o) => match sanitize_untrusted_str(&o, tags) {
+                        Cow::Borrowed(_) => Cow::Owned(o),
+                        Cow::Owned(s) => Cow::Owned(s),
+                    },
+                };
+                if tags
+                    .split(',')
+                    .any(|t| t.trim() == crate::compiled::sanitize_pass::INLINE_HEADING_SENTINEL)
+                {
+                    Ok(collapse_heading_line_breaks(sanitized))
+                } else {
+                    Ok(sanitized)
+                }
+            }
         },
         SanitizeFilterMode::Block { tag_spec, notice } => Ok(Cow::Owned(sanitize_block_str(
             &input,
@@ -401,7 +428,16 @@ pub(super) fn sanitize_into_with_mode(
         SanitizeFilterMode::Inline { enclosing_tags } => {
             let cow = match enclosing_tags.as_deref() {
                 None | Some("") => sanitize_tokens_str(s),
-                Some(tags) => sanitize_untrusted_str(s, tags),
+                Some(tags) => {
+                    let sanitized = sanitize_untrusted_str(s, tags);
+                    if tags.split(',').any(|t| {
+                        t.trim() == crate::compiled::sanitize_pass::INLINE_HEADING_SENTINEL
+                    }) {
+                        collapse_heading_line_breaks(sanitized)
+                    } else {
+                        sanitized
+                    }
+                }
             };
             buf.push_str(&cow);
             Ok(())

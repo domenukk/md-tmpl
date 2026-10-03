@@ -740,6 +740,12 @@ function isValidNcname(name: string): boolean {
   return true;
 }
 
+export const INLINE_HEADING_SENTINEL = "#heading";
+
+function collapseHeadingLineBreaks(s: string): string {
+  return s.replace(/[\n\r\u000b\u000c\u0085\u2028\u2029]/g, " ");
+}
+
 function validateQuarantineTagSpec(spec: string): [string, string[]] {
   if (spec.length === 0) {
     throw new TemplateSyntaxError(
@@ -748,7 +754,7 @@ function validateQuarantineTagSpec(spec: string): [string, string[]] {
   }
   const parts = spec.split(",").map((p) => p.trim());
   for (const part of parts) {
-    if (!isValidNcname(part)) {
+    if (part !== INLINE_HEADING_SENTINEL && !isValidNcname(part)) {
       throw new TemplateSyntaxError(
         `'quarantine' tag name must be a valid XML NCName: '${spec}'`,
       );
@@ -974,7 +980,11 @@ export function sanitizeTokensWithArgs(s: string, tagArg?: string): string {
   }
   const rawSpec = stripQuotes(tagArg);
   validateQuarantineTagSpec(rawSpec);
-  return sanitizeUntrustedString(s, rawSpec);
+  const sanitized = sanitizeUntrustedString(s, rawSpec);
+  if (rawSpec.split(",").some((t) => t.trim() === INLINE_HEADING_SENTINEL)) {
+    return collapseHeadingLineBreaks(sanitized);
+  }
+  return sanitized;
 }
 
 function applySanitizeTokens(value: Value, args: string | undefined): Value {
