@@ -101,6 +101,8 @@ export interface Frontmatter {
   >;
   /** Optional template-level untrusted-data boundary notice from `sanitize_notice:`. */
   readonly sanitizeNotice?: string;
+  /** Type alias names declared locally in this frontmatter block (excluding inherited parent aliases). */
+  readonly localTypeAliasNames?: ReadonlySet<string>;
   readonly bodyStartLine?: number;
 }
 

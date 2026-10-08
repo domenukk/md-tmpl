@@ -11,17 +11,61 @@
 //! Tests that use file references (`parent_template`), `expected_error`, or
 //! `env:` blocks are skipped since `template!` cannot handle those.
 
-use std::{fmt::Write, path::Path};
+use std::{
+    fmt::Write,
+    path::{Path, PathBuf},
+};
 
-/// Shared TOML files to process (relative to workspace root `tests/shared/`).
-const SHARED_TOML_FILES: &[&str] = &[
+/// Shared suites to process (relative to workspace root `tests/shared/`).
+///
+/// An entry ending in [`FIXTURE_SUFFIX`] is a single fixture file; any other
+/// entry is a directory whose fixture files are discovered in sorted order.
+const SHARED_SUITES: &[&str] = &[
     "inline_tmpl_tests.toml",
-    "inline_control_tests.toml",
+    "inline_control_tests",
     "tmpl_param_tests.toml",
-    "feature_e2e_tests.toml",
+    "feature_e2e_tests",
     // env_tests.toml is skipped — env: requires compile-time env values
-    // include_tests.toml is skipped — file includes need actual files
+    // include_tests/ is skipped — file includes need actual files
 ];
+
+/// File suffix of shared fixture files.
+const FIXTURE_SUFFIX: &str = ".toml";
+
+/// Resolve a shared suite to its fixture files, registering each path with
+/// Cargo's change tracking. Panics if the suite is missing or empty.
+fn suite_files(shared_dir: &Path, suite: &str) -> Vec<PathBuf> {
+    let suite_path = shared_dir.join(suite);
+    println!("cargo::rerun-if-changed={}", suite_path.display());
+    if suite.ends_with(FIXTURE_SUFFIX) {
+        assert!(
+            suite_path.is_file(),
+            "shared test file not found: {}",
+            suite_path.display()
+        );
+        return vec![suite_path];
+    }
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&suite_path)
+        .unwrap_or_else(|e| panic!("failed to list {}: {e}", suite_path.display()))
+        .map(|entry| {
+            entry
+                .unwrap_or_else(|e| panic!("failed to read entry in {}: {e}", suite_path.display()))
+                .path()
+        })
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(FIXTURE_SUFFIX))
+        })
+        .collect();
+    files.sort();
+    assert!(
+        !files.is_empty(),
+        "shared suite directory has no fixtures: {}",
+        suite_path.display()
+    );
+    files
+}
 
 fn main() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
@@ -36,27 +80,23 @@ fn main() {
     let mut test_count = 0u32;
     let mut skipped_count = 0u32;
 
-    for toml_file in SHARED_TOML_FILES {
-        let toml_path = shared_dir.join(toml_file);
-        if !toml_path.exists() {
-            eprintln!(
-                "cargo::warning=shared test file not found: {}",
-                toml_path.display()
-            );
-            continue;
-        }
+    let toml_paths: Vec<PathBuf> = SHARED_SUITES
+        .iter()
+        .flat_map(|suite| suite_files(&shared_dir, suite))
+        .collect();
 
+    for toml_path in &toml_paths {
         // Tell Cargo to re-run if the TOML file changes.
         println!("cargo::rerun-if-changed={}", toml_path.display());
 
-        let toml_content = std::fs::read_to_string(&toml_path)
+        let toml_content = std::fs::read_to_string(toml_path)
             .unwrap_or_else(|e| panic!("failed to read {}: {e}", toml_path.display()));
         let root: toml::Table = toml::from_str(&toml_content)
             .unwrap_or_else(|e| panic!("failed to parse {}: {e}", toml_path.display()));
-        let Some(tests) = root.get("tests").and_then(|v| v.as_array()) else {
-            eprintln!("cargo::warning=no tests array in {toml_file}");
-            continue;
-        };
+        let tests = root
+            .get("tests")
+            .and_then(|v| v.as_array())
+            .unwrap_or_else(|| panic!("no tests array in {}", toml_path.display()));
 
         for tc_val in tests {
             let tc = tc_val.as_table().expect("test case should be a table");

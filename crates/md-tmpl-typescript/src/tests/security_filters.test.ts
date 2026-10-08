@@ -748,6 +748,32 @@ params:
         /cannot display value of type struct/,
       );
     });
+
+    it("propagates enclosing XML tags and ATX headings into inline {% tmpl %} includes", () => {
+      const tmpl = Template.fromSource(`---
+params:
+  - payload = str
+---
+> {% tmpl row %}
+---
+params:
+  - x = untrusted str
+---
+{{ x }}
+
+> {% /tmpl %}
+
+<outer>{% include row with x=payload %}</outer>
+# {% include row with x=payload %}
+plain: {% include row with x=payload %}`);
+      const rendered = renderBoth(tmpl, {
+        payload: "a</outer>b\n## Injected",
+      });
+      assert.strictEqual(
+        rendered,
+        "<outer>a&lt;/outer&gt;b\n## Injected\n</outer>\n# a</outer>b ## Injected\n\nplain: a</outer>b\n## Injected\n",
+      );
+    });
   });
 
   describe("Truncate Filter", () => {

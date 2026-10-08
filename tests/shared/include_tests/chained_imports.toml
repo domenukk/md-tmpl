@@ -1,0 +1,201 @@
+# Shared include_tests: Chained (sequential) import path interpolation.
+
+# --------------------------------------------------------------------------
+# Chained (sequential) import path interpolation
+# --------------------------------------------------------------------------
+
+[[tests]]
+name = "chained_import_basic_pass"
+description = "Import env first, then use env.CONST in second import path"
+parent_template = '''
+---
+imports:
+  - "[env](./env.tmpl.md)"
+  - "[greet]({{ env.DIR }}/greet.tmpl.md)"
+
+params: [name = str]
+---
+> {% include [greet]({{ env.DIR }}/greet.tmpl.md) with name=name %}'''
+expected_output = "Hello World!"
+
+[tests.params]
+name = "World"
+
+[tests.files]
+"env.tmpl.md" = '''
+---
+name: env
+consts: [DIR = str := "."]
+---
+'''
+"greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+Hello {{ name }}!'''
+
+[[tests]]
+name = "chained_import_multiple_consumers_pass"
+description = "Multiple imports using the same chained constant, includes with params"
+parent_template = '''
+---
+imports:
+  - "[env](./env.tmpl.md)"
+  - "[greet]({{ env.DIR }}/greet.tmpl.md)"
+  - "[farewell]({{ env.DIR }}/farewell.tmpl.md)"
+
+params: [name = str]
+---
+> {% include [greet]({{ env.DIR }}/greet.tmpl.md) with name=name %}
+
+> {% include [farewell]({{ env.DIR }}/farewell.tmpl.md) with name=name %}'''
+expected_output = '''
+Hello World!
+Goodbye World!
+'''
+
+[tests.params]
+name = "World"
+
+[tests.files]
+"env.tmpl.md" = '''
+---
+name: env
+consts: [DIR = str := "."]
+---
+'''
+"greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+Hello {{ name }}!
+'''
+"farewell.tmpl.md" = '''
+---
+params: [name = str]
+---
+Goodbye {{ name }}!
+'''
+
+[[tests]]
+name = "chained_import_body_access_pass"
+description = "Access consts from chained import in the template body"
+parent_template = '''
+---
+imports:
+  - "[env](./env.tmpl.md)"
+
+params: []
+---
+Version: {{ env.VERSION }}'''
+expected_output = "Version: 2.0"
+params = {}
+
+[tests.files]
+"env.tmpl.md" = '''
+---
+name: env
+consts: [VERSION = str := "2.0"]
+---
+'''
+
+[[tests]]
+name = "chained_import_forward_reference_error"
+description = "Import cannot reference a const from an import declared below it"
+parent_template = '''
+---
+imports:
+  - "[greet]({{ env.DIR }}/greet.tmpl.md)"
+  - "[env](./env.tmpl.md)"
+
+params: [name = str]
+---
+> {% include [greet]({{ env.DIR }}/greet.tmpl.md) with name=name %}'''
+expected_error = "unresolvable"
+
+[tests.params]
+name = "World"
+
+[tests.files]
+"env.tmpl.md" = '''
+---
+name: env
+consts: [DIR = str := "."]
+---
+'''
+"greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+Hello {{ name }}!'''
+
+[[tests]]
+name = "chained_import_with_env_combined_pass"
+description = "env: frontmatter and chained import consts both available in import paths"
+parent_template = '''
+---
+env: [BASE = str]
+
+imports:
+  - "[cfg](./cfg.tmpl.md)"
+  - "[greet]({{ BASE }}/greet.tmpl.md)"
+
+params: [name = str]
+---
+> {% include [greet]({{ BASE }}/greet.tmpl.md) with name=name %}
+
+Mode: {{ cfg.MODE }}
+'''
+expected_output = '''
+Hello World!
+Mode: production
+'''
+
+[tests.params]
+name = "World"
+
+[tests.env]
+BASE = "."
+
+[tests.files]
+"cfg.tmpl.md" = '''
+---
+name: cfg
+consts: [MODE = str := "production"]
+---
+'''
+"greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+Hello {{ name }}!
+'''
+
+[[tests]]
+name = "chained_import_three_deep_pass"
+description = "Three-level chained imports: env exports DIR, config uses env.DIR, main uses both"
+parent_template = '''
+---
+imports:
+  - "[env](./env.tmpl.md)"
+  - "[config]({{ env.DIR }}/config.tmpl.md)"
+
+params: []
+---
+Dir: {{ env.DIR }}, App: {{ config.APP_NAME }}'''
+expected_output = "Dir: ., App: TestApp"
+params = {}
+
+[tests.files]
+"env.tmpl.md" = '''
+---
+name: env
+consts: [DIR = str := "."]
+---
+'''
+"config.tmpl.md" = '''
+---
+name: config
+consts: [APP_NAME = str := "TestApp"]
+---
+'''

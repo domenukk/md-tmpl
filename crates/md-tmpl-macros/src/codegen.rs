@@ -399,26 +399,44 @@ pub(crate) fn codegen_comparison_op(
     }
 }
 
+pub(crate) use crate::const_refs::{collect_keys_from_segments, collect_referenced_const_keys};
+
 pub(crate) fn codegen_compiled_inline_template(
     t: &md_tmpl_core::compiled::CompiledInlineTemplate,
 ) -> proc_macro2::TokenStream {
     let cp = crate_path();
+    let referenced = collect_referenced_const_keys(&t.segments);
     let segments_tokens = t.segments.iter().map(codegen_segment);
     let decls_tokens = t.declarations.iter().map(codegen_var_decl);
-    let const_entries = t.consts.iter().map(|(k, v)| {
-        let v_tokens = codegen_value(v);
-        quote! { (#cp::__private::String::from(#k), #v_tokens) }
-    });
-    let imported_const_entries = t.imported_consts.iter().map(|(k, v)| {
-        let v_tokens = codegen_value(v);
-        quote! { (#cp::__private::String::from(#k), #v_tokens) }
-    });
+    let const_entries = t
+        .consts
+        .iter()
+        .filter(|(k, _)| referenced.contains(k.as_str()))
+        .map(|(k, v)| {
+            let v_tokens = codegen_value(v);
+            quote! { (#cp::__private::String::from(#k), #v_tokens) }
+        });
+    let imported_const_entries = t
+        .imported_consts
+        .iter()
+        .filter(|(k, _)| referenced.contains(k.as_str()))
+        .map(|(k, v)| {
+            let v_tokens = codegen_value(v);
+            quote! { (#cp::__private::String::from(#k), #v_tokens) }
+        });
     quote! {
-        #cp::compiled::CompiledInlineTemplate {
-            segments: #cp::__private::Arc::from([#(#segments_tokens),*]),
-            declarations: #cp::__private::Arc::from([#(#decls_tokens),*]),
-            consts: #cp::__private::Arc::new([#(#const_entries),*].into_iter().collect()),
-            imported_consts: #cp::__private::Arc::new([#(#imported_const_entries),*].into_iter().collect()),
+        {
+            #[cold]
+            #[inline(never)]
+            fn __init_inline() -> #cp::compiled::CompiledInlineTemplate {
+                #cp::compiled::CompiledInlineTemplate {
+                    segments: #cp::__private::Arc::from([#(#segments_tokens),*]),
+                    declarations: #cp::__private::Arc::from([#(#decls_tokens),*]),
+                    consts: #cp::__private::Arc::new([#(#const_entries),*].into_iter().collect()),
+                    imported_consts: #cp::__private::Arc::new([#(#imported_const_entries),*].into_iter().collect()),
+                }
+            }
+            __init_inline()
         }
     }
 }
@@ -442,12 +460,83 @@ pub(crate) fn codegen_var_decl(d: &md_tmpl_core::VarDecl) -> proc_macro2::TokenS
     }
 }
 
+fn try_codegen_static_scalar(v: &md_tmpl_core::Value) -> Option<proc_macro2::TokenStream> {
+    use md_tmpl_core::Value;
+    let cp = crate_path();
+    match v {
+        Value::Str(s) => Some(quote! { #cp::__private::StaticScalar::Str(#s) }),
+        Value::Int(i) => Some(quote! { #cp::__private::StaticScalar::Int(#i) }),
+        Value::Float(f) => {
+            let bits = f.to_bits();
+            Some(quote! { #cp::__private::StaticScalar::Float(#bits) })
+        }
+        Value::Bool(b) => Some(quote! { #cp::__private::StaticScalar::Bool(#b) }),
+        Value::None => Some(quote! { #cp::__private::StaticScalar::None }),
+        Value::List(_) | Value::Struct(_) | Value::Tmpl(_) => None,
+    }
+}
+
+fn try_codegen_scalar_struct_fields(
+    d: &hashbrown::HashMap<String, md_tmpl_core::Value>,
+) -> Option<Vec<proc_macro2::TokenStream>> {
+    let mut fields = Vec::with_capacity(d.len());
+    for (k, v) in d {
+        let scalar = try_codegen_static_scalar(v)?;
+        fields.push(quote! { (#k, #scalar) });
+    }
+    Some(fields)
+}
+
+fn try_codegen_enum_namespace(
+    d: &hashbrown::HashMap<String, md_tmpl_core::Value>,
+) -> Option<proc_macro2::TokenStream> {
+    use md_tmpl_core::Value;
+    let cp = crate_path();
+    let Value::List(variants_list) = d.get(md_tmpl_core::consts::ENUM_VARIANTS_KEY)? else {
+        return None;
+    };
+    let mut all_variants = Vec::with_capacity(variants_list.len());
+    for item in variants_list.iter() {
+        let Value::Str(s) = item else {
+            return None;
+        };
+        all_variants.push(s.as_str());
+    }
+    let mut unit_variants = Vec::new();
+    let mut data_variants = Vec::new();
+    for (k, v) in d {
+        if k == md_tmpl_core::consts::ENUM_VARIANTS_KEY {
+            continue;
+        }
+        match v {
+            Value::Str(s) if s == k => unit_variants.push(k.as_str()),
+            Value::Struct(sub) if sub.len() == 1 => {
+                let Value::Str(tag) = sub.get(md_tmpl_core::consts::ENUM_TAG_KEY)? else {
+                    return None;
+                };
+                if tag != k {
+                    return None;
+                }
+                data_variants.push(k.as_str());
+            }
+            _ => return None,
+        }
+    }
+    Some(quote! {
+        #cp::__private::make_enum_namespace_value(
+            &[#(#unit_variants),*],
+            &[#(#data_variants),*],
+            &[#(#all_variants),*],
+        )
+    })
+}
+
 pub(crate) fn codegen_value(v: &md_tmpl_core::Value) -> proc_macro2::TokenStream {
     use md_tmpl_core::Value;
     let cp = crate_path();
     match v {
         Value::Str(s) => {
-            quote! { #cp::Value::Str(#cp::__private::String::from(#s)) }
+            quote! { #cp::__private::make_str_value(#s) }
         }
         Value::Int(i) => quote! { #cp::Value::Int(#i) },
         Value::Float(f) => {
@@ -456,18 +545,55 @@ pub(crate) fn codegen_value(v: &md_tmpl_core::Value) -> proc_macro2::TokenStream
         }
         Value::Bool(b) => quote! { #cp::Value::Bool(#b) },
         Value::List(l) => {
+            if let Some(scalars) = l
+                .iter()
+                .map(try_codegen_static_scalar)
+                .collect::<Option<Vec<_>>>()
+            {
+                return quote! { #cp::__private::make_scalar_list_value(&[#(#scalars),*]) };
+            }
+            if let Some(struct_slices) = l
+                .iter()
+                .map(|item| {
+                    if let Value::Struct(d) = item {
+                        let fields = try_codegen_scalar_struct_fields(d)?;
+                        Some(quote! { &[#(#fields),*] as &[(&str, #cp::__private::StaticScalar<'_>)] })
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Option<Vec<_>>>()
+            {
+                return quote! { #cp::__private::make_scalar_struct_list_value(&[#(#struct_slices),*]) };
+            }
             let items = l.iter().map(codegen_value);
-            quote! { #cp::Value::List(#cp::__private::Arc::new(#cp::__private::vec![#(#items),*])) }
+            let len = l.len();
+            quote! {
+                #cp::Value::List(#cp::__private::Arc::new({
+                    let mut __v = #cp::__private::Vec::with_capacity(#len);
+                    #(__v.push(#items);)*
+                    __v
+                }))
+            }
         }
         Value::Struct(d) => {
+            if let Some(enum_ns) = try_codegen_enum_namespace(d) {
+                return enum_ns;
+            }
+            if let Some(fields) = try_codegen_scalar_struct_fields(d) {
+                return quote! { #cp::__private::make_scalar_struct_value(&[#(#fields),*]) };
+            }
             let entries = d.iter().map(|(k, v)| {
                 let v_tokens = codegen_value(v);
-                quote! { (#cp::__private::String::from(#k), #v_tokens) }
+                quote! { __m.insert(#cp::__private::String::from(#k), #v_tokens); }
             });
+            let len = d.len();
             quote! {
-                #cp::Value::Struct(
-                    #cp::__private::Arc::new([#(#entries),*].into_iter().collect())
-                )
+                #cp::Value::Struct(#cp::__private::Arc::new({
+                    let mut __m = #cp::__private::HashMap::with_capacity(#len);
+                    #(#entries)*
+                    __m
+                }))
             }
         }
         Value::Tmpl(_) => {
@@ -541,12 +667,19 @@ pub(crate) fn codegen_list_literal(
 ) -> proc_macro2::TokenStream {
     use md_tmpl_core::Value;
     let cp = crate_path();
+    let len = items.len();
 
     if fields.len() == 1 && fields[0].name.is_empty() {
         let item_tokens = items.iter().map(|item| {
             codegen_value_as_rust_literal(item, &fields[0].var_type, parent_struct, field_name)
         });
-        quote! { #cp::__private::vec![#(#item_tokens),*] }
+        quote! {
+            {
+                let mut __v = #cp::__private::Vec::with_capacity(#len);
+                #(__v.push(#item_tokens);)*
+                __v
+            }
+        }
     } else {
         let capitalized = md_tmpl_core::to_pascal_case(field_name);
         let item_struct_name = format_ident!("{parent_struct}{capitalized}Item");
@@ -576,7 +709,13 @@ pub(crate) fn codegen_list_literal(
                 quote! { compile_error!(#msg) }
             }
         });
-        quote! { #cp::__private::vec![#(#item_tokens),*] }
+        quote! {
+            {
+                let mut __v = #cp::__private::Vec::with_capacity(#len);
+                #(__v.push(#item_tokens);)*
+                __v
+            }
+        }
     }
 }
 

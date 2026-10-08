@@ -1,0 +1,265 @@
+# Shared feature_e2e_tests: F11 nested type patterns and blockquote expressions.
+
+# ============================================================================
+# F11: Nested Type Patterns — option(enum), list(enum), struct(enum field)
+#
+# These verify that deeper nesting of types works correctly for matching,
+# rendering, and the undeclared-variable static analysis.
+# ============================================================================
+
+# -- option(enum) --
+
+[[tests]]
+name = "option_enum_match_some"
+description = "option(enum) — nested match: outer for Some/None, inner for variant"
+template = '''
+---
+types:
+  - Status = enum(Active, Paused, Stopped)
+
+params: [s = option(Status)]
+---
+> {% match s %}
+> {% case Some %}{% match s %}{% case Active %}on{% case Paused %}pause{% case Stopped %}off{% /match %}{% case None %}none{% /match %}'''
+expected_output = "on"
+[tests.params]
+s = "Active"
+
+[[tests]]
+name = "option_enum_match_none"
+description = "option(enum) — match hits None arm when absent"
+template = '''
+---
+types:
+  - Status = enum(Active, Paused, Stopped)
+
+params: [s = option(Status)]
+---
+> {% match s %}
+> {% case Some %}{{ kind(s) }}{% case None %}none{% /match %}'''
+expected_output = "none"
+[tests.params]
+s = "None"
+
+[[tests]]
+name = "option_enum_has_and_match"
+description = "option(enum) — has() guard + match on inner enum variant"
+template = '''
+---
+types:
+  - Color = enum(Red, Green, Blue)
+
+params: [c = option(Color)]
+---
+> {% if has(c) %}{% match c %}{% case Red %}R{% case Green %}G{% case Blue %}B{% /match %}{% else %}none{% /if %}'''
+expected_output = "G"
+[tests.params]
+c = "Green"
+
+# -- list(enum) --
+
+[[tests]]
+name = "list_enum_for_match"
+description = "list(enum) — iterate and match each variant"
+template = '''
+---
+types:
+  - Light = enum(Red, Yellow, Green)
+
+params: [lights = list(Light)]
+---
+> {% for l in lights %}{% match l %}{% case Red %}stop{% case Yellow %}slow{% case Green %}go{% /match %},{% /for %}'''
+expected_output = "go,stop,slow,"
+[tests.params]
+lights = ["Green", "Red", "Yellow"]
+
+[[tests]]
+name = "list_enum_kind_in_loop"
+description = "list(enum) — kind() on each element in a for loop"
+template = '''
+---
+types:
+  - Dir = enum(Up, Down)
+
+params: [dirs = list(Dir)]
+---
+> {% for d in dirs %}{{ kind(d) }} {% /for %}'''
+expected_output = "Up Down Up "
+[tests.params]
+dirs = ["Up", "Down", "Up"]
+
+# -- struct with enum field --
+
+[[tests]]
+name = "struct_enum_field_match"
+description = "struct with an enum field — match on the field value"
+template = '''
+---
+types:
+  - Severity = enum(Low, Medium, High)
+
+params: [issue = struct(title = str, sev = Severity)]
+---
+> {% match issue.sev %}{% case High %}🔴{% case Medium %}🟡{% case Low %}🟢{% /match %} {{ issue.title }}'''
+expected_output = "🔴 fix crash"
+[tests.params]
+issue = { "title" = "fix crash", "sev" = "High" }
+
+[[tests]]
+name = "struct_enum_field_kind"
+description = "struct with an enum field — kind() extracts variant name"
+template = '''
+---
+types:
+  - Role = enum(Admin, User, Guest)
+
+params: [acct = struct(name = str, role = Role)]
+---
+{{ acct.name }} ({{ kind(acct.role) }})'''
+expected_output = "alice (Admin)"
+[tests.params]
+acct = { "name" = "alice", "role" = "Admin" }
+
+# -- list(option(enum)) — three levels deep --
+
+[[tests]]
+name = "list_option_enum_for_match"
+description = "list(option(enum)) — triple nesting: iterate, check Some/None, match variant"
+template = '''
+---
+types:
+  - Prio = enum(P0, P1, P2)
+
+params: [items = list(option(Prio))]
+---
+> {% for p in items %}{% match p %}{% case Some %}{% match p %}{% case P0 %}🔴{% case P1 %}🟡{% case P2 %}🟢{% /match %}{% case None %}-{% /match %} {% /for %}'''
+expected_output = "🔴 - 🟢 "
+[tests.params]
+items = ["P0", "None", "P2"]
+
+# -- option(enum) narrowing edge cases --
+
+[[tests]]
+name = "option_enum_match_some_other_variant"
+description = "option(enum) — nested match: match Paused variant after Some narrowing"
+template = '''
+---
+types:
+  - Status = enum(Active, Paused, Stopped)
+
+params: [s = option(Status)]
+---
+> {% match s %}
+> {% case Some %}{% match s %}{% case Active %}on{% case Paused %}pause{% case Stopped %}off{% /match %}{% case None %}none{% /match %}'''
+expected_output = "pause"
+[tests.params]
+s = "Paused"
+
+[[tests]]
+name = "option_enum_kind_after_has"
+description = "option(enum) — kind() after has() guard returns variant name, not Some"
+template = '''
+---
+types:
+  - Color = enum(Red, Green, Blue)
+
+params: [c = option(Color)]
+---
+> {% if has(c) %}{{ kind(c) }}{% else %}absent{% /if %}'''
+expected_output = "Red"
+[tests.params]
+c = "Red"
+
+[[tests]]
+name = "option_enum_has_none"
+description = "option(enum) — has() guard returns false for None, else branch renders"
+template = '''
+---
+types:
+  - Color = enum(Red, Green, Blue)
+
+params: [c = option(Color)]
+---
+> {% if has(c) %}{{ kind(c) }}{% else %}absent{% /if %}'''
+expected_output = "absent"
+[tests.params]
+c = "None"
+
+[[tests]]
+name = "option_enum_match_some_kind"
+description = "option(enum) — kind() inside Some arm still returns Some (option semantics per SPEC); use nested match for variant"
+template = '''
+---
+types:
+  - Level = enum(L0, L1, L2)
+
+params: [lev = option(Level)]
+---
+> {% match lev %}{% case Some %}{% match lev %}{% case L0 %}zero{% case L1 %}one{% case L2 %}two{% /match %}{% case None %}N/A{% /match %}'''
+expected_output = "two"
+[tests.params]
+lev = "L2"
+
+[[tests]]
+name = "struct_option_enum_field_match"
+description = "struct with option(enum) field — has() guard + match"
+template = '''
+---
+types:
+  - Priority = enum(High, Normal, Low)
+
+params: [task = struct(title = str, prio = option(Priority))]
+---
+{{ task.title }}: {% if has(task.prio) %}{% match task.prio %}{% case High %}🔴{% case Normal %}⚪{% case Low %}🟢{% /match %}{% else %}unset{% /if %}'''
+expected_output = "deploy: 🔴"
+[tests.params]
+task = { "title" = "deploy", "prio" = "High" }
+
+[[tests]]
+name = "struct_option_enum_field_none"
+description = "struct with option(enum) field — has() guard with None value"
+template = '''
+---
+types:
+  - Priority = enum(High, Normal, Low)
+
+params: [task = struct(title = str, prio = option(Priority))]
+---
+{{ task.title }}: {% if has(task.prio) %}{{ kind(task.prio) }}{% else %}unset{% /if %}'''
+expected_output = "deploy: unset"
+[tests.params]
+task = { "title" = "deploy", "prio" = "None" }
+
+# -- Blockquote expression tests (SPEC §Markdown Blockquotes) --
+# `> {{ expr }}` is literal blockquote — `> ` is preserved in output.
+# `> {% tag %}` is a control tag — `> ` is stripped.
+
+[[tests]]
+name = "blockquote_expression_preserved"
+description = "> {{ expr }} is literal blockquote — preserves > prefix"
+template = '''
+---
+params: [name = str]
+---
+> {{ name }} is here'''
+expected_output = "> hello is here"
+[tests.params]
+name = "hello"
+
+[[tests]]
+name = "blockquote_expression_inside_if_block"
+description = "> {{ expr }} inside a > {% if %} block preserves > prefix"
+template = '''
+---
+params: [name = str, show = bool]
+---
+
+> {% if show %}
+
+> {{ name }} is visible
+
+> {% /if %}'''
+expected_output = "> hello is visible\n"
+[tests.params]
+name = "hello"
+show = true

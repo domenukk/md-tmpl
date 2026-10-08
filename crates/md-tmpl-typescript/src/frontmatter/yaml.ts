@@ -52,7 +52,14 @@ import {
  * Returns `[frontmatter, body]` where body is everything after the
  * closing `---` delimiter.
  */
-export function parseFrontmatter(source: string): [Frontmatter, string] {
+export function parseFrontmatter(
+  source: string,
+  parentTypeAliases?: ReadonlyMap<string, VarType>,
+  parentTypeAliasSanitize?: ReadonlyMap<
+    string,
+    ReadonlyMap<string, SanitizeSpec>
+  >,
+): [Frontmatter, string] {
   // Normalize CRLF → LF for cross-platform consistency.
   const normalized = source.includes("\r")
     ? source.replace(/\r\n/g, "\n")
@@ -98,7 +105,12 @@ export function parseFrontmatter(source: string): [Frontmatter, string] {
   const body = lines.slice(endIdx + 1).join("\n");
 
   // Parse the frontmatter YAML subset
-  const fm = parseFrontmatterYaml(fmLines, startIdx + 2);
+  const fm = parseFrontmatterYaml(
+    fmLines,
+    startIdx + 2,
+    parentTypeAliases,
+    parentTypeAliasSanitize,
+  );
   return [{ ...fm, bodyStartLine: endIdx + 2 }, body];
 }
 
@@ -273,6 +285,11 @@ function closingQuoteEnd(s: string, quote: string): number | undefined {
 export function parseFrontmatterYaml(
   rawLines: string[],
   startLineNo = 2,
+  parentTypeAliases?: ReadonlyMap<string, VarType>,
+  parentTypeAliasSanitize?: ReadonlyMap<
+    string,
+    ReadonlyMap<string, SanitizeSpec>
+  >,
 ): Frontmatter {
   // Fold multi-line declarations onto single logical lines before parsing.
   const lines = joinContinuationLines(rawLines);
@@ -319,11 +336,11 @@ export function parseFrontmatterYaml(
   let description: string | undefined;
   let allowUnused = false;
   let sanitizeNotice: string | undefined;
-  const typeAliases = new Map<string, VarType>();
-  const typeAliasSanitize = new Map<
-    string,
-    ReadonlyMap<string, SanitizeSpec>
-  >();
+  const typeAliases = new Map<string, VarType>(parentTypeAliases);
+  const localTypeAliasNames = new Set<string>();
+  const typeAliasSanitize = new Map<string, ReadonlyMap<string, SanitizeSpec>>(
+    parentTypeAliasSanitize,
+  );
   const imports: ImportDecl[] = [];
 
   // Two-pass approach: first collect raw items per block, then resolve.
@@ -400,14 +417,17 @@ export function parseFrontmatterYaml(
               item,
               typeAliasSanitize,
             );
-            if (typeAliases.has(aliasName)) {
+            if (localTypeAliasNames.has(aliasName)) {
               throw new TemplateSyntaxError(
                 `duplicate type alias '${aliasName}'`,
               );
             }
+            localTypeAliasNames.add(aliasName);
             typeAliases.set(aliasName, aliasType);
             if (relSpecs.size > 0) {
               typeAliasSanitize.set(aliasName, relSpecs);
+            } else {
+              typeAliasSanitize.delete(aliasName);
             }
           }
           currentBlock = "none";
@@ -463,14 +483,17 @@ export function parseFrontmatterYaml(
               item,
               typeAliasSanitize,
             );
-            if (typeAliases.has(aliasName)) {
+            if (localTypeAliasNames.has(aliasName)) {
               throw new TemplateSyntaxError(
                 `duplicate type alias '${aliasName}'`,
               );
             }
+            localTypeAliasNames.add(aliasName);
             typeAliases.set(aliasName, aliasType);
             if (relSpecs.size > 0) {
               typeAliasSanitize.set(aliasName, relSpecs);
+            } else {
+              typeAliasSanitize.delete(aliasName);
             }
             break;
           }
@@ -595,5 +618,6 @@ export function parseFrontmatterYaml(
     paramSanitize,
     typeAliasSanitize,
     sanitizeNotice,
+    localTypeAliasNames,
   };
 }

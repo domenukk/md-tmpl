@@ -41,6 +41,7 @@ import {
   TAG_ELIF_PREFIX,
   TAG_CASE_PREFIX,
   TAG_WITH_PREFIX,
+  ERR_TMPL_REQUIRES_NAME,
   KW_RAW,
   KW_END_RAW,
   NODE_FOR,
@@ -97,7 +98,7 @@ export function handleStatement(
   }
 
   // Inline template definition
-  if (tag.startsWith(TAG_TMPL_PREFIX)) {
+  if (tag === KW_TMPL || tag.startsWith(TAG_TMPL_PREFIX)) {
     return handleTmpl(tag, input, bodyStart, lineMap, tagStart);
   }
 
@@ -639,7 +640,7 @@ function handleTmpl(
   lineMap?: LineMapEntry[],
   tagStart?: number,
 ): [Node[], number] {
-  const name = tag.slice(5).trim();
+  const name = tag === KW_TMPL ? "" : tag.slice(TAG_TMPL_PREFIX.length).trim();
   const [, endPos, closingTag] = parseBlockWithClosing(
     input,
     afterTag,
@@ -651,6 +652,15 @@ function handleTmpl(
     const loc = getLoc(tagStart, lineMap);
     throw new TemplateSyntaxError(
       "unclosed '{% tmpl %}' block",
+      loc?.line,
+      loc?.column,
+      loc?.snippet,
+    );
+  }
+  if (!name) {
+    const loc = getLoc(tagStart, lineMap);
+    throw new TemplateSyntaxError(
+      ERR_TMPL_REQUIRES_NAME,
       loc?.line,
       loc?.column,
       loc?.snippet,

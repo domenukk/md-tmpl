@@ -392,3 +392,105 @@ expected_output = '''
 a"b
 '''
 params = {}
+
+[[tests]]
+name = "inline_template_without_frontmatter"
+description = "Parameterless inline template without a --- frontmatter block"
+template = '''
+---
+params: []
+---
+> {% tmpl sep %}
+
+[SEP]
+
+> {% /tmpl %}
+
+Before
+
+> {% include sep %}
+
+After'''
+expected_output = '''
+Before
+[SEP]
+After'''
+params = {}
+
+[[tests]]
+name = "duplicate_inline_template_name_error"
+description = "Duplicate inline template names in the same file are rejected"
+template = '''
+---
+params: []
+---
+> {% tmpl dup %}
+
+first
+
+> {% /tmpl %}
+> {% tmpl dup %}
+
+second
+
+> {% /tmpl %}
+
+> {% include dup %}'''
+expected_error = "duplicate inline template name"
+params = {}
+
+[[tests]]
+name = "empty_inline_template_name_error"
+description = "Empty {% tmpl %} name is rejected"
+template = '''
+---
+params: []
+---
+> {% tmpl %}
+
+body
+
+> {% /tmpl %}'''
+expected_error = "requires a name"
+params = {}
+
+[[tests]]
+name = "for_binding_shadows_inline_template_error"
+description = "A for-loop binding variable cannot shadow an inline template name"
+template = '''
+---
+params:
+  - items = list(str)
+---
+> {% tmpl row %}
+
+item
+
+> {% /tmpl %}
+
+> {% for row in items %}
+
+{{ row }}
+
+> {% /for %}'''
+expected_error = "shadows"
+params = {}
+
+[[tests]]
+name = "inline_template_duplicate_param_error"
+description = "Inline template frontmatter validates against duplicate parameter names"
+template = '''
+---
+params: []
+---
+> {% tmpl row %}
+---
+params:
+  - x = str
+  - x = int
+---
+{{ x }}
+
+> {% /tmpl %}'''
+expected_error = "duplicate parameter name"
+params = {}

@@ -35,9 +35,29 @@ use crate::{
 ///
 /// Returns [`TemplateError::Syntax`] on duplicate names, empty names, or
 /// compilation failures in inline template bodies.
+#[cfg(all(test, feature = "std"))]
 pub fn extract_inline_templates(
     input: &str,
     parent_type_aliases: &crate::compat::HashMap<String, crate::types::VarType>,
+) -> Result<(String, HashMap<String, CompiledInlineTemplate>), TemplateError> {
+    let empty_sanitize = HashMap::new();
+    extract_inline_templates_with_sanitize(input, parent_type_aliases, &empty_sanitize)
+}
+
+/// Extract `{% tmpl NAME %}...{% /tmpl %}` inline template definitions from
+/// the input, inheriting both `parent_type_aliases` and `parent_type_alias_sanitize`.
+///
+/// # Errors
+///
+/// Returns [`TemplateError::Syntax`] on duplicate names, empty names, or
+/// compilation failures in inline template bodies.
+pub fn extract_inline_templates_with_sanitize(
+    input: &str,
+    parent_type_aliases: &crate::compat::HashMap<String, crate::types::VarType>,
+    parent_type_alias_sanitize: &crate::compat::HashMap<
+        String,
+        crate::compat::HashMap<String, crate::types::SanitizeSpec>,
+    >,
 ) -> Result<(String, HashMap<String, CompiledInlineTemplate>), TemplateError> {
     let mut templates: HashMap<String, CompiledInlineTemplate> = HashMap::new();
     let mut cleaned = String::with_capacity(input.len());
@@ -90,9 +110,12 @@ pub fn extract_inline_templates(
                 )));
             }
 
-            // Parse frontmatter with parent scope for type alias inheritance.
-            let (fm, tmpl_body) =
-                frontmatter::parse_frontmatter_with_parent_scope(body, parent_type_aliases)?;
+            // Parse frontmatter with parent scope for type alias and sanitize inheritance.
+            let (fm, tmpl_body) = frontmatter::parse_frontmatter_with_parent_scope(
+                body,
+                parent_type_aliases,
+                parent_type_alias_sanitize,
+            )?;
             let mut segments = compile_body(tmpl_body)?;
             super::apply_frontmatter_sanitization(
                 &mut segments,
@@ -215,14 +238,21 @@ fn parse_tmpl_open_tag(input: &str) -> Result<(String, &str), TemplateError> {
         ))
     })?;
 
-    let inner = after_open[..inner_and_rest].trim();
-
-    // inner should be like "tmpl NAME" — strip the "tmpl " prefix.
-    let name = inner
-        .strip_prefix(TAG_TMPL_PREFIX)
-        .ok_or_else(|| TemplateError::syntax(format!("expected 'tmpl NAME', got '{inner}'")))?
+    let inner = after_open[..inner_and_rest]
         .trim()
-        .to_string();
+        .trim_end_matches(TRIM_MARKER)
+        .trim();
+
+    // inner should be "tmpl" (empty name, rejected by caller) or "tmpl NAME".
+    let name = if inner == TAG_TMPL_PREFIX.trim() {
+        String::new()
+    } else {
+        inner
+            .strip_prefix(TAG_TMPL_PREFIX)
+            .ok_or_else(|| TemplateError::syntax(format!("expected 'tmpl NAME', got '{inner}'")))?
+            .trim()
+            .to_string()
+    };
 
     // Check for `-%}` vs `%}`.
     let rest = &after_open[inner_and_rest + STMT_END.len()..];
@@ -294,4 +324,3 @@ pub(super) fn bind_inline_includes(
         }
     }
 }
-

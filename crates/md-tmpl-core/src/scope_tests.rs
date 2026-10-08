@@ -570,7 +570,7 @@ params:
     let mut ctx = Context::new();
     ctx.set(
         "items",
-        Value::List(std::sync::Arc::new(vec![
+        Value::List(alloc::sync::Arc::new(vec![
             Value::Str("alpha".into()),
             Value::Str("beta".into()),
             Value::Str("gamma".into()),
@@ -599,7 +599,7 @@ params:
     let mut ctx = Context::new();
     ctx.set(
         "items",
-        Value::List(std::sync::Arc::new(vec![
+        Value::List(alloc::sync::Arc::new(vec![
             Value::Str("a".into()),
             Value::Str("b".into()),
             Value::Str("c".into()),
@@ -628,7 +628,7 @@ params:
     let mut ctx = Context::new();
     ctx.set(
         "items",
-        Value::List(std::sync::Arc::new(vec![
+        Value::List(alloc::sync::Arc::new(vec![
             Value::Str("one".into()),
             Value::Str("two".into()),
             Value::Str("three".into()),
@@ -656,10 +656,10 @@ pretty:
     let mut user_map = crate::compat::HashMap::new();
     user_map.insert("name".to_string(), Value::Str("Alice".into()));
     user_map.insert("age".to_string(), Value::Int(30));
-    ctx.set("user", Value::Struct(std::sync::Arc::new(user_map)));
+    ctx.set("user", Value::Struct(alloc::sync::Arc::new(user_map)));
     ctx.set(
         "tags",
-        Value::List(std::sync::Arc::new(vec![
+        Value::List(alloc::sync::Arc::new(vec![
             Value::Str("dev".into()),
             Value::Str("admin".into()),
         ])),
@@ -676,7 +676,7 @@ fn test_value_serde_serialize_roundtrip() {
     let mut map = crate::compat::HashMap::new();
     map.insert("name".to_string(), Value::Str("Alice".into()));
     map.insert("score".to_string(), Value::Int(99));
-    let val = Value::Struct(std::sync::Arc::new(map));
+    let val = Value::Struct(alloc::sync::Arc::new(map));
 
     let json_str = serde_json::to_string(&val).unwrap();
     assert_eq!(json_str, "{\"name\":\"Alice\",\"score\":99}");

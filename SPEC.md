@@ -1275,25 +1275,26 @@ These prefixes are optional syntactic sugar for readability and are stripped dur
 
 ### Renderable Types
 
-Only **scalar types** can appear directly in `{{ }}` expressions:
+Only **scalar types** and **unit-only `enum` types** (where every variant has zero payload fields, e.g. `enum(Active, Paused)`) can appear directly in `{{ }}` expressions:
 
-| Type    | Rendered as                                           |
-| ------- | ----------------------------------------------------- |
-| `str`   | The raw string value verbatim (no automatic escaping) |
-| `int`   | Decimal integer (e.g. `42`)                           |
-| `float` | Decimal float (e.g. `3.14`)                           |
-| `bool`  | `true` or `false`                                     |
+| Type               | Rendered as                                           |
+| ------------------ | ----------------------------------------------------- |
+| `str`              | The raw string value verbatim (no automatic escaping) |
+| `int`              | Decimal integer (e.g. `42`)                           |
+| `float`            | Decimal float (e.g. `3.14`)                           |
+| `bool`             | `true` or `false`                                     |
+| `enum` (unit-only) | The active variant name (e.g. `Active`)               |
 
-Attempting to render a non-scalar type directly is a **compile-time error**.
+Attempting to render a non-scalar type (or a data `enum` with payload fields when not narrowed to a unit variant inside `{% case %}`) directly is a **compile-time error**.
 Use the appropriate construct instead:
 
-| Type     | Correct usage                                                       |
-| -------- | ------------------------------------------------------------------- |
-| `list`   | `{% for item in items %}{{ item.field }}{% /for %}`                 |
-| `struct` | `{{ config.timeout }}` (access individual fields)                   |
-| `enum`   | `{% match status %}` or `{{ kind(status) }}`                        |
-| `tmpl`   | `{% include widget with field = value %}`                           |
-| `option` | `{% if has(x) %}{{ x }}{% /if %}` (narrowing unwraps to inner type) |
+| Type               | Correct usage                                                                                              |
+| ------------------ | ---------------------------------------------------------------------------------------------------------- |
+| `list`             | `{% for item in items %}{{ item.field }}{% /for %}`                                                        |
+| `struct`           | `{{ config.timeout }}` (access individual fields)                                                          |
+| `enum` (with data) | `{% match status %}` (renders inside unit `{% case %}` or accesses payload fields) or `{{ kind(status) }}` |
+| `tmpl`             | `{% include widget with field = value %}`                                                                  |
+| `option`           | `{% if has(x) %}{{ x }}{% /if %}` (narrowing unwraps to inner type)                                        |
 
 Enum types declared in `types:` also support dotted-path access to their
 variants via the `kind()` function — see
@@ -1458,18 +1459,20 @@ Notice customization is supported at three levels:
 
 #### Declarative Parameter Sanitization (`untrusted str`)
 
-In YAML frontmatter `params:` or `types:`, mark untrusted string fields with `untrusted str`:
+In YAML frontmatter `params:` or `types:` (including chained `types:` aliases, cross-template `imports:` via `stem.Alias`, and inline `{% tmpl %}` frontmatter), mark untrusted string fields with `untrusted str` (or `str | sanitize(...)`):
 
 - **Scalar string:** `query = untrusted str`
 - **Lists of untrusted strings:** `items = list(untrusted str)`
 - **Optional untrusted strings:** `notes = option(untrusted str)`
-- **Struct / enum fields:** `user = struct(name = untrusted str, bio = untrusted str)`
+- **Struct / enum variant fields:** `user = struct(name = untrusted str, bio = untrusted str)` or `Status = enum(Ok, Err(msg = untrusted str))`
+- **Reusable type aliases:** `UntrustedText = untrusted str` or `Item = struct(title = untrusted str)` in `types:` (inherited by inline `{% tmpl %}` blocks and exported via `imports:`)
 
 Declaring a parameter or field as `untrusted str` automatically applies in-place `sanitize` to every interpolation of that value:
 
 - LLM control tokens and chat-turn delimiters are neutralized automatically.
-- If the interpolation is surrounded by static XML tags in the template (e.g. `<search>{{ query }}</search>`), closing tag breakouts (such as `</search>`) are automatically neutralized to `&lt;/search&gt;` without double-wrapping.
-- When full XML block encapsulation with a boundary notice is desired at a specific site in the template body, apply `{{ document | sanitize("user_document") }}` directly at that interpolation site:
+- If the interpolation is surrounded by static XML tags in the template (e.g. `<search>{{ query }}</search>`, including across inline `{% include %}` sites), closing tag breakouts (such as `</search>`) are automatically neutralized to `&lt;/search&gt;` without double-wrapping.
+- If the interpolation appears on a Markdown ATX heading line (`# ...` through `###### ...`), embedded line breaks (`\r\n`, `\n`, `\r`) are collapsed to a single space so untrusted input cannot break out of the heading line to inject new Markdown sections or directives.
+- When full XML block encapsulation with a boundary notice is desired at a specific site in the template body, apply `{{ document | sanitize("user_document") }}` directly at that interpolation site (or declare `document = untrusted("user_document") str` in frontmatter):
 
 ```markdown
 ---
@@ -2536,11 +2539,31 @@ Inline templates use standard `---` delimited frontmatter inside the
 parsed through the same `parse_frontmatter()` path, so all frontmatter
 features work identically.
 
-Inline templates support: typed frontmatter (including `types:` and
-`imports:` blocks), `with` parameter passing, `for` iteration, and full
-type checking. They are compiled once and reused at every include site.
+For parameterless reusable fragments that do not need `params:`, `consts:`,
+`types:`, or `imports:`, the inner `---` frontmatter block may be omitted
+entirely:
 
-### Scoping Rules
+```markdown
+> {% tmpl divider %}
+
+---
+
+> {% /tmpl %}
+
+Section A
+
+> {% include divider %}
+
+Section B
+```
+
+Inline templates support: typed frontmatter (including `types:`, `consts:`,
+`imports:`, `allow_unused:`, and `sanitize_notice:`), `with` parameter
+passing, `for` iteration, recursive/nested inline `{% include %}` (guarded by
+the maximum include depth limit), and full compile-time type and collision
+validation. They are compiled once and reused at every include site.
+
+### Scoping & Collision Rules
 
 Inline template names (`{% tmpl name %}`) are **scoped to their defining
 file**. Each `.tmpl.md` file has its own namespace:
@@ -2552,12 +2575,19 @@ file**. Each `.tmpl.md` file has its own namespace:
 - **Same name, different files**: two files can both define `{% tmpl row %}`
   with different content. Each file's `{% include row %}` resolves to its
   own definition.
-- **Duplicate names in the same file**: rejected at compile time.
+- **Non-empty name required**: `{% tmpl %}` without a name is rejected at
+  compile time (`"{% tmpl %} requires a name"`).
+- **Duplicate names in the same file**: defining two `{% tmpl name %}` blocks
+  with the same name in a single file is rejected at compile time
+  (`"duplicate inline template name: 'name'"`).
+- **Name collisions**: an inline template name cannot collide with a declared
+  `params:`, `consts:`, `env:`, or `imports:` stem in the parent template,
+  and a `for`-loop binding variable cannot shadow an inline template name.
 
 This scoping applies identically at compile time (proc macros) and runtime
 (dynamic include resolution).
 
-### Type Resolution in Inline Templates
+### Type & Sanitization Inheritance in Inline Templates
 
 Inline templates can define their own `types:` and `imports:` blocks,
 and they also inherit the parent template's `types:` and `imports:`
@@ -2571,6 +2601,20 @@ Resolution order for type names in an inline template:
 3. Parent `types:` entries
 4. Own `imports:` (dotted path)
 5. Parent `imports:` (dotted path)
+
+**Sanitization inheritance**:
+
+- **Type-alias `untrusted` rules**: when an inline template parameter
+  references a type alias inherited from the parent template's `types:` block,
+  any `untrusted` sanitization specs attached to that parent type alias are
+  automatically inherited and applied to the inline template's parameter.
+- **`sanitize_notice` inheritance**: an inline template inherits the parent
+  template's `sanitize_notice` unless it declares its own `sanitize_notice:`
+  in its inner frontmatter.
+- **Call-site context propagation**: each `{% include name %}` call site
+  receives its own sanitization context so enclosing XML tags (e.g., wrapping
+  `<context>{% include row %}</context>`) and ATX heading line contexts at the
+  include site are propagated into the inline template's rendered expressions.
 
 **Constants** (both local `consts:` and imported constants from the
 parent) are inherited by inline templates automatically.

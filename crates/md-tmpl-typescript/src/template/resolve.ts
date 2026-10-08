@@ -13,7 +13,13 @@ import {
   interpolatePathStr,
   parseFrontmatter,
   parseLiteral,
+  varTypeToString,
 } from "../frontmatter.js";
+import {
+  collectInheritedAliasSanitizeFromVarType,
+  registerDeclSanitizeSpecs,
+  type SanitizeSpec,
+} from "../sanitize_pass.js";
 import {
   ENUM_TAG_KEY,
   ENUM_VARIANTS_KEY,
@@ -166,6 +172,7 @@ export function resolveImportedConsts(
   const fsModule = getFs();
   const pathModule = getPath();
   const mergedTypeAliases = new Map(fm.typeAliases);
+  const mergedTypeAliasSanitize = new Map(fm.typeAliasSanitize);
   // Collect const type declarations per import stem, so we can build
   // typed namespace structs for the type checker.
   const constTypesPerStem = new Map<string, VarDecl[]>();
@@ -229,6 +236,35 @@ export function resolveImportedConsts(
       jsObj[ENUM_VARIANTS_KEY] = jsVariantNames;
       imported[key] = jsObj;
     }
+
+    for (const [typeName, specs] of importedFm.typeAliasSanitize) {
+      mergedTypeAliasSanitize.set(`${imp.stem}.${typeName}`, specs);
+    }
+  }
+
+  let mergedParamSanitize: ReadonlyMap<string, SanitizeSpec> = fm.paramSanitize;
+  if (mergedTypeAliasSanitize.size > fm.typeAliasSanitize.size) {
+    const paramSanitizeCopy = new Map(fm.paramSanitize);
+    for (const decl of fm.params) {
+      const relSpecs = new Map<string, SanitizeSpec>();
+      collectInheritedAliasSanitizeFromVarType(
+        decl.varType,
+        "",
+        mergedTypeAliasSanitize,
+        relSpecs,
+        mergedTypeAliases,
+      );
+      if (relSpecs.size > 0) {
+        registerDeclSanitizeSpecs(
+          decl,
+          relSpecs,
+          paramSanitizeCopy,
+          mergedTypeAliases,
+          varTypeToString,
+        );
+      }
+    }
+    mergedParamSanitize = paramSanitizeCopy;
   }
 
   // Build typed namespace structs from the collected const type declarations.
@@ -247,9 +283,16 @@ export function resolveImportedConsts(
     // Even if no consts were imported, we may have imported type aliases.
     if (
       mergedTypeAliases.size > fm.typeAliases.size ||
+      mergedTypeAliasSanitize.size > fm.typeAliasSanitize.size ||
       importedNamespaceTypes.size > 0
     ) {
-      return { ...fm, typeAliases: mergedTypeAliases, importedNamespaceTypes };
+      return {
+        ...fm,
+        typeAliases: mergedTypeAliases,
+        typeAliasSanitize: mergedTypeAliasSanitize,
+        paramSanitize: mergedParamSanitize,
+        importedNamespaceTypes,
+      };
     }
     return fm;
   }
@@ -262,6 +305,8 @@ export function resolveImportedConsts(
       ...fm,
       importedConsts: imported,
       typeAliases: mergedTypeAliases,
+      typeAliasSanitize: mergedTypeAliasSanitize,
+      paramSanitize: mergedParamSanitize,
       importedNamespaceTypes,
     };
   }
@@ -302,6 +347,8 @@ export function resolveImportedConsts(
     params: newParams,
     importedConsts: imported,
     typeAliases: mergedTypeAliases,
+    typeAliasSanitize: mergedTypeAliasSanitize,
+    paramSanitize: mergedParamSanitize,
     importedNamespaceTypes,
     unresolvedDefaults: new Map(),
   };

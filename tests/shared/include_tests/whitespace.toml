@@ -1,0 +1,187 @@
+# Shared include_tests: Include whitespace preservation.
+
+# ---------------------------------------------------------------------------
+# Include whitespace preservation tests
+# ---------------------------------------------------------------------------
+
+[[tests]]
+name = "include_ws_tag_tag_1_blank"
+description = "Two includes separated by 1 blank line — all blanks consumed between tags"
+parent_template = '''
+---
+params: [x = str]
+---
+> {% include [a](./a.tmpl.md) with x=x %}
+
+> {% include [a](./a.tmpl.md) with x=x %}'''
+expected_output = "A:1A:1"
+
+[tests.params]
+x = "1"
+
+[tests.files]
+"a.tmpl.md" = '''
+---
+params: [x = str]
+---
+A:{{ x }}'''
+
+[[tests]]
+name = "include_ws_tag_tag_3_blanks"
+description = "Two includes separated by 3 blank lines — all blanks consumed between tags"
+parent_template = '''
+---
+params: [x = str]
+---
+> {% include [a](./a.tmpl.md) with x=x %}
+
+
+
+> {% include [a](./a.tmpl.md) with x=x %}'''
+expected_output = "A:1A:1"
+
+[tests.params]
+x = "1"
+
+[tests.files]
+"a.tmpl.md" = '''
+---
+params: [x = str]
+---
+A:{{ x }}'''
+
+[[tests]]
+name = "include_ws_tag_content_1_blank"
+description = "Include followed by 1 blank and content — blank consumed"
+parent_template = '''
+---
+params: [x = str]
+---
+> {% include [a](./a.tmpl.md) with x=x %}
+
+More: {{ x }}'''
+expected_output = "A:1More: 1"
+
+[tests.params]
+x = "1"
+
+[tests.files]
+"a.tmpl.md" = '''
+---
+params: [x = str]
+---
+A:{{ x }}'''
+
+[[tests]]
+name = "include_ws_tag_content_2_blanks"
+description = "Include followed by 2 blanks and content — 1 consumed, 1 preserved"
+parent_template = '''
+---
+params: [x = str]
+---
+> {% include [a](./a.tmpl.md) with x=x %}
+
+
+More: {{ x }}'''
+expected_output = "A:1\nMore: 1"
+
+[tests.params]
+x = "1"
+
+[tests.files]
+"a.tmpl.md" = '''
+---
+params: [x = str]
+---
+A:{{ x }}'''
+
+[[tests]]
+name = "include_ws_tag_content_3_blanks"
+description = "Include followed by 3 blanks and content — 1 consumed, 2 preserved"
+parent_template = '''
+---
+params: [x = str]
+---
+> {% include [a](./a.tmpl.md) with x=x %}
+
+
+
+More: {{ x }}'''
+expected_output = "A:1\n\nMore: 1"
+
+[tests.params]
+x = "1"
+
+[tests.files]
+"a.tmpl.md" = '''
+---
+params: [x = str]
+---
+A:{{ x }}'''
+
+[[tests]]
+name = "include_ws_content_tag_1_blank"
+description = "Content followed by 1 blank line before include — blank consumed"
+parent_template = '''
+---
+params: [x = str]
+---
+Before: {{ x }}
+
+> {% include [a](./a.tmpl.md) with x=x %}'''
+expected_output = "Before: 1\nA:1"
+
+[tests.params]
+x = "1"
+
+[tests.files]
+"a.tmpl.md" = '''
+---
+params: [x = str]
+---
+A:{{ x }}'''
+
+[[tests]]
+name = "include_ws_content_tag_2_blanks"
+description = "Content followed by 2 blank lines before include — 1 consumed, 1 preserved"
+parent_template = '''
+---
+params: [x = str]
+---
+Before: {{ x }}
+
+
+> {% include [a](./a.tmpl.md) with x=x %}'''
+expected_output = "Before: 1\n\nA:1"
+
+[tests.params]
+x = "1"
+
+[tests.files]
+"a.tmpl.md" = '''
+---
+params: [x = str]
+---
+A:{{ x }}'''
+
+[[tests]]
+name = "include_ws_trim_redundant"
+description = "Trim modifiers on standalone include tags are redundant — same as non-trim"
+parent_template = '''
+---
+params: [x = str]
+---
+> {%- include [a](./a.tmpl.md) with x=x -%}
+
+More: {{ x }}'''
+expected_output = "A:1More: 1"
+
+[tests.params]
+x = "1"
+
+[tests.files]
+"a.tmpl.md" = '''
+---
+params: [x = str]
+---
+A:{{ x }}'''

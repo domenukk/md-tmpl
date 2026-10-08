@@ -1,11 +1,9 @@
 //! Native Rust code generation for `{% if %}` conditionals, boolean conditions,
-//! comparisons, and `{% match %}` blocks.
+//! and comparisons.
 
 use md_tmpl_core::{
-    Value, VarType, VariantDecl,
-    compiled::{
-        ComparisonOp, CompiledExpr, CompiledPath, Condition, ConditionOperand, MatchArm, Segment,
-    },
+    Value, VarType,
+    compiled::{ComparisonOp, CompiledExpr, CompiledPath, Condition, ConditionOperand, Segment},
 };
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -98,26 +96,25 @@ fn apply_option_narrowing_inline(scope: &mut NativeScope, n: &OptionNarrowing) {
     );
 }
 
-/// Bind `OptionNarrowing`s as local variables at the top of a branch block and insert
-/// them into `scope`.
+/// Emit `let _md_opt_... = (#opt_e).as_ref().expect(...);` bindings at the start of a branch body.
 fn bind_option_narrowings_in_block(
     scope: &mut NativeScope,
     narrowings: &[OptionNarrowing],
     counter: &mut usize,
 ) -> Vec<TokenStream> {
-    let mut let_stmts = Vec::with_capacity(narrowings.len());
+    let mut lets = Vec::with_capacity(narrowings.len());
     for n in narrowings {
         let id = *counter;
         *counter += 1;
-        let var_ident = format_ident!("_md_narrow_{id}_{}", sanitize_ident(&n.path_str));
+        let val_ident = format_ident!("_md_opt_{id}_{}", sanitize_ident(&n.path_str));
         let opt_e = &n.opt_expr;
-        let_stmts.push(quote! {
-            let #var_ident = (#opt_e).as_ref().expect("option verified present by branch condition");
+        lets.push(quote! {
+            let #val_ident = (#opt_e).as_ref().expect("option verified by enclosing condition");
         });
         let bound_expr = if is_copy_scalar(&n.inner_vt) {
-            quote! { (*#var_ident) }
+            quote! { (*#val_ident) }
         } else {
-            quote! { #var_ident }
+            quote! { #val_ident }
         };
         scope.bindings.insert(
             n.path_str.clone(),
@@ -128,7 +125,7 @@ fn bind_option_narrowings_in_block(
             },
         );
     }
-    let_stmts
+    lets
 }
 
 pub(super) fn codegen_if(
@@ -137,27 +134,66 @@ pub(super) fn codegen_if(
     scope: &NativeScope,
     counter: &mut usize,
 ) -> Option<TokenStream> {
-    if branches.is_empty() {
-        return Some(quote! {});
-    }
-
-    let mut carry: Vec<OptionNarrowing> = Vec::new();
     let mut branch_tokens = Vec::with_capacity(branches.len());
+    let mut carry: Vec<OptionNarrowing> = Vec::new();
 
-    for (idx, (condition, body)) in branches.iter().enumerate() {
+    for (idx, (cond, body)) in branches.iter().enumerate() {
         let mut cond_scope = scope.clone();
         for n in &carry {
             apply_option_narrowing_inline(&mut cond_scope, n);
         }
-        let cond_expr = codegen_condition(condition, &cond_scope, counter)?;
 
-        let mut positive = Vec::new();
-        collect_and_narrowings(condition, &cond_scope, &mut positive);
+        // Fast-path single `has(x)` or truthy `Option` check with `if let Some(...)`.
+        if carry.is_empty()
+            && idx == 0
+            && branches.len() == 1
+            && let Some(n) = extract_has_narrowing(cond, &cond_scope)
+        {
+            let id = *counter;
+            *counter += 1;
+            let val_ident = format_ident!("_md_opt_{id}_{}", sanitize_ident(&n.path_str));
+            let opt_e = &n.opt_expr;
+            let bound_expr = if is_copy_scalar(&n.inner_vt) {
+                quote! { (*#val_ident) }
+            } else {
+                quote! { #val_ident }
+            };
+            let mut body_scope = scope.clone();
+            body_scope.bindings.insert(
+                n.path_str,
+                Binding {
+                    expr: bound_expr,
+                    var_type: n.inner_vt,
+                    type_prefix: n.type_prefix,
+                },
+            );
+            let body_stmts = codegen_segments(body, &body_scope, counter)?;
+            return if else_body.is_empty() {
+                Some(quote! {
+                    if let ::core::option::Option::Some(#val_ident) = &(#opt_e) {
+                        #body_stmts
+                    }
+                })
+            } else {
+                let else_stmts = codegen_segments(else_body, scope, counter)?;
+                Some(quote! {
+                    if let ::core::option::Option::Some(#val_ident) = &(#opt_e) {
+                        #body_stmts
+                    } else {
+                        #else_stmts
+                    }
+                })
+            };
+        }
+
+        let cond_expr = codegen_condition(cond, &cond_scope, counter)?;
+
+        let mut branch_narrowings = carry.clone();
+        collect_and_narrowings(cond, &cond_scope, &mut branch_narrowings);
 
         let mut body_scope = scope.clone();
-        let all_narrowings: Vec<OptionNarrowing> = carry.iter().cloned().chain(positive).collect();
         let narrow_lets =
-            bind_option_narrowings_in_block(&mut body_scope, &all_narrowings, counter);
+            bind_option_narrowings_in_block(&mut body_scope, &branch_narrowings, counter);
         let body_stmts = codegen_segments(body, &body_scope, counter)?;
 
         if idx == 0 {
@@ -176,7 +212,7 @@ pub(super) fn codegen_if(
             });
         }
 
-        if let Some(neg) = extract_not_has_narrowing(condition, &cond_scope) {
+        if let Some(neg) = extract_not_has_narrowing(cond, &cond_scope) {
             carry.push(neg);
         }
     }
@@ -201,7 +237,7 @@ pub(super) fn codegen_if(
     })
 }
 
-fn codegen_condition(
+pub(super) fn codegen_condition(
     condition: &Condition,
     scope: &NativeScope,
     counter: &mut usize,
@@ -335,7 +371,7 @@ fn codegen_truthy(
 }
 
 /// Strongly-typed representation of a resolved [`ConditionOperand`].
-enum TypedOperand {
+pub(super) enum TypedOperand {
     Str(TokenStream),
     Int(TokenStream),
     Float(TokenStream),
@@ -343,7 +379,7 @@ enum TypedOperand {
     List { expr: TokenStream, elem_vt: VarType },
 }
 
-fn codegen_operand_typed(
+pub(super) fn codegen_operand_typed(
     operand: &ConditionOperand,
     scope: &NativeScope,
     counter: &mut usize,
@@ -432,33 +468,45 @@ fn codegen_path_operand_typed(
     let cp = crate_path();
     let expr = CompiledExpr::Path(path.clone());
     if filters.is_empty() {
-        match scope.resolve_path(path)? {
-            ResolvedValue::Static(val) => match val {
-                Value::Str(s) => Some(TypedOperand::Str(quote! { #s })),
-                Value::Int(i) => Some(TypedOperand::Int(quote! { #i })),
-                Value::Float(f) => {
-                    let bits = f.to_bits();
-                    Some(TypedOperand::Float(quote! {
-                        ::core::primitive::f64::from_bits(#bits)
-                    }))
-                }
-                Value::Bool(b) => Some(TypedOperand::Bool(quote! { #b })),
-                Value::List(items) => {
-                    let mut strs = Vec::with_capacity(items.len());
-                    for item in items.iter() {
-                        if let Value::Str(s) = item {
-                            strs.push(s.clone());
-                        } else {
-                            return None;
-                        }
+        return match scope.resolve_path(path)? {
+            ResolvedValue::Static(Value::Str(s)) => Some(TypedOperand::Str(quote! { #s })),
+            ResolvedValue::Static(Value::Int(i)) => Some(TypedOperand::Int(quote! { #i })),
+            ResolvedValue::Static(Value::Float(f)) => {
+                let bits = f.to_bits();
+                Some(TypedOperand::Float(quote! {
+                    ::core::primitive::f64::from_bits(#bits)
+                }))
+            }
+            ResolvedValue::Static(Value::Bool(b)) => Some(TypedOperand::Bool(quote! { #b })),
+            ResolvedValue::Static(Value::List(items)) => {
+                let mut strs = Vec::with_capacity(items.len());
+                let mut ints = Vec::with_capacity(items.len());
+                for item in items.iter() {
+                    match item {
+                        Value::Str(s) => strs.push(s.clone()),
+                        Value::Int(i) => ints.push(*i),
+                        _ => return None,
                     }
+                }
+                if !strs.is_empty() && ints.is_empty() {
                     Some(TypedOperand::List {
                         expr: quote! { [#(#strs),*] },
                         elem_vt: VarType::Str,
                     })
+                } else if !ints.is_empty() && strs.is_empty() {
+                    Some(TypedOperand::List {
+                        expr: quote! { [#(#ints),*] },
+                        elem_vt: VarType::Int,
+                    })
+                } else if items.is_empty() {
+                    Some(TypedOperand::List {
+                        expr: quote! { [&str; 0]::default() },
+                        elem_vt: VarType::Str,
+                    })
+                } else {
+                    None
                 }
-                _ => None,
-            },
+            }
             ResolvedValue::Runtime(b) => {
                 let e = b.expr;
                 match b.var_type {
@@ -468,7 +516,11 @@ fn codegen_path_operand_typed(
                     VarType::Int => Some(TypedOperand::Int(e)),
                     VarType::Float => Some(TypedOperand::Float(e)),
                     VarType::Bool => Some(TypedOperand::Bool(e)),
-                    VarType::List(fields) if fields.len() == 1 && fields[0].name.is_empty() => {
+                    VarType::Enum(ref variants) if variants.iter().all(|v| v.fields.is_empty()) => {
+                        let k = codegen_kind_expr_str(path, scope)?;
+                        Some(TypedOperand::Str(k))
+                    }
+                    VarType::List(ref fields) if fields.len() == 1 && fields[0].name.is_empty() => {
                         Some(TypedOperand::List {
                             expr: e,
                             elem_vt: fields[0].var_type.clone(),
@@ -477,28 +529,32 @@ fn codegen_path_operand_typed(
                     _ => None,
                 }
             }
-        }
-    } else {
-        if let Some(base_num) = try_extract_num_expr(&expr, scope)
-            && let Some(folded) = fold_numeric_filters(base_num, filters)
-        {
-            return Some(match folded {
-                NumExpr::Int(e) => TypedOperand::Int(e),
-                NumExpr::Float(e) => TypedOperand::Float(e),
-            });
-        }
-        let render_stmt = codegen_expr(&expr, filters, scope)?;
-        Some(TypedOperand::Str(quote! {
-            ({
-                let mut __op_buf = #cp::__private::String::new();
-                {
-                    let __out = &mut __op_buf;
-                    #render_stmt
-                }
-                __op_buf
-            }).as_str()
-        }))
+            ResolvedValue::Static(_) => None,
+        };
     }
+
+    // Fold numeric `add`/`sub` filter chains directly into a typed numeric expression.
+    if let Some(num_base) = try_extract_num_expr(&expr, scope)
+        && let Some(folded) = fold_numeric_filters(num_base, filters)
+    {
+        return Some(match folded {
+            NumExpr::Int(t) => TypedOperand::Int(t),
+            NumExpr::Float(t) => TypedOperand::Float(t),
+        });
+    }
+
+    // Any other filter chain produces a String.
+    let write_stmts = codegen_expr(&expr, filters, scope)?;
+    Some(TypedOperand::Str(quote! {
+        ({
+            let mut __op_str = #cp::__private::String::new();
+            {
+                let __out = &mut __op_str;
+                #write_stmts
+            }
+            __op_str
+        }).as_str()
+    }))
 }
 
 fn codegen_comparison(
@@ -508,137 +564,99 @@ fn codegen_comparison(
     scope: &NativeScope,
     counter: &mut usize,
 ) -> Option<TokenStream> {
-    let cp = crate_path();
-    let l = codegen_operand_typed(left, scope, counter)?;
-    let r = codegen_operand_typed(right, scope, counter)?;
-
     if op == ComparisonOp::In {
-        return codegen_in_comparison(l, r);
+        return codegen_in_comparison(left, right, scope, counter);
     }
 
-    match (l, r) {
-        (TypedOperand::Int(a), TypedOperand::Int(b)) => Some(match op {
-            ComparisonOp::Eq => quote! { ((#a) == (#b)) },
-            ComparisonOp::Ne => quote! { ((#a) != (#b)) },
-            ComparisonOp::Lt => quote! { ((#a) < (#b)) },
-            ComparisonOp::Le => quote! { ((#a) <= (#b)) },
-            ComparisonOp::Gt => quote! { ((#a) > (#b)) },
-            ComparisonOp::Ge => quote! { ((#a) >= (#b)) },
+    let lhs = codegen_operand_typed(left, scope, counter)?;
+    let rhs = codegen_operand_typed(right, scope, counter)?;
+    let cp = crate_path();
+
+    match (lhs, rhs) {
+        (TypedOperand::Int(l), TypedOperand::Int(r))
+        | (TypedOperand::Str(l), TypedOperand::Str(r)) => Some(match op {
+            ComparisonOp::Eq => quote! { ((#l) == (#r)) },
+            ComparisonOp::Ne => quote! { ((#l) != (#r)) },
+            ComparisonOp::Lt => quote! { ((#l) < (#r)) },
+            ComparisonOp::Le => quote! { ((#l) <= (#r)) },
+            ComparisonOp::Gt => quote! { ((#l) > (#r)) },
+            ComparisonOp::Ge => quote! { ((#l) >= (#r)) },
             ComparisonOp::In => unreachable!(),
         }),
-        (TypedOperand::Float(a), TypedOperand::Float(b)) => Some(match op {
-            ComparisonOp::Eq => {
-                quote! { (#a).partial_cmp(&(#b)).is_some_and(::core::cmp::Ordering::is_eq) }
-            }
-            ComparisonOp::Ne => {
-                quote! { !(#a).partial_cmp(&(#b)).is_some_and(::core::cmp::Ordering::is_eq) }
-            }
-            ComparisonOp::Lt => quote! { ((#a) < (#b)) },
-            ComparisonOp::Le => quote! { ((#a) <= (#b)) },
-            ComparisonOp::Gt => quote! { ((#a) > (#b)) },
-            ComparisonOp::Ge => quote! { ((#a) >= (#b)) },
-            ComparisonOp::In => unreachable!(),
-        }),
-        (TypedOperand::Int(a), TypedOperand::Float(b)) => {
-            let method = match op {
-                ComparisonOp::Eq => quote! { is_eq },
-                ComparisonOp::Ne => {
-                    return Some(quote! {
-                        !#cp::__private::cmp_int_float(#a, #b).is_some_and(::core::cmp::Ordering::is_eq)
-                    });
-                }
-                ComparisonOp::Lt => quote! { is_lt },
-                ComparisonOp::Le => quote! { is_le },
-                ComparisonOp::Gt => quote! { is_gt },
-                ComparisonOp::Ge => quote! { is_ge },
-                ComparisonOp::In => unreachable!(),
-            };
-            Some(quote! {
-                #cp::__private::cmp_int_float(#a, #b).is_some_and(::core::cmp::Ordering::#method)
-            })
+        (TypedOperand::Float(l), TypedOperand::Float(r)) => {
+            let cmp = quote! { (#l).partial_cmp(&(#r)) };
+            Some(codegen_ordering_check(&cmp, op))
         }
-        (TypedOperand::Float(a), TypedOperand::Int(b)) => {
-            let method = match op {
-                ComparisonOp::Eq => quote! { is_eq },
-                ComparisonOp::Ne => {
-                    return Some(quote! {
-                        !#cp::__private::cmp_int_float(#b, #a).is_some_and(::core::cmp::Ordering::is_eq)
-                    });
-                }
-                ComparisonOp::Lt => quote! { is_gt },
-                ComparisonOp::Le => quote! { is_ge },
-                ComparisonOp::Gt => quote! { is_lt },
-                ComparisonOp::Ge => quote! { is_le },
-                ComparisonOp::In => unreachable!(),
-            };
-            Some(quote! {
-                #cp::__private::cmp_int_float(#b, #a).is_some_and(::core::cmp::Ordering::#method)
-            })
+        (TypedOperand::Int(l), TypedOperand::Float(r)) => {
+            let cmp = quote! { #cp::__private::cmp_int_float(#l, #r) };
+            Some(codegen_ordering_check(&cmp, op))
         }
-        (TypedOperand::Str(a), TypedOperand::Str(b))
-        | (TypedOperand::Bool(a), TypedOperand::Bool(b)) => Some(match op {
-            ComparisonOp::Eq => quote! { ((#a) == (#b)) },
-            ComparisonOp::Ne => quote! { ((#a) != (#b)) },
-            ComparisonOp::Lt | ComparisonOp::Le | ComparisonOp::Gt | ComparisonOp::Ge => {
-                quote! { false }
-            }
-            ComparisonOp::In => unreachable!(),
-        }),
+        (TypedOperand::Float(l), TypedOperand::Int(r)) => {
+            let cmp = quote! {
+                #cp::__private::cmp_int_float(#r, #l).map(::core::cmp::Ordering::reverse)
+            };
+            Some(codegen_ordering_check(&cmp, op))
+        }
+        (TypedOperand::Bool(l), TypedOperand::Bool(r)) => match op {
+            ComparisonOp::Eq => Some(quote! { ((#l) == (#r)) }),
+            ComparisonOp::Ne => Some(quote! { ((#l) != (#r)) }),
+            _ => None,
+        },
         _ => None,
     }
 }
 
-fn codegen_in_comparison(left: TypedOperand, right: TypedOperand) -> Option<TokenStream> {
-    match (left, right) {
-        (TypedOperand::Str(l_str), TypedOperand::Str(r_str)) => {
-            Some(quote! { (#r_str).contains(#l_str) })
-        }
-        (
-            TypedOperand::List {
-                expr: l_list,
-                elem_vt: VarType::Str,
-            },
-            TypedOperand::Str(r_str),
-        ) => Some(quote! {
-            match #r_str {
-                __r_s => (#l_list).iter().all(|__item| __r_s.contains(::core::convert::AsRef::<str>::as_ref(__item))),
-            }
+fn codegen_ordering_check(cmp_opt: &TokenStream, op: ComparisonOp) -> TokenStream {
+    match op {
+        ComparisonOp::Eq => quote! { (#cmp_opt).is_some_and(::core::cmp::Ordering::is_eq) },
+        ComparisonOp::Ne => quote! { (#cmp_opt).is_none_or(::core::cmp::Ordering::is_ne) },
+        ComparisonOp::Lt => quote! { (#cmp_opt).is_some_and(::core::cmp::Ordering::is_lt) },
+        ComparisonOp::Le => quote! { (#cmp_opt).is_some_and(::core::cmp::Ordering::is_le) },
+        ComparisonOp::Gt => quote! { (#cmp_opt).is_some_and(::core::cmp::Ordering::is_gt) },
+        ComparisonOp::Ge => quote! { (#cmp_opt).is_some_and(::core::cmp::Ordering::is_ge) },
+        ComparisonOp::In => unreachable!(),
+    }
+}
+
+fn codegen_in_comparison(
+    left: &ConditionOperand,
+    right: &ConditionOperand,
+    scope: &NativeScope,
+    counter: &mut usize,
+) -> Option<TokenStream> {
+    let lhs = codegen_operand_typed(left, scope, counter)?;
+    let rhs = codegen_operand_typed(right, scope, counter)?;
+
+    match (lhs, rhs) {
+        // Substring check: `"sub" in str_val`
+        (TypedOperand::Str(l), TypedOperand::Str(r)) => Some(quote! {
+            (#r).contains(#l)
         }),
+        // String membership in `list(str)`
         (
-            TypedOperand::Str(l_str),
+            TypedOperand::Str(l),
             TypedOperand::List {
                 expr: r_list,
                 elem_vt: VarType::Str,
             },
         ) => Some(quote! {
-            match #l_str {
-                __l_s => (#r_list).iter().any(|__item| ::core::convert::AsRef::<str>::as_ref(__item) == __l_s),
+            match #l {
+                __needle => (#r_list).iter().any(|__item| ::core::convert::AsRef::<str>::as_ref(__item) == __needle),
             }
         }),
+        // Int membership in `list(int)`
         (
-            TypedOperand::Int(l_int),
+            TypedOperand::Int(l),
             TypedOperand::List {
                 expr: r_list,
                 elem_vt: VarType::Int,
             },
         ) => Some(quote! {
-            {
-                let __l_v: i64 = #l_int;
-                (#r_list).iter().any(|__item| *__item == __l_v)
+            match #l {
+                __needle => (#r_list).iter().any(|__item| *__item == __needle),
             }
         }),
-        (
-            TypedOperand::Bool(l_bool),
-            TypedOperand::List {
-                expr: r_list,
-                elem_vt: VarType::Bool,
-            },
-        ) => Some(quote! {
-            {
-                let __l_v: bool = #l_bool;
-                (#r_list).iter().any(|__item| *__item == __l_v)
-            }
-        }),
+        // Subset check: `list(str) in list(str)`
         (
             TypedOperand::List {
                 expr: l_list,
@@ -724,477 +742,5 @@ fn codegen_match_variant_cond(
         Some(quote! { false })
     } else {
         Some(quote! { matches!(&(#e), #(#pat_tokens)|*) })
-    }
-}
-
-pub(super) fn codegen_match(
-    expr: &CompiledPath,
-    arms: &[MatchArm],
-    is_option: bool,
-    scope: &NativeScope,
-    counter: &mut usize,
-) -> Option<TokenStream> {
-    let resolved = scope.resolve_path(expr)?;
-    match resolved {
-        ResolvedValue::Runtime(b) => match &b.var_type {
-            VarType::Option(inner) => codegen_match_option(expr, &b, inner, arms, scope, counter),
-            VarType::Enum(declared) if !is_option => {
-                codegen_match_enum(expr, &b, declared, arms, scope, counter)
-            }
-            VarType::Str | VarType::Int | VarType::Float | VarType::Bool => {
-                codegen_match_scalar(&b, arms, scope, counter)
-            }
-            _ => None,
-        },
-        ResolvedValue::Static(val) => {
-            let synthetic = match val {
-                Value::Str(s) => Binding {
-                    expr: quote! { #s },
-                    var_type: VarType::Str,
-                    type_prefix: String::new(),
-                },
-                Value::Int(i) => Binding {
-                    expr: quote! { #i },
-                    var_type: VarType::Int,
-                    type_prefix: String::new(),
-                },
-                Value::Float(f) => {
-                    let bits = f.to_bits();
-                    Binding {
-                        expr: quote! { ::core::primitive::f64::from_bits(#bits) },
-                        var_type: VarType::Float,
-                        type_prefix: String::new(),
-                    }
-                }
-                Value::Bool(b) => Binding {
-                    expr: quote! { #b },
-                    var_type: VarType::Bool,
-                    type_prefix: String::new(),
-                },
-                _ => return None,
-            };
-            codegen_match_scalar(&synthetic, arms, scope, counter)
-        }
-    }
-}
-
-fn codegen_match_option(
-    expr: &CompiledPath,
-    opt_binding: &Binding,
-    inner_vt: &VarType,
-    arms: &[MatchArm],
-    scope: &NativeScope,
-    counter: &mut usize,
-) -> Option<TokenStream> {
-    let mut rust_arms = Vec::with_capacity(arms.len() + 1);
-    let mut has_unconditional_some = false;
-    let mut has_unconditional_none = false;
-    let mut has_unconditional_default = false;
-
-    for arm in arms {
-        let id = *counter;
-        *counter += 1;
-        let has_default = arm
-            .variants
-            .iter()
-            .any(|v| v.as_ref() == md_tmpl_core::consts::MATCH_DEFAULT);
-        let has_some = arm
-            .variants
-            .iter()
-            .any(|v| v.as_ref() == md_tmpl_core::consts::OPTION_SOME);
-        let has_none = arm
-            .variants
-            .iter()
-            .any(|v| v.as_ref() == md_tmpl_core::consts::OPTION_NONE);
-
-        let mut arm_scope = scope.clone();
-        let pat = if has_default || (has_some && has_none) {
-            if arm.guard.is_none() {
-                has_unconditional_default = true;
-            }
-            quote! { _ }
-        } else if has_some {
-            if arm.guard.is_none() {
-                has_unconditional_some = true;
-            }
-            let val_ident = format_ident!("_md_opt_{id}_{}", sanitize_ident(expr.as_str()));
-            let bound_expr = if is_copy_scalar(inner_vt) {
-                quote! { (*#val_ident) }
-            } else {
-                quote! { #val_ident }
-            };
-            arm_scope.bindings.insert(
-                expr.as_str().to_string(),
-                Binding {
-                    expr: bound_expr,
-                    var_type: inner_vt.clone(),
-                    type_prefix: opt_binding.type_prefix.clone(),
-                },
-            );
-            quote! { ::core::option::Option::Some(#val_ident) }
-        } else if has_none {
-            if arm.guard.is_none() {
-                has_unconditional_none = true;
-            }
-            quote! { ::core::option::Option::None }
-        } else {
-            return None;
-        };
-
-        let guard_tok = if let Some(ref g) = arm.guard {
-            let g_expr = codegen_condition(g, &arm_scope, counter)?;
-            quote! { if #g_expr }
-        } else {
-            quote! {}
-        };
-
-        let body_tok = codegen_segments(&arm.body, &arm_scope, counter)?;
-        rust_arms.push(quote! {
-            #pat #guard_tok => {
-                #body_tok
-            }
-        });
-    }
-
-    if !(has_unconditional_default || has_unconditional_some && has_unconditional_none) {
-        rust_arms.push(quote! { _ => {} });
-    }
-
-    let opt_e = &opt_binding.expr;
-    Some(quote! {
-        match &(#opt_e) {
-            #(#rust_arms),*
-        }
-    })
-}
-
-fn codegen_single_enum_arm_pat(
-    expr: &CompiledPath,
-    enum_binding: &Binding,
-    enum_ident: &syn::Ident,
-    decl: &VariantDecl,
-    v_ident: &syn::Ident,
-    id: usize,
-    arm_scope: &mut NativeScope,
-) -> TokenStream {
-    if decl.fields.is_empty() {
-        return quote! { #enum_ident::#v_ident };
-    }
-    let mut pat_fields = Vec::with_capacity(decl.fields.len());
-    for f_decl in &decl.fields {
-        let f_ident = crate::make_ident(&f_decl.name);
-        let bind_ident = format_ident!("_md_vfield_{id}_{}", sanitize_ident(&f_decl.name));
-        pat_fields.push(quote! { #f_ident: #bind_ident });
-
-        let field_expr = if is_copy_scalar(&f_decl.var_type) {
-            quote! { (*#bind_ident) }
-        } else {
-            quote! { #bind_ident }
-        };
-        let field_prefix = format!(
-            "{}{v_ident}{}",
-            enum_binding.type_prefix,
-            md_tmpl_core::to_pascal_case(&f_decl.name)
-        );
-        arm_scope.bindings.insert(
-            format!("{}.{}", expr.as_str(), f_decl.name),
-            Binding {
-                expr: field_expr,
-                var_type: f_decl.var_type.clone(),
-                type_prefix: field_prefix,
-            },
-        );
-    }
-    quote! { #enum_ident::#v_ident { #(#pat_fields),* } }
-}
-
-fn codegen_match_enum(
-    expr: &CompiledPath,
-    enum_binding: &Binding,
-    declared: &[VariantDecl],
-    arms: &[MatchArm],
-    scope: &NativeScope,
-    counter: &mut usize,
-) -> Option<TokenStream> {
-    let enum_ident = format_ident!("{}", enum_binding.type_prefix);
-    let decl_names: Vec<String> = declared.iter().map(|v| v.name.clone()).collect();
-    let deduped = deduplicate_variant_idents(&decl_names);
-
-    let mut rust_arms = Vec::with_capacity(arms.len() + 1);
-    let mut unconditional_covered: Vec<&str> = Vec::new();
-    let mut has_unconditional_default = false;
-
-    for arm in arms {
-        let id = *counter;
-        *counter += 1;
-        let is_default = arm
-            .variants
-            .iter()
-            .any(|v| v.as_ref() == md_tmpl_core::consts::MATCH_DEFAULT);
-
-        let mut arm_scope = scope.clone();
-
-        let pat = if is_default {
-            if arm.guard.is_none() {
-                has_unconditional_default = true;
-            }
-            quote! { _ }
-        } else if arm.variants.len() == 1 {
-            let v_name = arm.variants[0].as_ref();
-            let (decl, (v_ident, _)) = declared
-                .iter()
-                .zip(deduped.iter())
-                .find(|(d, _)| d.name == v_name)?;
-            if arm.guard.is_none() {
-                unconditional_covered.push(decl.name.as_str());
-            }
-            codegen_single_enum_arm_pat(
-                expr,
-                enum_binding,
-                &enum_ident,
-                decl,
-                v_ident,
-                id,
-                &mut arm_scope,
-            )
-        } else {
-            let mut sub_pats = Vec::with_capacity(arm.variants.len());
-            for v_name in &arm.variants {
-                let (decl, (v_ident, _)) = declared
-                    .iter()
-                    .zip(deduped.iter())
-                    .find(|(d, _)| d.name == v_name.as_ref())?;
-                if arm.guard.is_none() {
-                    unconditional_covered.push(decl.name.as_str());
-                }
-                if decl.fields.is_empty() {
-                    sub_pats.push(quote! { #enum_ident::#v_ident });
-                } else {
-                    sub_pats.push(quote! { #enum_ident::#v_ident { .. } });
-                }
-            }
-            quote! { #(#sub_pats)|* }
-        };
-
-        let guard_tok = if let Some(ref g) = arm.guard {
-            let g_expr = codegen_condition(g, &arm_scope, counter)?;
-            quote! { if #g_expr }
-        } else {
-            quote! {}
-        };
-
-        let body_tok = codegen_segments(&arm.body, &arm_scope, counter)?;
-        rust_arms.push(quote! {
-            #pat #guard_tok => {
-                #body_tok
-            }
-        });
-    }
-
-    let all_covered = has_unconditional_default
-        || declared
-            .iter()
-            .all(|d| unconditional_covered.contains(&d.name.as_str()));
-    if !all_covered {
-        rust_arms.push(quote! { _ => {} });
-    }
-
-    let enum_e = &enum_binding.expr;
-    Some(quote! {
-        match &(#enum_e) {
-            #(#rust_arms),*
-        }
-    })
-}
-
-fn codegen_match_scalar(
-    scalar_binding: &Binding,
-    arms: &[MatchArm],
-    scope: &NativeScope,
-    counter: &mut usize,
-) -> Option<TokenStream> {
-    let val_ident = format_ident!("_md_match_val_{}", *counter);
-    *counter += 1;
-
-    let base_e = &scalar_binding.expr;
-    let init_stmt = match scalar_binding.var_type {
-        VarType::Str => quote! {
-            let #val_ident: &str = ::core::convert::AsRef::<str>::as_ref(&(#base_e));
-        },
-        VarType::Int => quote! { let #val_ident: i64 = #base_e; },
-        VarType::Float => quote! { let #val_ident: f64 = #base_e; },
-        VarType::Bool => quote! { let #val_ident: bool = #base_e; },
-        _ => return None,
-    };
-
-    let mut branches = Vec::with_capacity(arms.len());
-    let mut fallback_body = None;
-
-    for arm in arms {
-        let is_default = arm
-            .variants
-            .iter()
-            .any(|v| v.as_ref() == md_tmpl_core::consts::MATCH_DEFAULT);
-        let body_tok = codegen_segments(&arm.body, scope, counter)?;
-
-        if is_default && arm.guard.is_none() {
-            fallback_body = Some(body_tok);
-            break;
-        }
-
-        let mut label_checks = Vec::with_capacity(arm.variants.len());
-        if !is_default {
-            for label_cow in &arm.variants {
-                let check = codegen_scalar_case_check(
-                    &val_ident,
-                    &scalar_binding.var_type,
-                    label_cow.as_ref(),
-                    scope,
-                    counter,
-                )?;
-                label_checks.push(check);
-            }
-        }
-
-        let label_cond = if is_default {
-            quote! { true }
-        } else {
-            quote! { (#(#label_checks)||*) }
-        };
-
-        let full_cond = if let Some(ref g) = arm.guard {
-            let g_tok = codegen_condition(g, scope, counter)?;
-            if is_default {
-                g_tok
-            } else {
-                quote! { (#label_cond && (#g_tok)) }
-            }
-        } else {
-            label_cond
-        };
-
-        if branches.is_empty() {
-            branches.push(quote! {
-                if #full_cond {
-                    #body_tok
-                }
-            });
-        } else {
-            branches.push(quote! {
-                else if #full_cond {
-                    #body_tok
-                }
-            });
-        }
-    }
-
-    let else_part = match fallback_body {
-        Some(fb) if branches.is_empty() => return Some(fb),
-        Some(fb) => quote! {
-            else {
-                #fb
-            }
-        },
-        None => quote! {},
-    };
-
-    Some(quote! {
-        {
-            #init_stmt
-            #(#branches)*
-            #else_part
-        }
-    })
-}
-
-fn codegen_scalar_case_check(
-    val_ident: &syn::Ident,
-    var_type: &VarType,
-    label: &str,
-    scope: &NativeScope,
-    counter: &mut usize,
-) -> Option<TokenStream> {
-    let cp = crate_path();
-    // 1. Quoted string literal (possibly interpolated `"...{{ x }}..."`).
-    if let Some(inner) = md_tmpl_core::consts::strip_string_literal(label) {
-        if *var_type != VarType::Str {
-            return None;
-        }
-        let unescaped = md_tmpl_core::consts::unescape_string_literal(inner);
-        if unescaped.contains(md_tmpl_core::consts::EXPR_START) {
-            let segs = match md_tmpl_core::compiled::compile_body(&unescaped) {
-                Ok(s) => s,
-                Err(err) => {
-                    drop(err);
-                    return None;
-                }
-            };
-            let seg_tokens = codegen_segments(&segs, scope, counter)?;
-            return Some(quote! {
-                (#val_ident == ({
-                    let mut __case_str = #cp::__private::String::new();
-                    {
-                        let __out = &mut __case_str;
-                        #seg_tokens
-                    }
-                    __case_str
-                }).as_str())
-            });
-        }
-        return Some(quote! { (#val_ident == #unescaped) });
-    }
-
-    // 2. Literal scalar according to `var_type`.
-    match var_type {
-        VarType::Bool => {
-            if label == "true" {
-                return Some(quote! { #val_ident });
-            } else if label == "false" {
-                return Some(quote! { !#val_ident });
-            }
-        }
-        VarType::Int => {
-            if let Ok(n) = label.parse::<i64>() {
-                return Some(quote! { (#val_ident == #n) });
-            }
-        }
-        VarType::Float => {
-            if let Ok(f) = label.parse::<f64>() {
-                let bits = f.to_bits();
-                return Some(quote! {
-                    (#val_ident).partial_cmp(&::core::primitive::f64::from_bits(#bits)).is_some_and(::core::cmp::Ordering::is_eq)
-                });
-            }
-        }
-        VarType::Str => {}
-        _ => return None,
-    }
-
-    // 3. Variable or constant reference (or unquoted string fallback on `VarType::Str`).
-    let path = CompiledPath::compile(label);
-    if scope.resolve_path(&path).is_some() {
-        let op = ConditionOperand::Path {
-            path,
-            filters: Vec::new(),
-        };
-        let rhs = codegen_operand_typed(&op, scope, counter)?;
-        return match (var_type, rhs) {
-            (VarType::Float, TypedOperand::Int(r)) => Some(quote! {
-                #cp::__private::cmp_int_float(#r, #val_ident).is_some_and(::core::cmp::Ordering::is_eq)
-            }),
-            (VarType::Float, TypedOperand::Float(r)) => Some(quote! {
-                (#val_ident).partial_cmp(&(#r)).is_some_and(::core::cmp::Ordering::is_eq)
-            }),
-            (VarType::Str, TypedOperand::Str(r))
-            | (VarType::Int, TypedOperand::Int(r))
-            | (VarType::Bool, TypedOperand::Bool(r)) => Some(quote! { (#val_ident == (#r)) }),
-            _ => None,
-        };
-    }
-
-    if *var_type == VarType::Str {
-        Some(quote! { (#val_ident == #label) })
-    } else {
-        None
     }
 }

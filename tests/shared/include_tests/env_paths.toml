@@ -1,0 +1,330 @@
+# Shared include_tests: Env-based include/import path resolution.
+
+# ---------------------------------------------------------------------------
+# Env-based include path resolution
+# ---------------------------------------------------------------------------
+# Tests that use env: variables in include/import paths, simulating real-world
+# scenarios where template directories are configured externally.
+
+[[tests]]
+name = "env_include_path_basic"
+description = "Include path resolved via env variable pointing to a subdirectory"
+parent_template = '''
+---
+env: [TMPL_DIR = str]
+
+params: [name = str]
+---
+> {% include [greet]({{ TMPL_DIR }}/greet.tmpl.md) with name=name %}'''
+expected_output = "Hello Alice!"
+
+[tests.params]
+name = "Alice"
+
+[tests.env]
+TMPL_DIR = "./templates"
+
+[tests.files]
+"templates/greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+Hello {{ name }}!'''
+
+[[tests]]
+name = "env_include_path_multiple_includes"
+description = "Multiple includes using the same env-based path prefix"
+parent_template = '''
+---
+env: [TMPL_DIR = str]
+
+params: [name = str]
+---
+> {% include [header]({{ TMPL_DIR }}/header.tmpl.md) %}
+
+> {% include [greet]({{ TMPL_DIR }}/greet.tmpl.md) with name=name %}
+
+> {% include [footer]({{ TMPL_DIR }}/footer.tmpl.md) %}'''
+expected_output = '''
+=== Header ===
+Hello Alice!
+=== Footer ===
+'''
+
+[tests.params]
+name = "Alice"
+
+[tests.env]
+TMPL_DIR = "./parts"
+
+[tests.files]
+"parts/header.tmpl.md" = '''
+---
+params: []
+---
+=== Header ===
+'''
+"parts/greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+Hello {{ name }}!
+'''
+"parts/footer.tmpl.md" = '''
+---
+params: []
+---
+=== Footer ===
+'''
+
+[[tests]]
+name = "env_import_path_with_typed_include"
+description = "Import types via env path, then include a template that uses those types"
+parent_template = '''
+---
+env: [LIB_DIR = str]
+
+imports:
+  - "[types]({{ LIB_DIR }}/types.tmpl.md)"
+
+params: [role = types.Role]
+---
+> {% include [card]({{ LIB_DIR }}/card.tmpl.md) with role=role %}'''
+expected_output = "User role: admin"
+
+[tests.params]
+role = "admin"
+
+[tests.env]
+LIB_DIR = "./lib"
+
+[tests.files]
+"lib/types.tmpl.md" = '''
+---
+name: types
+types: [Role = enum(admin, editor, viewer)]
+---
+'''
+"lib/card.tmpl.md" = '''
+---
+params: [role = str]
+---
+User role: {{ role }}'''
+
+[[tests]]
+name = "env_include_different_dirs"
+description = "Two env vars pointing to different directories, used in separate includes"
+parent_template = '''
+---
+env:
+  - COMP_DIR = str
+  - DATA_DIR = str
+
+params: [name = str]
+---
+> {% include [header]({{ COMP_DIR }}/header.tmpl.md) %}
+
+> {% include [user]({{ DATA_DIR }}/user.tmpl.md) with name=name %}'''
+expected_output = '''
+-- Header --
+User: Alice
+'''
+
+[tests.params]
+name = "Alice"
+
+[tests.env]
+COMP_DIR = "./ui"
+DATA_DIR = "./data"
+
+[tests.files]
+"ui/header.tmpl.md" = '''
+---
+params: []
+---
+-- Header --
+'''
+"data/user.tmpl.md" = '''
+---
+params: [name = str]
+---
+User: {{ name }}
+'''
+
+[[tests]]
+name = "env_include_with_chained_import_consts"
+description = "Import a config template, then use its exported const alongside env in include paths"
+parent_template = '''
+---
+env: [BASE = str]
+
+imports:
+  - "[cfg]({{ BASE }}/cfg.tmpl.md)"
+
+params: [name = str]
+---
+> {% include [greet]({{ BASE }}/greet.tmpl.md) with name=name %}
+
+Version: {{ cfg.VERSION }}
+'''
+expected_output = '''
+Hi Alice!
+Version: 3.0
+'''
+
+[tests.params]
+name = "Alice"
+
+[tests.env]
+BASE = "."
+
+[tests.files]
+"cfg.tmpl.md" = '''
+---
+name: cfg
+consts: [VERSION = str := "3.0"]
+---
+'''
+"greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+Hi {{ name }}!
+'''
+
+[[tests]]
+name = "env_nested_include_child_uses_env"
+description = "Parent uses env for include; included child also declares and uses the same env variable"
+parent_template = '''
+---
+env: [PROMPT_DIR = str]
+
+params: [name = str]
+---
+> {% include [child]({{ PROMPT_DIR }}/child.tmpl.md) with name=name %}'''
+expected_output = "Hello Alice at ./prompts"
+
+[tests.params]
+name = "Alice"
+
+[tests.env]
+PROMPT_DIR = "./prompts"
+
+[tests.files]
+"prompts/child.tmpl.md" = '''
+---
+env: [PROMPT_DIR = str]
+
+params: [name = str]
+---
+Hello {{ name }} at {{ PROMPT_DIR }}'''
+
+[[tests]]
+name = "env_include_with_cross_dir_child_imports"
+description = "Parent uses env for include; child in subdir imports types from sibling dir via ../"
+parent_template = '''
+---
+env: [COMP_DIR = str]
+
+params: [role = str]
+---
+> {% include [widget]({{ COMP_DIR }}/widget.tmpl.md) with role=role %}'''
+expected_output = "Role: editor"
+
+[tests.params]
+role = "editor"
+
+[tests.env]
+COMP_DIR = "./components"
+
+[tests.files]
+"types/role.tmpl.md" = '''
+---
+name: role
+types: [Role = enum(admin, editor, viewer)]
+---
+'''
+"components/widget.tmpl.md" = '''
+---
+imports:
+  - "[role](../types/role.tmpl.md)"
+
+params: [role = role.Role]
+---
+Role: {{ role }}'''
+
+[[tests]]
+name = "env_include_path_missing_env_error"
+description = "Using an undeclared env variable in an include path should produce an error"
+parent_template = '''
+---
+params: [name = str]
+---
+> {% include [greet]({{ MISSING_DIR }}/greet.tmpl.md) with name=name %}'''
+expected_error = "undeclared variable"
+files = {}
+
+[tests.params]
+name = "World"
+
+[[tests]]
+name = "relative_include_parent_then_child_back"
+description = "Include from parent dir (../), then that template includes back into a subdirectory"
+parent_template = '''
+---
+params: [x = str]
+---
+> {% include [outer](./sub/outer.tmpl.md) with x=x %}'''
+expected_output = "outer -> inner: hello"
+
+[tests.params]
+x = "hello"
+
+[tests.files]
+"sub/outer.tmpl.md" = '''
+---
+params: [x = str]
+---
+outer -> {% include [inner](../deep/inner.tmpl.md) with x=x %}'''
+"deep/inner.tmpl.md" = '''
+---
+params: [x = str]
+---
+inner: {{ x }}'''
+
+[[tests]]
+name = "env_and_relative_combined"
+description = "Parent uses env for include dir; child uses relative ../ to import types from sibling"
+parent_template = '''
+---
+env: [VIEWS_DIR = str]
+
+imports:
+  - "[types](./shared/types.tmpl.md)"
+
+params: [prio = types.Priority]
+---
+> {% include [view]({{ VIEWS_DIR }}/prio_view.tmpl.md) with prio=prio %}'''
+expected_output = "Priority: High"
+
+[tests.params]
+prio = "High"
+
+[tests.env]
+VIEWS_DIR = "./views"
+
+[tests.files]
+"shared/types.tmpl.md" = '''
+---
+name: types
+types: [Priority = enum(High, Medium, Low)]
+---
+'''
+"views/prio_view.tmpl.md" = '''
+---
+imports:
+  - "[types](../shared/types.tmpl.md)"
+
+params: [prio = types.Priority]
+---
+Priority: {{ prio }}'''

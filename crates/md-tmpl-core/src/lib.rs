@@ -73,6 +73,103 @@ pub mod __private {
         }
         hash
     }
+
+    /// Copy-able static scalar representation for compile-time constant promotion to `.rodata`.
+    #[derive(Clone, Copy)]
+    pub enum StaticScalar<'a> {
+        Str(&'a str),
+        Int(i64),
+        Float(u64),
+        Bool(bool),
+        None,
+    }
+
+    impl StaticScalar<'_> {
+        #[must_use]
+        pub fn into_value(self) -> crate::Value {
+            match self {
+                Self::Str(s) => crate::Value::Str(String::from(s)),
+                Self::Int(i) => crate::Value::Int(i),
+                Self::Float(bits) => crate::Value::Float(f64::from_bits(bits)),
+                Self::Bool(b) => crate::Value::Bool(b),
+                Self::None => crate::Value::None,
+            }
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    #[must_use]
+    pub fn make_str_value(s: &str) -> crate::Value {
+        crate::Value::Str(String::from(s))
+    }
+
+    #[cold]
+    #[inline(never)]
+    #[must_use]
+    pub fn make_scalar_list_value(items: &[StaticScalar<'_>]) -> crate::Value {
+        crate::Value::List(Arc::new(
+            items
+                .iter()
+                .copied()
+                .map(StaticScalar::into_value)
+                .collect(),
+        ))
+    }
+
+    #[cold]
+    #[inline(never)]
+    #[must_use]
+    pub fn make_scalar_struct_value(fields: &[(&str, StaticScalar<'_>)]) -> crate::Value {
+        let mut map = HashMap::with_capacity(fields.len());
+        for &(k, v) in fields {
+            map.insert(String::from(k), v.into_value());
+        }
+        crate::Value::Struct(Arc::new(map))
+    }
+
+    #[cold]
+    #[inline(never)]
+    #[must_use]
+    pub fn make_scalar_struct_list_value(items: &[&[(&str, StaticScalar<'_>)]]) -> crate::Value {
+        crate::Value::List(Arc::new(
+            items
+                .iter()
+                .map(|fields| make_scalar_struct_value(fields))
+                .collect(),
+        ))
+    }
+
+    #[cold]
+    #[inline(never)]
+    #[must_use]
+    pub fn make_enum_namespace_value(
+        unit_variants: &[&str],
+        data_variants: &[&str],
+        all_variants: &[&str],
+    ) -> crate::Value {
+        let mut map = HashMap::with_capacity(unit_variants.len() + data_variants.len() + 1);
+        for &v in unit_variants {
+            map.insert(String::from(v), crate::Value::Str(String::from(v)));
+        }
+        for &v in data_variants {
+            let mut partial = HashMap::with_capacity(1);
+            partial.insert(
+                String::from(crate::consts::ENUM_TAG_KEY),
+                crate::Value::Str(String::from(v)),
+            );
+            map.insert(String::from(v), crate::Value::Struct(Arc::new(partial)));
+        }
+        let variant_list = all_variants
+            .iter()
+            .map(|&v| crate::Value::Str(String::from(v)))
+            .collect();
+        map.insert(
+            String::from(crate::consts::ENUM_VARIANTS_KEY),
+            crate::Value::List(Arc::new(variant_list)),
+        );
+        crate::Value::Struct(Arc::new(map))
+    }
 }
 
 #[cfg(feature = "std")]
@@ -226,4 +323,124 @@ macro_rules! __value {
     ($other:expr) => {
         $crate::Value::from($other)
     };
+}
+
+#[cfg(test)]
+mod private_tests {
+    use alloc::{string::String, sync::Arc};
+
+    use super::{
+        __private::{
+            StaticScalar, make_enum_namespace_value, make_scalar_list_value,
+            make_scalar_struct_list_value, make_scalar_struct_value, make_str_value,
+        },
+        Context, Value,
+        compat::HashMap,
+        scope::Scope,
+    };
+
+    #[test]
+    fn static_scalar_into_value_covers_all_variants() {
+        assert_eq!(
+            StaticScalar::Str("hello").into_value(),
+            Value::Str(String::from("hello"))
+        );
+        assert_eq!(StaticScalar::Int(-42).into_value(), Value::Int(-42));
+        assert_eq!(
+            StaticScalar::Float(2.5_f64.to_bits()).into_value(),
+            Value::Float(2.5)
+        );
+        assert_eq!(StaticScalar::Bool(true).into_value(), Value::Bool(true));
+        assert_eq!(StaticScalar::None.into_value(), Value::None);
+    }
+
+    #[test]
+    fn make_value_helpers_construct_expected_values() {
+        assert_eq!(make_str_value("abc"), Value::Str(String::from("abc")));
+
+        let list_val = make_scalar_list_value(&[
+            StaticScalar::Str("a"),
+            StaticScalar::Int(1),
+            StaticScalar::Bool(false),
+        ]);
+        assert_eq!(
+            list_val,
+            Value::List(Arc::new(alloc::vec![
+                Value::Str(String::from("a")),
+                Value::Int(1),
+                Value::Bool(false),
+            ]))
+        );
+
+        let struct_val = make_scalar_struct_value(&[
+            ("title", StaticScalar::Str("task")),
+            ("priority", StaticScalar::Int(3)),
+        ]);
+        let Value::Struct(ref fields) = struct_val else {
+            panic!("expected Value::Struct");
+        };
+        assert_eq!(fields.get("title"), Some(&Value::Str(String::from("task"))));
+        assert_eq!(fields.get("priority"), Some(&Value::Int(3)));
+
+        let struct_list = make_scalar_struct_list_value(&[
+            &[("k", StaticScalar::Str("v1"))],
+            &[("k", StaticScalar::Str("v2"))],
+        ]);
+        let Value::List(ref items) = struct_list else {
+            panic!("expected Value::List");
+        };
+        assert_eq!(items.len(), 2);
+
+        let enum_ns = make_enum_namespace_value(
+            &["Open", "Closed"],
+            &["Failed"],
+            &["Open", "Closed", "Failed"],
+        );
+        let Value::Struct(ref ns_fields) = enum_ns else {
+            panic!("expected Value::Struct for enum namespace");
+        };
+        assert_eq!(
+            ns_fields.get("Open"),
+            Some(&Value::Str(String::from("Open")))
+        );
+        let Some(Value::Struct(failed_fields)) = ns_fields.get("Failed") else {
+            panic!("expected Value::Struct for data variant");
+        };
+        assert_eq!(
+            failed_fields.get(crate::consts::ENUM_TAG_KEY),
+            Some(&Value::Str(String::from("Failed")))
+        );
+        let Some(Value::List(variants)) = ns_fields.get(crate::consts::ENUM_VARIANTS_KEY) else {
+            panic!("expected variants list");
+        };
+        assert_eq!(variants.len(), 3);
+    }
+
+    #[test]
+    fn scope_push_consts_arc_shares_arcs_and_resolves() {
+        let ctx = Context::new();
+        let mut scope = Scope::new(&ctx);
+
+        let mut c_map = HashMap::new();
+        c_map.insert(String::from("LOCAL_C"), Value::Int(7));
+        let c_arc = Arc::new(c_map);
+
+        let mut imp_map = HashMap::new();
+        imp_map.insert(String::from("ns.REMOTE_C"), Value::Str(String::from("ok")));
+        let imp_arc = Arc::new(imp_map);
+
+        scope.push_consts_arc(&c_arc, &imp_arc);
+        assert_eq!(Arc::strong_count(&c_arc), 2);
+        assert_eq!(Arc::strong_count(&imp_arc), 2);
+        assert_eq!(scope.resolve("LOCAL_C"), Some(&Value::Int(7)));
+        assert_eq!(
+            scope.resolve_path_str("ns.REMOTE_C").unwrap(),
+            &Value::Str(String::from("ok"))
+        );
+
+        scope.pop_consts();
+        assert_eq!(Arc::strong_count(&c_arc), 1);
+        assert_eq!(Arc::strong_count(&imp_arc), 1);
+        assert_eq!(scope.resolve("LOCAL_C"), None);
+    }
 }

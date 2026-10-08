@@ -628,3 +628,62 @@ fn struct_still_rejects_wrong_types_even_with_extras() {
         "extra fields don't fix type mismatches"
     );
 }
+
+#[test]
+fn var_type_is_displayable_for_unit_vs_data_enums() {
+    let unit_enum = VarType::Enum(vec![
+        VariantDecl {
+            name: "Fast".into(),
+            fields: vec![],
+        },
+        VariantDecl {
+            name: "Safe".into(),
+            fields: vec![],
+        },
+    ]);
+    assert!(
+        unit_enum.is_displayable(),
+        "unit-only enum must be displayable"
+    );
+
+    let data_enum = VarType::Enum(vec![
+        VariantDecl {
+            name: "Confirmed".into(),
+            fields: vec![VarDecl {
+                name: "evidence".into(),
+                var_type: VarType::Str,
+                default_value: None,
+            }],
+        },
+        VariantDecl {
+            name: "Rejected".into(),
+            fields: vec![],
+        },
+    ]);
+    assert!(
+        !data_enum.is_displayable(),
+        "enum with data variant must not be directly displayable"
+    );
+
+    let decls = vec![VarDecl {
+        name: "outcome".into(),
+        var_type: data_enum,
+        default_value: None,
+    }];
+    let bad_segments = crate::compiled::compile_body("{{ outcome }}").unwrap();
+    let errors = crate::compiled::validate_field_accesses(&bad_segments, &decls);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("cannot display value of type") && e.contains("use kind(x)")),
+        "unnarrowed data enum display should fail type check with kind(x) hint: {errors:?}"
+    );
+
+    let narrowed_unit_body = "> {% match outcome %}{% case Confirmed %}{{ outcome.evidence }}{% case Rejected %}{{ outcome }}{% /match %}";
+    let ok_segments = crate::compiled::compile_body(narrowed_unit_body).unwrap();
+    let ok_errors = crate::compiled::validate_field_accesses(&ok_segments, &decls);
+    assert!(
+        ok_errors.is_empty(),
+        "displaying enum narrowed to unit variant Rejected should pass: {ok_errors:?}"
+    );
+}

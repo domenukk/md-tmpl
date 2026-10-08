@@ -12,8 +12,13 @@ import {
   LIT_TRUE,
   OPTION_NONE,
   OPTION_SOME,
+  PREFIX_CONSTS_DOT,
+  PREFIX_OPTIONS_DOT,
+  PREFIX_OPTS_DOT,
+  PREFIX_PARAMS_DOT,
   unescapeStringLiteral,
 } from "../consts.js";
+import { ENUM_VARIANTS_KEY } from "../value.js";
 import {
   escapeXmlString,
   escapeJsonString,
@@ -89,9 +94,21 @@ export function resolveDirectExpr(expr: string, scope: DirectScope): unknown {
     return resolveDirectFunction(expr, scope);
   }
 
+  // Strip namespace prefixes (`consts.`, `opts.`, `options.`, `params.`)
+  let path = expr;
+  if (path.startsWith(PREFIX_CONSTS_DOT)) {
+    path = path.slice(PREFIX_CONSTS_DOT.length).trim();
+  } else if (path.startsWith(PREFIX_OPTS_DOT)) {
+    path = path.slice(PREFIX_OPTS_DOT.length).trim();
+  } else if (path.startsWith(PREFIX_OPTIONS_DOT)) {
+    path = path.slice(PREFIX_OPTIONS_DOT.length).trim();
+  } else if (path.startsWith(PREFIX_PARAMS_DOT)) {
+    path = path.slice(PREFIX_PARAMS_DOT.length).trim();
+  }
+
   // Loop metadata (loop.<prop>)
-  if (expr.startsWith("loop.")) {
-    const prop = expr.slice(5).trim();
+  if (path.startsWith("loop.")) {
+    const prop = path.slice(5).trim();
     const meta = scope.getLastLoopMeta();
     if (!meta) {
       throw new TemplateSyntaxError(
@@ -115,17 +132,29 @@ export function resolveDirectExpr(expr: string, scope: DirectScope): unknown {
     }
   }
 
-  // Dotted path: "task.title"
-  const dotIdx = expr.indexOf(".");
+  // Dotted path: "task.title" or imported const "child.MAX" / "child.Stage.Design"
+  const dotIdx = path.indexOf(".");
   if (dotIdx > 0) {
-    const root = expr.slice(0, dotIdx);
+    const exactConst = scope.resolveConst(path);
+    if (exactConst !== undefined) return exactConst;
+
+    const secondDot = path.indexOf(".", dotIdx + 1);
+    if (secondDot !== -1) {
+      const stemKey = path.slice(0, secondDot);
+      const stemVal = scope.resolveConst(stemKey);
+      if (stemVal !== undefined) {
+        return resolveDirectPath(stemVal, path, secondDot + 1);
+      }
+    }
+
+    const root = path.slice(0, dotIdx);
     const resolved = scope.resolve(root);
     if (resolved === undefined) return undefined;
-    return resolveDirectPath(resolved, expr, dotIdx + 1);
+    return resolveDirectPath(resolved, path, dotIdx + 1);
   }
 
   // Simple variable
-  return scope.resolve(expr);
+  return scope.resolve(path);
 }
 
 /** Handle built-in function calls. */
@@ -168,6 +197,16 @@ export function resolveDirectFunction(
       if (typeof arg === "string") return arg;
       // For transparent option values that are not enums, the kind is "Some"
       return OPTION_SOME;
+    }
+    case "kinds": {
+      const arg = resolveDirectExpr(argStr, scope);
+      if (arg !== null && typeof arg === "object" && !Array.isArray(arg)) {
+        const variants = (arg as Record<string, unknown>)[ENUM_VARIANTS_KEY];
+        if (Array.isArray(variants)) return variants;
+      }
+      throw new TemplateSyntaxError(
+        `kinds() requires an enum type namespace, got ${typeof arg}`,
+      );
     }
     case "has": {
       const arg = resolveDirectExpr(argStr, scope);

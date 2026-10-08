@@ -12,7 +12,7 @@ import {
   isOptionMatchNode,
 } from "./evaluator.js";
 import { parseBody } from "./parser.js";
-import { parseFrontmatter } from "./frontmatter.js";
+import { collectInlineTemplateMap } from "./template/inline_templates.js";
 import {
   type Value,
   type TmplRef,
@@ -162,11 +162,12 @@ function armLabelMatches(
 
 export interface RenderOptions {
   /** Inline template definitions available for `{% include %}`. */
-  inlineTemplates?: Map<
+  inlineTemplates?: ReadonlyMap<
     string,
     {
       declarations: readonly VarDecl[];
       body: string;
+      nodes?: readonly Node[];
       consts: Map<string, Value>;
     }
   >;
@@ -175,7 +176,21 @@ export interface RenderOptions {
     path: string,
     basePath?: string,
   ) =>
-    | [readonly Node[], ReadonlyMap<string, Value>, readonly VarDecl[], string?]
+    | [
+        readonly Node[],
+        ReadonlyMap<string, Value>,
+        readonly VarDecl[],
+        string?,
+        ReadonlyMap<
+          string,
+          {
+            declarations: readonly VarDecl[];
+            body: string;
+            nodes?: readonly Node[];
+            consts: Map<string, Value>;
+          }
+        >?,
+      ]
     | undefined;
   /** Current base directory path for resolving relative includes. */
   currentBasePath?: string;
@@ -407,15 +422,21 @@ export function renderNodes(
           if (!loaded) {
             throw new IncludeNotFoundError(resolvedPath);
           }
-          const [loadedNodes, loadedConsts, loadedDecls, loadedBasePath] =
-            loaded;
+          const [
+            loadedNodes,
+            loadedConsts,
+            loadedDecls,
+            loadedBasePath,
+            loadedInline,
+          ] = loaded;
           includedNodes = loadedNodes;
           decls = loadedDecls;
           consts = loadedConsts;
-          // Scope inline templates to the child file: collect the child's
-          // own {% tmpl %} definitions, NOT the parent's. (SPEC: "no leaking
-          // downward")
-          const childInline = collectChildInlineTemplates(loadedNodes);
+          // Scope inline templates to the child file: use precompiled child
+          // inline templates when available (or collect from child nodes for
+          // custom loaders), never inheriting the parent's.
+          const childInline =
+            loadedInline ?? collectChildInlineTemplates(loadedNodes);
           fileChildOpts = {
             ...options,
             inlineTemplates: childInline.size > 0 ? childInline : undefined,
@@ -492,7 +513,8 @@ export function renderNodes(
               `undefined inline template '${node.name}' (available: ${Array.from(options?.inlineTemplates?.keys() ?? []).join(", ")})`,
             );
           }
-          includedNodes = parseBody(inline.body, true);
+          includedNodes =
+            node.inlineNodes ?? inline.nodes ?? parseBody(inline.body, true);
           decls = inline.declarations;
           consts = inline.consts;
           fileChildOpts = {
@@ -622,44 +644,16 @@ function isUndefinedVariableError(err: unknown): boolean {
  * Each included file gets its own namespace of inline templates.
  * Parent inline templates do NOT leak to included files.
  */
-function collectChildInlineTemplates(
-  nodes: readonly Node[],
-): Map<
+function collectChildInlineTemplates(nodes: readonly Node[]): Map<
   string,
-  { declarations: readonly VarDecl[]; body: string; consts: Map<string, Value> }
-> {
-  const result = new Map<
-    string,
-    {
-      declarations: readonly VarDecl[];
-      body: string;
-      consts: Map<string, Value>;
-    }
-  >();
-  for (const n of nodes) {
-    if (n.kind !== "tmpl") continue;
-    if (n.source.trimStart().startsWith("---")) {
-      const [inlineFm, inlineBody] = parseFrontmatter(n.source);
-      const inlineConsts = new Map<string, Value>();
-      for (const decl of inlineFm.consts) {
-        if (decl.defaultValue !== undefined) {
-          inlineConsts.set(decl.name, decl.defaultValue);
-        }
-      }
-      result.set(n.name, {
-        declarations: inlineFm.params,
-        body: inlineBody,
-        consts: inlineConsts,
-      });
-    } else {
-      result.set(n.name, {
-        declarations: [],
-        body: n.source,
-        consts: new Map(),
-      });
-    }
+  {
+    declarations: readonly VarDecl[];
+    body: string;
+    nodes: readonly Node[];
+    consts: Map<string, Value>;
   }
-  return result;
+> {
+  return collectInlineTemplateMap(nodes);
 }
 
 function interpolateIncludePath(path: string, scope: Scope): string {

@@ -278,7 +278,9 @@ export function validateFrontmatter(fm: Frontmatter): void {
       throwErr(`reserved keyword used as name: '${decl.name}'`, decl.loc);
     }
   }
-  for (const aliasName of fm.typeAliases.keys()) {
+  const localAliasNames =
+    fm.localTypeAliasNames ?? new Set<string>(fm.typeAliases.keys());
+  for (const aliasName of localAliasNames) {
     // Check reserved keywords first (matches Rust backend order).
     if (RESERVED_NAMES.has(aliasName)) {
       throw new TemplateSyntaxError(
@@ -361,6 +363,7 @@ export function validateFrontmatter(fm: Frontmatter): void {
   for (const decl of allDecls) {
     const declPascal = toPascalCase(decl.name);
     for (const [aliasName, aliasType] of fm.typeAliases) {
+      if (!localAliasNames.has(aliasName)) continue;
       if (declPascal === aliasName) {
         // Exception: if the declaration's type exactly matches the alias type
         // OR if the declaration uses this alias by name, allow it.
@@ -391,7 +394,7 @@ export function validateFrontmatter(fm: Frontmatter): void {
 
   // ── R2: Type alias shadows import stem ──────────────────────────────
   for (const imp of fm.imports) {
-    for (const aliasName of fm.typeAliases.keys()) {
+    for (const aliasName of localAliasNames) {
       if (aliasName === imp.stem) {
         throwErr(
           `type alias shadows import alias: '${aliasName}' shadows '${imp.stem}'`,
@@ -420,10 +423,11 @@ export function validateFrontmatter(fm: Frontmatter): void {
   // ── R4: Unused type aliases ─────────────────────────────────────────
   if (
     !fm.allowUnused &&
-    fm.typeAliases.size > 0 &&
+    localAliasNames.size > 0 &&
     (fm.params.length > 0 || fm.consts.length > 0)
   ) {
     for (const [aliasName, aliasType] of fm.typeAliases) {
+      if (!localAliasNames.has(aliasName)) continue;
       // Enum types are always used — they're auto-injected as constants.
       if (aliasType.kind === TYPE_ENUM) continue;
       // Check if any param/const/env declaration references this alias.
@@ -504,6 +508,7 @@ export function validateBodyCollisions(
     ...fm.consts.map((d) => d.name),
     ...fm.env.map((d) => d.name),
     ...fm.imports.map((i) => i.stem),
+    ...inlineTemplateNames,
   ]);
   for (const binding of forBindings) {
     if (declaredNames.has(binding)) {

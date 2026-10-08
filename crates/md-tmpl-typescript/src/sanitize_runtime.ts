@@ -14,6 +14,8 @@ import {
   FM_SANITIZE_NOTICE_PREFIX,
   QUOTE_DOUBLE,
   QUOTE_SINGLE,
+  SANITIZE_KIND_BLOCK,
+  SANITIZE_KIND_INLINE,
   SANITIZE_NOTICE_TAG_PLACEHOLDER,
 } from "./consts.js";
 import { TemplateSyntaxError } from "./errors.js";
@@ -34,9 +36,9 @@ export {
 
 /** Declarative sanitization specification attached to a frontmatter parameter or type field. */
 export type SanitizeSpec =
-  | { readonly kind: "inline" }
+  | { readonly kind: typeof SANITIZE_KIND_INLINE }
   | {
-      readonly kind: "block";
+      readonly kind: typeof SANITIZE_KIND_BLOCK;
       readonly tag: string;
       readonly notice?: string;
     };
@@ -46,22 +48,37 @@ export interface SanitizeFilterArgs {
   readonly notice?: string;
 }
 
+const ASCII_CASE_BIT = 32;
+const CHAR_TAB = 9;
+const CHAR_LF = 10;
+const CHAR_CR = 13;
+const CHAR_SPACE = 32;
+const CHAR_HYPHEN = 45;
+const CHAR_DOT = 46;
+const CHAR_DIGIT_0 = 48;
+const CHAR_DIGIT_9 = 57;
+const CHAR_UNDERSCORE = 95;
+const CHAR_LOWER_A = 97;
+const CHAR_LOWER_Z = 122;
+
 export function isNcnameStartCode(c: number): boolean {
-  const lower = c | 32;
-  return (lower >= 97 && lower <= 122) || c === 95 /* '_' */;
+  const lower = c | ASCII_CASE_BIT;
+  return (
+    (lower >= CHAR_LOWER_A && lower <= CHAR_LOWER_Z) || c === CHAR_UNDERSCORE
+  );
 }
 
 export function isNcnameContinueCode(c: number): boolean {
   return (
     isNcnameStartCode(c) ||
-    (c >= 48 && c <= 57) ||
-    c === 46 /* '.' */ ||
-    c === 45 /* '-' */
+    (c >= CHAR_DIGIT_0 && c <= CHAR_DIGIT_9) ||
+    c === CHAR_DOT ||
+    c === CHAR_HYPHEN
   );
 }
 
 export function isAsciiWhitespaceCode(c: number): boolean {
-  return c === 32 || c === 9 || c === 10 || c === 13;
+  return c === CHAR_SPACE || c === CHAR_TAB || c === CHAR_LF || c === CHAR_CR;
 }
 
 function isValidNcname(name: string): boolean {

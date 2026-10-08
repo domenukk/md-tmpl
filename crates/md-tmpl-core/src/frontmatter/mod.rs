@@ -66,6 +66,8 @@ pub struct Import {
 pub struct ImportedNamespace {
     /// Type aliases exported by the imported template.
     pub type_aliases: HashMap<String, VarType>,
+    /// Sanitization rules declared on exported `types:` aliases, keyed by alias name -> relative field path.
+    pub type_alias_sanitize: HashMap<String, HashMap<String, SanitizeSpec>>,
     /// Parameter types (for cross-template type references).
     pub param_types: HashMap<String, VarType>,
     /// Constants exported by the imported template.
@@ -259,6 +261,7 @@ pub fn parse_frontmatter(source: &str) -> Result<(Frontmatter, &str), TemplateEr
         #[cfg(feature = "std")]
         None,
         None,
+        None,
         false,
         &[],
     )
@@ -283,6 +286,7 @@ pub fn parse_frontmatter_with_env<'a>(
         #[cfg(feature = "std")]
         None,
         None,
+        None,
         false,
         env_values,
     )
@@ -304,22 +308,25 @@ pub fn parse_frontmatter_with_base_dir<'a>(
     base_dir: &std::path::Path,
     env_values: &[(&str, crate::value::Value)],
 ) -> Result<(Frontmatter, &'a str), TemplateError> {
-    parse_frontmatter_impl(source, Some(base_dir), None, false, env_values)
+    parse_frontmatter_impl(source, Some(base_dir), None, None, false, env_values)
 }
 
-/// Parse YAML frontmatter with access to a parent template's type aliases.
+/// Parse YAML frontmatter with access to a parent template's type aliases
+/// and their declarative `untrusted` / `| sanitize(...)` specs.
 ///
 /// Used for inline template definitions (`{% tmpl %}`) that can reference
 /// type aliases from the enclosing template.
 pub fn parse_frontmatter_with_parent_scope<'a>(
     source: &'a str,
     parent_type_aliases: &HashMap<String, VarType>,
+    parent_type_alias_sanitize: &type_aliases::TypeAliasSanitizeMap,
 ) -> Result<(Frontmatter, &'a str), TemplateError> {
     parse_frontmatter_impl(
         source,
         #[cfg(feature = "std")]
         None,
         Some(parent_type_aliases),
+        Some(parent_type_alias_sanitize),
         true,
         &[],
     )
@@ -567,6 +574,7 @@ fn parse_frontmatter_impl<'a>(
     source: &'a str,
     #[cfg(feature = "std")] base_dir: Option<&std::path::Path>,
     parent_type_aliases: Option<&HashMap<String, VarType>>,
+    parent_type_alias_sanitize: Option<&type_aliases::TypeAliasSanitizeMap>,
     allow_missing_fm: bool,
     env_values: &[(&str, crate::value::Value)],
 ) -> Result<(Frontmatter, &'a str), TemplateError> {
@@ -617,6 +625,23 @@ fn parse_frontmatter_impl<'a>(
         #[cfg(feature = "std")]
         base_dir,
     )?;
+
+    let mut merged_alias_sanitize = if let Some(parent_san) = parent_type_alias_sanitize {
+        parent_san.clone()
+    } else {
+        HashMap::new()
+    };
+    for (k, v) in &fm.type_alias_sanitize {
+        merged_alias_sanitize.insert(k.clone(), v.clone());
+    }
+    for (stem, ns) in &resolved_imports {
+        for (type_name, specs) in &ns.type_alias_sanitize {
+            merged_alias_sanitize
+                .entry(alloc::format!("{stem}.{type_name}"))
+                .or_insert_with(|| specs.clone());
+        }
+    }
+    fm.type_alias_sanitize = merged_alias_sanitize;
 
     if let Some(raw) = params_raw {
         let (decls, import_refs, param_sanitize) = parse_declarations_with_sanitize(
@@ -759,4 +784,10 @@ fn build_available_consts(
 }
 
 #[cfg(test)]
-mod tests;
+mod test_helpers;
+#[cfg(test)]
+mod tests_defaults;
+#[cfg(test)]
+mod tests_parse;
+#[cfg(test)]
+mod tests_quoting;

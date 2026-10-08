@@ -24,12 +24,13 @@ RUST_DIRS = ["crates/"]
 TS_DIRS = ["crates/md-tmpl-typescript/src/", "crates/md-tmpl-wasm/"]
 RUST_EXTS = {".rs"}
 TS_EXTS = {".ts", ".tsx"}
-# Go and Python trees — scanned only by the test-integrity checks below, so they
-# are deliberately kept out of ALL_DIRS/ALL_EXTS (no long-file scan for them).
 GO_DIRS = ["go/"]
 GO_EXTS = {".go"}
 PY_DIRS = ["crates/md-tmpl-python/python/"]
 PY_EXTS = {".py"}
+# Shared cross-backend test fixtures — covered by the long-file check only.
+FIXTURE_DIRS = ["tests/shared/"]
+FIXTURE_EXTS = {".toml"}
 ALL_DIRS = RUST_DIRS + TS_DIRS + GO_DIRS + PY_DIRS
 ALL_EXTS = RUST_EXTS | TS_EXTS | GO_EXTS | PY_EXTS
 
@@ -487,24 +488,20 @@ def run_empty_catch_check() -> bool:
 
 
 def run_long_file_check() -> bool:
-    """Flag non-test files exceeding MAX_FILE_LINES."""
-    print(f"=== Long files (>{MAX_FILE_LINES} lines) ===")
+    """Flag every source, test, and fixture file at or exceeding MAX_FILE_LINES."""
+    print(f"=== Long files (>={MAX_FILE_LINES} lines) ===")
     long_files: list[tuple[Path, int]] = []
-    test_pattern = re.compile(r"tests?[/._]|_tests?\.|\.test\.|\.spec\.|correctness\.ts")
 
     seen: set[Path] = set()
-    for path in source_files(ALL_DIRS, ALL_EXTS):
+    scanned = source_files(ALL_DIRS, ALL_EXTS) + source_files(FIXTURE_DIRS, FIXTURE_EXTS)
+    for path in scanned:
         resolved = path.resolve()
         if resolved in seen:
             continue
         seen.add(resolved)
-        if test_pattern.search(str(path)):
-            continue
-        try:
-            line_count = sum(1 for _ in path.open(errors="replace"))
-        except OSError:
-            continue
-        if line_count > MAX_FILE_LINES:
+        with path.open(errors="replace") as handle:
+            line_count = sum(1 for _ in handle)
+        if line_count >= MAX_FILE_LINES:
             long_files.append((path, line_count))
 
     if long_files:

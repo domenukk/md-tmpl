@@ -511,7 +511,8 @@ impl<'a> Scope<'a> {
         }
     }
 
-    /// Push new constants onto the scope stack (used by includes).
+    /// Push new constants onto the scope stack (used by includes and scope tests).
+    #[cfg(any(test, feature = "std"))]
     pub(crate) fn push_consts(
         &mut self,
         consts: HashMap<String, Value>,
@@ -519,6 +520,16 @@ impl<'a> Scope<'a> {
     ) {
         self.consts_stack.push(Arc::new(consts));
         self.imported_consts_stack.push(Arc::new(imported_consts));
+    }
+
+    /// Push pre-wrapped `Arc` constant maps onto the scope stack without cloning the underlying maps.
+    pub(crate) fn push_consts_arc(
+        &mut self,
+        consts: &Arc<HashMap<String, Value>>,
+        imported_consts: &Arc<HashMap<String, Value>>,
+    ) {
+        self.consts_stack.push(Arc::clone(consts));
+        self.imported_consts_stack.push(Arc::clone(imported_consts));
     }
 
     /// Pop the most recently pushed constants.

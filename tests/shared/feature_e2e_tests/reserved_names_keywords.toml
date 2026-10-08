@@ -1,0 +1,376 @@
+# Shared feature_e2e_tests: Reserved names, language keywords, and collision guards.
+
+# -- Reserved-name rejection tests (SPEC §Naming Conventions & Collision Rules) --
+
+[[tests]]
+name = "reserved_param_name_None"
+description = "param named 'None' is rejected — pattern keyword"
+template = '''
+---
+params: [None = str]
+---
+{{ None }}'''
+expected_error = "reserved keyword used as name: 'None'"
+
+[[tests]]
+name = "reserved_param_name_Some"
+description = "param named 'Some' is rejected — pattern keyword"
+template = '''
+---
+params: [Some = str]
+---
+{{ Some }}'''
+expected_error = "reserved keyword used as name: 'Some'"
+
+[[tests]]
+name = "reserved_param_name_true"
+description = "param named 'true' is rejected — boolean literal"
+template = '''
+---
+params: [true = str]
+---
+{{ true }}'''
+expected_error = "reserved keyword used as name: 'true'"
+
+[[tests]]
+name = "reserved_param_name_false"
+description = "param named 'false' is rejected — boolean literal"
+template = '''
+---
+params: [false = str]
+---
+{{ false }}'''
+expected_error = "reserved keyword used as name: 'false'"
+
+[[tests]]
+name = "reserved_param_name_underscore"
+description = "param named '_' is rejected — wildcard pattern"
+template = '''
+---
+params: [_ = str]
+---
+{{ _ }}'''
+expected_error = "reserved keyword used as name: '_'"
+
+[[tests]]
+name = "reserved_param_name___kind__"
+description = "param named '__kind__' is rejected — internal enum tag key"
+template = '''
+---
+params: [__kind__ = str]
+---
+{{ __kind__ }}'''
+expected_error = "reserved keyword used as name: '__kind__'"
+
+[[tests]]
+name = "reserved_param_name___variants__"
+description = "param named '__variants__' is rejected — internal enum variants key"
+template = '''
+---
+params: [__variants__ = str]
+---
+{{ __variants__ }}'''
+expected_error = "reserved keyword used as name: '__variants__'"
+
+[[tests]]
+name = "reserved_const_name_None"
+description = "const named 'None' is rejected — pattern keyword"
+template = '''
+---
+consts: [None = str := "x"]
+---
+{{ None }}'''
+expected_error = "reserved keyword used as name: 'None'"
+
+[[tests]]
+name = "reserved_const_name_true"
+description = "const named 'true' is rejected — boolean literal"
+template = '''
+---
+consts: [true = str := "x"]
+---
+{{ true }}'''
+expected_error = "reserved keyword used as name: 'true'"
+
+[[tests]]
+name = "reserved_type_alias_list"
+description = "type alias named 'list' is rejected — built-in type name"
+template = '''
+---
+types:
+  - list = enum(A, B)
+
+params: [x = list]
+---
+> {% match x %}{% case A %}a{% case B %}b{% /match %}'''
+expected_error = "reserved keyword used as name: 'list'|shadows built-in type name: 'list'"
+
+[[tests]]
+name = "reserved_type_alias_enum"
+description = "type alias named 'enum' is rejected — built-in type name"
+template = '''
+---
+types:
+  - enum = enum(X, Y)
+
+params: [x = enum]
+---
+> {% match x %}{% case X %}x{% case Y %}y{% /match %}'''
+expected_error = "reserved keyword used as name: 'enum'|shadows built-in type name: 'enum'"
+
+[[tests]]
+name = "reserved_param_name_option"
+description = "param named 'option' is rejected — built-in type name"
+template = '''
+---
+params: [option = str]
+---
+{{ option }}'''
+expected_error = "reserved keyword used as name: 'option'"
+
+# ============================================================================
+# Language Keyword Compatibility
+# ============================================================================
+# Verifies that target-language keywords (e.g. Rust's `type`, `match`, `loop`,
+# or TypeScript's `class`, `delete`) work as param/field names at the runtime
+# level.  The md-tmpl engine treats these as plain identifiers; only the Rust
+# proc-macro codegen needs raw identifiers (`r#type`), handled transparently.
+
+[[tests]]
+name = "language_keyword_param_type"
+description = "Param named 'type' (Rust keyword) works at runtime"
+template = '''
+---
+params: [type = str]
+---
+{{ type }}'''
+expected_output = "widget"
+[tests.params]
+type = "widget"
+
+[[tests]]
+name = "language_keyword_param_match"
+description = "Param named 'match' (Rust keyword) works at runtime"
+template = '''
+---
+params: [match = int]
+---
+{{ match }}'''
+expected_output = "42"
+[tests.params]
+match = 42
+
+[[tests]]
+name = "language_keyword_param_class"
+description = "Param named 'class' (JS/TS keyword) works at runtime"
+template = '''
+---
+params: [class = str]
+---
+{{ class }}'''
+expected_output = "primary"
+[tests.params]
+class = "primary"
+
+[[tests]]
+name = "language_keyword_param_delete"
+description = "Param named 'delete' (JS keyword) works at runtime"
+template = '''
+---
+params: [delete = bool]
+---
+{{ delete }}'''
+expected_output = "true"
+[tests.params]
+delete = true
+
+[[tests]]
+name = "language_keyword_struct_field_type"
+description = "Struct field named 'type' works at runtime"
+template = '''
+---
+params: [item = struct(type = str, value = int)]
+---
+{{ item.type }}={{ item.value }}'''
+expected_output = "widget=42"
+[tests.params.item]
+type = "widget"
+value = 42
+
+[[tests]]
+name = "language_keyword_list_field_type"
+description = "List item field named 'type' works at runtime"
+template = '''
+---
+params: [items = list(type = str)]
+---
+> {% for x in items %}{{ x.type }} {% /for %}'''
+expected_output = "a b "
+[[tests.params.items]]
+type = "a"
+[[tests.params.items]]
+type = "b"
+
+[[tests]]
+name = "language_keyword_in_if_condition"
+description = "Keyword param used in if condition"
+template = '''
+---
+params: [loop = bool]
+---
+> {% if loop %}yes{% else %}no{% /if %}'''
+expected_output = "yes"
+[tests.params]
+loop = true
+
+[[tests]]
+name = "language_keyword_multiple_params"
+description = "Multiple keyword params in one template"
+template = '''
+---
+params:
+  - type = str
+  - match = int
+  - loop = bool
+---
+{{ type }}: {{ match }}
+> {% if loop %}(looping){% /if %}'''
+expected_output = "widget: 42\n(looping)"
+[tests.params]
+type = "widget"
+match = 42
+loop = true
+
+# ============================================================================
+# Un-escapable Keywords — Allowed as Names (renamed in Rust codegen)
+# ============================================================================
+# self, Self, super, crate are valid at the md-tmpl level.  Rust codegen
+# renames them to __self, __Self, __super, __crate internally.
+
+[[tests]]
+name = "unescapable_keyword_self_allowed"
+description = "param named 'self' works at runtime"
+template = '''
+---
+params: [self = str]
+---
+{{ self }}'''
+expected_output = "me"
+[tests.params]
+self = "me"
+
+[[tests]]
+name = "unescapable_keyword_Self_allowed"
+description = "param named 'Self' works at runtime"
+template = '''
+---
+params: [Self = str]
+---
+{{ Self }}'''
+expected_output = "typ"
+[tests.params]
+Self = "typ"
+
+[[tests]]
+name = "unescapable_keyword_super_allowed"
+description = "param named 'super' works at runtime"
+template = '''
+---
+params: [super = str]
+---
+{{ super }}'''
+expected_output = "parent"
+[tests.params]
+super = "parent"
+
+[[tests]]
+name = "unescapable_keyword_crate_allowed"
+description = "param named 'crate' works at runtime"
+template = '''
+---
+params: [crate = str]
+---
+{{ crate }}'''
+expected_output = "mylib"
+[tests.params]
+crate = "mylib"
+
+[[tests]]
+name = "unescapable_keyword_self_in_struct_field"
+description = "struct field named 'self' works at runtime"
+template = '''
+---
+params: [item = struct(self = str)]
+---
+{{ item.self }}'''
+expected_output = "me"
+[tests.params.item]
+self = "me"
+
+[[tests]]
+name = "unescapable_keyword_self_as_const"
+description = "const named 'self' works at runtime"
+template = '''
+---
+consts: [self = str := "x"]
+
+params: []
+---
+{{ self }}'''
+expected_output = "x"
+params = {}
+
+# ============================================================================
+# Collision Guard Rejection (__self, __Self, __super, __crate)
+# ============================================================================
+# These mangled names are reserved to prevent collisions with Rust codegen.
+
+[[tests]]
+name = "collision_guard_dunder_self"
+description = "param named '__self' is rejected — codegen collision guard"
+template = '''
+---
+params: [__self = str]
+---
+{{ __self }}'''
+expected_error = "reserved keyword used as name: '__self'"
+
+[[tests]]
+name = "collision_guard_dunder_Self"
+description = "param named '__Self' is rejected — codegen collision guard"
+template = '''
+---
+params: [__Self = str]
+---
+{{ __Self }}'''
+expected_error = "reserved keyword used as name: '__Self'"
+
+[[tests]]
+name = "collision_guard_dunder_super"
+description = "param named '__super' is rejected — codegen collision guard"
+template = '''
+---
+params: [__super = str]
+---
+{{ __super }}'''
+expected_error = "reserved keyword used as name: '__super'"
+
+[[tests]]
+name = "collision_guard_dunder_crate"
+description = "param named '__crate' is rejected — codegen collision guard"
+template = '''
+---
+params: [__crate = str]
+---
+{{ __crate }}'''
+expected_error = "reserved keyword used as name: '__crate'"
+
+[[tests]]
+name = "collision_guard_dunder_self_nested_struct"
+description = "struct field named '__self' is rejected — nested codegen collision guard"
+template = '''
+---
+params: [item = struct(__self = str)]
+---
+{{ item.__self }}'''
+expected_error = "reserved keyword used as name: '__self'"

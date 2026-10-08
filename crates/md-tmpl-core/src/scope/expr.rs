@@ -24,7 +24,19 @@ impl CompiledPath {
     /// Compile a raw path string into a `CompiledPath`.
     #[must_use]
     pub fn compile(raw: &str) -> Self {
-        let raw: Cow<'static, str> = Cow::Owned(raw.to_string());
+        let trimmed = raw.trim();
+        let stripped = if let Some(s) = trimmed.strip_prefix(crate::consts::PREFIX_CONSTS_DOT) {
+            s.trim()
+        } else if let Some(s) = trimmed.strip_prefix(crate::consts::PREFIX_OPTS_DOT) {
+            s.trim()
+        } else if let Some(s) = trimmed.strip_prefix(crate::consts::PREFIX_OPTIONS_DOT) {
+            s.trim()
+        } else if let Some(s) = trimmed.strip_prefix(crate::consts::PREFIX_PARAMS_DOT) {
+            s.trim()
+        } else {
+            trimmed
+        };
+        let raw: Cow<'static, str> = Cow::Owned(stripped.to_string());
         let parts: Arc<[String]> = raw
             .split(crate::consts::PATH_SEP)
             .map(|s| s.trim().to_string())

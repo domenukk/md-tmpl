@@ -1,0 +1,371 @@
+# Shared feature_e2e_tests: F8 filters and F12 whitespace control.
+
+# ============================================================================
+# F8: Filters — upper, lower, trim, fixed, join, limit
+# ============================================================================
+
+[[tests]]
+name = "filter_upper"
+description = "upper filter converts string to uppercase"
+template = '''
+---
+params:
+  - name = str
+---
+{{ name | upper }}'''
+expected_output = "HELLO WORLD"
+[tests.params]
+name = "hello world"
+
+[[tests]]
+name = "filter_lower"
+description = "lower filter converts string to lowercase"
+template = '''
+---
+params:
+  - name = str
+---
+{{ name | lower }}'''
+expected_output = "hello world"
+[tests.params]
+name = "HELLO WORLD"
+
+[[tests]]
+name = "filter_trim"
+description = "trim filter strips leading/trailing whitespace"
+template = '''
+---
+params:
+  - text = str
+---
+[{{ text | trim }}]'''
+expected_output = "[hello]"
+[tests.params]
+text = "  hello  "
+
+[[tests]]
+name = "filter_chain_trim_upper"
+description = "chained trim | upper filters"
+template = '''
+---
+params:
+  - text = str
+---
+{{ text | trim | upper }}'''
+expected_output = "HELLO"
+[tests.params]
+text = "  hello  "
+
+[[tests]]
+name = "filter_chain_trim_lower"
+description = "chained trim | lower filters"
+template = '''
+---
+params:
+  - text = str
+---
+{{ text | trim | lower }}'''
+expected_output = "hello"
+[tests.params]
+text = "  HELLO  "
+
+[[tests]]
+name = "filter_fixed_two_decimals"
+description = "fixed(2) formats float with 2 decimal places"
+template = '''
+---
+params:
+  - score = float
+---
+{{ score | fixed(2) }}'''
+expected_output = "3.14"
+[tests.params]
+score = 3.14159
+
+[[tests]]
+name = "filter_fixed_zero_decimals"
+description = "fixed(0) formats float with no decimal places"
+template = '''
+---
+params:
+  - score = float
+---
+{{ score | fixed(0) }}'''
+expected_output = "3"
+[tests.params]
+score = 3.14159
+
+[[tests]]
+name = "filter_join_basic"
+description = "join filter concatenates list items with separator"
+template = '''
+---
+params:
+  - items = list(str)
+---
+{{ items | join(", ") }}'''
+expected_output = "a, b, c"
+[tests.params]
+items = ["a", "b", "c"]
+
+[[tests]]
+name = "filter_join_empty_list"
+description = "join on empty list produces empty string"
+template = '''
+---
+params:
+  - items = list(str)
+---
+[{{ items | join(", ") }}]'''
+expected_output = "[]"
+[tests.params]
+items = []
+
+[[tests]]
+name = "filter_join_single_element"
+description = "join on single-element list produces no separator"
+template = '''
+---
+params:
+  - items = list(str)
+---
+{{ items | join(", ") }}'''
+expected_output = "only"
+[tests.params]
+items = ["only"]
+
+[[tests]]
+name = "filter_join_int_list"
+description = "join on list(int) converts integers to strings and joins"
+template = '''
+---
+params:
+  - nums = list(int)
+---
+{{ nums | join("-") }}'''
+expected_output = "1-2-3"
+[tests.params]
+nums = [1, 2, 3]
+
+[[tests]]
+name = "filter_join_bool_list"
+description = "join on list(bool) converts booleans to strings and joins"
+template = '''
+---
+params:
+  - flags = list(bool)
+---
+{{ flags | join(", ") }}'''
+expected_output = "true, false, true"
+[tests.params]
+flags = [true, false, true]
+
+[[tests]]
+name = "filter_join_struct_list"
+description = "join on struct-typed list is rejected — structs are not displayable"
+template = '''
+---
+params:
+  - items = list(name = str, score = int)
+---
+{{ items | join(", ") }}'''
+expected_error = "struct"
+[tests.params]
+items = [{ name = "a", score = 1 }, { name = "b", score = 2 }]
+
+[[tests]]
+name = "filter_limit_basic"
+description = "limit(N) takes first N elements, combined with join"
+template = '''
+---
+params:
+  - items = list(str)
+---
+{{ items | limit(2) | join(", ") }}'''
+expected_output = "a, b"
+[tests.params]
+items = ["a", "b", "c", "d"]
+
+[[tests]]
+name = "filter_limit_beyond_length"
+description = "limit(N) with N > list length returns full list"
+template = '''
+---
+params:
+  - items = list(str)
+---
+{{ items | limit(10) | join(", ") }}'''
+expected_output = "a, b"
+[tests.params]
+items = ["a", "b"]
+
+[[tests]]
+name = "filter_limit_zero"
+description = "limit(0) returns empty list"
+template = '''
+---
+params:
+  - items = list(str)
+---
+[{{ items | limit(0) | join(", ") }}]'''
+expected_output = "[]"
+[tests.params]
+items = ["a", "b", "c"]
+
+[[tests]]
+name = "filter_add_int"
+description = "add(N) adds integer N to integer value"
+template = '''
+---
+params:
+  - n = int
+---
+{{ n | add(3) }}'''
+expected_output = "8"
+[tests.params]
+n = 5
+
+[[tests]]
+name = "filter_add_negative"
+description = "add(N) with negative N subtracts from value"
+template = '''
+---
+params:
+  - n = int
+---
+{{ n | add(-2) }}'''
+expected_output = "8"
+[tests.params]
+n = 10
+
+[[tests]]
+name = "filter_add_float"
+description = "add(float) on int promotes result to float"
+template = '''
+---
+params:
+  - n = int
+---
+{{ n | add(0.5) }}'''
+expected_output = "3.5"
+[tests.params]
+n = 3
+
+[[tests]]
+name = "filter_sub_int"
+description = "sub(N) subtracts integer N from integer value"
+template = '''
+---
+params:
+  - n = int
+---
+{{ n | sub(3) }}'''
+expected_output = "7"
+[tests.params]
+n = 10
+
+[[tests]]
+name = "filter_sub_float"
+description = "sub(float) on float value produces float result"
+template = '''
+---
+params:
+  - n = float
+---
+{{ n | sub(1.5) }}'''
+expected_output = "3.5"
+[tests.params]
+n = 5.0
+
+[[tests]]
+name = "filter_add_on_non_number_rejected"
+description = "add filter on a string value is rejected as a type error"
+template = '''
+---
+params:
+  - name = str
+---
+{{ name | add(1) }}'''
+expected_error = "number"
+[tests.params]
+name = "hi"
+
+[[tests]]
+name = "filter_unknown_rejected"
+description = "unknown filter is rejected at compile time"
+template = '''
+---
+params:
+  - name = str
+---
+{{ name | nonexistent }}'''
+expected_error = "unknown filter"
+[tests.params]
+name = "test"
+
+# ============================================================================
+# F12: Whitespace Control — {{- -}}, {%- -%}, {#- -#}
+# ============================================================================
+
+[[tests]]
+name = "whitespace_strip_before_expr"
+description = "{{- strips whitespace before the expression tag"
+template = '''
+---
+params:
+  - name = str
+---
+hello  {{- name }}'''
+expected_output = "helloworld"
+[tests.params]
+name = "world"
+
+[[tests]]
+name = "whitespace_strip_after_expr"
+description = "-}} strips whitespace after the expression tag"
+template = '''
+---
+params:
+  - name = str
+---
+{{ name -}}  bye'''
+expected_output = "hellobye"
+[tests.params]
+name = "hello"
+
+[[tests]]
+name = "whitespace_strip_both_expr"
+description = "{{- -}} strips whitespace on both sides of expression"
+template = '''
+---
+params:
+  - name = str
+---
+hello  {{- name -}}  bye'''
+expected_output = "helloworldbye"
+[tests.params]
+name = "world"
+
+[[tests]]
+name = "whitespace_strip_statement_tag"
+description = "{%- strips whitespace before statement tag, -%} strips after"
+template = '''
+---
+params: []
+---
+> {%- if true %}yes{%- /if %}'''
+expected_output = "yes"
+params = {}
+
+[[tests]]
+name = "whitespace_no_strip_without_dash"
+description = "Without dash modifiers, whitespace around tags is preserved"
+template = '''
+---
+params:
+  - name = str
+---
+hello {{ name }} bye'''
+expected_output = "hello world bye"
+[tests.params]
+name = "world"

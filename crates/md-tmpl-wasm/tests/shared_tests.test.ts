@@ -57,15 +57,43 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const FIXTURES_DIR = path.resolve(__dirname, "../../../tests/shared");
 
-const INLINE_TMPL_FIXTURES = path.join(FIXTURES_DIR, "inline_tmpl_tests.toml");
+const INLINE_TMPL_SUITE = "inline_tmpl_tests.toml";
+const INLINE_CONTROL_SUITE = "inline_control_tests";
+const TMPL_PARAM_SUITE = "tmpl_param_tests.toml";
+const FEATURE_E2E_SUITE = "feature_e2e_tests";
+const ENV_SUITE = "env_tests.toml";
 
-const INLINE_CONTROL_FIXTURES = path.join(
-  FIXTURES_DIR,
-  "inline_control_tests.toml",
-);
-const TMPL_PARAM_FIXTURES = path.join(FIXTURES_DIR, "tmpl_param_tests.toml");
-const FEATURE_E2E_FIXTURES = path.join(FIXTURES_DIR, "feature_e2e_tests.toml");
-const ENV_FIXTURES = path.join(FIXTURES_DIR, "env_tests.toml");
+/** File suffix of shared fixture files. */
+const FIXTURE_SUFFIX = ".toml";
+
+/**
+ * Resolve a shared suite (relative to `FIXTURES_DIR`) to its fixture files.
+ * A `.toml` entry is a single file; any other entry is a directory of
+ * per-topic fixture files, discovered in sorted order. Throws if empty.
+ */
+function suiteFiles(suite: string): string[] {
+  const suitePath = path.join(FIXTURES_DIR, suite);
+  if (suite.endsWith(FIXTURE_SUFFIX)) return [suitePath];
+  const files = fs
+    .readdirSync(suitePath)
+    .filter((name) => name.endsWith(FIXTURE_SUFFIX))
+    .sort()
+    .map((name) => path.join(suitePath, name));
+  if (files.length === 0) {
+    throw new Error(`shared suite directory has no fixtures: ${suitePath}`);
+  }
+  return files;
+}
+
+/** Load and concatenate the `tests` arrays of every fixture in a suite. */
+function loadSuiteCases<T>(suite: string): T[] {
+  return suiteFiles(suite).flatMap((file) => {
+    const { tests } = TOML.parse(fs.readFileSync(file, "utf-8")) as unknown as {
+      tests: T[];
+    };
+    return tests;
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -131,10 +159,7 @@ function matchesError(err: unknown, expected: string): boolean {
 // ---------------------------------------------------------------------------
 
 describe("WASM Shared: Inline template tests", () => {
-  const raw = fs.readFileSync(INLINE_TMPL_FIXTURES, "utf-8");
-  const { tests } = TOML.parse(raw) as unknown as {
-    tests: InlineTmplTestCase[];
-  };
+  const tests = loadSuiteCases<InlineTmplTestCase>(INLINE_TMPL_SUITE);
 
   for (const tc of tests) {
     it(tc.name, () => {
@@ -176,10 +201,7 @@ describe("WASM Shared: Inline template tests", () => {
 // ---------------------------------------------------------------------------
 
 describe("WASM Shared: Inline control flow tests", () => {
-  const raw = fs.readFileSync(INLINE_CONTROL_FIXTURES, "utf-8");
-  const { tests } = TOML.parse(raw) as unknown as {
-    tests: InlineTmplTestCase[];
-  };
+  const tests = loadSuiteCases<InlineTmplTestCase>(INLINE_CONTROL_SUITE);
 
   for (const tc of tests) {
     it(tc.name, () => {
@@ -212,10 +234,7 @@ describe("WASM Shared: Inline control flow tests", () => {
 // ---------------------------------------------------------------------------
 
 describe("WASM Shared: tmpl() parameter tests", () => {
-  const raw = fs.readFileSync(TMPL_PARAM_FIXTURES, "utf-8");
-  const { tests } = TOML.parse(raw) as unknown as {
-    tests: InlineTmplTestCase[];
-  };
+  const tests = loadSuiteCases<InlineTmplTestCase>(TMPL_PARAM_SUITE);
 
   for (const tc of tests) {
     it(tc.name, () => {
@@ -248,10 +267,7 @@ describe("WASM Shared: tmpl() parameter tests", () => {
 // ---------------------------------------------------------------------------
 
 describe("WASM Shared: Feature E2E tests", () => {
-  const raw = fs.readFileSync(FEATURE_E2E_FIXTURES, "utf-8");
-  const { tests } = TOML.parse(raw) as unknown as {
-    tests: InlineTmplTestCase[];
-  };
+  const tests = loadSuiteCases<InlineTmplTestCase>(FEATURE_E2E_SUITE);
 
   for (const tc of tests) {
     it(tc.name, () => {
@@ -284,10 +300,7 @@ describe("WASM Shared: Feature E2E tests", () => {
 // ---------------------------------------------------------------------------
 
 describe("WASM Shared: Env tests", () => {
-  const raw = fs.readFileSync(ENV_FIXTURES, "utf-8");
-  const { tests } = TOML.parse(raw) as unknown as {
-    tests: EnvTestCase[];
-  };
+  const tests = loadSuiteCases<EnvTestCase>(ENV_SUITE);
 
   for (const tc of tests) {
     it(tc.name, () => {

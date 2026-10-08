@@ -3,6 +3,7 @@
 
 mod codegen;
 mod compile;
+mod const_refs;
 mod native_codegen;
 mod struct_gen;
 mod type_gen;
@@ -462,23 +463,36 @@ fn emit_template_module(
     let crate_path = crate_path.map_or_else(|| quote! { ::md_tmpl }, |p| quote! { #p });
 
     with_crate_path(crate_path.clone(), || {
+        let mut referenced_keys = codegen::collect_referenced_const_keys(&segments);
+        for inline_tmpl in inline_templates.values() {
+            codegen::collect_keys_from_segments(&inline_tmpl.segments, &mut referenced_keys);
+        }
         let segments_tokens = segments.iter().map(codegen_segment);
         let decls_tokens = fm.declarations.iter().map(codegen_var_decl);
         let inline_templates_tokens = inline_templates.iter().map(|(k, v)| {
             let v_tokens = codegen_compiled_inline_template(v);
             quote! { (#k, #v_tokens) }
         });
-        let consts_tokens = fm.consts.iter().chain(fm.env.iter()).filter_map(|d| {
-            d.default_value.as_ref().map(|v| {
-                let name = &d.name;
+        let consts_tokens = fm
+            .consts
+            .iter()
+            .chain(fm.env.iter())
+            .filter(|d| referenced_keys.contains(d.name.as_str()))
+            .filter_map(|d| {
+                d.default_value.as_ref().map(|v| {
+                    let name = &d.name;
+                    let val_tokens = codegen_value(v);
+                    quote! { (#name, #val_tokens) }
+                })
+            });
+        let imported_consts_tokens = fm
+            .imported_consts
+            .iter()
+            .filter(|(k, _)| referenced_keys.contains(k.as_str()))
+            .map(|(k, v)| {
                 let val_tokens = codegen_value(v);
-                quote! { (#name, #val_tokens) }
-            })
-        });
-        let imported_consts_tokens = fm.imported_consts.iter().map(|(k, v)| {
-            let val_tokens = codegen_value(v);
-            quote! { (#k, #val_tokens) }
-        });
+                quote! { (#k, #val_tokens) }
+            });
 
         let struct_name = struct_name.unwrap_or_else(|| format_ident!("Params"));
         let source = StructGenSource::Module { doc_path };
@@ -501,6 +515,8 @@ fn emit_template_module(
                 #primary_include
                 #(const _: &str = include_str!(#dep_paths_str);)*
 
+                #[cold]
+                #[inline(never)]
                 fn __init_template() -> #crate_path::Template {
                     #crate_path::Template::from_precompiled(&#crate_path::PrecompiledTemplateData {
                         segments: &[#(#segments_tokens),*],

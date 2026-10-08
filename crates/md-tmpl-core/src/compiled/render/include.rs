@@ -102,10 +102,7 @@ fn render_include_no_std_inner(
 
     // 0. Pre-compiled inline AST.
     if let Some(compiled) = &inc.inline_compiled {
-        scope.push_consts(
-            (*compiled.consts).clone(),
-            (*compiled.imported_consts).clone(),
-        );
+        scope.push_consts_arc(&compiled.consts, &compiled.imported_consts);
         let result = validate_and_render_no_std(
             &compiled.segments,
             &compiled.declarations,
@@ -119,10 +116,7 @@ fn render_include_no_std_inner(
 
     // 1. Inline templates from the current scope.
     if let Some(compiled) = scope.get_inline_template(directive.path).cloned() {
-        scope.push_consts(
-            (*compiled.consts).clone(),
-            (*compiled.imported_consts).clone(),
-        );
+        scope.push_consts_arc(&compiled.consts, &compiled.imported_consts);
         let result = validate_and_render_no_std(
             &compiled.segments,
             &compiled.declarations,
@@ -143,7 +137,7 @@ fn render_include_no_std_inner(
     };
     let tmpl = tmpl.clone();
     scope.push_inline_templates(tmpl.inline_templates().clone());
-    scope.push_consts((*tmpl.consts()).clone(), (*tmpl.imported_consts()).clone());
+    scope.push_consts_arc(&tmpl.consts(), &tmpl.imported_consts());
 
     let result = validate_and_render_no_std(
         tmpl.segments(),

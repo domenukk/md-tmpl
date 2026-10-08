@@ -21,7 +21,6 @@ import {
 } from "../errors.js";
 import {
   type Frontmatter,
-  type VarDecl,
   type VarType,
   parseFrontmatter,
   varTypeToString,
@@ -66,6 +65,7 @@ import {
 } from "./resolve.js";
 import { resolveIncludeEntry } from "./includes.js";
 import {
+  type InlineTemplateEntry,
   collectInlineTemplateMap,
   collectInlineTemplateNames,
 } from "./inline_templates.js";
@@ -153,6 +153,7 @@ export class Template implements ITemplate, TmplRef {
   private readonly optionParams: ReadonlySet<string>;
   private readonly nonEnumParams: ReadonlySet<string>;
   private readonly nonOptionParams: ReadonlySet<string>;
+  private readonly inlineTemplates: Map<string, InlineTemplateEntry>;
   private _maxIncludeDepth = 16;
   /** Optional reference to the TemplateCache that loaded this template. */
   _cache?: TemplateCache;
@@ -256,6 +257,45 @@ export class Template implements ITemplate, TmplRef {
     // constant dict mapping variant names → values, enabling expressions
     // like `{{ Stage.Design }}`.  User-defined constants are never overwritten.
     injectEnumTypeConstants(fm.typeAliases, consts, constsJs);
+    this.inlineTemplates = collectInlineTemplateMap(
+      nodes,
+      fm.typeAliases,
+      fm.typeAliasSanitize,
+      fm.sanitizeNotice,
+    );
+  }
+
+  private finalizeCompile(
+    body: string,
+    allowUnused = false,
+    checkCollisions = true,
+  ): this {
+    this.checkUndeclaredVariables(body);
+    if (!this.fm.allowUnused && !allowUnused) {
+      this.checkUnusedParams(body);
+    }
+    this.checkBareEnumAccess();
+    this.checkMatchTypeSafety();
+    if (checkCollisions) {
+      validateBodyCollisions(
+        this.fm,
+        collectInlineTemplateNames(this.nodes),
+        collectForBindings(this.nodes),
+      );
+    }
+    validateDisplayability(
+      this.nodes,
+      this.fm.params,
+      this.fm.consts,
+      this.fm.typeAliases,
+      this.fm.importedNamespaceTypes,
+    );
+    applySanitizeAstPass(
+      this.nodes,
+      this.fm.paramSanitize,
+      this.fm.sanitizeNotice,
+    );
+    return this;
   }
 
   // ── Static constructors ──────────────────────────────────────────────
@@ -274,27 +314,7 @@ export class Template implements ITemplate, TmplRef {
     validateFrontmatter(fm);
     const nodes = parseBody(body, false, fm.bodyStartLine ?? 1);
     walkNodesForConditionSyntax(nodes);
-    const tmpl = new Template(fm, body, nodes, source);
-    tmpl.checkUndeclaredVariables(body);
-    if (!fm.allowUnused) {
-      tmpl.checkUnusedParams(body);
-    }
-    tmpl.checkBareEnumAccess();
-    tmpl.checkMatchTypeSafety();
-    validateBodyCollisions(
-      fm,
-      collectInlineTemplateNames(nodes),
-      collectForBindings(nodes),
-    );
-    validateDisplayability(
-      nodes,
-      fm.params,
-      fm.consts,
-      fm.typeAliases,
-      fm.importedNamespaceTypes,
-    );
-    applySanitizeAstPass(nodes, fm.paramSanitize, fm.sanitizeNotice);
-    return tmpl;
+    return new Template(fm, body, nodes, source).finalizeCompile(body);
   }
 
   /**
@@ -323,38 +343,14 @@ export class Template implements ITemplate, TmplRef {
     }
     const nodes = parseBody(body, false, resolvedFm.bodyStartLine ?? 1);
     walkNodesForConditionSyntax(nodes);
-    const tmpl = new Template(
+    return new Template(
       resolvedFm,
       body,
       nodes,
       source,
       baseDir,
       envValues,
-    );
-    tmpl.checkUndeclaredVariables(body);
-    if (!resolvedFm.allowUnused && !options.allowUnused) {
-      tmpl.checkUnusedParams(body);
-    }
-    tmpl.checkBareEnumAccess();
-    tmpl.checkMatchTypeSafety();
-    validateBodyCollisions(
-      resolvedFm,
-      collectInlineTemplateNames(nodes),
-      collectForBindings(nodes),
-    );
-    validateDisplayability(
-      nodes,
-      resolvedFm.params,
-      resolvedFm.consts,
-      resolvedFm.typeAliases,
-      resolvedFm.importedNamespaceTypes,
-    );
-    applySanitizeAstPass(
-      nodes,
-      resolvedFm.paramSanitize,
-      resolvedFm.sanitizeNotice,
-    );
-    return tmpl;
+    ).finalizeCompile(body, options.allowUnused ?? false);
   }
 
   /**
@@ -385,19 +381,11 @@ export class Template implements ITemplate, TmplRef {
     const [fm, body] = parseFrontmatter(source);
     const nodes = parseBody(body, false, fm.bodyStartLine ?? 1);
     walkNodesForConditionSyntax(nodes);
-    const tmpl = new Template(fm, body, nodes, source);
-    tmpl.checkUndeclaredVariables(body);
-    tmpl.checkBareEnumAccess();
-    tmpl.checkMatchTypeSafety();
-    validateDisplayability(
-      nodes,
-      fm.params,
-      fm.consts,
-      fm.typeAliases,
-      fm.importedNamespaceTypes,
+    return new Template(fm, body, nodes, source).finalizeCompile(
+      body,
+      true,
+      false,
     );
-    applySanitizeAstPass(nodes, fm.paramSanitize, fm.sanitizeNotice);
-    return tmpl;
   }
 
   /**
@@ -409,31 +397,13 @@ export class Template implements ITemplate, TmplRef {
     const resolvedFm = resolveImportedConsts(fm, baseDir);
     const nodes = parseBody(body, false, resolvedFm.bodyStartLine ?? 1);
     walkNodesForConditionSyntax(nodes);
-    const tmpl = new Template(resolvedFm, body, nodes, source, baseDir);
-    tmpl.checkUndeclaredVariables(body);
-    if (!resolvedFm.allowUnused) {
-      tmpl.checkUnusedParams(body);
-    }
-    tmpl.checkBareEnumAccess();
-    tmpl.checkMatchTypeSafety();
-    validateBodyCollisions(
+    return new Template(
       resolvedFm,
-      collectInlineTemplateNames(nodes),
-      collectForBindings(nodes),
-    );
-    validateDisplayability(
+      body,
       nodes,
-      resolvedFm.params,
-      resolvedFm.consts,
-      resolvedFm.typeAliases,
-      resolvedFm.importedNamespaceTypes,
-    );
-    applySanitizeAstPass(
-      nodes,
-      resolvedFm.paramSanitize,
-      resolvedFm.sanitizeNotice,
-    );
-    return tmpl;
+      source,
+      baseDir,
+    ).finalizeCompile(body);
   }
 
   /**
@@ -476,38 +446,14 @@ export class Template implements ITemplate, TmplRef {
     const resolvedFm = resolveImportedConsts(envResolved, baseDir);
     const nodes = parseBody(body, false, resolvedFm.bodyStartLine ?? 1);
     walkNodesForConditionSyntax(nodes);
-    const tmpl = new Template(
+    return new Template(
       resolvedFm,
       body,
       nodes,
       source,
       baseDir,
       envValues,
-    );
-    tmpl.checkUndeclaredVariables(body);
-    if (!resolvedFm.allowUnused) {
-      tmpl.checkUnusedParams(body);
-    }
-    tmpl.checkBareEnumAccess();
-    tmpl.checkMatchTypeSafety();
-    validateBodyCollisions(
-      resolvedFm,
-      collectInlineTemplateNames(nodes),
-      collectForBindings(nodes),
-    );
-    validateDisplayability(
-      nodes,
-      resolvedFm.params,
-      resolvedFm.consts,
-      resolvedFm.typeAliases,
-      resolvedFm.importedNamespaceTypes,
-    );
-    applySanitizeAstPass(
-      nodes,
-      resolvedFm.paramSanitize,
-      resolvedFm.sanitizeNotice,
-    );
-    return tmpl;
+    ).finalizeCompile(body);
   }
 
   // ── Rendering ────────────────────────────────────────────────────────
@@ -699,10 +645,9 @@ params:
     const opts: RenderOptions = {
       maxIncludeDepth: maxDepth,
     };
-    // Set up inline templates from this template's body
-    const inlineTmpls = collectInlineTemplateMap(this.nodes);
-    if (inlineTmpls.size > 0) {
-      opts.inlineTemplates = inlineTmpls;
+    // Set up pre-compiled inline templates from this template's body
+    if (this.inlineTemplates.size > 0) {
+      opts.inlineTemplates = this.inlineTemplates;
     }
     // Wire up file includes if we have a base path
     const effectiveBase = this._basePath ?? basePath;
@@ -898,10 +843,8 @@ params:
     if (this._basePath || this._cache) {
       options.templateLoader = this.makeTemplateLoader(this._basePath ?? "");
     }
-    // Collect inline template definitions ({% tmpl name %}...{% /tmpl %})
-    const inlineTmpls = collectInlineTemplateMap(this.nodes);
-    if (inlineTmpls.size > 0) {
-      options.inlineTemplates = inlineTmpls;
+    if (this.inlineTemplates.size > 0) {
+      options.inlineTemplates = this.inlineTemplates;
     }
 
     return renderNodes(this.nodes, scope, options);
@@ -910,20 +853,16 @@ params:
   private makeTemplateLoader(
     defaultBase: string,
   ): RenderOptions["templateLoader"] {
-    return (
-      includePath: string,
-      basePath?: string,
-    ):
-      | [
-          readonly Node[],
-          ReadonlyMap<string, Value>,
-          readonly VarDecl[],
-          string?,
-        ]
-      | undefined => {
+    return (includePath: string, basePath?: string) => {
       const cached = this.resolveInclude(includePath, basePath ?? defaultBase);
       if (!cached) return undefined;
-      return [cached.nodes, cached.consts, cached.declarations, cached.baseDir];
+      return [
+        cached.nodes,
+        cached.consts,
+        cached.declarations,
+        cached.baseDir,
+        cached.inlineTemplates,
+      ];
     };
   }
 
@@ -1017,70 +956,25 @@ params:
   }
 
   private getDirectOptions(): DirectRenderOptions {
-    const inlineTemplates = new Map<
-      string,
-      {
-        declarations: readonly VarDecl[];
-        nodes: readonly Node[];
-        consts: Map<string, unknown>;
-      }
-    >();
-    for (const n of this.nodes) {
-      if (n.kind === "tmpl") {
-        if (n.source.trimStart().startsWith("---")) {
-          const [inlineFm, inlineBody] = parseFrontmatter(n.source);
-          const inlineConsts = new Map<string, unknown>();
-          for (const decl of inlineFm.consts) {
-            if (decl.defaultValue !== undefined) {
-              inlineConsts.set(decl.name, valueToJs(decl.defaultValue));
-            }
-          }
-          const inlineNodes = parseBody(inlineBody, true);
-          applySanitizeAstPass(
-            inlineNodes,
-            inlineFm.paramSanitize,
-            inlineFm.sanitizeNotice,
-          );
-          inlineTemplates.set(n.name, {
-            declarations: inlineFm.params,
-            nodes: inlineNodes,
-            consts: inlineConsts,
-          });
-        } else {
-          const rawNodes = parseBody(n.source, true);
-          applySanitizeAstPass(rawNodes, undefined, undefined);
-          inlineTemplates.set(n.name, {
-            declarations: [],
-            nodes: rawNodes,
-            consts: new Map(),
-          });
-        }
-      }
-    }
-
     const defaultBase = this._basePath ?? "";
-    const templateLoader = (
+    const templateLoader: DirectRenderOptions["templateLoader"] = (
       includePath: string,
       basePath?: string,
-    ):
-      | [
-          readonly Node[],
-          ReadonlyMap<string, unknown>,
-          readonly VarDecl[],
-          string?,
-        ]
-      | undefined => {
+    ) => {
       const cached = this.resolveInclude(includePath, basePath ?? defaultBase);
       if (!cached) return undefined;
-      const constsJs = new Map<string, unknown>();
-      for (const [k, v] of cached.consts) {
-        constsJs.set(k, valueToJs(v));
-      }
-      return [cached.nodes, constsJs, cached.declarations, cached.baseDir];
+      return [
+        cached.nodes,
+        cached.constsJs,
+        cached.declarations,
+        cached.baseDir,
+        cached.inlineTemplates,
+      ];
     };
 
     return {
-      inlineTemplates: inlineTemplates.size > 0 ? inlineTemplates : undefined,
+      inlineTemplates:
+        this.inlineTemplates.size > 0 ? this.inlineTemplates : undefined,
       templateLoader:
         this._basePath || this._cache ? templateLoader : undefined,
       maxIncludeDepth: this._maxIncludeDepth,

@@ -88,9 +88,14 @@ export const FM_ALLOW_UNUSED_PREFIX = "allow_unused:";
 export const FM_SANITIZE_NOTICE_PREFIX = "sanitize_notice:";
 export const FM_DELIMITER = "---";
 export const FILTER_SANITIZE = "sanitize";
+export const FILTER_SANITIZE_TOKENS = "sanitize_tokens";
+export const FILTER_QUARANTINE = "quarantine";
 export const FILTER_TRUNCATE = "truncate";
 export const FILTER_TOJSON = "tojson";
 export const FILTER_TO_JSON = "to_json";
+export const SANITIZE_KIND_INLINE = "inline";
+export const SANITIZE_KIND_BLOCK = "block";
+export const PIPE_SPACED = " | ";
 export const LOOP = "loop";
 export const TYPE_UNTRUSTED = "untrusted";
 export const DEFAULT_QUARANTINE_TAG = "untrusted_content";
@@ -193,6 +198,9 @@ export const PREFIX_CONSTS_DOT = "consts.";
 export const PREFIX_OPTS_DOT = "opts.";
 export const PREFIX_OPTIONS_DOT = "options.";
 export const PREFIX_PARAMS_DOT = "params.";
+export const ERR_TMPL_REQUIRES_NAME = "{% tmpl %} requires a name";
+export const ERR_DUPLICATE_INLINE_TMPL_PREFIX =
+  "duplicate inline template name: ";
 
 /**
  * Unescape the inner content of a string literal (surrounding quotes already

@@ -1,0 +1,230 @@
+# Shared feature_e2e_tests: F7: option types (None/Some convention).
+
+# ============================================================================
+# F7: Option Types — None/Some Convention
+#
+# TOML has no null. The shared test runners use this convention:
+#   - String "None"    → Value::None (null)
+#   - String "Some(x)" → Value::Str(x)  (escapes the literal string "None")
+#   - Omitted key      → parameter not provided (uses default if declared)
+#   - Any other value   → normal (transparent Some for option types)
+# ============================================================================
+
+# -- Option + For loop interaction --
+
+[[tests]]
+name = "option_for_match_some_none"
+description = "Iterating list(option(str)) and matching Some/None inside the loop"
+template = '''
+---
+params:
+  - items = list(option(str))
+---
+> {% for item in items %}{% match item %}{% case Some %}{{ item }}{% case None %}[empty]{% /match %} {% /for %}'''
+expected_output = "hello [empty] world "
+[tests.params]
+items = ["hello", "None", "world"]
+
+[[tests]]
+name = "option_for_has_check_str"
+description = "Iterating list(option(str)) and using has() to check presence"
+template = '''
+---
+params:
+  - items = list(option(str))
+---
+> {% for s in items %}{% if has(s) %}{{ s }}{% else %}N/A{% /if %},{% /for %}'''
+expected_output = "a,N/A,c,"
+[tests.params]
+items = ["a", "None", "c"]
+
+[[tests]]
+name = "option_for_has_check_int"
+description = "Iterating list(option(int)) and using has() to check presence"
+template = '''
+---
+params:
+  - scores = list(option(int))
+---
+> {% for s in scores %}{% if has(s) %}{{ s }}{% else %}N/A{% /if %},{% /for %}'''
+expected_output = "42,N/A,99,"
+[tests.params]
+scores = [42, "None", 99]
+
+[[tests]]
+name = "option_for_all_none"
+description = "Iterating list(option(str)) where all items are None"
+template = '''
+---
+params:
+  - items = list(option(str))
+---
+> {% for item in items %}{% if has(item) %}{{ item }}{% else %}X{% /if %}{% /for %}'''
+expected_output = "XXX"
+[tests.params]
+items = ["None", "None", "None"]
+
+# -- Option top-level params --
+
+[[tests]]
+name = "option_str_none_has"
+description = "option(str) set to None detected by has()"
+template = '''
+---
+params:
+  - label = option(str)
+---
+> {% if has(label) %}[{{ label }}]{% else %}[absent]{% /if %}'''
+expected_output = "[absent]"
+[tests.params]
+label = "None"
+
+[[tests]]
+name = "option_str_some_has"
+description = "option(str) with a value detected by has() and rendered"
+template = '''
+---
+params:
+  - label = option(str)
+---
+> {% if has(label) %}[{{ label }}]{% else %}[absent]{% /if %}'''
+expected_output = "[hello]"
+[tests.params]
+label = "hello"
+
+[[tests]]
+name = "option_str_some_none_escape"
+description = "Some(None) escapes the literal string 'None' for option(str)"
+template = '''
+---
+params:
+  - label = option(str)
+---
+> {% if has(label) %}[{{ label }}]{% else %}[absent]{% /if %}'''
+expected_output = "[None]"
+[tests.params]
+label = "Some(None)"
+
+[[tests]]
+name = "option_int_none_has"
+description = "has() returns false for option(int) set to None"
+template = '''
+---
+params:
+  - count = option(int)
+---
+> {% if has(count) %}{{ count }}{% else %}absent{% /if %}'''
+expected_output = "absent"
+[tests.params]
+count = "None"
+
+[[tests]]
+name = "option_int_some_has"
+description = "has() returns true for option(int) with a value"
+template = '''
+---
+params:
+  - count = option(int)
+---
+> {% if has(count) %}{{ count }}{% else %}absent{% /if %}'''
+expected_output = "42"
+[tests.params]
+count = 42
+
+[[tests]]
+name = "option_default_none_omitted"
+description = "option(str) := None uses default when param omitted"
+template = '''
+---
+params:
+  - label = option(str) := None
+---
+> {% if has(label) %}{{ label }}{% else %}default_none{% /if %}'''
+expected_output = "default_none"
+params = {}
+
+[[tests]]
+name = "option_default_none_explicit_none"
+description = "option(str) := None explicitly passed None stays None"
+template = '''
+---
+params:
+  - label = option(str) := None
+---
+> {% if has(label) %}{{ label }}{% else %}still_none{% /if %}'''
+expected_output = "still_none"
+[tests.params]
+label = "None"
+
+[[tests]]
+name = "option_default_none_explicit_value"
+description = "option(str) := None explicitly passed a value overrides to Some"
+template = '''
+---
+params:
+  - label = option(str) := None
+---
+> {% if has(label) %}{{ label }}{% else %}none{% /if %}'''
+expected_output = "override"
+[tests.params]
+label = "override"
+
+# -- Option match inside for --
+
+[[tests]]
+name = "option_for_match_with_idx"
+description = "option + for + idx() interaction: index tracks correctly across None elements"
+template = '''
+---
+params:
+  - items = list(option(str))
+---
+> {% for item in items %}{{ idx(item) }}:{% if has(item) %}{{ item }}{% else %}nil{% /if %} {% /for %}'''
+expected_output = "0:alpha 1:nil 2:gamma "
+[tests.params]
+items = ["alpha", "None", "gamma"]
+
+# -- Option in struct fields --
+
+[[tests]]
+name = "option_in_struct_field"
+description = "option(str) field inside a struct renders correctly when None"
+template = '''
+---
+params:
+  - user = struct(name = str, bio = option(str))
+---
+{{ user.name }}: {% if has(user.bio) %}{{ user.bio }}{% else %}no bio{% /if %}'''
+expected_output = "Alice: no bio"
+[tests.params.user]
+name = "Alice"
+bio = "None"
+
+[[tests]]
+name = "option_in_struct_field_some"
+description = "option(str) field inside a struct renders correctly when Some"
+template = '''
+---
+params:
+  - user = struct(name = str, bio = option(str))
+---
+{{ user.name }}: {% if has(user.bio) %}{{ user.bio }}{% else %}no bio{% /if %}'''
+expected_output = "Bob: Rust developer"
+[tests.params.user]
+name = "Bob"
+bio = "Rust developer"
+
+# -- Mixed list with Some(None) escape --
+
+[[tests]]
+name = "option_list_with_escape"
+description = "list(option(str)) with Some(None) escape renders literal 'None'"
+template = '''
+---
+params:
+  - tags = list(option(str))
+---
+> {% for t in tags %}{% if has(t) %}{{ t }}{% else %}[nil]{% /if %},{% /for %}'''
+expected_output = "hello,[nil],None,world,"
+[tests.params]
+tags = ["hello", "None", "Some(None)", "world"]

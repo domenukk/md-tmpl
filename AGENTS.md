@@ -12,7 +12,7 @@ This document defines the architectural, coding, specification, and testing stan
   - Any new syntax, type rule, built-in function, filter, whitespace rule, error diagnostic, or programmatic API primitive must be documented accurately in `SPEC.md` (and in the relevant language `README.md` files) in the same change.
   - Keep `SPEC.md` and `README.md` prose concise, technical, and reference-style — zero marketing buzzwords or filler.
 - **Every feature and edge case MUST be implemented and tested across all languages:**
-  1. **Shared Conformance Suite (`tests/conformance/*.toml`, `tests/shared/*.toml`):** Add positive and negative test cases so all engines and bindings validate identical inputs and outputs.
+  1. **Shared Conformance Suite (`tests/conformance/*.toml`, `tests/shared/*.toml` and `tests/shared/<suite>/<topic>.toml`):** Add positive and negative test cases so all engines and bindings validate identical inputs and outputs.
   2. **Rust (`crates/md-tmpl-core`, `crates/md-tmpl-macros`, `crates/md-tmpl`, `crates/md-tmpl-ffi`, `crates/md-tmpl-compile-tests`):** Runtime rendering, `no_std` + `alloc` compatibility, compile-time proc-macro (`include_template!`, `template!`) codegen, and C FFI (`pt_*`).
   3. **TypeScript (`crates/md-tmpl-typescript`):** Pure-TypeScript parser, validator, AST compiler, direct renderer, and type generator (`generateTypes`).
   4. **WebAssembly (`crates/md-tmpl-wasm`):** `wasm-bindgen` bindings and `ITemplate` parity with pure TypeScript.

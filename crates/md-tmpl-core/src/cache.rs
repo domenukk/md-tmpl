@@ -419,20 +419,34 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
         }
 
         // Cache miss — compile.
-        let (fm, body) = frontmatter::parse_frontmatter(&source)?;
+        let (fm, body) = if let Some(ref dir) = base_dir {
+            frontmatter::parse_frontmatter_with_base_dir(&source, dir, &[])?
+        } else {
+            frontmatter::parse_frontmatter(&source)?
+        };
         let body_str = body.to_string();
-        let (mut segments, inline_templates) = compiled::compile(&body_str, &fm.type_aliases)?;
+        let (mut segments, inline_templates) = compiled::compile_with_parent_scope(
+            &body_str,
+            &fm.type_aliases,
+            &fm.type_alias_sanitize,
+        )?;
         compiled::apply_frontmatter_sanitization(
             &mut segments,
             &fm.param_sanitize,
             fm.sanitize_notice.as_deref(),
         );
 
-        let consts: HashMap<String, crate::value::Value> = fm
+        let mut consts: HashMap<String, crate::value::Value> = fm
             .consts
             .iter()
             .filter_map(|d| d.default_value.clone().map(|v| (d.name.clone(), v)))
             .collect();
+        for d in &fm.env {
+            if let Some(ref v) = d.default_value {
+                consts.entry(d.name.clone()).or_insert_with(|| v.clone());
+            }
+        }
+        crate::template::analysis::inject_enum_type_constants(&fm.type_aliases, &mut consts);
         let consts = Arc::new(consts);
         let imported_consts = Arc::new(fm.imported_consts.clone());
 
@@ -540,7 +554,8 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
             env.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
         let (fm, body) =
             frontmatter::parse_frontmatter_with_base_dir(&source, &base_dir, &env_pairs)?;
-        let (mut segments, _inline_templates) = compiled::compile(body, &fm.type_aliases)?;
+        let (mut segments, _inline_templates) =
+            compiled::compile_with_parent_scope(body, &fm.type_aliases, &fm.type_alias_sanitize)?;
         compiled::apply_frontmatter_sanitization(
             &mut segments,
             &fm.param_sanitize,

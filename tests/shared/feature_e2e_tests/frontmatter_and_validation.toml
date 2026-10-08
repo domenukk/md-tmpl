@@ -1,0 +1,286 @@
+# Shared feature_e2e_tests: Frontmatter formatting, type aliases, naming collisions, built-ins, extra params.
+
+# ============================================================================
+# Frontmatter Formatting: Blank Line After Block List
+# ============================================================================
+# SPEC rule: A block list (imports:, types:, consts:, params:, env:) must be
+# followed by a blank line before the next section keyword. This ensures raw
+# markdown renderers don't merge the list with the following key.
+
+[[tests]]
+name = "fm_blank_line_imports_before_params_reject"
+description = "Missing blank line after imports: block list before params: is rejected"
+template = '''
+---
+imports:
+  - "[shared](./shared.tmpl.md)"
+params:
+  - x = int
+---
+body'''
+expected_error = "blank line is required after a block list"
+
+[[tests]]
+name = "fm_blank_line_consts_before_params_reject"
+description = "Missing blank line after consts: block list before params: is rejected"
+template = '''
+---
+consts:
+  - FOO = str := "bar"
+params:
+  - x = int
+---
+body'''
+expected_error = "blank line is required after a block list"
+
+[[tests]]
+name = "fm_blank_line_types_before_consts_reject"
+description = "Missing blank line after types: block list before consts: is rejected"
+template = '''
+---
+types:
+  - Severity = enum(Low, Medium, High)
+consts:
+  - FOO = str := "bar"
+---
+body'''
+expected_error = "blank line is required after a block list"
+
+[[tests]]
+name = "fm_blank_line_consts_before_allow_unused_reject"
+description = "Missing blank line after consts: block list before allow_unused: is rejected"
+template = '''
+---
+consts:
+  - FOO = str := "bar"
+allow_unused: true
+---
+body'''
+expected_error = "blank line is required after a block list"
+
+[[tests]]
+name = "fm_blank_line_env_before_params_reject"
+description = "Missing blank line after env: block list before params: is rejected"
+template = '''
+---
+env:
+  - DIR = str
+params:
+  - x = int
+---
+body'''
+expected_error = "blank line is required after a block list"
+
+[[tests]]
+name = "fm_blank_line_params_before_allow_unused_reject"
+description = "Missing blank line after params: block list before allow_unused: is rejected"
+template = '''
+---
+params:
+  - x = str
+allow_unused: true
+---
+{{ x }}'''
+expected_error = "blank line is required after a block list"
+
+[[tests]]
+name = "fm_blank_line_present_consts_before_params_accept"
+description = "Blank line after consts: block list before params: is accepted"
+template = '''
+---
+consts:
+  - FOO = str := "bar"
+
+params:
+  - x = str
+---
+{{ FOO }}: {{ x }}'''
+expected_output = "bar: hello"
+[tests.params]
+x = "hello"
+
+[[tests]]
+name = "fm_blank_line_inline_list_no_blank_line_ok"
+description = "Inline list format (params: [...]) followed by another key without blank line is accepted"
+template = '''
+---
+params: [x = str]
+---
+{{ x }}'''
+expected_output = "hi"
+[tests.params]
+x = "hi"
+
+# ============================================================================
+# Type Alias Tests
+# ============================================================================
+
+[[tests]]
+name = "type_alias_basic"
+description = "Basic type alias resolves and renders correctly"
+template = '''
+---
+types: [MyStr = str]
+params: [name = MyStr]
+---
+{{ name }}'''
+expected_output = "hello"
+[tests.params]
+name = "hello"
+
+[[tests]]
+name = "type_alias_enum"
+description = "Type alias for enum resolves and match works"
+template = '''
+---
+types: [Status = enum(Active, Paused)]
+params: [s = Status]
+---
+> {% match s %}{% case Active %}ACTIVE{% case Paused %}PAUSED{% /match %}'''
+expected_output = "ACTIVE"
+[tests.params]
+s = { __kind__ = "Active" }
+
+[[tests]]
+name = "type_alias_chained"
+description = "Chained type alias (Name = Base = str) resolves correctly"
+template = '''
+---
+types:
+  - Base = str
+  - Name = Base
+
+params: [n = Name]
+---
+{{ n }}'''
+expected_output = "test"
+[tests.params]
+n = "test"
+
+# NOTE: type_alias_unknown_rejected is skipped in shared tests because:
+# - Rust errors with "unknown type"
+# - TypeScript errors with "missing required parameter(s)"
+# The engines reject unknown types through different validation paths with
+# no common error substring.
+
+# ============================================================================
+# Naming Collision Tests
+# ============================================================================
+
+[[tests]]
+name = "collision_param_shadows_const"
+description = "Param with same name as const is rejected as a collision"
+template = '''
+---
+consts: [X = int := 1]
+
+params: [X = int]
+---
+{{ X }}'''
+expected_error = "conflicts"
+
+[[tests]]
+name = "collision_inline_tmpl_shadows_param"
+description = "Inline tmpl block with same name as param is rejected"
+template = '''
+---
+params: [widget = str]
+---
+> {% tmpl widget %}hello{% /tmpl %}{{ widget }}'''
+expected_error = "conflicts"
+
+# ============================================================================
+# str() — Not a built-in function (rejected)
+# ============================================================================
+
+[[tests]]
+name = "builtin_str_on_int_rejected"
+description = "str() is not a known function — rejected on integer"
+template = '''
+---
+consts: [N = int := 42]
+---
+{{ str(N) }}'''
+expected_error = "unknown function"
+params = {}
+
+[[tests]]
+name = "builtin_str_on_bool_rejected"
+description = "str() is not a known function — rejected on bool"
+template = '''
+---
+consts: [B = bool := true]
+---
+{{ str(B) }}'''
+expected_error = "unknown function"
+params = {}
+
+[[tests]]
+name = "builtin_str_on_enum_variant_rejected"
+description = "str() is not a known function — rejected on enum variant"
+template = '''
+---
+types: [Color = enum(Red, Blue)]
+params: [c = Color]
+---
+> {% match c %}{% case Red %}{{ str(c) }}{% case Blue %}{{ str(c) }}{% /match %}'''
+expected_error = "unknown function"
+[tests.params]
+c = { __kind__ = "Red" }
+
+# ============================================================================
+# len() Positive Tests
+# ============================================================================
+
+[[tests]]
+name = "builtin_len_list"
+description = "len() returns count of list elements"
+template = '''
+---
+params: [items = list(str)]
+---
+{{ len(items) }}'''
+expected_output = "3"
+[tests.params]
+items = ["a", "b", "c"]
+
+[[tests]]
+name = "builtin_len_str"
+description = "len() returns length of a string"
+template = '''
+---
+params: [s = str]
+---
+{{ len(s) }}'''
+expected_output = "5"
+[tests.params]
+s = "hello"
+
+[[tests]]
+name = "builtin_len_empty_list"
+description = "len() returns 0 for an empty list"
+template = '''
+---
+params: [items = list(str)]
+---
+{{ len(items) }}'''
+expected_output = "0"
+[tests.params]
+items = []
+
+# ============================================================================
+# Extra Params Rejected (strict validation)
+# ============================================================================
+
+[[tests]]
+name = "extra_params_rejected"
+description = "Providing an undeclared parameter is rejected"
+template = '''
+---
+params: [name = str]
+---
+{{ name }}'''
+expected_error = "extra"
+[tests.params]
+name = "hi"
+extra = "oops"

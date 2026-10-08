@@ -10,17 +10,22 @@ import {
   BACKSLASH,
   COMMA,
   DOT,
+  FILTER_QUARANTINE,
   FILTER_SANITIZE,
+  FILTER_SANITIZE_TOKENS,
   NODE_EXPR,
   NODE_FOR,
   NODE_IF,
+  NODE_INCLUDE,
   NODE_MATCH,
   NODE_PANIC,
   NODE_RAW,
   NODE_TEXT,
+  PIPE_SPACED,
   PREFIX_PARAMS_DOT,
   QUOTE_DOUBLE,
   QUOTE_SINGLE,
+  SANITIZE_KIND_INLINE,
 } from "./consts.js";
 import { splitPipes } from "./evaluator.js";
 import { INLINE_HEADING_SENTINEL, parseFilter } from "./filters.js";
@@ -34,6 +39,19 @@ import {
 
 export * from "./sanitize_runtime.js";
 export * from "./sanitize_decl.js";
+
+const CHAR_TAB = 9;
+const CHAR_SPACE = 32;
+const CHAR_HASH = 35;
+const CHAR_SLASH = 47;
+const CHAR_LT = 60;
+const CHAR_GT = 62;
+const MIN_HEADING_LEVEL = 1;
+const MAX_HEADING_LEVEL = 6;
+const ESCAPED_NEWLINE_CHAR = "n";
+const ESCAPED_TAB_CHAR = "t";
+const NEWLINE_CHAR = "\n";
+const TAB_CHAR = "\t";
 
 /** Parse a `sanitize_notice:` frontmatter value, stripping optional surrounding quotes. */
 export function parseSanitizeNoticeValue(raw: string): string {
@@ -50,8 +68,8 @@ export function parseSanitizeNoticeValue(raw: string): string {
       if (ch === BACKSLASH && i + 1 < inner.length) {
         const nextCh = inner[i + 1];
         i++;
-        if (nextCh === "n") out += "\n";
-        else if (nextCh === "t") out += "\t";
+        if (nextCh === ESCAPED_NEWLINE_CHAR) out += NEWLINE_CHAR;
+        else if (nextCh === ESCAPED_TAB_CHAR) out += TAB_CHAR;
         else if (nextCh !== undefined) out += nextCh;
       } else if (ch !== undefined) {
         out += ch;
@@ -77,7 +95,7 @@ function formatSanitizeSpecFilter(
   spec: SanitizeSpec,
   fmNotice: string | undefined,
 ): string {
-  if (spec.kind === "inline") {
+  if (spec.kind === SANITIZE_KIND_INLINE) {
     return FILTER_SANITIZE;
   }
   const effectiveNotice = spec.notice ?? fmNotice;
@@ -164,8 +182,8 @@ function rewriteExprForSanitize(
         const [fName] = parseFilter(f);
         return (
           fName === FILTER_SANITIZE ||
-          fName === "quarantine" ||
-          fName === "sanitize_tokens"
+          fName === FILTER_QUARANTINE ||
+          fName === FILTER_SANITIZE_TOKENS
         );
       });
       if (!alreadySanitized) {
@@ -178,10 +196,23 @@ function rewriteExprForSanitize(
     return expr;
   }
 
-  // 2. Rewrite any `sanitize` filter for template-level `sanitizeNotice` and `openTags`
+  // 2. Rewrite any `sanitize` / `sanitize_tokens` filter for template-level `sanitizeNotice` and `openTags`
   let modified = filterStrings.length !== parts.length - 1;
   const updatedFilters = filterStrings.map((fStr) => {
     const [fName, fArgs] = parseFilter(fStr);
+    if (fName === FILTER_SANITIZE_TOKENS) {
+      const parsedTokens = parseSanitizeFilterArgs(fArgs);
+      const mergedTags = mergeEnclosingTagsIntoSpec(
+        parsedTokens?.tagSpec,
+        openTags,
+        inAtxHeading,
+      );
+      if (mergedTags !== undefined && mergedTags !== parsedTokens?.tagSpec) {
+        modified = true;
+        return `${FILTER_SANITIZE_TOKENS}(${quoteFilterArg(mergedTags)})`;
+      }
+      return fStr;
+    }
     if (fName !== FILTER_SANITIZE) {
       return fStr;
     }
@@ -195,7 +226,7 @@ function rewriteExprForSanitize(
       );
       if (mergedTags !== undefined) {
         modified = true;
-        return `sanitize_tokens(${quoteFilterArg(mergedTags)})`;
+        return `${FILTER_SANITIZE_TOKENS}(${quoteFilterArg(mergedTags)})`;
       }
       return fStr;
     }
@@ -217,18 +248,18 @@ function rewriteExprForSanitize(
   if (!modified) {
     return expr;
   }
-  return `${baseExpr} | ${updatedFilters.join(" | ")}`;
+  return `${baseExpr}${PIPE_SPACED}${updatedFilters.join(PIPE_SPACED)}`;
 }
 
 function scanClosingTagsInText(text: string, out: Set<string>): void {
   let i = 0;
   while (i + 3 < text.length) {
-    if (text.charCodeAt(i) === 60 /* '<' */) {
+    if (text.charCodeAt(i) === CHAR_LT) {
       let pos = i + 1;
       while (pos < text.length && isAsciiWhitespaceCode(text.charCodeAt(pos))) {
         pos++;
       }
-      if (pos < text.length && text.charCodeAt(pos) === 47 /* '/' */) {
+      if (pos < text.length && text.charCodeAt(pos) === CHAR_SLASH) {
         pos++;
         while (
           pos < text.length &&
@@ -252,7 +283,7 @@ function scanClosingTagsInText(text: string, out: Set<string>): void {
           ) {
             pos++;
           }
-          if (pos < text.length && text.charCodeAt(pos) === 62 /* '>' */) {
+          if (pos < text.length && text.charCodeAt(pos) === CHAR_GT) {
             out.add(name.toLowerCase());
             i = pos + 1;
             continue;
@@ -292,6 +323,11 @@ function collectClosingXmlTags(nodes: readonly Node[], out: Set<string>): void {
       case NODE_PANIC:
         collectClosingXmlTags(node.body, out);
         break;
+      case NODE_INCLUDE:
+        if (node.inlineNodes) {
+          collectClosingXmlTags(node.inlineNodes, out);
+        }
+        break;
       default:
         break;
     }
@@ -309,12 +345,12 @@ function updateOpenXmlTagsFromText(
     let closeIdx = 0;
     while (
       closeIdx < text.length &&
-      text.charCodeAt(closeIdx) !== 62 /* '>' */ &&
-      text.charCodeAt(closeIdx) !== 60 /* '<' */
+      text.charCodeAt(closeIdx) !== CHAR_GT &&
+      text.charCodeAt(closeIdx) !== CHAR_LT
     ) {
       closeIdx++;
     }
-    if (closeIdx < text.length && text.charCodeAt(closeIdx) === 62) {
+    if (closeIdx < text.length && text.charCodeAt(closeIdx) === CHAR_GT) {
       let beforeGt = closeIdx;
       while (
         beforeGt > 0 &&
@@ -323,7 +359,7 @@ function updateOpenXmlTagsFromText(
         beforeGt--;
       }
       const selfClosing =
-        beforeGt > 0 && text.charCodeAt(beforeGt - 1) === 47; /* '/' */
+        beforeGt > 0 && text.charCodeAt(beforeGt - 1) === CHAR_SLASH;
       if (!selfClosing && closingTags.has(pendingOpenTag.toLowerCase())) {
         openTags.push(pendingOpenTag);
       }
@@ -336,7 +372,7 @@ function updateOpenXmlTagsFromText(
   }
 
   while (i + 2 < text.length) {
-    if (text.charCodeAt(i) !== 60 /* '<' */) {
+    if (text.charCodeAt(i) !== CHAR_LT) {
       i++;
       continue;
     }
@@ -344,7 +380,7 @@ function updateOpenXmlTagsFromText(
     while (pos < text.length && isAsciiWhitespaceCode(text.charCodeAt(pos))) {
       pos++;
     }
-    if (pos < text.length && text.charCodeAt(pos) === 47 /* '/' */) {
+    if (pos < text.length && text.charCodeAt(pos) === CHAR_SLASH) {
       pos++;
       while (pos < text.length && isAsciiWhitespaceCode(text.charCodeAt(pos))) {
         pos++;
@@ -365,7 +401,7 @@ function updateOpenXmlTagsFromText(
         ) {
           pos++;
         }
-        if (pos < text.length && text.charCodeAt(pos) === 62 /* '>' */) {
+        if (pos < text.length && text.charCodeAt(pos) === CHAR_GT) {
           const lowerName = name.toLowerCase();
           for (let k = openTags.length - 1; k >= 0; k--) {
             if (openTags[k]?.toLowerCase() === lowerName) {
@@ -389,19 +425,19 @@ function updateOpenXmlTagsFromText(
       const name = text.slice(start, end);
       if (
         end < text.length &&
-        (text.charCodeAt(end) === 62 /* '>' */ ||
-          text.charCodeAt(end) === 47 /* '/' */ ||
+        (text.charCodeAt(end) === CHAR_GT ||
+          text.charCodeAt(end) === CHAR_SLASH ||
           isAsciiWhitespaceCode(text.charCodeAt(end)))
       ) {
         let closeIdx = end;
         while (
           closeIdx < text.length &&
-          text.charCodeAt(closeIdx) !== 62 /* '>' */ &&
-          text.charCodeAt(closeIdx) !== 60 /* '<' */
+          text.charCodeAt(closeIdx) !== CHAR_GT &&
+          text.charCodeAt(closeIdx) !== CHAR_LT
         ) {
           closeIdx++;
         }
-        if (closeIdx < text.length && text.charCodeAt(closeIdx) === 62) {
+        if (closeIdx < text.length && text.charCodeAt(closeIdx) === CHAR_GT) {
           let beforeGt = closeIdx;
           while (
             beforeGt > end &&
@@ -410,7 +446,7 @@ function updateOpenXmlTagsFromText(
             beforeGt--;
           }
           const selfClosing =
-            beforeGt > end && text.charCodeAt(beforeGt - 1) === 47; /* '/' */
+            beforeGt > end && text.charCodeAt(beforeGt - 1) === CHAR_SLASH;
           if (!selfClosing && closingTags.has(name.toLowerCase())) {
             openTags.push(name);
           }
@@ -437,24 +473,25 @@ interface HeadingLineState {
 function isAtxHeadingPrefix(line: string): boolean {
   const trimmed = line.replace(/^[ \t]+/, "");
   let hashes = 0;
-  while (
-    hashes < trimmed.length &&
-    trimmed.charCodeAt(hashes) === 35 /* '#' */
-  ) {
+  while (hashes < trimmed.length && trimmed.charCodeAt(hashes) === CHAR_HASH) {
     hashes++;
   }
-  if (hashes < 1 || hashes > 6 || hashes >= trimmed.length) {
+  if (
+    hashes < MIN_HEADING_LEVEL ||
+    hashes > MAX_HEADING_LEVEL ||
+    hashes >= trimmed.length
+  ) {
     return false;
   }
   const next = trimmed.charCodeAt(hashes);
-  return next === 32 /* ' ' */ || next === 9 /* '\t' */;
+  return next === CHAR_SPACE || next === CHAR_TAB;
 }
 
 function updateHeadingLineState(text: string, state: HeadingLineState): void {
   if (text.length === 0) {
     return;
   }
-  const lastNl = text.lastIndexOf("\n");
+  const lastNl = text.lastIndexOf(NEWLINE_CHAR);
   if (lastNl !== -1) {
     const tail = text.slice(lastNl + 1);
     state.inAtxHeading = isAtxHeadingPrefix(tail);
@@ -641,6 +678,23 @@ function applySanitizeNodesInner(
           { ...headingState },
           pendingTag,
         );
+        break;
+      }
+      case NODE_INCLUDE: {
+        if (node.inlineNodes) {
+          const includeTags = [...openTags];
+          applySanitizeNodesInner(
+            node.inlineNodes,
+            undefined,
+            undefined,
+            closingTags,
+            new Map(),
+            includeTags,
+            { ...headingState },
+            pendingTag,
+          );
+        }
+        headingState.atLineStart = false;
         break;
       }
       default:
