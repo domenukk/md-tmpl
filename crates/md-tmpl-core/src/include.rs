@@ -189,10 +189,7 @@ fn resolve_from_precompiled(
     base_dir: Option<&Path>,
     output: &mut String,
 ) -> Result<(), TemplateError> {
-    scope.push_consts(
-        (*compiled.consts).clone(),
-        (*compiled.imported_consts).clone(),
-    );
+    scope.push_consts_arc(&compiled.consts, &compiled.imported_consts);
     let result = validate_and_render_into(
         &compiled.segments,
         &compiled.declarations,
@@ -213,7 +210,7 @@ fn resolve_from_tmpl_value(
     output: &mut String,
 ) -> Result<(), TemplateError> {
     scope.push_inline_templates(tmpl.inline_templates().clone());
-    scope.push_consts((*tmpl.consts()).clone(), (*tmpl.imported_consts()).clone());
+    scope.push_consts_arc(&tmpl.consts(), &tmpl.imported_consts());
 
     let result = validate_and_render_into(
         tmpl.segments(),
@@ -277,8 +274,11 @@ fn resolve_from_filesystem(
         .collect();
     let (fm, body) =
         crate::frontmatter::parse_frontmatter_with_base_dir(&source, include_base, &env_pairs)?;
-    let (mut segments, included_inline_templates) =
-        crate::compiled::compile(body, &fm.type_aliases)?;
+    let (mut segments, included_inline_templates) = crate::compiled::compile_with_parent_scope(
+        body,
+        &fm.type_aliases,
+        &fm.type_alias_sanitize,
+    )?;
     crate::compiled::apply_frontmatter_sanitization(
         &mut segments,
         &fm.param_sanitize,

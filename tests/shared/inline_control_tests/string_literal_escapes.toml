@@ -1,0 +1,80 @@
+# Shared inline_control_tests: Operators and escaped quotes inside string literals.
+
+[[tests]]
+name = "condition_operators_inside_string_literal"
+description = "||, && and == inside a quoted RHS literal are not treated as top-level operators"
+template = '''
+---
+params: [label = str]
+---
+> {% if label == "a || b && c == d" %}match{% else %}no{% /if %}'''
+expected_output = "match"
+
+[tests.params]
+label = "a || b && c == d"
+
+[[tests]]
+name = "condition_escaped_quote_in_string_literal"
+description = "A backslash-escaped quote does not close the literal; trailing operators stay literal"
+template = '''
+---
+params: [label = str]
+---
+> {% if label == "a\" && b || c" %}match{% else %}no{% /if %}'''
+expected_output = "match"
+
+[tests.params]
+label = 'a" && b || c'
+
+[[tests]]
+name = "condition_escaped_single_quote_inside_literal"
+description = "A backslash-escaped single quote does not close a single-quoted literal"
+template = '''
+---
+params: [note = str]
+---
+> {% if note == 'x\' || y' %}match{% else %}no{% /if %}'''
+expected_output = "match"
+
+[tests.params]
+note = "x' || y"
+
+[[tests]]
+name = "condition_escaped_quote_analysis_detects_unused_param"
+description = "A param only appearing after an escaped quote inside a string literal is still unused; analysis must treat the whole literal as opaque, not a reference"
+template = '''
+---
+params: [label = str, ghost = str]
+---
+> {% if label == "x\" && ghost" %}hi{% else %}no{% /if %}'''
+expected_error = "unused"
+
+[tests.params]
+label = "nomatch"
+ghost = "g"
+
+[[tests]]
+name = "case_label_escaped_quote_matches"
+description = "A quoted case label containing an escaped quote matches a string value with that literal quote (label must be unescaped, mirroring Rust matching)"
+template = '''
+---
+params: [color = str]
+---
+> {% match color %}{% case "a\"b" %}match{% else %}no{% /match %}'''
+expected_output = "match"
+
+[tests.params]
+color = 'a"b'
+
+[[tests]]
+name = "join_filter_escaped_quote_separator"
+description = "join() unescapes escaped quotes in its separator argument, mirroring Rust filter arg handling"
+template = '''
+---
+params: [items = list(str)]
+---
+> {{ items | join("\"") }}'''
+expected_output = '> a"b'
+
+[tests.params]
+items = ["a", "b"]

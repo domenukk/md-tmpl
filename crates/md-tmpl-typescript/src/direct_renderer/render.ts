@@ -222,7 +222,7 @@ export function renderDirectNodes(
 
       case NODE_PANIC: {
         const msg = renderDirectNodes(node.body, scope, options);
-        throw new TemplatePanicError(msg);
+        throw new TemplatePanicError(msg.trim());
       }
 
       case NODE_INCLUDE: {
@@ -233,7 +233,7 @@ export function renderDirectNodes(
           );
         }
         let includedNodes: readonly Node[];
-        const loadedConsts = new Map<string, unknown>();
+        const loadedConsts = new Map<string, unknown>(scope.allConsts());
         let decls: readonly VarDecl[];
         let childOpts: DirectRenderOptions | undefined;
 
@@ -250,7 +250,7 @@ export function renderDirectNodes(
           if (!loaded) {
             throw new IncludeNotFoundError(node.path);
           }
-          const [lNodes, lConsts, lDecls, lBase] = loaded;
+          const [lNodes, lConsts, lDecls, lBase, lInline] = loaded;
           includedNodes = lNodes;
           decls = lDecls;
           for (const [k, v] of lConsts) {
@@ -258,6 +258,7 @@ export function renderDirectNodes(
           }
           childOpts = {
             ...options,
+            inlineTemplates: lInline && lInline.size > 0 ? lInline : undefined,
             currentBasePath: lBase ?? options.currentBasePath,
             maxIncludeDepth: maxDepth - 1,
           };
@@ -268,10 +269,13 @@ export function renderDirectNodes(
               `undefined inline template '${node.name}' (available: ${Array.from(options?.inlineTemplates?.keys() ?? []).join(", ")})`,
             );
           }
-          includedNodes = inline.nodes;
+          includedNodes = node.inlineNodes ?? inline.nodes;
           decls = inline.declarations;
-          for (const [k, v] of inline.consts) {
-            loadedConsts.set(k, v);
+          const inlineConsts = inline.constsJs ?? inline.consts;
+          if (inlineConsts) {
+            for (const [k, v] of inlineConsts) {
+              loadedConsts.set(k, v);
+            }
           }
           childOpts = {
             ...options,

@@ -7,6 +7,7 @@
 pub(crate) mod analysis;
 mod blockquote;
 mod inline;
+mod match_compile;
 pub mod render;
 pub(crate) mod sanitize_pass;
 pub(crate) mod type_check;
@@ -20,9 +21,9 @@ use alloc::{
     vec::Vec,
 };
 
-use analysis::parse_condition;
 // Re-export submodule items used by the rest of the crate.
 pub use analysis::{collect_referenced_params, collect_unquoted_case_labels};
+use match_compile::compile_match;
 #[cfg(feature = "std")]
 pub(crate) use render::register_loop_meta;
 pub(crate) use render::render_interpolated_str;
@@ -302,13 +303,32 @@ pub fn compile(
     input: &str,
     parent_type_aliases: &HashMap<String, crate::types::VarType>,
 ) -> Result<(Vec<Segment>, HashMap<String, CompiledInlineTemplate>), TemplateError> {
+    let empty_sanitize = HashMap::new();
+    compile_with_parent_scope(input, parent_type_aliases, &empty_sanitize)
+}
+
+/// Compile a template body into a list of pre-parsed segments, propagating
+/// both `parent_type_aliases` and `parent_type_alias_sanitize` into inline
+/// `{% tmpl %}` definitions.
+///
+/// # Errors
+///
+/// Returns [`TemplateError::Syntax`] on malformed tags or blocks.
+pub fn compile_with_parent_scope(
+    input: &str,
+    parent_type_aliases: &HashMap<String, crate::types::VarType>,
+    parent_type_alias_sanitize: &HashMap<String, HashMap<String, crate::types::SanitizeSpec>>,
+) -> Result<(Vec<Segment>, HashMap<String, CompiledInlineTemplate>), TemplateError> {
     // Validate: statement tags at line start must have `>` blockquote prefix.
     blockquote::validate_blockquote_prefix(input)?;
     // Preprocess: strip blockquote `>` prefix from statement-tag lines if present.
     let processed = blockquote::strip_blockquote_tags(input);
     // Extract inline template definitions before compiling the body.
-    let (cleaned, inline_templates) =
-        inline::extract_inline_templates(&processed, parent_type_aliases)?;
+    let (cleaned, inline_templates) = inline::extract_inline_templates_with_sanitize(
+        &processed,
+        parent_type_aliases,
+        parent_type_alias_sanitize,
+    )?;
     let mut segments = compile_body(&cleaned).map_err(|e| enrich_error(e, &cleaned))?;
     inline::bind_inline_includes(
         &mut segments,
@@ -341,7 +361,7 @@ const SNIPPET_MAX_LEN: usize = 80;
 
 /// Enrich a `TemplateError` with line number and context from the original
 /// source when the error does not already contain line information.
-fn enrich_error(err: TemplateError, source: &str) -> TemplateError {
+pub(super) fn enrich_error(err: TemplateError, source: &str) -> TemplateError {
     match err {
         TemplateError::Syntax(ref syn) if syn.line.is_none() => {
             // Try to locate the problematic text in the source.
@@ -690,7 +710,7 @@ fn compile_statement<'a>(
 ///
 /// Handles nesting: `{% else %}` tags inside nested `{% for %}` or `{% if %}` blocks
 /// are correctly skipped.
-fn split_for_else(body: &str) -> (&str, Option<&str>) {
+pub(super) fn split_for_else(body: &str) -> (&str, Option<&str>) {
     let mut depth: u32 = 0;
     let mut search_from: usize = 0;
 
@@ -820,303 +840,6 @@ fn compile_raw_block<'a>(
     Ok((Segment::Raw(Cow::Owned(body.to_string())), rest))
 }
 
-/// Returns `true` if the match arms use option-style variant names (`Some`/`None`).
-///
-/// Called once at compile time so the renderer can use a discriminant check
-/// (`Value::None` vs not) instead of scanning arm names on every render.
-fn arms_are_option(arms: &MatchArms) -> bool {
-    arms.iter().any(|arm| {
-        arm.variants.iter().any(|v| {
-            v.as_ref() == crate::consts::OPTION_SOME || v.as_ref() == crate::consts::OPTION_NONE
-        })
-    })
-}
-
-/// Compile a match block.
-///
-/// Supports two forms:
-/// - **Inline**: `{% match expr case Variant %}body{% /match %}` — single-arm
-/// - **Multi-arm**: `{% match expr %}{% case A %}...{% case B %}...{% /match %}`
-fn compile_match<'a>(
-    match_body: &str,
-    after_tag: &'a str,
-) -> Result<(Segment, &'a str), TemplateError> {
-    // Check for inline form: `match expr case Variant`
-    let (expr, inline_variant) =
-        if let Some(case_pos) = match_body.find(crate::consts::TAG_CASE_SPACED) {
-            let expr = match_body[..case_pos].trim();
-            let variant = match_body[case_pos + crate::consts::TAG_CASE_SPACED.len()..].trim();
-            if variant.is_empty() {
-                return Err(TemplateError::syntax(
-                    "match: empty variant name after 'case'".to_string(),
-                ));
-            }
-            (expr, Some(variant))
-        } else {
-            (match_body, None)
-        };
-
-    if expr.is_empty() {
-        return Err(TemplateError::syntax(
-            "match: missing expression".to_string(),
-        ));
-    }
-
-    let expr_compiled = CompiledPath::compile(expr);
-
-    let (body_text, rest) = parser::find_closing_block(after_tag, TAG_MATCH_PREFIX, CLOSE_MATCH)?;
-
-    if let Some(variant) = inline_variant {
-        // Inline form: check for {% else %} to create a default arm.
-        let (case_text, else_text) = split_for_else(body_text);
-        let case_body = compile_body(case_text).map_err(|e| enrich_error(e, case_text))?;
-
-        // Parse guard: `Variant && guard_condition`.
-        let (variant_part, guard_str) = if let Some(pos) = variant.find(" && ") {
-            (&variant[..pos], Some(variant[pos + 4..].trim()))
-        } else {
-            (variant, None)
-        };
-        let guard = if let Some(g) = guard_str {
-            Some(parse_condition(g)?)
-        } else {
-            None
-        };
-
-        let variant_part = variant_part.trim();
-        if variant_part
-            .split(crate::consts::PIPE)
-            .any(|v| v.trim() == crate::consts::MATCH_DEFAULT)
-        {
-            return Err(TemplateError::syntax(
-                "match: wildcard '_' in {% case %} is not supported — use {% else %} for fallback"
-                    .to_string(),
-            ));
-        }
-        let mut arms = vec![MatchArm {
-            variants: variant_part
-                .split(crate::consts::PIPE)
-                .map(|v| Cow::Owned(v.trim().to_string()))
-                .collect(),
-            guard,
-            body: case_body,
-        }];
-        if let Some(else_body_text) = else_text {
-            let else_body =
-                compile_body(else_body_text).map_err(|e| enrich_error(e, else_body_text))?;
-            arms.push(MatchArm {
-                variants: vec![Cow::Borrowed(crate::consts::MATCH_DEFAULT)],
-                guard: None,
-                body: else_body,
-            });
-        }
-        let is_option = arms_are_option(&arms);
-        Ok((
-            Segment::Match {
-                expr: expr_compiled,
-                arms,
-                is_option,
-            },
-            rest,
-        ))
-    } else {
-        // Multi-arm form: split body at `{% case Variant %}` tags.
-        let arms = split_match_arms(body_text)?;
-        if arms.is_empty() {
-            return Err(TemplateError::syntax(
-                "match: no {% case %} arms found".to_string(),
-            ));
-        }
-        let is_option = arms_are_option(&arms);
-        Ok((
-            Segment::Match {
-                expr: expr_compiled,
-                arms,
-                is_option,
-            },
-            rest,
-        ))
-    }
-}
-
-fn parse_case_arm<'a>(variant: &str, after: &'a str) -> Result<(MatchArm, &'a str), TemplateError> {
-    let (variant_part, guard_str) = if let Some(pos) = variant.find(" && ") {
-        (&variant[..pos], Some(variant[pos + 4..].trim()))
-    } else {
-        (variant, None)
-    };
-    let variant_part = variant_part.trim();
-    if variant_part.is_empty() {
-        return Err(TemplateError::syntax(
-            "match: empty variant name in {% case %}".to_string(),
-        ));
-    }
-    if variant_part
-        .split(crate::consts::PIPE)
-        .any(|v| v.trim() == crate::consts::MATCH_DEFAULT)
-    {
-        return Err(TemplateError::syntax(
-            "match: wildcard '_' in {% case %} is not supported — use {% else %} for fallback"
-                .to_string(),
-        ));
-    }
-
-    let arm_body = scan_to_next_case_or_end(after)?;
-    let arm_segments = compile_body(arm_body).map_err(|e| enrich_error(e, arm_body))?;
-    let variants = variant_part
-        .split(crate::consts::PIPE)
-        .map(|v| Cow::Owned(v.trim().to_string()))
-        .collect();
-    let guard = if let Some(g) = guard_str {
-        Some(parse_condition(g)?)
-    } else {
-        None
-    };
-    let arm = MatchArm {
-        variants,
-        guard,
-        body: arm_segments,
-    };
-    Ok((arm, &after[arm_body.len()..]))
-}
-
-fn parse_else_arm(after: &str) -> Result<(MatchArm, &str), TemplateError> {
-    let arm_body = scan_to_next_case_or_end(after)?;
-    let arm_segments = compile_body(arm_body).map_err(|e| enrich_error(e, arm_body))?;
-    let arm = MatchArm {
-        variants: vec![Cow::Borrowed(crate::consts::MATCH_DEFAULT)],
-        guard: None,
-        body: arm_segments,
-    };
-    Ok((arm, &after[arm_body.len()..]))
-}
-
-/// Split a match block body into `(variant_name, body_segments)` arms.
-///
-/// Scans for `{% case Variant %}` tags at the top level (respecting nesting
-/// of inner match blocks). Text before the first `{% case %}` is discarded
-/// (whitespace only).
-fn split_match_arms(body: &str) -> Result<MatchArms, TemplateError> {
-    let mut arms = Vec::new();
-    let mut remaining = body.trim_start();
-    let mut has_default = false;
-
-    if remaining.is_empty() {
-        return Ok(arms);
-    }
-
-    loop {
-        let scan = parser::scan_next_tag(remaining)?;
-        match scan {
-            parser::ScanResult::Literal(_) => break,
-            parser::ScanResult::Found {
-                before,
-                tag: parser::Tag::Stmt(stmt),
-                after,
-                ..
-            } => {
-                if !before.trim().is_empty() && arms.is_empty() {
-                    return Err(TemplateError::syntax(
-                        "match: unexpected text before first {% case %}".to_string(),
-                    ));
-                }
-
-                if let Some(variant) = stmt.strip_prefix(TAG_CASE_PREFIX) {
-                    if has_default {
-                        return Err(TemplateError::syntax(
-                            "match: {% case %} after {% else %} is not allowed".to_string(),
-                        ));
-                    }
-                    let (arm, next_remaining) = parse_case_arm(variant, after)?;
-                    arms.push(arm);
-                    remaining = next_remaining;
-                    if remaining.is_empty() {
-                        break;
-                    }
-                } else if stmt == KW_ELSE {
-                    if has_default {
-                        return Err(TemplateError::syntax(
-                            "match: only one {% else %} arm is allowed".to_string(),
-                        ));
-                    }
-                    has_default = true;
-                    let (arm, next_remaining) = parse_else_arm(after)?;
-                    arms.push(arm);
-                    remaining = next_remaining;
-                    if remaining.is_empty() {
-                        break;
-                    }
-                } else {
-                    return Err(TemplateError::syntax(format!(
-                        "match: expected '{{% case Variant %}}', got '{{% {stmt} %}}'"
-                    )));
-                }
-            }
-            parser::ScanResult::Found { .. } => {
-                return Err(TemplateError::syntax(
-                    "match: expected {% case %} tag".to_string(),
-                ));
-            }
-        }
-    }
-
-    Ok(arms)
-}
-
-/// Scan forward from `input` until we find a top-level `{% case %}` tag
-/// (respecting nesting of inner match, if, and for blocks). Returns the
-/// text slice that constitutes the arm body.
-fn scan_to_next_case_or_end(input: &str) -> Result<&str, TemplateError> {
-    let mut match_depth: u32 = 0;
-    let mut if_for_depth: u32 = 0;
-    let mut search_from: usize = 0;
-
-    while search_from < input.len() {
-        let rest = &input[search_from..];
-        let scan = parser::scan_next_tag(rest)?;
-        match scan {
-            parser::ScanResult::Literal(_) => return Ok(input),
-            parser::ScanResult::Found {
-                before,
-                tag: parser::Tag::Stmt(stmt),
-                after,
-                ..
-            } => {
-                let tag_pos = search_from + before.len();
-
-                if stmt.starts_with(TAG_MATCH_PREFIX) {
-                    match_depth += 1;
-                } else if stmt == CLOSE_MATCH {
-                    if match_depth == 0 {
-                        // End of our match block — return everything before.
-                        return Ok(&input[..tag_pos]);
-                    }
-                    match_depth -= 1;
-                } else if stmt.starts_with(TAG_IF_PREFIX) || stmt.starts_with(TAG_FOR_PREFIX) {
-                    if_for_depth += 1;
-                } else if stmt == CLOSE_IF || stmt == CLOSE_FOR {
-                    if_for_depth = if_for_depth.saturating_sub(1);
-                } else if (stmt.starts_with(TAG_CASE_PREFIX) || stmt == KW_ELSE)
-                    && match_depth == 0
-                    && if_for_depth == 0
-                {
-                    // Next case/else at our level — return everything before.
-                    return Ok(&input[..tag_pos]);
-                }
-
-                // Skip past the tag.
-                search_from = input.len() - after.len();
-            }
-            parser::ScanResult::Found { after, .. } => {
-                // Expr or comment — skip past the tag.
-                search_from = input.len() - after.len();
-            }
-        }
-    }
-
-    Ok(input)
-}
-
 /// Compile an include directive.
 fn compile_include<'a>(
     stmt: &str,
@@ -1177,9 +900,26 @@ fn compile_panic<'a>(
 }
 
 #[cfg(all(test, feature = "std"))]
-#[path = "tests.rs"]
-mod tests;
-
+mod test_helpers;
 #[cfg(all(test, feature = "std"))]
-#[path = "tests_analysis.rs"]
-mod tests_analysis;
+mod tests_blockquote;
+#[cfg(all(test, feature = "std"))]
+mod tests_compile;
+#[cfg(all(test, feature = "std"))]
+mod tests_conditions;
+#[cfg(all(test, feature = "std"))]
+mod tests_expressions;
+#[cfg(all(test, feature = "std"))]
+mod tests_for_else;
+#[cfg(all(test, feature = "std"))]
+mod tests_include;
+#[cfg(all(test, feature = "std"))]
+mod tests_inline_templates;
+#[cfg(all(test, feature = "std"))]
+mod tests_match;
+#[cfg(all(test, feature = "std"))]
+mod tests_refs;
+#[cfg(all(test, feature = "std"))]
+mod tests_render;
+#[cfg(all(test, feature = "std"))]
+mod tests_whitespace;

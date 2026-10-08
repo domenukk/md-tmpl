@@ -831,3 +831,112 @@ fn template_unescapable_keyword_to_context() {
     let output = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(output, "me: up\n");
 }
+
+// ── Constant pruning & StaticScalar codegen verification ────────────
+
+md_tmpl_macros::include_template!("prompts/role_consumer.tmpl.md");
+
+md_tmpl_macros::template!(
+    r#"
+---
+types:
+  - UsedEnum = enum(Alpha, Beta, Data(msg = str))
+  - UnusedEnum = enum(One, Two, Three)
+
+consts:
+  - USED_STR = str := "kept"
+  - UNUSED_STR = str := "pruned"
+  - USED_LIST = list(str) := ["x", "y"]
+  - UNUSED_LIST = list(int) := [1, 2, 3, 4]
+  - USED_STRUCT_LIST = list(k = str, v = int) := [{k = "a", v = 1}, {k = "b", v = 2}]
+  - UNUSED_STRUCT_LIST = list(k = str, v = int) := [{k = "z", v = 99}]
+
+params:
+  - tag = str
+---
+{{ consts.USED_STR }}:{{ kind(UsedEnum.Alpha) }}:{{ kinds(UsedEnum) | join(",") }}
+
+> {% for item in USED_LIST %}
+
+[{{ item }}]
+
+> {% /for %}
+
+> {% for row in USED_STRUCT_LIST %}
+
+({{ row.k }}={{ row.v }})
+
+> {% /for %}
+
+> {% match tag %}
+> {% case "{{ USED_STR }}_arm" %}
+
+matched!
+
+> {% else %}
+
+other
+
+> {% /match %}
+"# => const_pruning_test
+);
+
+#[test]
+fn unreferenced_consts_and_imported_consts_are_pruned_from_runtime_template() {
+    // 1. In `type_library` (no body expressions), top-level Rust pub consts exist,
+    //    while the runtime Template's `consts` and `imported_consts` maps are empty.
+    assert_eq!(type_library::APP_NAME, "TestApp");
+    assert_eq!(type_library::MAX_RETRIES, 3);
+    let lib_tmpl = type_library::template();
+    assert!(
+        lib_tmpl.consts().is_empty(),
+        "unreferenced consts should be pruned from __TEMPLATE: {:?}",
+        lib_tmpl.consts()
+    );
+    assert!(
+        lib_tmpl.imported_consts().is_empty(),
+        "unreferenced enum type namespaces should be pruned from __TEMPLATE: {:?}",
+        lib_tmpl.imported_consts()
+    );
+
+    // 2. In `role_consumer`, `roles_lib.WorkRole` is used only as a param type,
+    //    never as a runtime value in the body, so `imported_consts` is empty.
+    let consumer_tmpl = role_consumer::template();
+    assert!(consumer_tmpl.imported_consts().is_empty());
+    let rendered = role_consumer::Params {
+        role: role_consumer::ParamsRole::Researcher,
+    }
+    .render()
+    .unwrap();
+    assert_eq!(rendered.trim(), "Role: Researcher");
+
+    // 3. In `const_pruning_test`, referenced consts/enums are kept in `__TEMPLATE`,
+    //    while unreferenced ones are pruned, and top-level Rust consts remain accessible.
+    assert_eq!(const_pruning_test::USED_STR, "kept");
+    assert_eq!(const_pruning_test::UNUSED_STR, "pruned");
+    assert_eq!(&*const_pruning_test::UNUSED_LIST, &[1, 2, 3, 4]);
+    assert_eq!(const_pruning_test::UNUSED_STRUCT_LIST.len(), 1);
+
+    let tmpl = const_pruning_test::template();
+    assert!(tmpl.consts().contains_key("USED_STR"));
+    assert!(tmpl.consts().contains_key("USED_LIST"));
+    assert!(tmpl.consts().contains_key("USED_STRUCT_LIST"));
+    assert!(!tmpl.consts().contains_key("UNUSED_STR"));
+    assert!(!tmpl.consts().contains_key("UNUSED_LIST"));
+    assert!(!tmpl.consts().contains_key("UNUSED_STRUCT_LIST"));
+
+    assert!(tmpl.imported_consts().contains_key("UsedEnum"));
+    assert!(!tmpl.imported_consts().contains_key("UnusedEnum"));
+
+    // Verify native `Params::render()` and dynamic `Template::render_ctx()` produce identical output.
+    let params = const_pruning_test::Params {
+        tag: "kept_arm".into(),
+    };
+    let native_out = params.render().unwrap();
+    let dyn_out = tmpl.render_ctx(&params.to_context()).unwrap();
+    assert_eq!(native_out, dyn_out);
+    assert!(native_out.contains("kept:Alpha:Alpha,Beta,Data"));
+    assert!(native_out.contains("[x]\n[y]"));
+    assert!(native_out.contains("(a=1)\n(b=2)"));
+    assert!(native_out.contains("matched!"));
+}

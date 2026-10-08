@@ -1,0 +1,335 @@
+# Shared feature_e2e_tests: F9 kind()/kinds(), F10 for-loop edge cases, F11 raw/comments, F6 string match.
+
+# ============================================================================
+# F9: Built-in Functions — kind(), kinds()
+# ============================================================================
+
+[[tests]]
+name = "kind_enum_variant"
+description = "kind() returns the variant name of an enum value"
+template = '''
+---
+params:
+  - status = enum(Active, Paused, Stopped)
+---
+{{ kind(status) }}'''
+expected_output = "Active"
+[tests.params]
+status = "Active"
+
+[[tests]]
+name = "kind_enum_in_condition"
+description = "kind() used in conditional to check variant"
+template = '''
+---
+params:
+  - status = enum(Active, Paused, Stopped)
+---
+> {% if kind(status) == "Paused" %}PAUSED{% else %}RUNNING{% /if %}'''
+expected_output = "PAUSED"
+[tests.params]
+status = "Paused"
+
+[[tests]]
+name = "kind_option_some"
+description = "kind() returns Some for a present option value"
+template = '''
+---
+params:
+  - val = option(str)
+---
+{{ kind(val) }}'''
+expected_output = "Some"
+[tests.params]
+val = "hello"
+
+[[tests]]
+name = "kind_option_none"
+description = "kind() returns None for an absent option value"
+template = '''
+---
+params:
+  - val = option(str)
+---
+{{ kind(val) }}'''
+expected_output = "None"
+[tests.params]
+val = "None"
+
+[[tests]]
+name = "kinds_enum_iteration"
+description = "kinds() returns list of variant names for iteration"
+template = '''
+---
+types:
+  - Status = enum(Active, Paused, Stopped)
+
+params: []
+---
+> {% for v in kinds(Status) %}{{ v }} {% /for %}'''
+expected_output = "Active Paused Stopped "
+params = {}
+
+[[tests]]
+name = "kinds_enum_in_operator"
+description = "kinds() with in operator checks variant membership"
+template = '''
+---
+types:
+  - Role = enum(Admin, User, Guest)
+
+params:
+  - check = str
+---
+> {% if check in kinds(Role) %}valid{% else %}invalid{% /if %}'''
+expected_output = "valid"
+[tests.params]
+check = "User"
+
+[[tests]]
+name = "kinds_enum_in_operator_miss"
+description = "kinds() with in operator — variant not found"
+template = '''
+---
+types:
+  - Role = enum(Admin, User, Guest)
+
+params:
+  - check = str
+---
+> {% if check in kinds(Role) %}valid{% else %}invalid{% /if %}'''
+expected_output = "invalid"
+[tests.params]
+check = "Superadmin"
+
+# ============================================================================
+# F10: For loop edge cases — idx() nested, empty list
+# ============================================================================
+
+[[tests]]
+name = "for_idx_nested"
+description = "idx() tracks independently in nested loops"
+template = '''
+---
+params:
+  - outer = list(str)
+  - inner = list(str)
+---
+> {% for o in outer %}{% for i in inner %}{{ idx(o) }}.{{ idx(i) }} {% /for %}{% /for %}'''
+expected_output = "0.0 0.1 1.0 1.1 "
+[tests.params]
+outer = ["a", "b"]
+inner = ["X", "Y"]
+
+[[tests]]
+name = "for_empty_list_no_output"
+description = "for loop over empty list produces no output"
+template = '''
+---
+params:
+  - items = list(str)
+---
+> {% for x in items %}{{ x }}{% /for %}'''
+expected_output = ""
+[tests.params]
+items = []
+
+# ============================================================================
+# F11: Raw blocks and comments
+# ============================================================================
+
+[[tests]]
+name = "raw_block_preserves_tags"
+description = "raw block preserves template syntax verbatim"
+template = '''
+---
+params:
+---
+> {% raw %}{{ not_a_var }}{% /raw %}'''
+expected_output = "{{ not_a_var }}"
+params = {}
+
+[[tests]]
+name = "comment_suppressed"
+description = "comment block produces no output"
+template = '''
+---
+params:
+  - name = str
+---
+> {{ name }}{# hidden #} end'''
+expected_output = "> hello end"
+[tests.params]
+name = "hello"
+
+# ============================================================================
+# F6: Match / Case on strings (quoted case labels)
+# ============================================================================
+
+[[tests]]
+name = "f6_t1_str_match_multi_arm"
+description = "Match on str with quoted case labels — multi-arm"
+template = '''
+---
+params: [status = str]
+---
+> {% match status %}{% case "Active" %}on{% case "Paused" %}paused{% /match %}'''
+expected_output = "on"
+[tests.params]
+status = "Active"
+
+[[tests]]
+name = "f6_t1_str_match_multi_arm_second"
+description = "Match on str with quoted case labels — second arm"
+template = '''
+---
+params: [status = str]
+---
+> {% match status %}{% case "Active" %}on{% case "Paused" %}paused{% /match %}'''
+expected_output = "paused"
+[tests.params]
+status = "Paused"
+
+[[tests]]
+name = "f6_t1_str_match_inline"
+description = "Inline match on str with quoted case label"
+template = '''
+---
+params: [role = str]
+---
+> {% match role case "Admin" %}admin{% /match %}'''
+expected_output = "admin"
+[tests.params]
+role = "Admin"
+
+[[tests]]
+name = "f6_t1_str_match_inline_no_match"
+description = "Inline match on str — no match produces empty"
+template = '''
+---
+params: [role = str]
+---
+> {% match role case "Admin" %}admin{% /match %}'''
+expected_output = ""
+[tests.params]
+role = "User"
+
+[[tests]]
+name = "f6_t1_str_match_multi_value_pipe"
+description = "Match on str with multiple quoted values via pipe"
+template = '''
+---
+params: [level = str]
+---
+> {% match level %}{% case "High" | "Critical" %}urgent{% case "Low" %}fine{% /match %}'''
+expected_output = "urgent"
+[tests.params]
+level = "Critical"
+
+[[tests]]
+name = "f6_t1_str_match_else_fallback"
+description = "Match on str with else fallback for unmatched values"
+template = '''
+---
+params: [color = str]
+---
+> {% match color %}{% case "red" %}stop{% case "green" %}go{% else %}unknown{% /match %}'''
+expected_output = "unknown"
+[tests.params]
+color = "blue"
+
+[[tests]]
+name = "f6_t1_str_match_else_matched"
+description = "Match on str — matching case is preferred over else"
+template = '''
+---
+params: [color = str]
+---
+> {% match color %}{% case "red" %}stop{% case "green" %}go{% else %}unknown{% /match %}'''
+expected_output = "stop"
+[tests.params]
+color = "red"
+
+[[tests]]
+name = "f6_t2_str_match_single_quoted"
+description = "Match on str with single-quoted case labels"
+template = '''
+---
+params: [mode = str]
+---
+> {% match mode %}{% case 'fast' %}speed{% case 'slow' %}safe{% /match %}'''
+expected_output = "speed"
+[tests.params]
+mode = "fast"
+
+[[tests]]
+name = "f6_t2_str_match_param_ref_match"
+description = "Unquoted label that IS a declared str param — param-ref match"
+template = '''
+---
+params:
+  - status = str
+  - expected = str
+---
+> {% match status %}{% case expected %}matched{% else %}nope{% /match %}'''
+expected_output = "matched"
+[tests.params]
+status = "Active"
+expected = "Active"
+
+[[tests]]
+name = "f6_t2_str_match_param_ref_no_match"
+description = "Param-ref match where param values differ — else arm taken"
+template = '''
+---
+params:
+  - status = str
+  - expected = str
+---
+> {% match status %}{% case expected %}matched{% else %}nope{% /match %}'''
+expected_output = "nope"
+[tests.params]
+status = "Active"
+expected = "Paused"
+
+[[tests]]
+name = "f6_t2_str_match_mixed_param_ref_and_quoted"
+description = "Mixed param-ref and quoted string labels in str match"
+template = '''
+---
+params:
+  - status = str
+  - alt = str
+---
+> {% match status %}{% case "Active" %}a{% case alt %}b{% else %}c{% /match %}'''
+expected_output = "b"
+[tests.params]
+status = "Paused"
+alt = "Paused"
+
+
+[[tests]]
+name = "f6_t3_kind_comparison_with_str"
+description = "Comparing str param to kind(EnumType.Variant) works"
+template = '''
+---
+types: [StatusKind = enum(Active, Paused, Done)]
+params: [status = str]
+---
+> {% if status == kind(StatusKind.Active) %}matched{% else %}nope{% /if %}'''
+expected_output = "matched"
+[tests.params]
+status = "Active"
+
+[[tests]]
+name = "f6_t3_kind_comparison_no_match"
+description = "kind() comparison on str — no match when values differ"
+template = '''
+---
+types: [StatusKind = enum(Active, Paused, Done)]
+params: [status = str]
+---
+> {% if status == kind(StatusKind.Active) %}matched{% else %}nope{% /if %}'''
+expected_output = "nope"
+[tests.params]
+status = "Paused"

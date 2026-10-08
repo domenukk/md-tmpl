@@ -1,9 +1,9 @@
 /**
  * Shared test runner for cross-backend test fixtures.
  *
- * Runs test cases defined in `tests/shared/inline_tmpl_tests.toml`,
- * `tests/shared/include_tests.toml`, `tests/shared/inline_control_tests.toml`,
- * and `tests/shared/tmpl_param_tests.toml` against the TypeScript backend.
+ * Runs the test cases defined in the `tests/shared/` suites (single-file
+ * suites such as `inline_tmpl_tests.toml` and per-topic suite directories such
+ * as `include_tests/`) against the TypeScript backend.
  *
  * These same fixtures are consumed by the Rust backend's shared test
  * runner, ensuring behavioral parity between implementations.
@@ -76,15 +76,44 @@ const FIXTURES_DIR = path.resolve(
   "../../../../tests/shared",
 );
 
-const INLINE_TMPL_FIXTURES = path.join(FIXTURES_DIR, "inline_tmpl_tests.toml");
-const INCLUDE_FIXTURES = path.join(FIXTURES_DIR, "include_tests.toml");
-const INLINE_CONTROL_FIXTURES = path.join(
-  FIXTURES_DIR,
-  "inline_control_tests.toml",
-);
-const TMPL_PARAM_FIXTURES = path.join(FIXTURES_DIR, "tmpl_param_tests.toml");
-const FEATURE_E2E_FIXTURES = path.join(FIXTURES_DIR, "feature_e2e_tests.toml");
-const ENV_FIXTURES = path.join(FIXTURES_DIR, "env_tests.toml");
+const INLINE_TMPL_SUITE = "inline_tmpl_tests.toml";
+const INCLUDE_SUITE = "include_tests";
+const INLINE_CONTROL_SUITE = "inline_control_tests";
+const TMPL_PARAM_SUITE = "tmpl_param_tests.toml";
+const FEATURE_E2E_SUITE = "feature_e2e_tests";
+const ENV_SUITE = "env_tests.toml";
+
+/** File suffix of shared fixture files. */
+const FIXTURE_SUFFIX = ".toml";
+
+/**
+ * Resolve a shared suite (relative to `FIXTURES_DIR`) to its fixture files.
+ * A `.toml` entry is a single file; any other entry is a directory of
+ * per-topic fixture files, discovered in sorted order. Throws if empty.
+ */
+function suiteFiles(suite: string): string[] {
+  const suitePath = path.join(FIXTURES_DIR, suite);
+  if (suite.endsWith(FIXTURE_SUFFIX)) return [suitePath];
+  const files = fs
+    .readdirSync(suitePath)
+    .filter((name) => name.endsWith(FIXTURE_SUFFIX))
+    .sort()
+    .map((name) => path.join(suitePath, name));
+  if (files.length === 0) {
+    throw new Error(`shared suite directory has no fixtures: ${suitePath}`);
+  }
+  return files;
+}
+
+/** Load and concatenate the `tests` arrays of every fixture in a suite. */
+function loadSuiteCases<T>(suite: string): T[] {
+  return suiteFiles(suite).flatMap((file) => {
+    const { tests } = parseToml(fs.readFileSync(file, "utf-8")) as unknown as {
+      tests: T[];
+    };
+    return tests;
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -146,10 +175,7 @@ function getTemplateSrc(tc: InlineTmplTestCase): string {
 // ---------------------------------------------------------------------------
 
 describe("Shared: Inline template tests", () => {
-  const raw = fs.readFileSync(INLINE_TMPL_FIXTURES, "utf-8");
-  const { tests } = parseToml(raw) as unknown as {
-    tests: InlineTmplTestCase[];
-  };
+  const tests = loadSuiteCases<InlineTmplTestCase>(INLINE_TMPL_SUITE);
 
   for (const tc of tests) {
     it(tc.name, () => {
@@ -189,8 +215,7 @@ describe("Shared: Inline template tests", () => {
 // ---------------------------------------------------------------------------
 
 describe("Shared: File-based include tests", () => {
-  const raw = fs.readFileSync(INCLUDE_FIXTURES, "utf-8");
-  const { tests } = parseToml(raw) as unknown as { tests: IncludeTestCase[] };
+  const tests = loadSuiteCases<IncludeTestCase>(INCLUDE_SUITE);
 
   for (const tc of tests) {
     it(tc.name, () => {
@@ -271,10 +296,7 @@ describe("Shared: File-based include tests", () => {
 // ---------------------------------------------------------------------------
 
 describe("Shared: Inline control flow tests", () => {
-  const raw = fs.readFileSync(INLINE_CONTROL_FIXTURES, "utf-8");
-  const { tests } = parseToml(raw) as unknown as {
-    tests: InlineTmplTestCase[];
-  };
+  const tests = loadSuiteCases<InlineTmplTestCase>(INLINE_CONTROL_SUITE);
 
   for (const tc of tests) {
     it(tc.name, () => {
@@ -314,10 +336,7 @@ describe("Shared: Inline control flow tests", () => {
 // ---------------------------------------------------------------------------
 
 describe("Shared: tmpl() parameter tests", () => {
-  const raw = fs.readFileSync(TMPL_PARAM_FIXTURES, "utf-8");
-  const { tests } = parseToml(raw) as unknown as {
-    tests: InlineTmplTestCase[];
-  };
+  const tests = loadSuiteCases<InlineTmplTestCase>(TMPL_PARAM_SUITE);
 
   for (const tc of tests) {
     it(tc.name, () => {
@@ -357,10 +376,7 @@ describe("Shared: tmpl() parameter tests", () => {
 // ---------------------------------------------------------------------------
 
 describe("Shared: Feature E2E tests (Milestone E2E.2)", () => {
-  const raw = fs.readFileSync(FEATURE_E2E_FIXTURES, "utf-8");
-  const { tests } = parseToml(raw) as unknown as {
-    tests: InlineTmplTestCase[];
-  };
+  const tests = loadSuiteCases<InlineTmplTestCase>(FEATURE_E2E_SUITE);
 
   for (const tc of tests) {
     it(tc.name, () => {
@@ -400,10 +416,7 @@ describe("Shared: Feature E2E tests (Milestone E2E.2)", () => {
 // ---------------------------------------------------------------------------
 
 describe("Shared: Env tests", () => {
-  const raw = fs.readFileSync(ENV_FIXTURES, "utf-8");
-  const { tests } = parseToml(raw) as unknown as {
-    tests: EnvTestCase[];
-  };
+  const tests = loadSuiteCases<EnvTestCase>(ENV_SUITE);
 
   function getEnvTemplateSrc(tc: EnvTestCase): string {
     if (tc.template) {

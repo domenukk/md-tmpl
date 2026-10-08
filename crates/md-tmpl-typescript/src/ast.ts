@@ -116,6 +116,7 @@ export type Node =
       withMappings: Map<string, string>;
       forBinding?: string;
       forExpr?: string;
+      inlineNodes?: Node[];
       loc?: SourceLocation;
     }
   | {

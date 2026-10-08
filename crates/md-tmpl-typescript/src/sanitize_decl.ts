@@ -16,6 +16,8 @@ import {
   PIPE,
   QUOTE_DOUBLE,
   QUOTE_SINGLE,
+  SANITIZE_KIND_BLOCK,
+  SANITIZE_KIND_INLINE,
   TYPE_ALIAS,
   TYPE_ENUM,
   TYPE_LIST,
@@ -92,8 +94,12 @@ function parseDeclSanitizeChain(chain: string): SanitizeSpec {
     const parsed = parseSanitizeFilterArgs(args);
     result =
       parsed === undefined
-        ? { kind: "inline" }
-        : { kind: "block", tag: parsed.tagSpec, notice: parsed.notice };
+        ? { kind: SANITIZE_KIND_INLINE }
+        : {
+            kind: SANITIZE_KIND_BLOCK,
+            tag: parsed.tagSpec,
+            notice: parsed.notice,
+          };
   }
   if (result === undefined) {
     throw new Error("empty filter after '|' in declaration");
@@ -115,11 +121,17 @@ function insertSpec(
   const existing = specs.get(prefix);
   if (existing !== undefined) {
     if (existing.kind === spec.kind) return;
-    if (existing.kind === "inline" && spec.kind === "block") {
+    if (
+      existing.kind === SANITIZE_KIND_INLINE &&
+      spec.kind === SANITIZE_KIND_BLOCK
+    ) {
       specs.set(prefix, spec);
       return;
     }
-    if (existing.kind === "block" && spec.kind === "inline") {
+    if (
+      existing.kind === SANITIZE_KIND_BLOCK &&
+      spec.kind === SANITIZE_KIND_INLINE
+    ) {
       return;
     }
     throw new Error(
@@ -230,12 +242,12 @@ function extractTypeSanitizeInner(
   if (base.startsWith(TYPE_UNTRUSTED)) {
     const rest = base.slice(TYPE_UNTRUSTED.length);
     if (rest.startsWith(" ") || rest.startsWith("\t")) {
-      insertSpec(specs, prefix, { kind: "inline" });
+      insertSpec(specs, prefix, { kind: SANITIZE_KIND_INLINE });
       base = rest.trim();
     } else {
       const inner = stripTypeBrackets(base, TYPE_UNTRUSTED);
       if (inner.length !== base.length) {
-        insertSpec(specs, prefix, { kind: "inline" });
+        insertSpec(specs, prefix, { kind: SANITIZE_KIND_INLINE });
         base = inner.trim();
       }
     }
@@ -427,6 +439,122 @@ export function collectInheritedAliasSanitize(
       }
       return;
     }
+  }
+  if (startsWithCompoundType(t, TYPE_ENUM)) {
+    const inner = stripTypeBrackets(t, TYPE_ENUM);
+    for (const entry of splitTopLevel(inner, COMMA)) {
+      const v = entry.trim();
+      const openPos = v.indexOf(PAREN_OPEN);
+      if (openPos !== -1 && v.endsWith(PAREN_CLOSE)) {
+        const varInner = v.slice(openPos + 1, -1);
+        for (const fieldEntry of splitTopLevel(varInner, COMMA)) {
+          const f = fieldEntry.trim();
+          const eqPos = findCharAtDepthZero(f, EQUALS);
+          if (eqPos !== -1) {
+            const fieldName = f.slice(0, eqPos).trim();
+            const fieldType = f.slice(eqPos + 1).trim();
+            const fieldPrefix = joinPrefix(prefix, fieldName);
+            collectInheritedAliasSanitize(
+              fieldType,
+              fieldPrefix,
+              typeAliasSanitize,
+              out,
+            );
+          }
+        }
+      }
+    }
+  }
+}
+
+/** Collect inherited `| sanitize` specs from a parsed `VarType` tree against `typeAliasSanitize`. */
+export function collectInheritedAliasSanitizeFromVarType(
+  varType: VarType,
+  prefix: string,
+  typeAliasSanitize: ReadonlyMap<string, ReadonlyMap<string, SanitizeSpec>>,
+  out: Map<string, SanitizeSpec>,
+  typeAliases?: ReadonlyMap<string, VarType>,
+  seenAliases = new Set<string>(),
+): void {
+  if (typeAliasSanitize.size === 0) return;
+  switch (varType.kind) {
+    case TYPE_ALIAS: {
+      const aliasSpecs = typeAliasSanitize.get(varType.name);
+      if (aliasSpecs) {
+        for (const [rel, spec] of aliasSpecs) {
+          const key = joinPrefix(prefix, rel);
+          if (!out.has(key)) {
+            out.set(key, spec);
+          }
+        }
+      }
+      if (typeAliases && !seenAliases.has(varType.name)) {
+        const target = typeAliases.get(varType.name);
+        if (target) {
+          seenAliases.add(varType.name);
+          collectInheritedAliasSanitizeFromVarType(
+            target,
+            prefix,
+            typeAliasSanitize,
+            out,
+            typeAliases,
+            seenAliases,
+          );
+          seenAliases.delete(varType.name);
+        }
+      }
+      return;
+    }
+    case TYPE_OPTION:
+      collectInheritedAliasSanitizeFromVarType(
+        varType.innerType,
+        prefix,
+        typeAliasSanitize,
+        out,
+        typeAliases,
+        seenAliases,
+      );
+      return;
+    case TYPE_SCALAR_LIST:
+      collectInheritedAliasSanitizeFromVarType(
+        varType.elementType,
+        prefix,
+        typeAliasSanitize,
+        out,
+        typeAliases,
+        seenAliases,
+      );
+      return;
+    case TYPE_STRUCT:
+    case TYPE_LIST:
+    case TYPE_TMPL:
+      for (const field of varType.fields) {
+        collectInheritedAliasSanitizeFromVarType(
+          field.varType,
+          joinPrefix(prefix, field.name),
+          typeAliasSanitize,
+          out,
+          typeAliases,
+          seenAliases,
+        );
+      }
+      return;
+    case TYPE_ENUM:
+      for (const v of varType.variants) {
+        for (const field of v.fields) {
+          collectInheritedAliasSanitizeFromVarType(
+            field.varType,
+            joinPrefix(prefix, field.name),
+            typeAliasSanitize,
+            out,
+            typeAliases,
+            seenAliases,
+          );
+        }
+      }
+      return;
+    default:
+      return;
   }
 }
 

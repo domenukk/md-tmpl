@@ -742,8 +742,26 @@ function isValidNcname(name: string): boolean {
 
 export const INLINE_HEADING_SENTINEL = "#heading";
 
+const HEADING_LINE_BREAK_CHARS = new Set([
+  0x0a, // \n
+  0x0d, // \r
+  0x0b, // \v
+  0x0c, // \f
+  0x85, // NEL
+  0x2028, // LS
+  0x2029, // PS
+]);
+
 function collapseHeadingLineBreaks(s: string): string {
-  return s.replace(/[\n\r\u000b\u000c\u0085\u2028\u2029]/g, " ");
+  let out = "";
+  let last = 0;
+  for (let i = 0; i < s.length; i++) {
+    if (HEADING_LINE_BREAK_CHARS.has(s.charCodeAt(i))) {
+      out += `${s.slice(last, i)} `;
+      last = i + 1;
+    }
+  }
+  return last === 0 ? s : out + s.slice(last);
 }
 
 function validateQuarantineTagSpec(spec: string): [string, string[]] {

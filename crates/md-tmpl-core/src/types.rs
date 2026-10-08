@@ -93,16 +93,17 @@ impl fmt::Display for VarType {
 impl VarType {
     /// Returns `true` if this type can be directly displayed via `{{ expr }}`.
     ///
-    /// Only scalar types (`str`, `int`, `float`, `bool`) are displayable.
-    /// Compound types (`list`, `struct`, `enum`, `tmpl`, `option`) must be
-    /// accessed through iteration, field access, `kind()`, `has()`, or
-    /// `{% match %}` instead.
+    /// Scalar types (`str`, `int`, `float`, `bool`) and unit-only enums (all
+    /// variants have zero fields) are displayable. Compound types (`list`,
+    /// `struct`, data `enum`, `tmpl`, `option`) must be accessed through
+    /// iteration, field access, `kind()`, `has()`, or `{% match %}` instead.
     #[must_use]
     pub fn is_displayable(&self) -> bool {
-        matches!(
-            self,
-            Self::Str | Self::Int | Self::Float | Self::Bool | Self::Enum(_)
-        )
+        match self {
+            Self::Str | Self::Int | Self::Float | Self::Bool => true,
+            Self::Enum(variants) => variants.iter().all(|v| v.fields.is_empty()),
+            Self::List(_) | Self::Struct(_) | Self::Tmpl(_) | Self::Option(_) => false,
+        }
     }
 
     /// Returns `true` if `value` is compatible with this declared type.

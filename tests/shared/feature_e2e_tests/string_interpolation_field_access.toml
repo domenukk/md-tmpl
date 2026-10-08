@@ -1,0 +1,266 @@
+# Shared feature_e2e_tests: F6: string interpolation and compile-time field access validation.
+
+# ============================================================================
+# F6: String Interpolation — {{ expr }} inside quoted string literals
+# ============================================================================
+
+# -- Tier 1: Basic interpolation in conditions --
+
+[[tests]]
+name = "str_interp_if_eq_match"
+description = "Interpolated string in == comparison matches when values align"
+template = '''
+---
+params: [role = str, env = str]
+---
+> {% if role == "admin_{{ env }}" %}yes{% else %}no{% /if %}'''
+expected_output = "yes"
+[tests.params]
+role = "admin_prod"
+env = "prod"
+
+[[tests]]
+name = "str_interp_if_eq_no_match"
+description = "Interpolated string in == comparison does not match when values differ"
+template = '''
+---
+params: [role = str, env = str]
+---
+> {% if role == "admin_{{ env }}" %}yes{% else %}no{% /if %}'''
+expected_output = "no"
+[tests.params]
+role = "admin_staging"
+env = "prod"
+
+[[tests]]
+name = "str_interp_if_ne"
+description = "Interpolated string with != operator"
+template = '''
+---
+params: [label = str, prefix = str]
+---
+> {% if label != "{{ prefix }}_item" %}diff{% else %}same{% /if %}'''
+expected_output = "same"
+[tests.params]
+label = "test_item"
+prefix = "test"
+
+[[tests]]
+name = "str_interp_multiple_exprs"
+description = "String literal with multiple {{ expr }} interpolations"
+template = '''
+---
+params: [greeting = str, first = str, last = str]
+---
+> {% if greeting == "{{ first }} {{ last }}" %}match{% else %}no{% /if %}'''
+expected_output = "match"
+[tests.params]
+greeting = "Jane Doe"
+first = "Jane"
+last = "Doe"
+
+[[tests]]
+name = "str_interp_in_operator"
+description = "Interpolated string used as left operand of 'in'"
+template = '''
+---
+params: [items = list(str), key = str]
+---
+> {% if "item_{{ key }}" in items %}found{% else %}missing{% /if %}'''
+expected_output = "found"
+[tests.params]
+items = ["item_alpha", "item_beta"]
+key = "alpha"
+
+[[tests]]
+name = "str_interp_in_operator_not_found"
+description = "Interpolated string not found via 'in' operator"
+template = '''
+---
+params: [items = list(str), key = str]
+---
+> {% if "item_{{ key }}" in items %}found{% else %}missing{% /if %}'''
+expected_output = "missing"
+[tests.params]
+items = ["item_alpha", "item_beta"]
+key = "gamma"
+
+# -- Tier 2: Edge cases --
+
+[[tests]]
+name = "str_interp_empty_result"
+description = "Interpolation that produces empty string segments"
+template = '''
+---
+params: [a = str, empty = str]
+---
+> {% if a == "{{ empty }}hello" %}yes{% else %}no{% /if %}'''
+expected_output = "yes"
+[tests.params]
+a = "hello"
+empty = ""
+
+[[tests]]
+name = "str_interp_with_int"
+description = "Interpolated int value in string comparison"
+template = '''
+---
+params: [label = str, count = int]
+---
+> {% if label == "item_{{ count }}" %}yes{% else %}no{% /if %}'''
+expected_output = "yes"
+[tests.params]
+label = "item_42"
+count = 42
+
+[[tests]]
+name = "str_interp_both_sides"
+description = "Interpolated strings on both sides of a comparison"
+template = '''
+---
+params: [prefix = str, suffix = str]
+---
+> {% if "{{ prefix }}_X" == "{{ suffix }}_X" %}same{% else %}diff{% /if %}'''
+expected_output = "same"
+[tests.params]
+prefix = "hello"
+suffix = "hello"
+
+[[tests]]
+name = "str_interp_no_interpolation_fallback"
+description = "Plain strings without {{ }} still work as before"
+template = '''
+---
+params: [x = str]
+---
+> {% if x == "plain_literal" %}yes{% else %}no{% /if %}'''
+expected_output = "yes"
+[tests.params]
+x = "plain_literal"
+
+[[tests]]
+name = "str_interp_unicode"
+description = "Unicode values in interpolated strings"
+template = '''
+---
+params: [label = str, emoji = str]
+---
+> {% if label == "{{ emoji }}_test" %}yes{% else %}no{% /if %}'''
+expected_output = "yes"
+[tests.params]
+label = "🚀_test"
+emoji = "🚀"
+
+# -- Tier 3: Interpolation in panic (with filter) --
+
+[[tests]]
+name = "str_interp_panic_with_filter"
+description = "Panic string with interpolation using a filter"
+template = '''
+---
+params: [name = str]
+---
+> {% panic("unknown user: {{ name | upper }}") %}'''
+expected_error = "unknown user: ALICE"
+[tests.params]
+name = "alice"
+
+# ==========================================================================
+# Compile-time field access validation
+# ==========================================================================
+
+# -- Internal __kind__ key must be rejected at compile time --
+
+[[tests]]
+name = "internal_kind_key_rejected_in_expr"
+description = "Accessing __kind__ via dot path must produce a compile error"
+template = '''
+---
+params: [item = struct(name = str)]
+---
+{{ item.__kind__ }}'''
+expected_error = "__kind__"
+[tests.params.item]
+name = "test"
+[[tests]]
+name = "internal_kind_key_rejected_in_condition"
+description = "Accessing __kind__ in an if condition must produce a compile error"
+template = '''
+---
+params: [item = struct(name = str)]
+---
+> {% if item.__kind__ == "foo" %}
+
+yes
+
+> {% /if %}'''
+expected_error = "__kind__"
+[tests.params.item]
+name = "test"
+# -- Non-existing field access must produce an error --
+
+[[tests]]
+name = "nonexistent_field_access_errors"
+description = "Accessing a field that does not exist on a struct must produce an error"
+template = '''
+---
+params: [item = struct(name = str)]
+---
+{{ item.nonexistent }}'''
+[tests.params.item]
+name = "Alice"
+expected_error = "not found"
+
+[[tests]]
+name = "nonexistent_nested_field_access_errors"
+description = "Accessing a nested field that does not exist must produce an error"
+template = '''
+---
+params: [outer = struct(inner = struct(value = int))]
+---
+{{ outer.inner.missing }}'''
+[tests.params.outer.inner]
+value = 42
+expected_error = "not found"
+
+[[tests]]
+name = "len_on_struct_rejected"
+description = "len() should reject struct values — only list and string are valid"
+template = '''
+---
+params:
+  - data = struct(a = int, b = int)
+---
+{{ len(data) }}'''
+expected_error = "len() requires a list or string"
+
+[tests.params]
+data = { a = 1, b = 2 }
+
+# -- Undeclared variable references are compile-time errors --
+
+[[tests]]
+name = "undeclared_variable_in_body_is_error"
+description = "Referencing a variable declared nowhere is a compile-time error"
+template = '''
+---
+params:
+  - x = str
+---
+{{ x }} {{ y }}'''
+expected_error = "undeclared variable"
+[tests.params]
+x = "hi"
+
+[[tests]]
+name = "undeclared_variable_in_condition_is_error"
+description = "Referencing an undeclared variable inside an if condition errors"
+template = '''
+---
+params:
+  - x = int
+---
+> {% if y > 0 %}{{ x }}{% /if %}'''
+expected_error = "undeclared variable"
+[tests.params]
+x = 1

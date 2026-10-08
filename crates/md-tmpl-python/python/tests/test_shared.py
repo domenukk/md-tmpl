@@ -1,6 +1,6 @@
 """Shared cross-language conformance test runner in Python.
 
-Executes all 569 test cases across tests/shared/*.toml through the md_tmpl
+Executes every test case in the tests/shared/ suites through the md_tmpl
 Python extension module and asserts behavioral parity with Rust, Go, and TS.
 """
 
@@ -20,12 +20,15 @@ import pytest
 from md_tmpl import Template
 
 SHARED_DIR = Path(__file__).resolve().parents[4] / "tests" / "shared"
-SHARED_FILES = (
+FIXTURE_SUFFIX = ".toml"
+# A `.toml` entry is a single fixture file; any other entry is a directory of
+# per-topic fixture files, discovered in sorted order.
+SHARED_SUITES = (
     "inline_tmpl_tests.toml",
-    "include_tests.toml",
-    "inline_control_tests.toml",
+    "include_tests",
+    "inline_control_tests",
     "tmpl_param_tests.toml",
-    "feature_e2e_tests.toml",
+    "feature_e2e_tests",
     "env_tests.toml",
 )
 
@@ -91,9 +94,23 @@ def _resolve_file_content(val: Any) -> str:
     return ""
 
 
+def _suite_files(suite: str) -> list[str]:
+    """Resolve a shared suite to fixture paths relative to SHARED_DIR."""
+    if suite.endswith(FIXTURE_SUFFIX):
+        return [suite]
+    files = sorted(
+        p.relative_to(SHARED_DIR).as_posix()
+        for p in (SHARED_DIR / suite).iterdir()
+        if p.name.endswith(FIXTURE_SUFFIX)
+    )
+    if not files:
+        raise RuntimeError(f"shared suite directory {suite!r} has no fixtures")
+    return files
+
+
 def _load_all_cases() -> list[tuple[str, str, dict[str, Any]]]:
     all_cases: list[tuple[str, str, dict[str, Any]]] = []
-    for fname in SHARED_FILES:
+    for fname in (f for suite in SHARED_SUITES for f in _suite_files(suite)):
         data = tomllib.loads((SHARED_DIR / fname).read_text())
         for case in data.get("tests", []):
             case_id = f"{fname}::{case.get('name', 'unnamed')}"

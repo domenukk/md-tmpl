@@ -398,7 +398,8 @@ impl Template {
             frontmatter::parse_frontmatter_with_env(source, env_values)?
         };
         let body = body.to_string();
-        let (mut segments, inline_templates) = compiled::compile(&body, &fm.type_aliases)?;
+        let (mut segments, inline_templates) =
+            compiled::compile_with_parent_scope(&body, &fm.type_aliases, &fm.type_alias_sanitize)?;
         compiled::apply_frontmatter_sanitization(
             &mut segments,
             &fm.param_sanitize,
@@ -469,7 +470,8 @@ impl Template {
         let source_hash = hash_source_no_std(source);
         let (fm, body) = frontmatter::parse_frontmatter_with_env(source, env_values)?;
         let body = body.to_string();
-        let (mut segments, inline_templates) = compiled::compile(&body, &fm.type_aliases)?;
+        let (mut segments, inline_templates) =
+            compiled::compile_with_parent_scope(&body, &fm.type_aliases, &fm.type_alias_sanitize)?;
         compiled::apply_frontmatter_sanitization(
             &mut segments,
             &fm.param_sanitize,
@@ -1027,17 +1029,37 @@ mod collision_and_scope_tests;
 #[cfg(all(test, feature = "std"))]
 mod const_tests;
 #[cfg(all(test, feature = "std"))]
+mod declaration_tests;
+#[cfg(all(test, feature = "std", feature = "serde"))]
+mod enum_integration_tests;
+#[cfg(all(test, feature = "std"))]
 mod error_diagnostic_tests;
+#[cfg(all(test, feature = "std"))]
+mod escape_and_newline_tests;
 #[cfg(all(test, feature = "std"))]
 mod higher_order_tests;
 #[cfg(all(test, feature = "std"))]
+mod hot_reload_tests;
+#[cfg(all(test, feature = "std"))]
 mod inline_edge_tests;
 #[cfg(all(test, feature = "std"))]
-mod render_integration_tests;
+mod name_rule_tests;
+#[cfg(all(test, feature = "std"))]
+mod param_usage_tests;
+#[cfg(all(test, feature = "std"))]
+mod render_integration_feature_tests;
+#[cfg(all(test, feature = "std"))]
+mod render_integration_include_typing_tests;
+#[cfg(all(test, feature = "std"))]
+mod render_integration_scope_tests;
+#[cfg(all(test, feature = "std"))]
+mod render_into_tests;
+#[cfg(all(test, feature = "std", feature = "serde"))]
+mod serde_render_tests;
 #[cfg(all(test, feature = "std"))]
 mod shared_tests;
 #[cfg(all(test, feature = "std"))]
-mod tests;
+mod source_and_defaults_tests;
 
 #[cfg(all(test, feature = "std"))]
 mod doc_example_tests;

@@ -8,6 +8,7 @@ import { parseFrontmatter } from "../frontmatter.js";
 import { parseBody } from "../parser.js";
 import { applySanitizeAstPass } from "../sanitize_pass.js";
 import { type Value, fromJs, valueToJs } from "../value.js";
+import { collectInlineTemplateMap } from "./inline_templates.js";
 import { type CachedInclude, type IncludeCacheEntry } from "./types.js";
 import { getFs, getPath, hashString } from "./utils.js";
 import {
@@ -75,6 +76,12 @@ export function resolveIncludeEntry(
     }
 
     const nodes = parseBody(body, false, fm.bodyStartLine ?? 1);
+    const inlineTemplates = collectInlineTemplateMap(
+      nodes,
+      fm.typeAliases,
+      fm.typeAliasSanitize,
+      fm.sanitizeNotice,
+    );
     applySanitizeAstPass(nodes, fm.paramSanitize, fm.sanitizeNotice);
     const consts = new Map<string, Value>();
     for (const decl of fm.consts) {
@@ -92,12 +99,12 @@ export function resolveIncludeEntry(
     for (const [key, jsVal] of Object.entries(fm.importedConsts)) {
       consts.set(key, fromJs(jsVal));
     }
+    const constsJs = new Map<string, unknown>();
+    for (const [k, v] of consts) {
+      constsJs.set(k, valueToJs(v));
+    }
     // Inject enum type constants from imported type aliases.
     if (fm.typeAliases.size > 0) {
-      const constsJs = new Map<string, unknown>();
-      for (const [k, v] of consts) {
-        constsJs.set(k, valueToJs(v));
-      }
       injectEnumTypeConstants(fm.typeAliases, consts, constsJs);
     }
     // Resolve alias types in declarations (e.g., types.Role → enum(...))
@@ -106,9 +113,11 @@ export function resolveIncludeEntry(
     const cached: CachedInclude = {
       nodes,
       consts,
+      constsJs,
       declarations: resolvedDecls,
       baseDir: childBaseDir,
       typeAliases: fm.typeAliases.size > 0 ? fm.typeAliases : undefined,
+      inlineTemplates,
     };
     cache.delete(absPath);
     cache.set(absPath, { hash, envHash, mtimeMs: stat.mtimeMs, cached });

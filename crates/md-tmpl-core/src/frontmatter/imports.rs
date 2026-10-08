@@ -387,6 +387,7 @@ pub fn resolve_imports_with_consts<S: core::hash::BuildHasher>(
 
         let ns = ImportedNamespace {
             type_aliases: imported_fm.type_aliases,
+            type_alias_sanitize: imported_fm.type_alias_sanitize,
             param_types: imported_fm
                 .declarations
                 .iter()
@@ -766,6 +767,105 @@ consts:
             result["layout"].consts.get("MAX"),
             Some(&Value::Int(42)),
             "layout's MAX const should be 42"
+        );
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn imported_type_alias_sanitize_propagates_to_param_sanitize() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let base = dir.path();
+
+        std::fs::write(
+            base.join("shared.tmpl.md"),
+            "---
+name: shared
+types:
+  - UntrustedBio = untrusted str
+  - SafeCard = struct(body = str | sanitize(\"card\"))
+  - Verdict = enum(Confirmed(evidence = untrusted str), Rejected)
+---
+",
+        )
+        .expect("write shared");
+
+        let host_src = "---
+imports:
+  - \"[shared](./shared.tmpl.md)\"
+
+params:
+  - bio = shared.UntrustedBio
+  - card = shared.SafeCard
+  - verdict = shared.Verdict
+---
+Bio={{ bio }}
+Card={{ card.body }}
+
+> {% match verdict %}
+> {% case Confirmed %}
+
+Evidence={{ verdict.evidence }}
+
+> {% case Rejected %}
+
+Rejected
+
+> {% /match %}";
+
+        let (fm, _) = crate::frontmatter::parse_frontmatter_with_base_dir(host_src, base, &[])
+            .expect("parse host frontmatter");
+
+        assert_eq!(
+            fm.param_sanitize.get("bio"),
+            Some(&crate::types::SanitizeSpec::Inline),
+            "imported UntrustedBio alias should propagate Inline sanitize spec"
+        );
+        assert_eq!(
+            fm.param_sanitize.get("card.body"),
+            Some(&crate::types::SanitizeSpec::Block {
+                tag: "card".to_string(),
+                notice: None,
+            }),
+            "imported SafeCard struct field should propagate Block sanitize spec"
+        );
+        assert_eq!(
+            fm.param_sanitize.get("verdict.evidence"),
+            Some(&crate::types::SanitizeSpec::Inline),
+            "imported Verdict enum variant field should propagate Inline sanitize spec"
+        );
+    }
+
+    #[test]
+    fn test_inline_tmpl_inherits_parent_type_alias_sanitize() {
+        let src = "---
+types:
+  - SafeItem = struct(label = untrusted str)
+
+params:
+  - item = SafeItem
+---
+> {% tmpl badge %}
+---
+params:
+  - entry = SafeItem
+---
+<badge>{{ entry.label }}</badge>
+
+> {% /tmpl %}
+> {% include badge with entry=item %}";
+
+        let tmpl = crate::Template::from_source(src).expect("compile template with inline tmpl");
+        let mut ctx = crate::Context::new();
+        let mut fields = crate::compat::HashMap::new();
+        fields.insert(
+            "label".to_string(),
+            crate::Value::Str("break </badge> out".to_string()),
+        );
+        ctx.set("item", crate::Value::Struct(alloc::sync::Arc::new(fields)));
+        let rendered = tmpl.render_ctx(&ctx).expect("render");
+        assert!(
+            !rendered.contains("</badge> out"),
+            "Expected inline template inheriting parent SafeItem type alias to sanitize </badge>, got: {rendered}"
         );
     }
 }

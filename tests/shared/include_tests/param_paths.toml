@@ -1,0 +1,80 @@
+# Shared include_tests: Param-based (runtime-interpolated) include paths.
+
+# ---------------------------------------------------------------------------
+# Param-based include paths (runtime interpolation)
+# ---------------------------------------------------------------------------
+# Include paths can use runtime params — resolved at render time.
+
+[[tests]]
+name = "param_based_include_path"
+description = "Include path uses a runtime param to select the template directory"
+parent_template = '''
+---
+params:
+  - tmpl_dir = str
+  - name = str
+---
+> {% include [greet]({{ tmpl_dir }}/greet.tmpl.md) with name=name %}'''
+expected_output = "Hello Alice!"
+
+[tests.params]
+tmpl_dir = "./templates"
+name = "Alice"
+
+[tests.files]
+"templates/greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+Hello {{ name }}!'''
+
+[[tests]]
+name = "param_based_include_path_different_values"
+description = "Same param-based include path pattern works with different runtime values"
+parent_template = '''
+---
+params:
+  - locale = str
+  - name = str
+---
+> {% include [greet](./locales/{{ locale }}/greet.tmpl.md) with name=name %}'''
+expected_output = "Bonjour Alice!"
+
+[tests.params]
+locale = "fr"
+name = "Alice"
+
+[tests.files]
+"locales/fr/greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+Bonjour {{ name }}!'''
+
+[[tests]]
+name = "param_combined_with_env_in_include_path"
+description = "Include path mixes env (compile-time) with param (runtime) for path construction"
+parent_template = '''
+---
+env: [BASE = str]
+
+params:
+  - variant = str
+  - name = str
+---
+> {% include [greet]({{ BASE }}/{{ variant }}/greet.tmpl.md) with name=name %}'''
+expected_output = "Hola Alice!"
+
+[tests.params]
+variant = "es"
+name = "Alice"
+
+[tests.env]
+BASE = "./locales"
+
+[tests.files]
+"locales/es/greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+Hola {{ name }}!'''

@@ -1,0 +1,116 @@
+# Shared include_tests: Cross-directory relative path includes.
+
+# ---------------------------------------------------------------------------
+# Cross-directory relative path includes
+# ---------------------------------------------------------------------------
+# Tests that validate includes across sibling directories, ensuring relative
+# path resolution (../) works correctly in various configurations.
+
+[[tests]]
+name = "include_sibling_dir_simple"
+description = "Include a template from a sibling directory via ../sibling/"
+parent_template = '''
+---
+params: [name = str]
+---
+> {% include [greet](./dir_a/greet.tmpl.md) with name=name %}'''
+expected_output = "Hello Alice from dir_a!"
+
+[tests.params]
+name = "Alice"
+
+[tests.files]
+"dir_a/greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+Hello {{ name }} from dir_a!'''
+
+[[tests]]
+name = "include_cross_sibling_dirs"
+description = "Template in dir_a/ includes a template from sibling dir_b/ via ../dir_b/"
+parent_template = '''
+---
+params: [name = str]
+---
+> {% include [wrapper](./dir_a/wrapper.tmpl.md) with name=name %}'''
+expected_output = "Wrapped: Greeting from dir_b: Alice"
+
+[tests.params]
+name = "Alice"
+
+[tests.files]
+"dir_a/wrapper.tmpl.md" = '''
+---
+params: [name = str]
+---
+Wrapped: {% include [greet](../dir_b/greet.tmpl.md) with name=name %}'''
+"dir_b/greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+Greeting from dir_b: {{ name }}'''
+
+[[tests]]
+name = "include_cross_sibling_with_types"
+description = "Template in components/ imports types from ../types/ and includes from ../layouts/"
+parent_template = '''
+---
+params: [role = str]
+---
+> {% include [card](./components/card.tmpl.md) with role=role %}'''
+expected_output = "Role: admin | Layout: default"
+
+[tests.params]
+role = "admin"
+
+[tests.files]
+"types/role.tmpl.md" = '''
+---
+name: role
+types: [Role = enum(admin, editor, viewer)]
+---
+'''
+"layouts/base.tmpl.md" = '''
+---
+params: []
+consts: [LAYOUT_NAME = str := "default"]
+---
+Layout: {{ LAYOUT_NAME }}'''
+"components/card.tmpl.md" = '''
+---
+imports:
+  - "[role](../types/role.tmpl.md)"
+
+params: [role = role.Role]
+---
+Role: {{ role }} | {% include [layout](../layouts/base.tmpl.md) %}'''
+
+[[tests]]
+name = "include_deeply_nested_cross_dirs"
+description = "Three directories deep with cross-references: a/b/c/ → ../../types/ and ../../../shared/"
+parent_template = '''
+---
+params: [msg = str]
+---
+> {% include [deep](./a/b/c/deep.tmpl.md) with msg=msg %}'''
+expected_output = "Message: hello | Version: 1.0"
+
+[tests.params]
+msg = "hello"
+
+[tests.files]
+"shared/config.tmpl.md" = '''
+---
+name: config
+consts: [VERSION = str := "1.0"]
+---
+'''
+"a/b/c/deep.tmpl.md" = '''
+---
+imports:
+  - "[config](../../../shared/config.tmpl.md)"
+
+params: [msg = str]
+---
+Message: {{ msg }} | Version: {{ config.VERSION }}'''

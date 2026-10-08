@@ -115,5 +115,18 @@ pub fn validate_field_accesses_runtime(
 }
 
 #[cfg(all(test, feature = "std"))]
-#[path = "type_check_tests.rs"]
-mod type_check_tests;
+mod include_contract_tests;
+#[cfg(all(test, feature = "std"))]
+mod include_edge_tests;
+#[cfg(all(test, feature = "std"))]
+mod loop_and_field_tests;
+#[cfg(all(test, feature = "std"))]
+mod match_tests;
+#[cfg(all(test, feature = "std"))]
+mod option_narrowing_tests;
+#[cfg(all(test, feature = "std"))]
+mod string_match_tests;
+#[cfg(all(test, feature = "std"))]
+mod test_helpers;
+#[cfg(all(test, feature = "std"))]
+mod type_alias_tests;

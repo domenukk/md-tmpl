@@ -309,6 +309,32 @@ pub(crate) fn collect_inherited_alias_sanitize(
             return;
         }
     }
+    if let Some(rest) = t.strip_prefix(TYPE_ENUM)
+        && let Some(inner) = strip_type_brackets(rest.trim())
+    {
+        for entry in split_at_depth_zero(inner) {
+            let v = entry.trim();
+            if let Some(open_pos) = v.find(PAREN_OPEN)
+                && v.ends_with(PAREN_CLOSE)
+            {
+                let var_inner = &v[open_pos + 1..v.len() - 1];
+                for field_entry in split_at_depth_zero(var_inner) {
+                    let f = field_entry.trim();
+                    if let Some(eq_pos) = find_char_at_depth_zero(f, EQUALS) {
+                        let field_name = f[..eq_pos].trim();
+                        let field_type = f[eq_pos + 1..].trim();
+                        let field_prefix = join_prefix(prefix, field_name);
+                        collect_inherited_alias_sanitize(
+                            field_type,
+                            &field_prefix,
+                            type_alias_sanitize,
+                            out,
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 pub(crate) type ExtractedDeclarationSanitize =

@@ -1275,25 +1275,26 @@ These prefixes are optional syntactic sugar for readability and are stripped dur
 
 ### Renderable Types
 
-Only **scalar types** can appear directly in `{{ }}` expressions:
+Only **scalar types** and **unit-only `enum` types** (where every variant has zero payload fields, e.g. `enum(Active, Paused)`) can appear directly in `{{ }}` expressions:
 
-| Type    | Rendered as                                           |
-| ------- | ----------------------------------------------------- |
-| `str`   | The raw string value verbatim (no automatic escaping) |
-| `int`   | Decimal integer (e.g. `42`)                           |
-| `float` | Decimal float (e.g. `3.14`)                           |
-| `bool`  | `true` or `false`                                     |
+| Type               | Rendered as                                           |
+| ------------------ | ----------------------------------------------------- |
+| `str`              | The raw string value verbatim (no automatic escaping) |
+| `int`              | Decimal integer (e.g. `42`)                           |
+| `float`            | Decimal float (e.g. `3.14`)                           |
+| `bool`             | `true` or `false`                                     |
+| `enum` (unit-only) | The active variant name (e.g. `Active`)               |
 
-Attempting to render a non-scalar type directly is a **compile-time error**.
+Attempting to render a non-scalar type (or a data `enum` with payload fields when not narrowed to a unit variant inside `{% case %}`) directly is a **compile-time error**.
 Use the appropriate construct instead:
 
-| Type     | Correct usage                                                       |
-| -------- | ------------------------------------------------------------------- |
-| `list`   | `{% for item in items %}{{ item.field }}{% /for %}`                 |
-| `struct` | `{{ config.timeout }}` (access individual fields)                   |
-| `enum`   | `{% match status %}` or `{{ kind(status) }}`                        |
-| `tmpl`   | `{% include widget with field = value %}`                           |
-| `option` | `{% if has(x) %}{{ x }}{% /if %}` (narrowing unwraps to inner type) |
+| Type               | Correct usage                                                                                              |
+| ------------------ | ---------------------------------------------------------------------------------------------------------- |
+| `list`             | `{% for item in items %}{{ item.field }}{% /for %}`                                                        |
+| `struct`           | `{{ config.timeout }}` (access individual fields)                                                          |
+| `enum` (with data) | `{% match status %}` (renders inside unit `{% case %}` or accesses payload fields) or `{{ kind(status) }}` |
+| `tmpl`             | `{% include widget with field = value %}`                                                                  |
+| `option`           | `{% if has(x) %}{{ x }}{% /if %}` (narrowing unwraps to inner type)                                        |
 
 Enum types declared in `types:` also support dotted-path access to their
 variants via the `kind()` function — see
@@ -1458,18 +1459,20 @@ Notice customization is supported at three levels:
 
 #### Declarative Parameter Sanitization (`untrusted str`)
 
-In YAML frontmatter `params:` or `types:`, mark untrusted string fields with `untrusted str`:
+In YAML frontmatter `params:` or `types:` (including chained `types:` aliases, cross-template `imports:` via `stem.Alias`, and inline `{% tmpl %}` frontmatter), mark untrusted string fields with `untrusted str` (or `str | sanitize(...)`):
 
 - **Scalar string:** `query = untrusted str`
 - **Lists of untrusted strings:** `items = list(untrusted str)`
 - **Optional untrusted strings:** `notes = option(untrusted str)`
-- **Struct / enum fields:** `user = struct(name = untrusted str, bio = untrusted str)`
+- **Struct / enum variant fields:** `user = struct(name = untrusted str, bio = untrusted str)` or `Status = enum(Ok, Err(msg = untrusted str))`
+- **Reusable type aliases:** `UntrustedText = untrusted str` or `Item = struct(title = untrusted str)` in `types:` (inherited by inline `{% tmpl %}` blocks and exported via `imports:`)
 
 Declaring a parameter or field as `untrusted str` automatically applies in-place `sanitize` to every interpolation of that value:
 
 - LLM control tokens and chat-turn delimiters are neutralized automatically.
-- If the interpolation is surrounded by static XML tags in the template (e.g. `<search>{{ query }}</search>`), closing tag breakouts (such as `</search>`) are automatically neutralized to `&lt;/search&gt;` without double-wrapping.
-- When full XML block encapsulation with a boundary notice is desired at a specific site in the template body, apply `{{ document | sanitize("user_document") }}` directly at that interpolation site:
+- If the interpolation is surrounded by static XML tags in the template (e.g. `<search>{{ query }}</search>`, including across inline `{% include %}` sites), closing tag breakouts (such as `</search>`) are automatically neutralized to `&lt;/search&gt;` without double-wrapping.
+- If the interpolation appears on a Markdown ATX heading line (`# ...` through `###### ...`), embedded line breaks (`\r\n`, `\n`, `\r`) are collapsed to a single space so untrusted input cannot break out of the heading line to inject new Markdown sections or directives.
+- When full XML block encapsulation with a boundary notice is desired at a specific site in the template body, apply `{{ document | sanitize("user_document") }}` directly at that interpolation site (or declare `document = untrusted("user_document") str` in frontmatter):
 
 ```markdown
 ---

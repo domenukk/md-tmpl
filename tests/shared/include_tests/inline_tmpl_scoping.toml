@@ -1,0 +1,112 @@
+# Shared include_tests: Inline template scoping across included files.
+
+# ---------------------------------------------------------------------------
+# Inline template scoping (no leaking between files)
+# ---------------------------------------------------------------------------
+# SPEC: Inline templates are scoped to their defining file.
+# Parent {% tmpl %} defs must NOT leak to included files.
+# Included file's {% tmpl %} defs must NOT leak to parent.
+
+[[tests]]
+name = "inline_tmpl_preferred_over_file"
+description = "When both inline and file template exist with same name, inline wins"
+parent_template = '''
+---
+params: [name = str]
+---
+> {% tmpl greet %}
+---
+params: [name = str]
+---
+Inline: {{ name }}
+
+> {% /tmpl %}
+
+> {% include greet with name=name %}'''
+expected_output = '''Inline: Alice
+'''
+
+[tests.params]
+name = "Alice"
+
+[tests.files]
+"greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+File: {{ name }}'''
+
+[[tests]]
+name = "file_include_not_affected_by_parent_inline"
+description = "Included file's own inline templates are independent from parent's"
+parent_template = '''
+---
+params: [name = str]
+---
+> {% tmpl helper %}
+---
+params: []
+---
+PARENT_HELPER
+
+> {% /tmpl %}
+
+> {% include [child](./child.tmpl.md) with name=name %}'''
+expected_output = '''CHILD_HELPER: Alice
+'''
+
+[tests.params]
+name = "Alice"
+
+[tests.files]
+"child.tmpl.md" = '''
+---
+params: [name = str]
+---
+> {% tmpl helper %}
+---
+params: [name = str]
+---
+CHILD_HELPER: {{ name }}
+
+> {% /tmpl %}
+
+> {% include helper with name=name %}'''
+
+[[tests]]
+name = "same_named_tmpl_parent_and_child_independent"
+description = "Parent and child both define {% tmpl greeting %} — each uses its own"
+parent_template = '''
+---
+params: []
+---
+> {% tmpl greeting %}
+---
+params: []
+---
+PARENT_GREETING
+
+> {% /tmpl %}
+
+> {% include greeting %}
+
+> {% include [child](./child.tmpl.md) %}'''
+expected_output = '''PARENT_GREETING
+CHILD_GREETING
+'''
+params = {}
+
+[tests.files]
+"child.tmpl.md" = '''
+---
+params: []
+---
+> {% tmpl greeting %}
+---
+params: []
+---
+CHILD_GREETING
+
+> {% /tmpl %}
+
+> {% include greeting %}'''

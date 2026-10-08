@@ -25,16 +25,24 @@ export class DirectScope {
   }
 
   resolve(name: string): unknown {
+    // Check consts first (constants are immutable and take precedence)
+    if (this.consts.has(name)) {
+      return this.consts.get(name);
+    }
     // Check layers top-down
     for (let i = this.layers.length - 1; i >= 0; i--) {
       const layer = this.layers[i];
       if (layer?.has(name)) return layer.get(name);
     }
-    // Check consts — return raw value (display conversion happens at render)
-    if (this.consts.has(name)) {
-      return this.consts.get(name);
-    }
     return undefined;
+  }
+
+  resolveConst(key: string): unknown {
+    return this.consts.get(key);
+  }
+
+  allConsts(): ReadonlyMap<string, unknown> {
+    return this.consts;
   }
 
   pushLayer(): Map<string, unknown> {

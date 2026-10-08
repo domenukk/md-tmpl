@@ -860,5 +860,14 @@ mod param_defaults;
 pub(crate) use param_defaults::*;
 
 #[cfg(test)]
-#[path = "params_tests.rs"]
-mod tests;
+#[path = "params_tests_decls.rs"]
+mod tests_decls;
+#[cfg(test)]
+#[path = "params_tests_defaults.rs"]
+mod tests_defaults;
+#[cfg(test)]
+#[path = "params_tests_lexing.rs"]
+mod tests_lexing;
+#[cfg(test)]
+#[path = "params_tests_types.rs"]
+mod tests_types;

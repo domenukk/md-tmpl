@@ -1,0 +1,209 @@
+# Shared include_tests: Import unused-variable tracking at root-level granularity.
+
+# ---------------------------------------------------------------------------
+# Import unused-variable tracking: root-level granularity
+# ---------------------------------------------------------------------------
+# Imports are tracked by their stem (root name) only. Using ANY sub-field
+# (e.g., {{ lib.Foo }}) marks the entire import as used. There is no need
+# to claim individual sub-fields in {# unused #} comments.
+
+[[tests]]
+name = "import_subfield_marks_root_used"
+description = "Using one sub-field of an import marks the entire import as used — no unused error"
+parent_template = '''
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+
+params: []
+---
+Value: {{ lib.CONST_X }}'''
+expected_output = "Value: x"
+params = {}
+
+[tests.files]
+"lib.tmpl.md" = '''
+---
+name: lib
+allow_unused: true
+
+types:
+  - TypeA = enum(TypeA, TypeB)
+  - TypeC = enum(TypeC, TypeD)
+
+consts:
+  - CONST_X = str := "x"
+  - CONST_Y = str := "y"
+---
+'''
+
+[[tests]]
+name = "import_unused_without_any_reference_allowed"
+description = "An import whose stem is never referenced in the body is silently allowed — imports are not subject to unused-param checks"
+parent_template = '''
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+
+params: [name = str]
+---
+Hello {{ name }}'''
+expected_output = "Hello World"
+
+[tests.params]
+name = "World"
+
+[tests.files]
+"lib.tmpl.md" = '''
+---
+name: lib
+allow_unused: true
+
+types:
+  - Sev = enum(High, Low)
+---
+'''
+
+[[tests]]
+name = "import_comment_reference_marks_used"
+description = "Referencing an import in a {# comment #} counts as a use — no unused error"
+parent_template = '''
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+
+params: [name = str]
+---
+
+> {# unused: {{ lib }} #}
+
+Hello {{ name }}'''
+expected_output = "Hello World"
+
+[tests.params]
+name = "World"
+
+[tests.files]
+"lib.tmpl.md" = '''
+---
+name: lib
+allow_unused: true
+
+types:
+  - Sev = enum(High, Low)
+---
+'''
+
+[[tests]]
+name = "import_subfield_no_claim_needed_for_siblings"
+description = "Using lib.TypeA does NOT require claiming lib.TypeC or lib.CONST_Y — they are not individually tracked"
+parent_template = '''
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+
+params: []
+---
+Value: {{ lib.CONST_X }}'''
+expected_output = "Value: x"
+params = {}
+
+[tests.files]
+"lib.tmpl.md" = '''
+---
+name: lib
+allow_unused: true
+
+types:
+  - TypeA = enum(TypeA, TypeB)
+  - TypeC = enum(TypeC, TypeD)
+
+consts:
+  - CONST_X = str := "x"
+  - CONST_Y = str := "y"
+---
+'''
+
+[[tests]]
+name = "import_multiple_subfields_all_count"
+description = "Using multiple sub-fields from the same import all satisfy the root-level used check"
+parent_template = '''
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+
+params: []
+---
+X={{ lib.CONST_X }} Y={{ lib.CONST_Y }}'''
+expected_output = "X=x Y=y"
+params = {}
+
+[tests.files]
+"lib.tmpl.md" = '''
+---
+name: lib
+allow_unused: true
+
+consts:
+  - CONST_X = str := "x"
+  - CONST_Y = str := "y"
+---
+'''
+
+[[tests]]
+name = "import_kinds_function_marks_root_used"
+description = "Using kinds(lib.EnumType) on an imported enum marks the import as used"
+parent_template = '''
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+
+params: []
+---
+Tags: {{ kinds(lib.Priority) | join(", ") }}'''
+expected_output = "Tags: High, Medium, Low"
+params = {}
+
+[tests.files]
+"lib.tmpl.md" = '''
+---
+name: lib
+allow_unused: true
+
+types:
+  - Priority = enum(High, Medium, Low)
+  - Status = enum(Open, Closed)
+
+consts:
+  - UNUSED_CONST = str := "nope"
+---
+'''
+
+[[tests]]
+name = "import_typed_param_marks_root_used"
+description = "Using an imported type in a param declaration marks the import as used"
+parent_template = '''
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+
+params:
+  - priority = lib.Priority
+---
+Priority: {{ priority }}'''
+expected_output = "Priority: High"
+
+[tests.params]
+priority = "High"
+
+[tests.files]
+"lib.tmpl.md" = '''
+---
+name: lib
+allow_unused: true
+
+types:
+  - Priority = enum(High, Medium, Low)
+  - Status = enum(Open, Closed)
+---
+'''

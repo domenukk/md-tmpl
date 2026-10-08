@@ -1,0 +1,185 @@
+# Shared include_tests: Circular includes, non-circular re-includes, and mutual imports.
+
+# ---------------------------------------------------------------------------
+# Cross-directory circular includes (depth limit)
+# ---------------------------------------------------------------------------
+# Circular includes across different directories should hit the depth limit
+# just like same-directory circulars.
+
+[[tests]]
+name = "circular_includes_cross_dir_rejected"
+description = "Circular includes across sibling directories should exceed max include depth"
+parent_template = '''
+---
+params: []
+---
+> {% include [a](./dir_a/a.tmpl.md) %}'''
+expected_error = "maximum include depth"
+params = {}
+
+[tests.files]
+"dir_a/a.tmpl.md" = '''
+---
+params: []
+---
+A> {% include [b](../dir_b/b.tmpl.md) %}'''
+"dir_b/b.tmpl.md" = '''
+---
+params: []
+---
+B> {% include [a](../dir_a/a.tmpl.md) %}'''
+
+[[tests]]
+name = "self_recursive_include_rejected"
+description = "A template that includes itself should exceed max include depth"
+parent_template = '''
+---
+params: []
+---
+> {% include [self](./self.tmpl.md) %}'''
+expected_error = "maximum include depth"
+params = {}
+
+[tests.files]
+"self.tmpl.md" = '''
+---
+params: []
+---
+R> {% include [self](./self.tmpl.md) %}'''
+
+# ---------------------------------------------------------------------------
+# Non-circular re-includes from first path
+# ---------------------------------------------------------------------------
+# Template A includes B in a different dir, B includes C back in A's dir.
+# This is NOT circular — it's just cross-directory path traversal.
+
+[[tests]]
+name = "re_include_from_original_dir"
+description = "A includes B in sub/, B includes C back in root — not circular"
+parent_template = '''
+---
+params: [name = str]
+---
+> {% include [wrapper](./sub/wrapper.tmpl.md) with name=name %}'''
+expected_output = "Wrapped: Hello Alice from root!"
+
+[tests.params]
+name = "Alice"
+
+[tests.files]
+"sub/wrapper.tmpl.md" = '''
+---
+params: [name = str]
+---
+Wrapped: {% include [greet](../greet.tmpl.md) with name=name %}'''
+"greet.tmpl.md" = '''
+---
+params: [name = str]
+---
+Hello {{ name }} from root!'''
+
+[[tests]]
+name = "re_include_chain_three_dirs"
+description = "Chain: root → dir_a/ → dir_b/ → root/shared/ — all relative, non-circular"
+parent_template = '''
+---
+params: [msg = str]
+---
+> {% include [step1](./dir_a/step1.tmpl.md) with msg=msg %}'''
+expected_output = "step1 > step2 > final: hello"
+
+[tests.params]
+msg = "hello"
+
+[tests.files]
+"dir_a/step1.tmpl.md" = '''
+---
+params: [msg = str]
+---
+step1 > {% include [step2](../dir_b/step2.tmpl.md) with msg=msg %}'''
+"dir_b/step2.tmpl.md" = '''
+---
+params: [msg = str]
+---
+step2 > {% include [final](../shared/final.tmpl.md) with msg=msg %}'''
+"shared/final.tmpl.md" = '''
+---
+params: [msg = str]
+---
+final: {{ msg }}'''
+
+# ---------------------------------------------------------------------------
+# Mutual imports (frontmatter — non-recursive, should work)
+# ---------------------------------------------------------------------------
+# A imports B for B's types, B imports A for A's types.
+# Since imports are non-recursive (only reading direct frontmatter),
+# this should work without circular issues.
+
+[[tests]]
+name = "mutual_imports_consts"
+description = "A imports B for consts, B imports A for consts — works because imports are non-recursive"
+parent_template = '''
+---
+imports:
+  - "[b](./b.tmpl.md)"
+
+params: []
+---
+B says: {{ b.GREETING }}'''
+expected_output = "B says: Hello from B"
+params = {}
+
+[tests.files]
+"b.tmpl.md" = '''
+---
+name: b
+
+imports:
+  - "[a](./a.tmpl.md)"
+
+consts: [GREETING = str := "Hello from B"]
+
+params: []
+---
+'''
+"a.tmpl.md" = '''
+---
+name: a
+
+consts: [GREETING = str := "Hello from A"]
+
+params: []
+---
+'''
+
+[[tests]]
+name = "mutual_imports_types_for_include"
+description = "Parent imports types from lib, includes child that also imports types from lib — shared import, not circular"
+parent_template = '''
+---
+imports:
+  - "[types](./types.tmpl.md)"
+
+params: [role = types.Role]
+---
+Parent: {{ role }} | {% include [child](./child.tmpl.md) with role=role %}'''
+expected_output = "Parent: admin | Child: admin"
+
+[tests.params]
+role = "admin"
+
+[tests.files]
+"types.tmpl.md" = '''
+---
+name: types
+types: [Role = enum(admin, editor, viewer)]
+---
+'''
+"child.tmpl.md" = '''
+---
+imports:
+  - "[types](./types.tmpl.md)"
+
+params: [role = types.Role]
+---
+Child: {{ role }}'''

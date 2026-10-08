@@ -1,0 +1,458 @@
+# Shared feature_e2e_tests: F5: boolean expressions.
+
+# ============================================================================
+# Tier 1: Basic Functionality — F5 Boolean Expressions
+# ============================================================================
+
+[[tests]]
+name = "bool_and_basic"
+description = "Logical AND returns true when both operands are true"
+template = '''
+---
+params: [a = int, b = int]
+---
+> {% if a > 0 && b > 0 %}yes{% else %}no{% /if %}'''
+expected_output = "yes"
+[tests.params]
+a = 5
+b = 3
+
+[[tests]]
+name = "bool_and_short_circuit"
+description = "Logical AND returns false when first operand is false"
+template = '''
+---
+params: [a = int, b = int]
+---
+> {% if a > 0 && b > 0 %}yes{% else %}no{% /if %}'''
+expected_output = "no"
+[tests.params]
+a = -1
+b = 3
+
+[[tests]]
+name = "bool_or_basic"
+description = "Logical OR returns true when at least one operand is true"
+template = '''
+---
+params: [a = int, b = int]
+---
+> {% if a > 0 || b > 0 %}yes{% else %}no{% /if %}'''
+expected_output = "yes"
+[tests.params]
+a = -1
+b = 3
+
+[[tests]]
+name = "bool_or_both_false"
+description = "Logical OR returns false when both operands are false"
+template = '''
+---
+params: [a = int, b = int]
+---
+> {% if a > 0 || b > 0 %}yes{% else %}no{% /if %}'''
+expected_output = "no"
+[tests.params]
+a = -1
+b = -2
+
+[[tests]]
+name = "bool_not_basic"
+description = "Unary NOT negates a boolean variable"
+template = '''
+---
+params: [flag = bool]
+---
+> {% if !flag %}yes{% else %}no{% /if %}'''
+expected_output = "yes"
+[tests.params]
+flag = false
+
+[[tests]]
+name = "bool_not_has"
+description = "Unary NOT negates has() built-in function"
+template = '''
+---
+params: [x = option(str) := None]
+---
+> {% if !has(x) %}missing{% else %}present{% /if %}'''
+expected_output = "missing"
+params = {}
+
+[[tests]]
+name = "bool_grouping"
+description = "Parentheses group sub-expressions to control evaluation order"
+template = '''
+---
+params: [a = bool, b = bool, c = bool]
+---
+> {% if (a || b) && c %}yes{% else %}no{% /if %}'''
+expected_output = "yes"
+[tests.params]
+a = false
+b = true
+c = true
+
+[[tests]]
+name = "bool_match_as_condition"
+description = "match...case used as boolean condition inside if"
+template = '''
+---
+types:
+  - Status = enum(Active, Paused, Stopped)
+
+params: [status = Status]
+---
+> {% if match status case Active %}yes{% else %}no{% /if %}'''
+expected_output = "yes"
+[tests.params]
+status = "Active"
+
+[[tests]]
+name = "bool_match_multi_variant_condition"
+description = "match...case with multiple variants used as boolean condition"
+template = '''
+---
+types:
+  - Status = enum(Active, Paused, Stopped)
+
+params: [status = Status]
+---
+> {% if match status case Active | Paused %}actionable{% else %}stopped{% /if %}'''
+expected_output = "actionable"
+[tests.params]
+status = "Paused"
+
+[[tests]]
+name = "bool_match_guard"
+description = "Inline match with guard expression (&&) filters on condition"
+template = '''
+---
+types:
+  - Status = enum(Active(score = int), Paused, Stopped)
+
+params: [status = Status]
+---
+> {% match status case Active && status.score > 80 %}high{% else %}other{% /match %}'''
+expected_output = "high"
+[tests.params]
+status = { "__kind__" = "Active", "score" = 95 }
+
+# ============================================================================
+# Tier 2: Edge Cases — F5 Boolean Expressions
+# ============================================================================
+
+[[tests]]
+name = "bool_nested_not"
+description = "Unary NOT with grouped comparison negates the result"
+template = '''
+---
+params: [a = int]
+---
+> {% if !(a > 0) %}not_positive{% else %}positive{% /if %}'''
+expected_output = "not_positive"
+[tests.params]
+a = -5
+
+[[tests]]
+name = "bool_complex_expr"
+description = "Complex boolean: (a > 0 || b > 0) && !flag"
+template = '''
+---
+params: [a = int, b = int, flag = bool]
+---
+> {% if (a > 0 || b > 0) && !flag %}yes{% else %}no{% /if %}'''
+expected_output = "yes"
+[tests.params]
+a = -1
+b = 5
+flag = false
+
+[[tests]]
+name = "bool_match_and_comparison"
+description = "match-as-condition combined with comparison using &&"
+template = '''
+---
+types:
+  - Status = enum(Active, Paused, Stopped)
+
+params: [status = Status, count = int]
+---
+> {% if match status case Active && count > 0 %}active_with_items{% else %}inactive{% /if %}'''
+expected_output = "active_with_items"
+[tests.params]
+status = "Active"
+count = 5
+
+[[tests]]
+name = "bool_not_in_replacement"
+description = "!(x in y) replaces the removed not-in operator"
+template = '''
+---
+params: [roles = list(str)]
+---
+> {% if !("admin" in roles) %}no_admin{% else %}has_admin{% /if %}'''
+expected_output = "no_admin"
+[tests.params]
+roles = ["user", "guest"]
+
+[[tests]]
+name = "bool_chained_and"
+description = "Multiple && operators chain left-to-right"
+template = '''
+---
+params: [a = int, b = int, c = int]
+---
+> {% if a > 0 && b > 0 && c > 0 %}all_positive{% else %}not_all{% /if %}'''
+expected_output = "all_positive"
+[tests.params]
+a = 1
+b = 2
+c = 3
+
+# ============================================================================
+# Tier 2 (cont.): More Edge Cases — F5 Boolean Expressions
+# ============================================================================
+
+[[tests]]
+name = "bool_not_true_becomes_false"
+description = "Unary NOT on a true variable produces false"
+template = '''
+---
+params: [flag = bool]
+---
+> {% if !flag %}no{% else %}yes{% /if %}'''
+expected_output = "yes"
+[tests.params]
+flag = true
+
+[[tests]]
+name = "bool_double_negation"
+description = "Double negation !!flag cancels out"
+template = '''
+---
+params: [flag = bool]
+---
+> {% if !!flag %}yes{% else %}no{% /if %}'''
+expected_output = "yes"
+[tests.params]
+flag = true
+
+[[tests]]
+name = "bool_precedence_and_binds_tighter"
+description = "Without parens, && binds tighter than || — a || (b && c)"
+template = '''
+---
+params: [a = bool, b = bool, c = bool]
+---
+> {% if a || b && c %}yes{% else %}no{% /if %}'''
+expected_output = "yes"
+[tests.params]
+a = true
+b = false
+c = false
+
+[[tests]]
+name = "bool_elif_with_and"
+description = "Boolean && operator works in elif branches"
+template = '''
+---
+params: [a = int, b = int]
+---
+> {% if a > 10 %}big{% elif a > 0 && b > 0 %}both_positive{% else %}nope{% /if %}'''
+expected_output = "both_positive"
+[tests.params]
+a = 3
+b = 5
+
+[[tests]]
+name = "bool_elif_with_or"
+description = "Boolean || operator works in elif branches"
+template = '''
+---
+params: [a = int, b = int]
+---
+> {% if a > 10 %}big{% elif a > 0 || b > 0 %}some_positive{% else %}nope{% /if %}'''
+expected_output = "some_positive"
+[tests.params]
+a = -1
+b = 5
+
+[[tests]]
+name = "bool_match_guard_false"
+description = "Match guard that evaluates to false causes arm to be skipped"
+template = '''
+---
+types:
+  - Status = enum(Active(score = int), Paused, Stopped)
+
+params: [status = Status]
+---
+> {% match status case Active && status.score > 80 %}high{% else %}other{% /match %}'''
+expected_output = "other"
+[tests.params]
+status = { "__kind__" = "Active", "score" = 30 }
+
+[[tests]]
+name = "bool_match_as_condition_option_some"
+description = "match...case Some used as boolean condition on option type"
+template = '''
+---
+params: [opt = option(str)]
+---
+> {% if match opt case Some %}present{% else %}absent{% /if %}'''
+expected_output = "present"
+[tests.params]
+opt = "hello"
+
+[[tests]]
+name = "bool_match_as_condition_option_none"
+description = "match...case Some returns false when option is None"
+template = '''
+---
+params: [opt = option(str) := None]
+---
+> {% if match opt case Some %}present{% else %}absent{% /if %}'''
+expected_output = "absent"
+params = {}
+
+[[tests]]
+name = "bool_has_and_field_access"
+description = "has(opt) && opt > 0 — option narrowing works through && chain"
+template = '''
+---
+params: [opt = option(int)]
+---
+> {% if has(opt) && opt > 0 %}positive{% else %}nope{% /if %}'''
+expected_output = "positive"
+[tests.params]
+opt = 42
+
+[[tests]]
+name = "bool_chained_or"
+description = "Multiple || operators chain correctly with short-circuit"
+template = '''
+---
+params: [a = bool, b = bool, c = bool]
+---
+> {% if a || b || c %}yes{% else %}no{% /if %}'''
+expected_output = "yes"
+[tests.params]
+a = false
+b = false
+c = true
+
+[[tests]]
+name = "bool_negated_match_condition"
+description = "Negated match-as-condition: !(match X case Y)"
+template = '''
+---
+types:
+  - Status = enum(Active, Paused, Stopped)
+
+params: [status = Status]
+---
+> {% if !(match status case Stopped) %}running{% else %}stopped{% /if %}'''
+expected_output = "running"
+[tests.params]
+status = "Active"
+
+# ============================================================================
+# Negative Tests — F5 Boolean Expressions
+# ============================================================================
+
+[[tests]]
+name = "bool_error_not_keyword"
+description = "Using removed 'not' keyword produces compile error"
+template = '''
+---
+params: [flag = bool]
+---
+> {% if not flag %}yes{% /if %}'''
+expected_error = "not"
+[tests.params]
+flag = true
+
+[[tests]]
+name = "bool_error_not_in_operator"
+description = "Using removed 'not in' operator produces compile error"
+template = '''
+---
+params: [x = str, items = list(str)]
+---
+> {% if x not in items %}yes{% /if %}'''
+expected_error = "not"
+[tests.params]
+x = "hello"
+items = ["world"]
+
+[[tests]]
+name = "bool_error_unclosed_paren"
+description = "Unclosed parenthesis in boolean expression produces compile error"
+template = '''
+---
+params: [a = int]
+---
+> {% if (a > 0 %}yes{% /if %}'''
+expected_error = ")"
+[tests.params]
+a = 1
+
+[[tests]]
+name = "bool_error_empty_parens"
+description = "Empty parentheses in boolean expression produce compile error"
+template = '''
+---
+params: []
+---
+> {% if () %}yes{% /if %}'''
+expected_error = "expression"
+params = {}
+
+[[tests]]
+name = "bool_error_dangling_operator"
+description = "Dangling && operator without right operand produces compile error"
+template = '''
+---
+params: [a = int]
+---
+> {% if a && %}yes{% /if %}'''
+expected_error = "expression"
+[tests.params]
+a = 1
+
+[[tests]]
+name = "bool_error_dangling_or"
+description = "Dangling || operator without right operand produces compile error"
+template = '''
+---
+params: [a = int]
+---
+> {% if a || %}yes{% /if %}'''
+expected_error = "expression"
+[tests.params]
+a = 1
+
+[[tests]]
+name = "bool_error_leading_and"
+description = "Leading && without left operand produces compile error"
+template = '''
+---
+params: [a = int]
+---
+> {% if && a > 0 %}yes{% /if %}'''
+expected_error = "expression"
+[tests.params]
+a = 1
+
+[[tests]]
+name = "bool_error_unclosed_negated_paren"
+description = "Unclosed parenthesis after ! produces compile error"
+template = '''
+---
+params: [a = int]
+---
+> {% if !(a > 0 %}yes{% /if %}'''
+expected_error = ")"
+[tests.params]
+a = 1

@@ -1,0 +1,157 @@
+# Shared feature_e2e_tests: Unused parameter detection corner cases.
+
+# ===========================================================================
+# Unused parameter detection — corner cases
+# ===========================================================================
+
+[[tests]]
+name = "unused_param_in_text_only"
+description = "Param appearing only in plain text (not in {{ }}) must be rejected as unused"
+template = '''
+---
+params: [name = str]
+---
+The name of the project is important.'''
+expected_error = "unused"
+[tests.params]
+name = "hello"
+
+[[tests]]
+name = "unused_param_in_raw_block_only"
+description = "Param appearing only inside {% raw %} block must be rejected as unused"
+template = '''
+---
+params: [name = str]
+---
+> {% raw %}{{ name }}{% /raw %}'''
+expected_error = "unused"
+[tests.params]
+name = "hello"
+
+[[tests]]
+name = "unused_param_in_comment_only_suppresses"
+description = "Param mentioned as {{ name }} in {# comment #} suppresses unused error"
+template = '''
+---
+params: [name = str]
+---
+> {# {{ name }} is intentionally unused here #}
+
+No params used.'''
+expected_output = "No params used."
+[tests.params]
+name = "hello"
+
+[[tests]]
+name = "param_used_in_expr_is_not_unused"
+description = "Param used in {{ expr }} is correctly detected as used"
+template = '''
+---
+params: [name = str]
+---
+Hello {{ name }}!'''
+expected_output = "Hello hello!"
+[tests.params]
+name = "hello"
+
+[[tests]]
+name = "param_used_only_in_condition_is_not_unused"
+description = "Param used only in {% if %} condition (not in body text) is not unused"
+template = '''
+---
+params: [flag = bool]
+---
+> {% if flag %}yes{% else %}no{% /if %}'''
+expected_output = "yes"
+[tests.params]
+flag = true
+
+[[tests]]
+name = "param_used_only_in_for_iter_is_not_unused"
+description = "Param used only as for-loop iterable (not in body text) is not unused"
+template = '''
+---
+params: [items = list(str)]
+---
+> {% for item in items %}{{ item }}{% /for %}'''
+expected_output = "ab"
+[tests.params]
+items = ["a", "b"]
+
+[[tests]]
+name = "for_binding_shadows_param_is_unused"
+description = "Param shadowed by for-loop binding is correctly detected as unused"
+template = '''
+---
+params: [item = str, items = list(str)]
+---
+> {% for item in items %}{{ item }}{% /for %}'''
+expected_error = "unused"
+[tests.params]
+item = "hello"
+items = ["a", "b"]
+
+[[tests]]
+name = "bare_name_in_comment_does_not_suppress"
+description = "SPEC: Bare variable name in comment (without {{ }}) does NOT suppress unused error"
+template = '''
+---
+params: [reserved = str, name = str]
+---
+> {# reserved — bare name, does NOT suppress the error #}
+
+Hello {{ name }}!'''
+expected_error = "unused"
+[tests.params]
+reserved = "x"
+name = "world"
+
+[[tests]]
+name = "comment_multi_ref_suppresses"
+description = "SPEC: Multiple {{ }} references in a single comment all suppress unused"
+template = '''
+---
+params: [role_type = str, agent_name = str]
+---
+> {# unused: {{ role_type }}, {{ agent_name }} #}
+
+Done.'''
+expected_output = "Done."
+[tests.params]
+role_type = "admin"
+agent_name = "bot"
+
+[[tests]]
+name = "comment_dotted_path_tracks_root"
+description = "SPEC: Dotted paths like {{ item.label }} in comments track the root variable"
+template = '''
+---
+params: [item = struct(label = str)]
+---
+> {# {{ item.label }} referenced here #}
+
+Done.'''
+expected_output = "Done."
+[tests.params]
+item = { label = "x" }
+
+[[tests]]
+name = "param_used_only_in_match_is_not_unused"
+description = "Param used only in {% match %} expression is correctly detected as used"
+template = '''
+---
+params: [status = enum(Ok, Err)]
+---
+> {% match status %}
+> {% case Ok %}
+
+good
+
+> {% case Err %}
+
+bad
+
+> {% /match %}'''
+expected_output = "good\n"
+[tests.params]
+status = { __kind__ = "Ok" }

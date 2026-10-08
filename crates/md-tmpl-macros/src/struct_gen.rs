@@ -274,7 +274,14 @@ pub(crate) fn generate_const_decl_tokens(
                 let val_tokens =
                     codegen_value_as_rust_literal(v, &decl.var_type, struct_name_str, &decl.name);
                 const_decls.push(quote! {
-                    pub static #const_ident: #cp::__private::LazyLock<#rust_type> = #cp::__private::LazyLock::new(|| #val_tokens);
+                    pub static #const_ident: #cp::__private::LazyLock<#rust_type> = #cp::__private::LazyLock::new({
+                        #[cold]
+                        #[inline(never)]
+                        fn __init_const() -> #rust_type {
+                            #val_tokens
+                        }
+                        __init_const
+                    });
                 });
             }
         }

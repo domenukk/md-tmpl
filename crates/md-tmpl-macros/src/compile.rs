@@ -75,8 +75,12 @@ pub(crate) fn compile_template_to_ast(
     let mut dependency_paths: Vec<PathBuf> = Vec::new();
     collect_import_deps(&fm, base_dir, &mut dependency_paths);
 
-    let (mut segments, inline_templates) =
-        md_tmpl_core::compiled::compile(body, &fm.type_aliases).map_err(|e| e.to_string())?;
+    let (mut segments, inline_templates) = md_tmpl_core::compiled::compile_with_parent_scope(
+        body,
+        &fm.type_aliases,
+        &fm.type_alias_sanitize,
+    )
+    .map_err(|e| e.to_string())?;
     md_tmpl_core::compiled::apply_frontmatter_sanitization(
         &mut segments,
         &fm.param_sanitize,
@@ -389,13 +393,17 @@ pub(crate) fn load_include_declarations(
         md_tmpl_core::parse_frontmatter_with_base_dir(&included_source, included_base_dir, &[])
             .map_err(|e| format!("syntax error in include {}: {e}", include_path.display()))?;
     collect_import_deps(&included_fm, included_base_dir, deps);
-    let (mut included_segments, _) =
-        md_tmpl_core::compiled::compile(included_body, &included_fm.type_aliases).map_err(|e| {
-            format!(
-                "compilation error in include {}: {e}",
-                include_path.display()
-            )
-        })?;
+    let (mut included_segments, _) = md_tmpl_core::compiled::compile_with_parent_scope(
+        included_body,
+        &included_fm.type_aliases,
+        &included_fm.type_alias_sanitize,
+    )
+    .map_err(|e| {
+        format!(
+            "compilation error in include {}: {e}",
+            include_path.display()
+        )
+    })?;
     md_tmpl_core::compiled::apply_frontmatter_sanitization(
         &mut included_segments,
         &included_fm.param_sanitize,
@@ -444,7 +452,12 @@ pub(crate) fn resolve_single_include(
     // Each file has its own {% tmpl %} namespace — parent templates do NOT
     // leak into includes, and included file templates don't leak to parents.
     let (mut included_segments, included_inline_templates) =
-        md_tmpl_core::compiled::compile(included_body, &included_fm.type_aliases).map_err(|e| {
+        md_tmpl_core::compiled::compile_with_parent_scope(
+            included_body,
+            &included_fm.type_aliases,
+            &included_fm.type_alias_sanitize,
+        )
+        .map_err(|e| {
             format!(
                 "compilation error in include {}: {e}",
                 include_path.display()

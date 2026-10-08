@@ -1,0 +1,132 @@
+# Shared feature_e2e_tests: Frontmatter const block parsing and multi-line declaration regressions.
+
+# ============================================================================
+# REGRESSION: frontmatter const block parsing (blank lines, comments, quotes)
+# ============================================================================
+# These fixtures lock in fixes for real-world `consts:` blocks (see the ARTIST
+# SEVERITY_LADDER const): blank lines and `#` comments between block-list
+# entries must not drop subsequent entries, and commas inside quoted string
+# values must not be misread as struct/list field separators.
+
+[[tests]]
+name = "regression_const_quoted_comma_in_struct_list"
+description = "REGRESSION: commas inside quoted strings in a list-of-struct const value must not be treated as field separators"
+template = '''
+---
+consts:
+  - ROWS = list(msg = str, n = int) := [{msg = "a, b", n = 1}, {msg = "c, d, e", n = 2}]
+
+params: []
+---
+> {% for r in ROWS %}{{ r.msg }}={{ r.n }};{% /for %}'''
+expected_output = "a, b=1;c, d, e=2;"
+params = {}
+
+[[tests]]
+name = "regression_const_blank_line_between_entries"
+description = "REGRESSION: a blank line between block-list const entries must not drop subsequent entries"
+template = '''
+---
+consts:
+  - ALPHA = str := "one"
+
+  - BETA = str := "two"
+
+params: []
+---
+{{ ALPHA }}/{{ BETA }}'''
+expected_output = "one/two"
+params = {}
+
+[[tests]]
+name = "regression_const_comment_between_entries"
+description = "REGRESSION: a full-line # comment between block-list const entries is skipped and does not drop subsequent entries"
+template = '''
+---
+consts:
+  - GAMMA = int := 10
+  # a documenting comment between const entries
+  - DELTA = int := 20
+
+params: []
+---
+{{ GAMMA }}/{{ DELTA }}'''
+expected_output = "10/20"
+params = {}
+
+# ============================================================================
+# Multi-line frontmatter declarations (regression: continuation-line joining)
+#
+# A declaration whose `:=` default value or compound type spans several
+# physical lines must be parsed in full. The TypeScript port previously parsed
+# frontmatter line-by-line and dropped continuation lines, truncating such
+# values (e.g. ARTIST's SEVERITY_LADDER). These fixtures run against BOTH the
+# Rust reference engine and the TypeScript port, guarding against divergence.
+# ============================================================================
+
+[[tests]]
+name = "fm_multiline_const_list_value"
+description = "REGRESSION: a const list value spanning multiple physical lines parses every element"
+template = '''
+---
+consts:
+  - TIERS = list(tier = str, note = str) :=
+    [{tier = "L0", note = "analysis"},
+    {tier = "L1", note = "trigger"},
+    {tier = "L2", note = "control"}]
+
+params: []
+---
+out:{% for row in TIERS %}{{ row.tier }}={{ row.note }};{% /for %}'''
+expected_output = "out:L0=analysis;L1=trigger;L2=control;"
+params = {}
+
+[[tests]]
+name = "fm_multiline_const_list_with_comments"
+description = "REGRESSION: comments and blank lines before a multi-line value do not break the continuation (ARTIST layout)"
+template = '''
+---
+consts:
+  - FIRST = str := "one"
+
+  # A documented, canonical list — single source of truth.
+  # The value intentionally spans several physical lines.
+  - SECOND = list(k = str) :=
+    [{k = "a"},
+    {k = "b"},
+    {k = "c"}]
+
+params: []
+---
+{{ FIRST }}:{% for e in SECOND %}{{ e.k }}{% /for %}'''
+expected_output = "one:abc"
+params = {}
+
+[[tests]]
+name = "fm_multiline_compound_type_param"
+description = "REGRESSION: a param whose compound list() type spans multiple physical lines parses every field"
+template = '''
+---
+params:
+  - rows = list(tier = str,
+    short = str,
+    note = str)
+---
+out:{% for r in rows %}{{ r.tier }}/{{ r.short }}/{{ r.note }};{% /for %}'''
+expected_output = "out:L0/zero/analysis;"
+[tests.params]
+rows = [{ "tier" = "L0", "short" = "zero", "note" = "analysis" }]
+
+[[tests]]
+name = "fm_multiline_param_list_default"
+description = "REGRESSION: a param default list value spanning multiple physical lines is used when the param is omitted"
+template = '''
+---
+params:
+  - rows = list(id = int, label = str) :=
+    [{id = 1, label = "alpha"},
+    {id = 2, label = "beta"}]
+---
+out:{% for r in rows %}{{ r.id }}:{{ r.label }} {% /for %}'''
+expected_output = "out:1:alpha 2:beta "
+params = {}

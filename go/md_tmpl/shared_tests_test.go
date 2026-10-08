@@ -1,13 +1,14 @@
 package md_tmpl
 
-// Comprehensive shared conformance test runner covering all 569 cases across
-// the 6 central cross-language test suites in tests/shared/*.toml.
+// Comprehensive shared conformance test runner covering every case in the
+// central cross-language test suites under tests/shared/.
 //
 // Language parity: Rust and TypeScript execute these exact same fixtures.
 
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -18,13 +19,53 @@ func sharedCorpusDir() string {
 	return filepath.Join("..", "..", "tests", "shared")
 }
 
-var sharedCorpusFiles = []string{
+// sharedFixtureSuffix is the file suffix of shared fixture files.
+const sharedFixtureSuffix = ".toml"
+
+// sharedCorpusSuites lists the shared suites relative to sharedCorpusDir. An
+// entry ending in sharedFixtureSuffix is a single fixture file; any other entry
+// is a directory of per-topic fixture files, discovered in sorted order.
+var sharedCorpusSuites = []string{
 	"inline_tmpl_tests.toml",
-	"include_tests.toml",
-	"inline_control_tests.toml",
+	"include_tests",
+	"inline_control_tests",
 	"tmpl_param_tests.toml",
-	"feature_e2e_tests.toml",
+	"feature_e2e_tests",
 	"env_tests.toml",
+}
+
+// sharedSuiteFiles resolves a shared suite to fixture paths relative to
+// sharedCorpusDir, failing the test if a suite directory has no fixtures.
+func sharedSuiteFiles(t *testing.T, suite string) []string {
+	t.Helper()
+	if strings.HasSuffix(suite, sharedFixtureSuffix) {
+		return []string{suite}
+	}
+	entries, err := os.ReadDir(filepath.Join(sharedCorpusDir(), suite))
+	if err != nil {
+		t.Fatalf("list shared suite %s: %v", suite, err)
+	}
+	var files []string
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), sharedFixtureSuffix) {
+			files = append(files, suite+"/"+entry.Name())
+		}
+	}
+	sort.Strings(files)
+	if len(files) == 0 {
+		t.Fatalf("shared suite directory %s has no fixtures", suite)
+	}
+	return files
+}
+
+// sharedCorpusFiles returns every shared fixture file across all suites.
+func sharedCorpusFiles(t *testing.T) []string {
+	t.Helper()
+	var files []string
+	for _, suite := range sharedCorpusSuites {
+		files = append(files, sharedSuiteFiles(t, suite)...)
+	}
+	return files
 }
 
 // transformOptionValues implements TOML option-value transformations:
@@ -268,7 +309,7 @@ func runSharedCase(t *testing.T, tc map[string]any) {
 
 func TestSharedConformance(t *testing.T) {
 	totalCases := 0
-	for _, file := range sharedCorpusFiles {
+	for _, file := range sharedCorpusFiles(t) {
 		cases := loadSharedCases(t, file)
 		if len(cases) == 0 {
 			t.Fatalf("shared test suite %s is empty", file)

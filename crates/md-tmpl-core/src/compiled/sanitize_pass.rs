@@ -490,7 +490,11 @@ fn propagate_enclosing_xml_tags(
                     &mut state.open_tags,
                     &mut state.pending_open_tag,
                 );
-                update_heading_line_state(text, &mut state.in_atx_heading, &mut state.at_line_start);
+                update_heading_line_state(
+                    text,
+                    &mut state.in_atx_heading,
+                    &mut state.at_line_start,
+                );
             }
             Segment::Expr { filters, .. } => {
                 attach_open_tags_to_filters(filters, &state.open_tags, state.in_atx_heading);
@@ -528,7 +532,11 @@ fn propagate_enclosing_xml_tags(
                 }
             }
             Segment::Raw(text) => {
-                update_heading_line_state(text, &mut state.in_atx_heading, &mut state.at_line_start);
+                update_heading_line_state(
+                    text,
+                    &mut state.in_atx_heading,
+                    &mut state.at_line_start,
+                );
             }
             Segment::Comment(_) => {}
         }

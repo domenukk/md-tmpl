@@ -7,6 +7,7 @@
 import { type VarDecl, type VarType } from "../frontmatter.js";
 import { type Node } from "../parser.js";
 import { type Value } from "../value.js";
+import { type InlineTemplateEntry } from "./inline_templates.js";
 
 // ---------------------------------------------------------------------------
 // ITemplate — shared interface for all template backends
@@ -97,10 +98,13 @@ export interface CompileOptions {
 export interface CachedInclude {
   readonly nodes: readonly Node[];
   readonly consts: ReadonlyMap<string, Value>;
+  readonly constsJs: ReadonlyMap<string, unknown>;
   readonly declarations: readonly VarDecl[];
   readonly baseDir: string;
   /** Type aliases from the child's own frontmatter + imports. */
   readonly typeAliases?: ReadonlyMap<string, VarType>;
+  /** Pre-compiled inline templates defined inside the included file. */
+  readonly inlineTemplates: Map<string, InlineTemplateEntry>;
 }
 
 /**
