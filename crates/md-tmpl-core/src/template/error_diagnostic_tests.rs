@@ -28,30 +28,23 @@ fn test_error_io_includes_path() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_error_undefined_variable_message() {
-    // UndefinedVariable fires at runtime when a dotted path reaches
-    // a missing field — validate_context returns MissingParams for
-    // top-level keys, so we use a dotted path instead.
-    let tmpl = Template::from_source(
+fn test_error_missing_field_is_compile_error() {
+    // A dotted path to an undeclared field is rejected when the template is
+    // compiled, before any context is supplied.
+    let err = Template::from_source(
         r"---
 params: [data = struct(x = str)]
 ---
 {{ data.missing_field }}",
     )
-    .unwrap();
-    let mut ctx = Context::new();
-    ctx.set(
-        "data",
-        crate::Value::new_struct([("x", crate::Value::from("hello"))]),
-    );
-    let err = tmpl.render_ctx(&ctx).unwrap_err();
+    .unwrap_err();
     let msg = err.to_string();
     assert!(
-        matches!(err, TemplateError::UndefinedVariable(_)),
-        "expected UndefinedVariable, got: {msg}"
+        matches!(err, TemplateError::Syntax(_)),
+        "expected a compile-time syntax error, got: {msg}"
     );
     assert!(
-        msg.contains("missing_field"),
+        msg.contains("field 'missing_field' does not exist"),
         "should mention the undefined field: {msg}"
     );
 }
@@ -164,7 +157,7 @@ fn test_error_type_mismatch_nested_path() {
         r"---
 params: [items = list(score = int)]
 ---
-{{ items }}",
+> {% for item in items %}{{ item.score }}{% /for %}",
     )
     .unwrap();
     let ctx = ctx! {
@@ -366,7 +359,7 @@ fn test_type_mismatch_dotted_path_for_deeply_nested() {
         r"---
 params: [items = list(config = struct(timeout = int))]
 ---
-{{ items }}",
+> {% for item in items %}{{ item.config.timeout }}{% /for %}",
     )
     .unwrap();
     let ctx = ctx! {

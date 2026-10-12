@@ -3,14 +3,13 @@
 use alloc::{borrow::Cow, string::ToString, vec, vec::Vec};
 
 use super::{
-    CompiledPath, MatchArm, MatchArms, Segment, analysis::parse_condition, compile_body,
-    enrich_error, split_for_else,
+    CompiledPath, MatchArm, MatchArms, Segment,
+    analysis::parse_condition,
+    block_scan::{find_top_level_tag, split_for_else},
+    compile_body, enrich_error,
 };
 use crate::{
-    consts::{
-        CLOSE_FOR, CLOSE_IF, CLOSE_MATCH, KW_ELSE, TAG_CASE_PREFIX, TAG_FOR_PREFIX, TAG_IF_PREFIX,
-        TAG_MATCH_PREFIX,
-    },
+    consts::{CLOSE_MATCH, KW_ELSE, TAG_CASE_PREFIX, TAG_MATCH_PREFIX},
     error::TemplateError,
     parser,
 };
@@ -63,7 +62,7 @@ pub(super) fn compile_match<'a>(
 
     if let Some(variant) = inline_variant {
         // Inline form: check for {% else %} to create a default arm.
-        let (case_text, else_text) = split_for_else(body_text);
+        let (case_text, else_text) = split_for_else(body_text)?;
         let case_body = compile_body(case_text).map_err(|e| enrich_error(e, case_text))?;
 
         // Parse guard: `Variant && guard_condition`.
@@ -258,56 +257,12 @@ fn split_match_arms(body: &str) -> Result<MatchArms, TemplateError> {
     Ok(arms)
 }
 
-/// Scan forward from `input` until we find a top-level `{% case %}` tag
-/// (respecting nesting of inner match, if, and for blocks). Returns the
-/// text slice that constitutes the arm body.
+/// Return the arm body at the start of `input`: everything up to the next
+/// `{% case %}` / `{% else %}` arm of this match (nested `if`, `for`,
+/// `match`, and `raw` blocks are skipped), or all of `input` for the last arm.
 fn scan_to_next_case_or_end(input: &str) -> Result<&str, TemplateError> {
-    let mut match_depth: u32 = 0;
-    let mut if_for_depth: u32 = 0;
-    let mut search_from: usize = 0;
-
-    while search_from < input.len() {
-        let rest = &input[search_from..];
-        let scan = parser::scan_next_tag(rest)?;
-        match scan {
-            parser::ScanResult::Literal(_) => return Ok(input),
-            parser::ScanResult::Found {
-                before,
-                tag: parser::Tag::Stmt(stmt),
-                after,
-                ..
-            } => {
-                let tag_pos = search_from + before.len();
-
-                if stmt.starts_with(TAG_MATCH_PREFIX) {
-                    match_depth += 1;
-                } else if stmt == CLOSE_MATCH {
-                    if match_depth == 0 {
-                        // End of our match block — return everything before.
-                        return Ok(&input[..tag_pos]);
-                    }
-                    match_depth -= 1;
-                } else if stmt.starts_with(TAG_IF_PREFIX) || stmt.starts_with(TAG_FOR_PREFIX) {
-                    if_for_depth += 1;
-                } else if stmt == CLOSE_IF || stmt == CLOSE_FOR {
-                    if_for_depth = if_for_depth.saturating_sub(1);
-                } else if (stmt.starts_with(TAG_CASE_PREFIX) || stmt == KW_ELSE)
-                    && match_depth == 0
-                    && if_for_depth == 0
-                {
-                    // Next case/else at our level — return everything before.
-                    return Ok(&input[..tag_pos]);
-                }
-
-                // Skip past the tag.
-                search_from = input.len() - after.len();
-            }
-            parser::ScanResult::Found { after, .. } => {
-                // Expr or comment — skip past the tag.
-                search_from = input.len() - after.len();
-            }
-        }
-    }
-
-    Ok(input)
+    let next_arm = find_top_level_tag(input, |stmt| {
+        stmt.starts_with(TAG_CASE_PREFIX) || stmt == KW_ELSE
+    })?;
+    Ok(next_arm.map_or(input, |tag| &input[..tag.start]))
 }

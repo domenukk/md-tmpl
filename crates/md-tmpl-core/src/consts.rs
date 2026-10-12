@@ -487,11 +487,16 @@ pub(crate) const ERR_UNUSED_TYPE_ALIAS: &str = "unused type alias";
 pub(crate) const ERR_DUPLICATE_CONST: &str = "duplicate constant name";
 /// Error when a param and a const share the same name.
 pub(crate) const ERR_PARAM_CONST_CONFLICT: &str = "parameter name conflicts with constant name";
-/// Error when a for-loop binding shadows a declared name.
-pub(crate) const ERR_FOR_BINDING_SHADOWS: &str = "for loop binding shadows";
+/// Error suffix when a for-loop binding shadows a declared name:
+/// `for-loop binding '<name>' shadows a declared name (...)`.
+pub(crate) const ERR_FOR_BINDING_SHADOWS: &str =
+    "shadows a declared name (param, const, env, import stem, or inline template)";
 /// Error when a `{% %}` tag starts a line without a blockquote `>` prefix.
 pub(crate) const ERR_BARE_STMT_TAG: &str =
     "statement tag at line start must be blockquote-prefixed with '> '";
+/// Error when a `{# #}` comment starts a line without a blockquote `>` prefix.
+pub(crate) const ERR_BARE_COMMENT: &str =
+    "comment at line start must be blockquote-prefixed with '> '";
 /// Error when compound type uses angle or square brackets instead of parentheses.
 pub(crate) const ERR_COMPOUND_BRACKETS_PROHIBITED: &str =
     "must use parentheses (...); angle brackets <...> and square brackets [...] are prohibited";

@@ -174,6 +174,36 @@ char *pt_quarantine(const uint8_t *data, size_t len, const char *tag_spec,
 char *pt_quarantine_untrusted(const uint8_t *data, size_t len,
                               const char *tag_spec, char **out_err);
 bool pt_is_quarantined(const uint8_t *data, size_t len, const char *tag_spec);
+char *pt_sanitize(const uint8_t *data, size_t len, const char *tag_spec,
+                  char **out_err);
+char *pt_sanitize_block(const uint8_t *data, size_t len, const char *tag_spec,
+                        const char *custom_notice, char **out_err);
+bool pt_is_sanitized_block(const uint8_t *data, size_t len,
+                           const char *tag_spec, const char *custom_notice);
+char *pt_unsanitize_block(const uint8_t *data, size_t len,
+                          const char *tag_spec, const char *custom_notice);
+
+/* ---- Host envelope, XML codec, notice & truncation primitives ----------- */
+
+char *pt_security_constants_json(void);
+char *pt_decode_xml(const uint8_t *data, size_t len, char **out_err);
+char *pt_escape_xml_attr(const uint8_t *data, size_t len, char **out_err);
+char *pt_escape_xml_body(const uint8_t *data, size_t len, char **out_err);
+char *pt_format_sanitize_notice(const char *primary_tag,
+                                const char *custom_notice, char **out_err);
+char *pt_strip_outer_quarantine_tag(const uint8_t *data, size_t len,
+                                    const char *tag_name);
+char *pt_unquarantine(const uint8_t *data, size_t len, const char *tag_spec);
+char *pt_quarantine_untrusted_idempotent(const uint8_t *data, size_t len,
+                                         const char *tag_spec,
+                                         char **out_err);
+char *pt_sanitize_block_idempotent(const uint8_t *data, size_t len,
+                                   const char *tag_spec,
+                                   const char *custom_notice, char **out_err);
+char *pt_truncate_middle(const uint8_t *data, size_t len, size_t limit,
+                         const char *marker, char **out_err);
+char *pt_truncate_middle_list_json(const char *items_json, size_t limit,
+                                   const char *marker, char **out_err);
 
 #ifdef __cplusplus
 } /* extern "C" */

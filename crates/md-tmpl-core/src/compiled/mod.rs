@@ -5,6 +5,7 @@
 //! per render call.
 
 pub(crate) mod analysis;
+mod block_scan;
 mod blockquote;
 mod inline;
 mod match_compile;
@@ -37,17 +38,16 @@ pub use sanitize_pass::{
     SanitizeFilterMode, apply_enclosing_xml_tags, apply_frontmatter_sanitization,
 };
 pub use type_check::{
-    validate_field_accesses, validate_field_accesses_full, validate_field_accesses_runtime,
-    validate_field_accesses_with_opaque, validate_match_labels,
+    validate_field_accesses, validate_field_accesses_full, validate_field_accesses_with_opaque,
+    validate_match_labels,
 };
 
 pub use crate::scope::{CompiledExpr, CompiledPath, ConditionOperand};
 use crate::{
     compat::HashMap,
     consts::{
-        CLOSE_FOR, CLOSE_IF, CLOSE_MATCH, CLOSE_RAW, KW_ELSE, KW_RAW, KW_RAW_ASSIGN, STMT_END,
-        STMT_START, TAG_CASE_PREFIX, TAG_ELIF_PREFIX, TAG_FOR_PREFIX, TAG_IF_PREFIX,
-        TAG_INCLUDE_PREFIX, TAG_MATCH_PREFIX,
+        CLOSE_FOR, CLOSE_IF, CLOSE_MATCH, CLOSE_RAW, KW_ELSE, TAG_CASE_PREFIX, TAG_ELIF_PREFIX,
+        TAG_FOR_PREFIX, TAG_IF_PREFIX, TAG_INCLUDE_PREFIX, TAG_MATCH_PREFIX,
     },
     error::TemplateError,
     parser,
@@ -319,10 +319,9 @@ pub fn compile_with_parent_scope(
     parent_type_aliases: &HashMap<String, crate::types::VarType>,
     parent_type_alias_sanitize: &HashMap<String, HashMap<String, crate::types::SanitizeSpec>>,
 ) -> Result<(Vec<Segment>, HashMap<String, CompiledInlineTemplate>), TemplateError> {
-    // Validate: statement tags at line start must have `>` blockquote prefix.
-    blockquote::validate_blockquote_prefix(input)?;
-    // Preprocess: strip blockquote `>` prefix from statement-tag lines if present.
-    let processed = blockquote::strip_blockquote_tags(input);
+    // Validate that line-start statement tags carry the `>` blockquote prefix,
+    // then strip that prefix from statement-tag lines.
+    let processed = blockquote::preprocess_blockquotes(input)?;
     // Extract inline template definitions before compiling the body.
     let (cleaned, inline_templates) = inline::extract_inline_templates_with_sanitize(
         &processed,
@@ -658,20 +657,8 @@ fn compile_statement<'a>(
         compile_conditional(condition.trim(), after_tag)
     } else if let Some(match_body) = stmt.strip_prefix(TAG_MATCH_PREFIX) {
         compile_match(match_body.trim(), after_tag)
-    } else if stmt == KW_RAW {
-        compile_raw_block(after_tag, KW_RAW, CLOSE_RAW)
-    } else if let Some(delim) = stmt.strip_prefix(KW_RAW_ASSIGN) {
-        let delim = delim.trim();
-        if delim.is_empty() {
-            return Err(TemplateError::syntax(format!(
-                "{STMT_START} {KW_RAW_ASSIGN} {STMT_END} requires a delimiter after '='"
-            )));
-        }
-        compile_raw_block(
-            after_tag,
-            &format!("{KW_RAW_ASSIGN}{delim}"),
-            &format!("/{delim}"),
-        )
+    } else if let Some(delimiters) = block_scan::RawBlockDelimiters::parse(stmt)? {
+        compile_raw_block(after_tag, &delimiters)
     } else if stmt.starts_with(TAG_INCLUDE_PREFIX) {
         compile_include(stmt, after_tag)
     } else if stmt.starts_with(crate::consts::TAG_PANIC_PAREN)
@@ -703,55 +690,6 @@ fn compile_statement<'a>(
     }
 }
 
-/// Split a for-loop body at `{% else %}` (depth-aware).
-///
-/// Returns `(for_body, Optional else_body)`. If no `{% else %}` is found at depth 0,
-/// the entire body is the `for_body` and `else_body` is `None`.
-///
-/// Handles nesting: `{% else %}` tags inside nested `{% for %}` or `{% if %}` blocks
-/// are correctly skipped.
-pub(super) fn split_for_else(body: &str) -> (&str, Option<&str>) {
-    let mut depth: u32 = 0;
-    let mut search_from: usize = 0;
-
-    while search_from < body.len() {
-        let rest = &body[search_from..];
-        let Ok(scan) = parser::scan_next_tag(rest) else {
-            break;
-        };
-
-        match scan {
-            parser::ScanResult::Literal(_) => break,
-            parser::ScanResult::Found {
-                before,
-                tag: parser::Tag::Stmt(stmt),
-                after,
-                ..
-            } => {
-                let tag_end_offset = rest.len() - after.len();
-
-                if stmt.starts_with(TAG_FOR_PREFIX) || stmt.starts_with(TAG_IF_PREFIX) {
-                    depth += 1;
-                } else if stmt == CLOSE_FOR || stmt == CLOSE_IF {
-                    depth = depth.saturating_sub(1);
-                } else if stmt == KW_ELSE && depth == 0 {
-                    // Found top-level {% else %} — split here.
-                    let split_pos = search_from + before.len();
-                    let else_body_start = search_from + tag_end_offset;
-                    return (&body[..split_pos], Some(&body[else_body_start..]));
-                }
-
-                search_from += tag_end_offset;
-            }
-            parser::ScanResult::Found { after, .. } => {
-                // Expression or comment — skip past.
-                search_from = body.len() - after.len();
-            }
-        }
-    }
-    (body, None)
-}
-
 /// Compile a for-loop block.
 fn compile_for_loop<'a>(
     stmt_body: &str,
@@ -772,7 +710,7 @@ fn compile_for_loop<'a>(
     let (body_text, rest) = parser::find_closing_block(after_tag, TAG_FOR_PREFIX, CLOSE_FOR)?;
 
     // Split body at {% else %} if present (respecting nesting).
-    let (for_text, else_text) = split_for_else(body_text);
+    let (for_text, else_text) = block_scan::split_for_else(body_text)?;
     let body = compile_body(for_text).map_err(|e| enrich_error(e, for_text))?;
     let else_body = match else_text {
         Some(text) => compile_body(text).map_err(|e| enrich_error(e, text))?,
@@ -797,10 +735,10 @@ fn compile_conditional<'a>(
     after_tag: &'a str,
 ) -> Result<(Segment, &'a str), TemplateError> {
     let (body_text, rest) = parser::find_closing_block(after_tag, TAG_IF_PREFIX, CLOSE_IF)?;
-    let (raw_branches, else_text) = parser::split_elif_chain(body_text);
+    let chain = block_scan::split_elif_chain(body_text)?;
 
-    let mut branches = Vec::with_capacity(raw_branches.len());
-    for (i, &(cond_str, branch_body)) in raw_branches.iter().enumerate() {
+    let mut branches = Vec::with_capacity(chain.branches.len());
+    for (i, &(cond_str, branch_body)) in chain.branches.iter().enumerate() {
         let cond = if i == 0 {
             // First branch uses the condition from the opening `{% if ... %}` tag.
             analysis::parse_condition(condition)?
@@ -813,7 +751,7 @@ fn compile_conditional<'a>(
         ));
     }
 
-    let else_body = match else_text {
+    let else_body = match chain.else_body {
         Some(text) => compile_body(text).map_err(|e| enrich_error(e, text))?,
         None => Vec::new(),
     };
@@ -829,14 +767,12 @@ fn compile_conditional<'a>(
 
 /// Compile a raw block (the body is kept as literal text).
 ///
-/// Supports custom delimiters: `{% raw=# %}...{% /# %}` uses
-/// `open_keyword="raw=#"` and `close_keyword="/#"`.
+/// Supports custom delimiters: `{% raw=# %}...{% /# %}`.
 fn compile_raw_block<'a>(
     after_tag: &'a str,
-    open_keyword: &str,
-    close_keyword: &str,
+    delimiters: &block_scan::RawBlockDelimiters,
 ) -> Result<(Segment, &'a str), TemplateError> {
-    let (body, rest) = parser::find_closing_block(after_tag, open_keyword, close_keyword)?;
+    let (body, rest) = delimiters.split_body(after_tag)?;
     Ok((Segment::Raw(Cow::Owned(body.to_string())), rest))
 }
 

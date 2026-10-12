@@ -615,7 +615,7 @@ fn generate_mixed_enum_serde(
 
     quote! {
         impl ::serde::Serialize for #enum_ident {
-            fn serialize<S: ::serde::Serializer>(&self, serializer: S) -> ::core::result::Result<S::Ok, S::Error> {
+            fn serialize<__MdTmplSerializer: ::serde::Serializer>(&self, serializer: __MdTmplSerializer) -> ::core::result::Result<__MdTmplSerializer::Ok, __MdTmplSerializer::Error> {
                 match self {
                     #(#ser_arms),*
                 }
@@ -623,7 +623,7 @@ fn generate_mixed_enum_serde(
         }
 
         impl<'de> ::serde::Deserialize<'de> for #enum_ident {
-            fn deserialize<D: ::serde::Deserializer<'de>>(deserializer: D) -> ::core::result::Result<Self, D::Error> {
+            fn deserialize<__MdTmplDeserializer: ::serde::Deserializer<'de>>(deserializer: __MdTmplDeserializer) -> ::core::result::Result<Self, __MdTmplDeserializer::Error> {
                 struct __MixedEnumVisitor;
 
                 impl<'de> ::serde::de::Visitor<'de> for __MixedEnumVisitor {
@@ -633,7 +633,7 @@ fn generate_mixed_enum_serde(
                         f.write_str(#expecting_msg)
                     }
 
-                    fn visit_str<E: ::serde::de::Error>(self, v: &str) -> ::core::result::Result<Self::Value, E> {
+                    fn visit_str<__MdTmplError: ::serde::de::Error>(self, v: &str) -> ::core::result::Result<Self::Value, __MdTmplError> {
                         match v {
                             #(#unit_str_arms,)*
                             other => ::core::result::Result::Err(::serde::de::Error::unknown_variant(
@@ -643,7 +643,7 @@ fn generate_mixed_enum_serde(
                         }
                     }
 
-                    fn visit_map<A: ::serde::de::MapAccess<'de>>(self, mut map: A) -> ::core::result::Result<Self::Value, A::Error> {
+                    fn visit_map<__MdTmplMapAccess: ::serde::de::MapAccess<'de>>(self, mut map: __MdTmplMapAccess) -> ::core::result::Result<Self::Value, __MdTmplMapAccess::Error> {
                         let mut __kind: ::core::option::Option<::std::string::String> = ::core::option::Option::None;
                         if let ::core::option::Option::Some(first_key) = map.next_key::<::std::string::String>()? {
                             if first_key == "__kind__" {
@@ -699,13 +699,20 @@ fn mixed_serialize_arms(
                     .iter()
                     .map(|f| crate::make_ident(&f.name))
                     .collect();
+                // Bind fields under reserved names so a field called `map` or
+                // `serializer` cannot shadow the generated locals.
+                let bound_idents: Vec<_> = v
+                    .fields
+                    .iter()
+                    .map(|f| format_ident!("__md_tmpl_field_{}", f.name))
+                    .collect();
                 let field_names: Vec<_> = v.fields.iter().map(|f| f.name.as_str()).collect();
                 quote! {
-                    Self::#ident { #(#field_idents),* } => {
+                    Self::#ident { #(#field_idents: #bound_idents),* } => {
                         use ::serde::ser::SerializeMap;
                         let mut map = serializer.serialize_map(::core::option::Option::Some(#field_count))?;
                         map.serialize_entry("__kind__", #name_str)?;
-                        #(map.serialize_entry(#field_names, #field_idents)?;)*
+                        #(map.serialize_entry(#field_names, #bound_idents)?;)*
                         map.end()
                     }
                 }

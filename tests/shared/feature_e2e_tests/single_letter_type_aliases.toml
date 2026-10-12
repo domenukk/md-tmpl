@@ -1,0 +1,48 @@
+# Shared feature_e2e_tests: `types:` aliases whose names match common generic
+# parameter names (`E`, `T`, `S`, `D`, `A`). The proc-macro (`template!`)
+# compile-time suite generates serde impls for these enums; generated generic
+# parameters must never collide with user type names.
+
+[[tests]]
+name = "single_letter_mixed_enum_aliases"
+description = "Mixed (unit + data) enum aliases named E, T, S, D and A compile and render"
+template = '''
+---
+types:
+  - E = enum(A(v = str), B)
+  - T = enum(On(level = int), Off)
+  - S = enum(Some1(x = str), None1)
+  - D = enum(Data(d = str), Empty)
+  - A = enum(Alpha(a = str), Beta)
+
+params:
+  - e = E
+  - t = T
+  - s = S
+  - d = D
+  - a = A
+---
+{{ kind(e) }} {{ kind(t) }} {{ kind(s) }} {{ kind(d) }} {{ kind(a) }}'''
+expected_output = "A Off None1 Data Beta"
+[tests.params]
+e = { "__kind__" = "A", "v" = "q" }
+t = "Off"
+s = "None1"
+d = { "__kind__" = "Data", "d" = "z" }
+a = "Beta"
+
+[[tests]]
+name = "single_letter_enum_alias_json"
+description = "A data variant of an enum alias named E serializes with its __kind__ key"
+template = '''
+---
+types:
+  - E = enum(A(map = str, serializer = str), B)
+
+params:
+  - x = E
+---
+{{ x | json }}'''
+expected_output = '{"__kind__":"A","map":"m","serializer":"s"}'
+[tests.params]
+x = { "__kind__" = "A", "map" = "m", "serializer" = "s" }

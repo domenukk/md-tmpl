@@ -1,0 +1,509 @@
+# Shared feature_e2e_tests: Rust/TypeScript parity for filters (`json`, `fixed`,
+# `limit`, `add`/`sub`), float display, and sanitization edge cases.
+
+# ============================================================================
+# Anthropic turn markers: `\n\nHuman:` anywhere, `\nHuman:` at input start
+# ============================================================================
+
+[[tests]]
+name = "parity_sanitize_start_of_input_human_turn"
+description = "sanitize neutralizes a single-newline Human: turn marker at the very start of the input"
+template = '''
+---
+params:
+  - x = str
+---
+{{ x | sanitize }}'''
+expected_output = "\nHuman&#58; hi"
+[tests.params]
+x = "\nHuman: hi"
+
+[[tests]]
+name = "parity_sanitize_tokens_start_of_input_assistant_turn"
+description = "sanitize_tokens neutralizes a single-newline Assistant: turn marker at the very start of the input"
+template = '''
+---
+params:
+  - x = str
+---
+{{ x | sanitize_tokens }}'''
+expected_output = "\nAssistant&#58; hi"
+[tests.params]
+x = "\nAssistant: hi"
+
+[[tests]]
+name = "parity_sanitize_single_newline_turn_mid_input_untouched"
+description = "a single-newline Human: marker after the first character is not a turn boundary"
+template = '''
+---
+params:
+  - x = str
+---
+{{ x | sanitize }}'''
+expected_output = "a\nHuman: b"
+[tests.params]
+x = "a\nHuman: b"
+
+[[tests]]
+name = "parity_sanitize_double_newline_turn_mid_input"
+description = "a double-newline Assistant: marker is neutralized anywhere in the input"
+template = '''
+---
+params:
+  - x = str
+---
+{{ x | sanitize }}'''
+expected_output = "a\n\nAssistant&#58; b"
+[tests.params]
+x = "a\n\nAssistant: b"
+
+# ============================================================================
+# json / tojson
+# ============================================================================
+
+[[tests]]
+name = "parity_json_escapes_unicode_line_separators"
+description = "json escapes U+2028/U+2029 and leaves '/' unescaped"
+template = '''
+---
+params:
+  - x = str
+---
+{{ x | json }}'''
+expected_output = '"a\u2028b\u2029c/d"'
+[tests.params]
+x = "a\u2028b\u2029c/d"
+
+[[tests]]
+name = "parity_json_indent_above_ten"
+description = "json indentation is not capped at 10 spaces"
+template = '''
+---
+params:
+  - x = list(str)
+---
+{{ x | json(12) }}'''
+expected_output = "[\n            \"a\"\n]"
+[tests.params]
+x = ["a"]
+
+[[tests]]
+name = "parity_json_indent_rejects_negative"
+description = "json rejects a negative indent with the canonical message"
+template = '''
+---
+params:
+  - x = list(str)
+---
+{{ x | json(-1) }}'''
+expected_error = "'tojson' indent argument must be a non-negative integer, got '-1'"
+[tests.params]
+x = ["a"]
+
+[[tests]]
+name = "parity_json_large_float_positional"
+description = "json prints large floats positionally (no exponent)"
+template = '''
+---
+params:
+  - x = float
+---
+{{ x | json }}'''
+expected_output = "1000000000000000000000"
+[tests.params]
+x = 1e21
+
+[[tests]]
+name = "parity_json_small_float_positional"
+description = "json prints small floats positionally (no exponent)"
+template = '''
+---
+params:
+  - x = float
+---
+{{ x | json }}'''
+expected_output = "0.0000001"
+[tests.params]
+x = 1e-7
+
+[[tests]]
+name = "parity_display_floats_positional"
+description = "plain float interpolation prints large and small floats positionally"
+template = '''
+---
+params:
+  - a = float
+  - b = float
+---
+{{ a }} {{ b }}'''
+expected_output = "1000000000000000000000 0.0000001"
+[tests.params]
+a = 1e21
+b = 1e-7
+
+[[tests]]
+name = "parity_json_enum_keeps_kind_key"
+description = "json serializes enum struct variants with their __kind__ discriminant"
+template = '''
+---
+types:
+  - E = enum(A(v = str), B)
+
+params:
+  - x = E
+---
+{{ x | json }}'''
+expected_output = '{"__kind__":"A","v":"q"}'
+[tests.params]
+x = { "__kind__" = "A", "v" = "q" }
+
+[[tests]]
+name = "parity_json_struct_keys_code_point_order"
+description = "json sorts struct keys by code point (uppercase, underscore, lowercase)"
+template = '''
+---
+params:
+  - x = struct(b = int, a = int, B = int, _z = int)
+---
+{{ x | json }}'''
+expected_output = '{"B":3,"_z":4,"a":2,"b":1}'
+[tests.params]
+x = { b = 1, a = 2, B = 3, _z = 4 }
+
+# ============================================================================
+# fixed / limit / add / sub argument parsing and numeric semantics
+# ============================================================================
+
+[[tests]]
+name = "parity_fixed_rejects_trailing_garbage"
+description = "fixed parses its precision strictly"
+template = '''
+---
+params:
+  - x = float
+---
+{{ x | fixed(2abc) }}'''
+expected_error = "'fixed' precision must be an integer: invalid digit found in string"
+[tests.params]
+x = 1.5
+
+[[tests]]
+name = "parity_limit_rejects_negative"
+description = "limit parses its argument as a non-negative integer"
+template = '''
+---
+params:
+  - x = list(str)
+---
+{{ x | limit(-1) | join(",") }}'''
+expected_error = "'limit' argument must be an integer: invalid digit found in string"
+[tests.params]
+x = ["a", "b"]
+
+[[tests]]
+name = "parity_limit_accepts_plus_sign"
+description = "limit accepts an explicit '+' sign like Rust's usize parser"
+template = '''
+---
+params:
+  - x = list(str)
+---
+{{ x | limit(+1) | join(",") }}'''
+expected_output = "a"
+[tests.params]
+x = ["a", "b"]
+
+[[tests]]
+name = "parity_fixed_rounds_exact_ties_half_away_from_zero"
+description = "fixed rounds exact binary ties half away from zero"
+template = '''
+---
+params:
+  - a = float
+  - b = float
+  - c = float
+---
+{{ a | fixed(0) }} {{ b | fixed(0) }} {{ c | fixed(2) }}'''
+expected_output = "3 -3 0.13"
+[tests.params]
+a = 2.5
+b = -2.5
+c = 0.125
+
+[[tests]]
+name = "parity_fixed_uses_exact_binary_value"
+description = "fixed rounds the exact binary value (1.45 is 1.4499..., 0.49999999999999994 < 0.5)"
+template = '''
+---
+params:
+  - a = float
+  - b = float
+---
+{{ a | fixed(1) }} {{ b | fixed(0) }}'''
+expected_output = "1.4 0"
+[tests.params]
+a = 1.45
+b = 0.49999999999999994
+
+[[tests]]
+name = "parity_fixed_large_float_does_not_saturate"
+description = "fixed prints large floats exactly"
+template = '''
+---
+params:
+  - x = float
+---
+{{ x | fixed(2) }}'''
+expected_output = "1000000000000000000000.00"
+[tests.params]
+x = 1e21
+
+[[tests]]
+name = "parity_fixed_high_precision_exact"
+description = "fixed prints the exact decimal expansion at high precision"
+template = '''
+---
+params:
+  - x = float
+---
+{{ x | fixed(30) }}'''
+expected_output = "0.100000000000000005551115123126"
+[tests.params]
+x = 0.1
+
+[[tests]]
+name = "parity_add_accepts_rust_float_literals"
+description = "add accepts Rust f64 literals such as inf"
+template = '''
+---
+params:
+  - x = float
+---
+{{ x | add(inf) }}'''
+expected_output = "inf"
+[tests.params]
+x = 1.5
+
+[[tests]]
+name = "parity_add_rejects_hex_literal"
+description = "add rejects non-decimal literals with the Rust parse error"
+template = '''
+---
+params:
+  - x = int
+---
+{{ x | add(0x10) }}'''
+expected_error = "'add' argument must be a number: invalid float literal"
+[tests.params]
+x = 1
+
+[[tests]]
+name = "parity_sub_saturates_at_i64_min"
+description = "integer sub saturates at the i64 minimum"
+template = '''
+---
+params:
+  - x = int
+---
+{{ x | sub(9223372036854775807) | sub(10) }}'''
+expected_output = "-9223372036854775808"
+[tests.params]
+x = -5
+
+# ============================================================================
+# sanitize_notice: standard string-literal escapes only
+# ============================================================================
+
+[[tests]]
+name = "parity_sanitize_notice_uses_string_literal_escapes"
+description = "sanitize_notice decodes only \\\\, \\\" and \\' (\\n and \\q stay verbatim)"
+template = '''
+---
+params:
+  - x = str
+
+sanitize_notice: "a\nb\qc\\d"
+---
+{{ x | sanitize("doc") }}'''
+expected_output = '''
+<doc>
+a\nb\qc\d
+p
+</doc>'''
+[tests.params]
+x = "p"
+
+# ============================================================================
+# Conflicting declarative sanitize specifications
+# ============================================================================
+
+[[tests]]
+name = "parity_sanitize_conflicting_block_tags_error"
+description = "two different sanitize block tags on one declaration are rejected"
+template = '''
+---
+params:
+  - x = str | sanitize("a") := "d" | sanitize("b")
+---
+{{ x }}'''
+expected_error = "conflicting sanitization specifications on 'type'"
+
+[[tests]]
+name = "parity_sanitize_conflicting_notices_error"
+description = "the same block tag with different notices is rejected"
+template = '''
+---
+params:
+  - x = str | sanitize("a", "n1") := "d" | sanitize("a", "n2")
+---
+{{ x }}'''
+expected_error = "conflicting sanitization specifications on 'type'"
+
+[[tests]]
+name = "parity_sanitize_identical_specs_allowed"
+description = "repeating an identical sanitize block spec is allowed"
+template = '''
+---
+params:
+  - x = str | sanitize("a", "") := "d" | sanitize("a", "")
+---
+{{ x }}'''
+expected_output = "<a>\nd\n</a>"
+
+# ============================================================================
+# Tag-spec validation (the internal #heading sentinel is never user-visible)
+# ============================================================================
+
+[[tests]]
+name = "parity_sanitize_tokens_rejects_heading_sentinel"
+description = "sanitize_tokens rejects the internal #heading sentinel as a tag name"
+template = '''
+---
+params:
+  - x = str
+---
+{{ x | sanitize_tokens("#heading") }}'''
+expected_error = "'sanitize_tokens' tag name must be a valid XML NCName: '#heading'"
+[tests.params]
+x = "a\nb"
+
+[[tests]]
+name = "parity_quarantine_rejects_heading_sentinel"
+description = "quarantine rejects the internal #heading sentinel as a tag name"
+template = '''
+---
+params:
+  - x = str
+---
+{{ x | quarantine("#heading") }}'''
+expected_error = "'quarantine' tag name must be a valid XML NCName: '#heading'"
+[tests.params]
+x = "a"
+
+[[tests]]
+name = "parity_sanitize_rejects_heading_sentinel"
+description = "sanitize rejects the internal #heading sentinel as a tag name"
+template = '''
+---
+params:
+  - x = str
+---
+{{ x | sanitize("#heading") }}'''
+expected_error = "'sanitize' tag name must be a valid XML NCName: '#heading'"
+[tests.params]
+x = "a"
+
+[[tests]]
+name = "parity_sanitize_whitespace_tag_spec_error"
+description = "a whitespace-only sanitize tag spec is reported verbatim"
+template = '''
+---
+params:
+  - x = str
+---
+{{ x | sanitize(" ") }}'''
+expected_error = "'sanitize' tag name must be a valid XML NCName: ' '"
+[tests.params]
+x = "a"
+
+[[tests]]
+name = "parity_sanitize_many_tags_beyond_stack_capacity"
+description = "more than 64 comma-separated tags are all neutralized"
+template = '''
+---
+params:
+  - x = str
+---
+{{ x | sanitize("t1,t2,t3,t4,t5,t6,t7,t8,t9,t10,t11,t12,t13,t14,t15,t16,t17,t18,t19,t20,t21,t22,t23,t24,t25,t26,t27,t28,t29,t30,t31,t32,t33,t34,t35,t36,t37,t38,t39,t40,t41,t42,t43,t44,t45,t46,t47,t48,t49,t50,t51,t52,t53,t54,t55,t56,t57,t58,t59,t60,t61,t62,t63,t64,t65,t66,t67,t68,t69,t70", "") }}'''
+expected_output = "<t1>\n&lt;/t70&gt;\n</t1>"
+[tests.params]
+x = "</t70>"
+
+# ============================================================================
+# Inline sanitization edge cases
+# ============================================================================
+
+[[tests]]
+name = "parity_heading_untrusted_collapses_each_line_break"
+description = "inline untrusted str in an ATX heading maps every line break char (\\r\\n = two) to a space"
+template = '''
+---
+params:
+  - x = untrusted str
+---
+# T {{ x }}'''
+expected_output = "# T a  b c"
+[tests.params]
+x = "a\r\nb\u2028c"
+
+[[tests]]
+name = "parity_sanitize_block_payload_trailing_newline_not_doubled"
+description = "a payload ending in a newline is not followed by an extra newline before the closing tag"
+template = '''
+---
+params:
+  - x = str
+---
+{{ x | sanitize("doc", "") }}'''
+expected_output = "<doc>\np\n</doc>"
+[tests.params]
+x = "p\n"
+
+[[tests]]
+name = "parity_untrusted_with_tag_argument_is_unknown_type"
+description = "untrusted(\"tag\") str is not a supported type form"
+template = '''
+---
+params:
+  - x = untrusted("doc") str
+---
+{{ x }}'''
+expected_error = "unknown type"
+[tests.params]
+x = "p"
+
+[[tests]]
+name = "parity_sanitize_auto_detects_enclosing_tags"
+description = "0-arg sanitize neutralizes the statically enclosing XML tag"
+template = '''
+---
+params:
+  - x = str
+---
+<doc>{{ x | sanitize }}</doc>'''
+expected_output = "<doc>&lt;/doc&gt;</doc>"
+[tests.params]
+x = "</doc>"
+
+[[tests]]
+name = "parity_sanitize_tokens_does_not_auto_detect_enclosing_tags"
+description = "sanitize_tokens only escapes explicitly listed tags (use sanitize for enclosing-tag detection)"
+template = '''
+---
+params:
+  - x = str
+---
+<doc>{{ x | sanitize_tokens }}</doc><doc>{{ x | sanitize_tokens("doc") }}</doc>'''
+expected_output = "<doc></doc></doc><doc>&lt;/doc&gt;</doc>"
+[tests.params]
+x = "</doc>"

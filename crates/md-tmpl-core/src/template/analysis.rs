@@ -90,8 +90,11 @@ pub(super) fn check_bare_enum_access(
                     )));
                 }
             }
-            Segment::ForLoop { body, .. } => {
+            Segment::ForLoop {
+                body, else_body, ..
+            } => {
                 check_bare_enum_access(body, enum_keys)?;
+                check_bare_enum_access(else_body, enum_keys)?;
             }
             Segment::If {
                 branches,
@@ -370,14 +373,20 @@ fn validate_for_bindings(
 ) -> Result<(), TemplateError> {
     for seg in segments {
         match seg {
-            Segment::ForLoop { binding, body, .. } => {
+            Segment::ForLoop {
+                binding,
+                body,
+                else_body,
+                ..
+            } => {
                 if protected.contains(binding.as_ref()) {
                     return Err(TemplateError::syntax(format!(
-                        "{} declared name '{binding}'",
+                        "for-loop binding '{binding}' {}",
                         crate::consts::ERR_FOR_BINDING_SHADOWS,
                     )));
                 }
                 validate_for_bindings(body, protected)?;
+                validate_for_bindings(else_body, protected)?;
             }
             Segment::If {
                 branches,

@@ -362,3 +362,145 @@ params: []
 expected_output = "yes"
 [tests.env]
 ACTIVE = true
+
+# ============================================================================
+# Tier 2: Env value typing (canonical Rust/TypeScript rules and messages)
+# ============================================================================
+
+[[tests]]
+name = "env_t2_missing_required_env_message"
+description = "Missing required env var reports the canonical message"
+template = '''
+---
+env: [REQUIRED_PATH = str]
+
+params: []
+---
+{{ REQUIRED_PATH }}'''
+expected_error = "env variable 'REQUIRED_PATH': no value provided and no default"
+
+[[tests]]
+name = "env_t2_typed_bool_for_int_rejected"
+description = "A typed bool value for an int env var is a compile-time type error"
+template = '''
+---
+env: [COUNT = int]
+
+params: []
+---
+{{ COUNT }}'''
+expected_error = "env variable 'COUNT': expected int, got bool"
+[tests.env]
+COUNT = true
+
+[[tests]]
+name = "env_t2_typed_int_for_str_rejected"
+description = "A typed int value for a str env var is a compile-time type error"
+template = '''
+---
+env: [NAME = str]
+
+params: []
+---
+{{ NAME }}'''
+expected_error = "env variable 'NAME': expected str, got int"
+[tests.env]
+NAME = 5
+
+[[tests]]
+name = "env_t2_int_string_rejects_whitespace"
+description = "String-to-int coercion is strict (Rust i64 parser)"
+template = '''
+---
+env: [COUNT = int]
+
+params: []
+---
+{{ COUNT }}'''
+expected_error = "env variable 'COUNT': expected int, got ' 5' (invalid digit found in string)"
+[tests.env]
+COUNT = " 5"
+
+[[tests]]
+name = "env_t2_int_string_accepts_plus_sign"
+description = "String-to-int coercion accepts an explicit '+' sign"
+template = '''
+---
+env: [COUNT = int]
+
+params: []
+---
+{{ COUNT }}'''
+expected_output = "5"
+[tests.env]
+COUNT = "+5"
+
+[[tests]]
+name = "env_t2_float_string_rejects_trailing_garbage"
+description = "String-to-float coercion is strict (Rust f64 parser)"
+template = '''
+---
+env: [RATE = float]
+
+params: []
+---
+{{ RATE }}'''
+expected_error = "env variable 'RATE': expected float, got '1.5abc' (invalid float literal)"
+[tests.env]
+RATE = "1.5abc"
+
+[[tests]]
+name = "env_t2_float_string_exponent"
+description = "String-to-float coercion accepts exponent notation"
+template = '''
+---
+env: [RATE = float]
+
+params: []
+---
+{{ RATE }}'''
+expected_output = "1000"
+[tests.env]
+RATE = "1e3"
+
+[[tests]]
+name = "env_t2_bool_string_case_sensitive"
+description = "String-to-bool coercion accepts only 'true' / 'false'"
+template = '''
+---
+env: [FLAG = bool]
+
+params: []
+---
+> {% if FLAG %}yes{% /if %}'''
+expected_error = "env variable 'FLAG': expected bool, got 'True'"
+[tests.env]
+FLAG = "True"
+
+[[tests]]
+name = "env_t2_list_from_string_rejected"
+description = "Strings are not parsed for compound env types"
+template = '''
+---
+env: [TAGS = list(str)]
+
+params: []
+---
+> {% for t in TAGS %}{{ t }}{% /for %}'''
+expected_error = "env variable 'TAGS': expected list(str), got str"
+[tests.env]
+TAGS = '["a"]'
+
+[[tests]]
+name = "env_t2_int_for_float_accepted"
+description = "A typed int value satisfies a float env var"
+template = '''
+---
+env: [RATE = float]
+
+params: []
+---
+{{ RATE }}'''
+expected_output = "3"
+[tests.env]
+RATE = 3

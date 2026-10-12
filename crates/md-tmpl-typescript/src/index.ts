@@ -197,3 +197,22 @@ export {
   parseSanitizeNoticeValue,
   applySanitizeAstPass,
 } from "./sanitize_pass.js";
+export {
+  TOOL_OUTPUT_QUARANTINE_TAG,
+  UNTRUSTED_TOOL_OUTPUT_TAG,
+  TOOL_OUTPUT_QUARANTINE_OPEN_TAG,
+  TOOL_OUTPUT_QUARANTINE_CLOSE_TAG,
+  UNTRUSTED_QUARANTINE_OPEN_TAG,
+  UNTRUSTED_QUARANTINE_CLOSE_TAG,
+  stripOuterQuarantineTag,
+  unquarantineString,
+  quarantineUntrustedIdempotentString,
+  sanitizeBlockIdempotentString,
+} from "./sanitize_host.js";
+export {
+  XML_DECODE_PAIRS,
+  decodeXmlString,
+  escapeXmlAttrString,
+  escapeXmlBodyString,
+} from "./xml_codec.js";
+export { truncateMiddleList } from "./filter_truncate.js";

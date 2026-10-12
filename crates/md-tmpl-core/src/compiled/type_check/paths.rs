@@ -50,6 +50,7 @@ pub(crate) fn validate_compiled_path(
     let mut traversed = root.clone();
 
     for field in &path.parts()[1..] {
+        let parent_len = traversed.len();
         traversed.push(crate::consts::PATH_SEP);
         traversed.push_str(field);
 
@@ -71,11 +72,12 @@ pub(crate) fn validate_compiled_path(
             }
             FieldResult::NotAvailable { reason } => {
                 if let VarType::Option(_) = current_type {
+                    let parent = &traversed[..parent_len];
                     errors.push(format!(
                         "'{traversed}': cannot access field '{field}' on {current_type} — \
                          option values must be checked before access. \
-                         Try guard: {{% if has({traversed}) %}}{{{{{traversed}.{field}}}}}{{% /if %}} or \
-                         match: {{% match {traversed} %}}{{% case Some %}}{{{{{traversed}.{field}}}}}{{% /match %}}"
+                         Try guard: {{% if has({parent}) %}}{{{{{traversed}}}}}{{% /if %}} or \
+                         match: {{% match {parent} %}}{{% case Some %}}{{{{{traversed}}}}}{{% /match %}}"
                     ));
                 } else {
                     errors.push(format!("'{traversed}': {reason}"));

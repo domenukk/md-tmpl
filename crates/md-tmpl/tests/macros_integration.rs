@@ -150,6 +150,26 @@ fn custom_module_name_works() {
     assert_eq!(output, "\nHello Custom!\n");
 }
 
+// ── include_template! with an include in a for-loop else body ─────────
+
+md_tmpl_macros::include_template!("prompts/for_else_include.tmpl.md");
+
+#[test]
+fn include_in_for_else_body_is_resolved_at_compile_time() {
+    let empty = for_else_include::Params::builder()
+        .build()
+        .render()
+        .unwrap();
+    assert_eq!(empty, "\nNo items.\n");
+
+    let listed = for_else_include::Params::builder()
+        .items(vec!["a".to_string()])
+        .build()
+        .render()
+        .unwrap();
+    assert_eq!(listed, "- a\n");
+}
+
 // ── include_template! with types: block ─────────────────────────────
 
 md_tmpl_macros::include_template!("prompts/type_library.tmpl.md");

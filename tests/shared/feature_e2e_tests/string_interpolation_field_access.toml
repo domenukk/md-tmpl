@@ -207,9 +207,10 @@ template = '''
 params: [item = struct(name = str)]
 ---
 {{ item.nonexistent }}'''
+expected_error = "'item.nonexistent': field 'nonexistent' does not exist on dict. (declared fields: name)"
+
 [tests.params.item]
 name = "Alice"
-expected_error = "not found"
 
 [[tests]]
 name = "nonexistent_nested_field_access_errors"
@@ -219,9 +220,10 @@ template = '''
 params: [outer = struct(inner = struct(value = int))]
 ---
 {{ outer.inner.missing }}'''
+expected_error = "'outer.inner.missing': field 'missing' does not exist on dict. (declared fields: value)"
+
 [tests.params.outer.inner]
 value = 42
-expected_error = "not found"
 
 [[tests]]
 name = "len_on_struct_rejected"
@@ -232,7 +234,7 @@ params:
   - data = struct(a = int, b = int)
 ---
 {{ len(data) }}'''
-expected_error = "len() requires a list or string"
+expected_error = "requires a list or str"
 
 [tests.params]
 data = { a = 1, b = 2 }

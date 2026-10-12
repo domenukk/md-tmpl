@@ -93,6 +93,9 @@ export function walkNodesForBareEnumAccess(
       }
       case "for":
         walkNodesForBareEnumAccess(node.body, enumTypeNames);
+        if (node.elseBody) {
+          walkNodesForBareEnumAccess(node.elseBody, enumTypeNames);
+        }
         break;
       case "if":
         for (const branch of node.branches) {

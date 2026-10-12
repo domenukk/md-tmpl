@@ -224,7 +224,10 @@ fn test_layer_allocation_reuse() {
 fn kind_extracts_enum_variant_name() {
     let tmpl = crate::Template::from_source(
         r"---
-params: [outcome = struct(evidence = str)]
+types:
+  - Outcome = enum(Confirmed(evidence = str), Rejected)
+
+params: [outcome = Outcome]
 ---
 {{ kind(outcome) }}",
     )
@@ -244,17 +247,14 @@ params: [outcome = struct(evidence = str)]
 }
 
 #[test]
-fn kind_rejects_non_dict() {
-    let tmpl = crate::Template::from_source(
+fn kind_rejects_non_enum_param_at_compile_time() {
+    let err = crate::Template::from_source(
         r"---
 params: [count = int]
 ---
 {{ kind(count) }}",
     )
-    .unwrap();
-    let mut ctx = crate::Context::new();
-    ctx.set("count", 42);
-    let err = tmpl.render_ctx(&ctx).unwrap_err();
+    .unwrap_err();
     assert!(
         err.to_string().contains("enum"),
         "should mention enum requirement: {err}"
@@ -262,23 +262,14 @@ params: [count = int]
 }
 
 #[test]
-fn kind_rejects_dict_without_variant_tag() {
-    let tmpl = crate::Template::from_source(
+fn kind_rejects_struct_param_at_compile_time() {
+    let err = crate::Template::from_source(
         r"---
 params: [data = struct(name = str)]
 ---
 {{ kind(data) }}",
     )
-    .unwrap();
-    let mut ctx = crate::Context::new();
-    ctx.set(
-        "data",
-        Value::Struct(Arc::new(HashMap::from([(
-            "name".into(),
-            Value::Str("x".into()),
-        )]))),
-    );
-    let err = tmpl.render_ctx(&ctx).unwrap_err();
+    .unwrap_err();
     assert!(
         err.to_string().contains("enum"),
         "should mention enum requirement: {err}"
@@ -363,7 +354,10 @@ fn user_field_named_tag_does_not_collide() {
     // A user field named "tag" must not collide with the internal __kind__ key.
     let tmpl = crate::Template::from_source(
         r"---
-params: [entry = struct(tag = str)]
+types:
+  - Entry = enum(Woche(tag = str))
+
+params: [entry = Entry]
 ---
 {{ kind(entry) }}: {{ entry.tag }}",
     )

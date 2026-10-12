@@ -479,9 +479,13 @@ export function collectForBindings(nodes: readonly Node[]): Set<string> {
   for (const node of nodes) {
     if (node.kind === "for") {
       bindings.add(node.binding);
-      // Recurse into body
       for (const b of collectForBindings(node.body)) {
         bindings.add(b);
+      }
+      if (node.elseBody) {
+        for (const b of collectForBindings(node.elseBody)) {
+          bindings.add(b);
+        }
       }
     } else if (node.kind === "if") {
       for (const branch of node.branches) {

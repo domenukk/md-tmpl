@@ -856,7 +856,7 @@ params:
 
 allow_unused: true
 ---
-{{ sub_tmpl }}`
+> {% include sub_tmpl with name="n" %}`
 
 	code, err := GenerateTypes(source, WithRenderHelper(true))
 	if err != nil {

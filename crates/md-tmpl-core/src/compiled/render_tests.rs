@@ -193,8 +193,9 @@ fn write_fixed_float_basic_positive() {
 #[test]
 fn write_fixed_float_rounding() {
     assert_eq!(fixed(1.25, 1), "1.3"); // rounds up
-    assert_eq!(fixed(1.35, 1), "1.4"); // rounds up
-    assert_eq!(fixed(1.45, 1), "1.5"); // rounds up
+    assert_eq!(fixed(1.35, 1), "1.4"); // exact value 1.35000000000000008882 rounds up
+    // Exact value 1.44999999999999995559 rounds down (matches JS `toFixed` and `format!`).
+    assert_eq!(fixed(1.45, 1), "1.4");
     assert_eq!(fixed(2.999, 2), "3.00"); // rounds to 3.00
 }
 
@@ -234,6 +235,62 @@ fn write_fixed_float_matches_std() {
         for p in 0..=6 {
             assert_eq!(fixed(v, p), fixed_std(v, p), "mismatch for fixed({v}, {p})");
         }
+    }
+}
+
+#[test]
+fn write_fixed_float_rounds_exact_ties_half_away_from_zero() {
+    assert_eq!(fixed(2.5, 0), "3");
+    assert_eq!(fixed(-2.5, 0), "-3");
+    assert_eq!(fixed(0.125, 2), "0.13");
+    assert_eq!(fixed(0.5, 0), "1");
+}
+
+#[test]
+fn write_fixed_float_uses_exact_binary_value() {
+    // `x * 10^p + 0.5` would round 0.49999999999999994 up to 1.
+    assert_eq!(fixed(0.499_999_999_999_999_94, 0), "0");
+    assert_eq!(fixed(-0.001, 2), "-0.00");
+}
+
+#[test]
+fn write_fixed_float_large_magnitudes_do_not_saturate() {
+    assert_eq!(fixed(1e21, 2), "1000000000000000000000.00");
+    assert_eq!(fixed(-1e21, 0), "-1000000000000000000000");
+    let expected_1e300 = alloc::format!("{:.0}", 1e300_f64);
+    assert_eq!(fixed(1e300, 0), expected_1e300);
+}
+
+#[test]
+fn write_fixed_float_high_precision_is_exact() {
+    assert_eq!(fixed(0.1, 30), "0.100000000000000005551115123126");
+    assert_eq!(fixed(123.456, 25), "123.4560000000000030695446185");
+    // 2^-20 has 20 fractional digits: precision 19 is an exact tie.
+    assert_eq!(fixed(9.536_743_164_062_5e-7, 19), "0.0000009536743164063");
+    assert_eq!(fixed(9.536_743_164_062_5e-7, 20), "0.00000095367431640625");
+}
+
+#[test]
+fn write_fixed_float_non_finite() {
+    assert_eq!(fixed(f64::NAN, 2), "NaN");
+    assert_eq!(fixed(f64::INFINITY, 1), "inf");
+    assert_eq!(fixed(f64::NEG_INFINITY, 0), "-inf");
+}
+
+#[test]
+fn fixed_filter_general_path_matches_fast_path() {
+    use crate::{Template, ctx};
+    let src = "---
+params:
+  - val = float
+---
+{{ val | fixed(2) }}|{{ val | sub(0) | fixed(2) }}";
+    let tmpl = Template::from_source(src).expect("compile");
+    for v in [1e21, 0.125, 2.675, -0.001, 1.45] {
+        let out = tmpl.render_ctx(&ctx! { val: v }).expect("render");
+        let (fast, general) = out.split_once('|').expect("separator");
+        assert_eq!(fast, general, "fast/general mismatch for {v}");
+        assert_eq!(fast, fixed(v, 2), "fast path mismatch for {v}");
     }
 }
 

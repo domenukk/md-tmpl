@@ -199,42 +199,6 @@ impl Frontmatter {
             &opaque_roots,
         )
     }
-
-    /// Validate field types, built-in function argument types, and match
-    /// exhaustiveness/narrowing for runtime templates (`Template::from_source`).
-    ///
-    /// Identical to [`Self::validate_field_types`], except static displayability
-    /// checks (`{{ struct }}`, `{{ list }}`, `{{ option }}`) are deferred to
-    /// render time.
-    #[must_use]
-    pub fn validate_runtime_types(&self, segments: &[crate::compiled::Segment]) -> Vec<String> {
-        let mut opaque_roots: crate::compat::HashSet<String> = crate::compat::HashSet::new();
-        let mut declarations: Vec<VarDecl> = self.declarations.clone();
-
-        for import in &self.imports {
-            opaque_roots.insert(import.stem.clone());
-            if let Some(ns_type) = self.imported_namespace_types.get(&import.stem) {
-                declarations.push(VarDecl {
-                    name: import.stem.clone(),
-                    var_type: ns_type.clone(),
-                    default_value: None,
-                });
-            }
-        }
-        for c in &self.consts {
-            declarations.push(c.clone());
-        }
-        for e in &self.env {
-            declarations.push(e.clone());
-        }
-
-        crate::compiled::validate_field_accesses_runtime(
-            segments,
-            &declarations,
-            &self.type_aliases,
-            &opaque_roots,
-        )
-    }
 }
 
 /// Strip YAML frontmatter delimited by `---` and return only the body text.
@@ -416,11 +380,21 @@ type FmResolutionResult = Result<
     TemplateError,
 >;
 
+/// Detail for a required `env:` declaration that received no value.
+const ENV_ERR_NO_VALUE: &str = "no value provided and no default";
+
+/// Build an `env:` resolution error: `env variable '{name}': {detail}`.
+fn env_error(name: &str, detail: &str) -> TemplateError {
+    TemplateError::syntax(format!("env variable '{name}': {detail}"))
+}
+
 /// Validate and coerce a provided [`Value`](crate::value::Value) to match the declared type.
 ///
-/// If the value is already the correct type, it is returned as-is.
-/// If the value is `Value::Str` but the declared type is a scalar
-/// (int, bool, float), the string is auto-parsed for convenience.
+/// - A `Value::Str` provided for a bare scalar type is parsed strictly: `int` with
+///   `str::parse::<i64>()`, `float` with `str::parse::<f64>()`, and `bool` only from the
+///   exact literals `true` / `false`.
+/// - Any other value must already match the declared type ([`VarType::matches`]);
+///   mismatches are compile-time errors.
 fn validate_env_value(
     name: &str,
     value: &crate::value::Value,
@@ -428,24 +402,24 @@ fn validate_env_value(
 ) -> Result<crate::value::Value, TemplateError> {
     use crate::value::Value;
     match (value, var_type) {
-        // String auto-parse for scalar types.
         (Value::Str(raw), VarType::Int) => raw
             .parse::<i64>()
             .map(Value::Int)
-            .map_err(|_| TemplateError::syntax(format!("env '{name}': expected int, got '{raw}'"))),
+            .map_err(|e| env_error(name, &format!("expected int, got '{raw}' ({e})"))),
         (Value::Str(raw), VarType::Bool) => match raw.as_str() {
             crate::consts::LIT_TRUE => Ok(Value::Bool(true)),
             crate::consts::LIT_FALSE => Ok(Value::Bool(false)),
-            _ => Err(TemplateError::syntax(format!(
-                "env '{name}': expected bool, got '{raw}'"
-            ))),
+            _ => Err(env_error(name, &format!("expected bool, got '{raw}'"))),
         },
-        (Value::Str(raw), VarType::Float) => raw.parse::<f64>().map(Value::Float).map_err(|_| {
-            TemplateError::syntax(format!("env '{name}': expected float, got '{raw}'"))
-        }),
-        // Direct type matches and unknown combos: accept as-is.
-        // The template engine validates at render time via type declarations.
-        _ => Ok(value.clone()),
+        (Value::Str(raw), VarType::Float) => raw
+            .parse::<f64>()
+            .map(Value::Float)
+            .map_err(|e| env_error(name, &format!("expected float, got '{raw}' ({e})"))),
+        _ if var_type.matches(value) => Ok(value.clone()),
+        _ => Err(env_error(
+            name,
+            &format!("expected {var_type}, got {}", value.type_name()),
+        )),
     }
 }
 
@@ -506,10 +480,7 @@ fn resolve_fm_consts_and_imports(
             } else if let Some(ref default) = decl.default_value {
                 prelim_consts.insert(decl.name.clone(), default.clone());
             } else {
-                return Err(TemplateError::syntax(format!(
-                    "env '{}': no value provided and no default",
-                    decl.name
-                )));
+                return Err(env_error(&decl.name, ENV_ERR_NO_VALUE));
             }
         }
         fm.env = env_decls;

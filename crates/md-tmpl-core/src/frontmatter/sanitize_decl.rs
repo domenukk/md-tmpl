@@ -395,34 +395,14 @@ pub(crate) fn register_decl_sanitize_specs(
     Ok(())
 }
 
-/// Parse a `sanitize_notice:` frontmatter value, stripping optional surrounding quotes.
+/// Parse a `sanitize_notice:` frontmatter value, stripping optional surrounding quotes and
+/// decoding the standard string-literal escapes (`\\`, `\"`, `\'`; any other `\X` is kept
+/// verbatim), exactly like every other md-tmpl string literal.
 #[must_use]
 pub(crate) fn parse_sanitize_notice_value(raw: &str) -> String {
     let trimmed = raw.trim();
-    if trimmed.len() >= 2
-        && ((trimmed.starts_with(crate::consts::QUOTE_DOUBLE)
-            && trimmed.ends_with(crate::consts::QUOTE_DOUBLE))
-            || (trimmed.starts_with(crate::consts::QUOTE_SINGLE)
-                && trimmed.ends_with(crate::consts::QUOTE_SINGLE)))
-    {
-        let inner = &trimmed[1..trimmed.len() - 1];
-        let mut out = String::with_capacity(inner.len());
-        let mut chars = inner.chars();
-        while let Some(ch) = chars.next() {
-            if ch == crate::consts::BACKSLASH
-                && let Some(next_ch) = chars.next()
-            {
-                match next_ch {
-                    'n' => out.push('\n'),
-                    't' => out.push('\t'),
-                    other => out.push(other),
-                }
-            } else {
-                out.push(ch);
-            }
-        }
-        out
-    } else {
-        trimmed.to_string()
+    match crate::consts::strip_string_literal(trimmed) {
+        Some(inner) => crate::consts::unescape_string_literal(inner),
+        None => trimmed.to_string(),
     }
 }

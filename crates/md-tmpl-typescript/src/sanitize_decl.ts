@@ -113,6 +113,13 @@ export function joinPrefix(prefix: string, field: string): string {
   return `${prefix}${DOT}${field}`;
 }
 
+function sanitizeSpecsEqual(a: SanitizeSpec, b: SanitizeSpec): boolean {
+  if (a.kind === SANITIZE_KIND_BLOCK && b.kind === SANITIZE_KIND_BLOCK) {
+    return a.tag === b.tag && a.notice === b.notice;
+  }
+  return a.kind === b.kind;
+}
+
 function insertSpec(
   specs: Map<string, SanitizeSpec>,
   prefix: string,
@@ -120,7 +127,7 @@ function insertSpec(
 ): void {
   const existing = specs.get(prefix);
   if (existing !== undefined) {
-    if (existing.kind === spec.kind) return;
+    if (sanitizeSpecsEqual(existing, spec)) return;
     if (
       existing.kind === SANITIZE_KIND_INLINE &&
       spec.kind === SANITIZE_KIND_BLOCK
@@ -241,15 +248,17 @@ function extractTypeSanitizeInner(
 
   if (base.startsWith(TYPE_UNTRUSTED)) {
     const rest = base.slice(TYPE_UNTRUSTED.length);
+    const restTrimmed = rest.trim();
     if (rest.startsWith(" ") || rest.startsWith("\t")) {
       insertSpec(specs, prefix, { kind: SANITIZE_KIND_INLINE });
-      base = rest.trim();
-    } else {
-      const inner = stripTypeBrackets(base, TYPE_UNTRUSTED);
-      if (inner.length !== base.length) {
-        insertSpec(specs, prefix, { kind: SANITIZE_KIND_INLINE });
-        base = inner.trim();
-      }
+      base = restTrimmed;
+    } else if (
+      restTrimmed.startsWith(PAREN_OPEN) &&
+      restTrimmed.endsWith(PAREN_CLOSE)
+    ) {
+      // Mirrors Rust `strip_type_brackets`: the parentheses must span the whole rest.
+      insertSpec(specs, prefix, { kind: SANITIZE_KIND_INLINE });
+      base = restTrimmed.slice(PAREN_OPEN.length, -PAREN_CLOSE.length).trim();
     }
   }
 

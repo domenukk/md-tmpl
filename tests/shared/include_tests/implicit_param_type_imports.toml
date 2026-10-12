@@ -1,0 +1,77 @@
+# Shared include_tests: importing an implicit param type from another template.
+#
+# A compound param (`tasks = list(...)`) implicitly defines the type `Tasks`.
+# Importers reference it as `stem.Tasks` (canonical); the raw declaration name
+# `stem.tasks` resolves to the same type.
+
+[[tests]]
+name = "implicit_param_type_pascal_case_reference"
+description = "An implicit param type is importable as stem.PascalName"
+parent_template = '''
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+
+params: [items = lib.Tasks]
+---
+> {% for item in items %}{{ item.title }};{% /for %}'''
+expected_output = "a;b;"
+
+[[tests.params.items]]
+title = "a"
+
+[[tests.params.items]]
+title = "b"
+
+[tests.files]
+"lib.tmpl.md" = '''
+---
+params: [tasks = list(title = str)]
+---
+> {% for t in tasks %}{{ t.title }}{% /for %}'''
+
+[[tests]]
+name = "implicit_param_type_declaration_name_reference"
+description = "An implicit param type is also importable by the declaring param's name"
+parent_template = '''
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+
+params: [items = lib.tasks]
+---
+> {% for item in items %}{{ item.title }};{% /for %}'''
+expected_output = "a;"
+
+[[tests.params.items]]
+title = "a"
+
+[tests.files]
+"lib.tmpl.md" = '''
+---
+params: [tasks = list(title = str)]
+---
+> {% for t in tasks %}{{ t.title }}{% /for %}'''
+
+[[tests]]
+name = "implicit_param_type_fields_are_checked"
+description = "Fields of an imported implicit param type are type-checked at compile time"
+parent_template = '''
+---
+imports:
+  - "[lib](./lib.tmpl.md)"
+
+params: [items = lib.Tasks]
+---
+> {% for item in items %}{{ item.name }};{% /for %}'''
+expected_error = "field 'name' does not exist"
+
+[[tests.params.items]]
+title = "a"
+
+[tests.files]
+"lib.tmpl.md" = '''
+---
+params: [tasks = list(title = str)]
+---
+> {% for t in tasks %}{{ t.title }}{% /for %}'''

@@ -89,10 +89,21 @@ export const FM_SANITIZE_NOTICE_PREFIX = "sanitize_notice:";
 export const FM_DELIMITER = "---";
 export const FILTER_SANITIZE = "sanitize";
 export const FILTER_SANITIZE_TOKENS = "sanitize_tokens";
+/**
+ * Internal-only filter emitted by the compile-time sanitize pass for a 0-arg
+ * `| sanitize` inside statically enclosing XML tags or an ATX heading (mirrors
+ * Rust `SanitizeFilterMode::Inline { enclosing_tags }`). The `#` makes it
+ * impossible to write in template source.
+ */
+export const FILTER_SANITIZE_ENCLOSED = "sanitize#enclosed";
 export const FILTER_QUARANTINE = "quarantine";
 export const FILTER_TRUNCATE = "truncate";
 export const FILTER_TOJSON = "tojson";
 export const FILTER_TO_JSON = "to_json";
+export const FILTER_FIXED = "fixed";
+export const FILTER_LIMIT = "limit";
+export const FILTER_ADD = "add";
+export const FILTER_SUB = "sub";
 export const SANITIZE_KIND_INLINE = "inline";
 export const SANITIZE_KIND_BLOCK = "block";
 export const PIPE_SPACED = " | ";
@@ -199,6 +210,22 @@ export const PREFIX_OPTS_DOT = "opts.";
 export const PREFIX_OPTIONS_DOT = "options.";
 export const PREFIX_PARAMS_DOT = "params.";
 export const ERR_TMPL_REQUIRES_NAME = "{% tmpl %} requires a name";
+/** A `{% %}` tag starts a line without a `>` prefix (mirrors Rust `ERR_BARE_STMT_TAG`). */
+export const ERR_BARE_STMT_TAG =
+  "statement tag at line start must be blockquote-prefixed with '> '";
+/** A `{# #}` comment starts a line without a `>` prefix (mirrors Rust `ERR_BARE_COMMENT`). */
+export const ERR_BARE_COMMENT =
+  "comment at line start must be blockquote-prefixed with '> '";
+/** Comment content not separated from its delimiters by whitespace. */
+export const ERR_COMMENT_SPACING =
+  "Comments must have spaces around the content (e.g. `{# comment #}` or `{#- comment -#}`)";
+/**
+ * Error suffix when a for-loop binding shadows a declared name:
+ * `for-loop binding '<name>' shadows a declared name (...)`. Mirrors the Rust
+ * core's `ERR_FOR_BINDING_SHADOWS`.
+ */
+export const ERR_FOR_BINDING_SHADOWS =
+  "shadows a declared name (param, const, env, import stem, or inline template)";
 export const ERR_DUPLICATE_INLINE_TMPL_PREFIX =
   "duplicate inline template name: ";
 

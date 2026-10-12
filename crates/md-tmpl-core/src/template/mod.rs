@@ -1006,6 +1006,12 @@ fn run_static_analysis(
     if !label_errors.is_empty() {
         return Err(TemplateError::Syntax(label_errors.join("; ").into()));
     }
+    // Flow-sensitive type check (field access, displayability, built-in
+    // argument types) — the same checker the `template!` proc macro runs.
+    let type_errors = fm.validate_field_types(segments);
+    if !type_errors.is_empty() {
+        return Err(TemplateError::Syntax(type_errors.join("; ").into()));
+    }
     Ok(())
 }
 

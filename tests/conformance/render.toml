@@ -452,8 +452,8 @@ params = { s = "Build" }
 expect = { kind = "render", output = "B\n" }
 
 [[cases]]
-name = "enum_literal_in_condition"
-note = "compare an enum param against a namespaced enum literal"
+name = "enum_eq_in_condition_rejected"
+note = "comparing an enum param with == is a compile error — use {% match %}"
 source = '''
 ---
 types:
@@ -474,7 +474,7 @@ other
 > {% /if %}
 '''
 params = { s = "Build" }
-expect = { kind = "render", output = "building\n" }
+expect = { kind = "error", phase = "compile", error_contains = "cannot compare enum 's' with '=='" }
 
 [[cases]]
 name = "option_has_some"

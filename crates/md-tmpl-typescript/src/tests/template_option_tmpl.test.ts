@@ -470,8 +470,10 @@ yes
     );
   });
 
-  it("option(tmpl) with None default can be overridden", () => {
-    const tmpl = Template.fromSource(`---
+  it("rejects field access on an option(tmpl) handle with a None default", () => {
+    assert.throws(
+      () =>
+        Template.fromSource(`---
 params:
   - cb = option(tmpl(test = str)) := None
 ---
@@ -483,14 +485,17 @@ params:
 
 absent
 
-> {% /if %}`);
-    assert.ok(tmpl.render({ cb: { test: "override" } }).includes("override"));
+> {% /if %}`),
+      /cannot access field '[a-z_]+' on tmpl\(/,
+    );
   });
 });
 
 describe("option(tmpl(...)) field access inside has() guard", () => {
-  it("accesses tmpl fields when option is present", () => {
-    const tmpl = Template.fromSource(`---
+  it("rejects field access on a narrowed option(tmpl) handle", () => {
+    assert.throws(
+      () =>
+        Template.fromSource(`---
 params:
   - cb = option(tmpl(name = str, count = int))
 ---
@@ -498,14 +503,15 @@ params:
 
 {{ cb.name }}: {{ cb.count }}
 
-> {% /if %}`);
-    assert.ok(
-      tmpl.render({ cb: { name: "test", count: 42 } }).includes("test: 42"),
+> {% /if %}`),
+      /cannot access field '[a-z_]+' on tmpl\(/,
     );
   });
 
-  it("skips field access block when None", () => {
-    const tmpl = Template.fromSource(`---
+  it("rejects field access on an option(tmpl) handle in a has() branch with else", () => {
+    assert.throws(
+      () =>
+        Template.fromSource(`---
 params:
   - cb = option(tmpl(name = str, count = int))
 ---
@@ -517,8 +523,9 @@ params:
 
 no callback
 
-> {% /if %}`);
-    assert.ok(tmpl.render({ cb: null }).includes("no callback"));
+> {% /if %}`),
+      /cannot access field '[a-z_]+' on tmpl\(/,
+    );
   });
 });
 
@@ -558,8 +565,10 @@ describe("option(tmpl(...)) nested: option(tmpl(x = option(tmpl(...))))", () => 
     );
   });
 
-  it("renders deeply nested option(tmpl) with all levels present", () => {
-    const tmpl = Template.fromSource(`---
+  it("rejects nested field access through tmpl handles", () => {
+    assert.throws(
+      () =>
+        Template.fromSource(`---
 params:
   - outer = option(tmpl(inner = option(tmpl(val = str))))
 ---
@@ -579,15 +588,15 @@ no inner
 
 no outer
 
-> {% /if %}`);
-    const output = tmpl.render({
-      outer: { inner: { val: "deep" } },
-    });
-    assert.ok(output.includes("deep"), `output: ${output}`);
+> {% /if %}`),
+      /cannot access field '[a-z_]+' on tmpl\(/,
+    );
   });
 
-  it("renders deeply nested option(tmpl) with inner None", () => {
-    const tmpl = Template.fromSource(`---
+  it("rejects has() on a field of a tmpl handle", () => {
+    assert.throws(
+      () =>
+        Template.fromSource(`---
 params:
   - outer = option(tmpl(inner = option(tmpl(val = str))))
 ---
@@ -607,13 +616,15 @@ no inner
 
 no outer
 
-> {% /if %}`);
-    const output = tmpl.render({ outer: { inner: null } });
-    assert.ok(output.includes("no inner"), `output: ${output}`);
+> {% /if %}`),
+      /cannot access field '[a-z_]+' on tmpl\(/,
+    );
   });
 
-  it("renders deeply nested option(tmpl) with outer None", () => {
-    const tmpl = Template.fromSource(`---
+  it("rejects has() on a nested tmpl field even when the body is static", () => {
+    assert.throws(
+      () =>
+        Template.fromSource(`---
 params:
   - outer = option(tmpl(inner = option(tmpl(val = str))))
 ---
@@ -633,9 +644,9 @@ no inner
 
 no outer
 
-> {% /if %}`);
-    const output = tmpl.render({ outer: null });
-    assert.ok(output.includes("no outer"), `output: ${output}`);
+> {% /if %}`),
+      /cannot access field '[a-z_]+' on tmpl\(/,
+    );
   });
 });
 
@@ -703,8 +714,10 @@ params:
 });
 
 describe("option(tmpl(...)) multiple params mix", () => {
-  it("mix of option(tmpl), regular tmpl, and option scalars", () => {
-    const tmpl = Template.fromSource(`---
+  it("rejects field access on option(tmpl) handles mixed with option scalars", () => {
+    assert.throws(
+      () =>
+        Template.fromSource(`---
 params:
   - cb = option(tmpl(test = str))
   - target = option(tmpl(test = str))
@@ -726,13 +739,8 @@ target: {{ target.test }}
 
 label: {{ label }}
 
-> {% /if %}`);
-    const output = tmpl.render({
-      cb: { test: "A" },
-      target: null,
-    });
-    assert.ok(output.includes("cb: A"), `output: ${output}`);
-    assert.ok(!output.includes("target:"), `output: ${output}`);
-    assert.ok(!output.includes("label:"), `output: ${output}`);
+> {% /if %}`),
+      /cannot access field '[a-z_]+' on tmpl\(/,
+    );
   });
 });

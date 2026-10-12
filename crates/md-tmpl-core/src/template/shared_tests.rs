@@ -52,6 +52,7 @@ const INCLUDE_FIXTURES: &[SharedFixture] = &[
     shared_fixture!("include_tests/circular_and_mutual.toml"),
     shared_fixture!("include_tests/cross_directory.toml"),
     shared_fixture!("include_tests/env_paths.toml"),
+    shared_fixture!("include_tests/implicit_param_type_imports.toml"),
     shared_fixture!("include_tests/import_usage_tracking.toml"),
     shared_fixture!("include_tests/imported_const_iteration.toml"),
     shared_fixture!("include_tests/included_file_imports.toml"),
@@ -72,9 +73,13 @@ const INLINE_CONTROL_FIXTURES: &[SharedFixture] = &[
 
 /// Sorted contents of `tests/shared/feature_e2e_tests/`.
 const FEATURE_E2E_FIXTURES: &[SharedFixture] = &[
+    shared_fixture!("feature_e2e_tests/block_scoping_regressions.toml"),
     shared_fixture!("feature_e2e_tests/boolean_expressions.toml"),
     shared_fixture!("feature_e2e_tests/builtins_loops_raw_string_match.toml"),
+    shared_fixture!("feature_e2e_tests/compile_time_type_errors.toml"),
+    shared_fixture!("feature_e2e_tests/diagnostic_parity.toml"),
     shared_fixture!("feature_e2e_tests/enums.toml"),
+    shared_fixture!("feature_e2e_tests/filter_sanitize_parity.toml"),
     shared_fixture!("feature_e2e_tests/filters_whitespace.toml"),
     shared_fixture!("feature_e2e_tests/frontmatter_and_validation.toml"),
     shared_fixture!("feature_e2e_tests/frontmatter_regressions.toml"),
@@ -83,6 +88,7 @@ const FEATURE_E2E_FIXTURES: &[SharedFixture] = &[
     shared_fixture!("feature_e2e_tests/nested_type_patterns_blockquotes.toml"),
     shared_fixture!("feature_e2e_tests/option_types.toml"),
     shared_fixture!("feature_e2e_tests/reserved_names_keywords.toml"),
+    shared_fixture!("feature_e2e_tests/single_letter_type_aliases.toml"),
     shared_fixture!("feature_e2e_tests/strict_builtin_typing.toml"),
     shared_fixture!("feature_e2e_tests/string_interpolation_field_access.toml"),
     shared_fixture!("feature_e2e_tests/unused_params.toml"),
@@ -312,19 +318,13 @@ fn shared_include_tests() {
             .collect();
 
         if let Some(expected) = tc.get("expected_output").and_then(|v| v.as_str()) {
-            let (tmpl, fm) = Template::compile(
+            let (tmpl, _fm) = Template::compile(
                 &parent_template,
                 CompileOptions::default()
                     .base_dir(dir.path())
                     .env(&env_pairs),
             )
             .unwrap_or_else(|e| panic!("[{name}] parse failed: {e}"));
-            // Exercise the compile-time field-type checker (same path as the
-            // `template!` proc-macro) so imported-const field access is validated
-            // statically, not only at render time.
-            if let Some(err) = fm.validate_field_types(&tmpl.segments).into_iter().next() {
-                panic!("[{name}] static type check failed: {err}");
-            }
             let ctx = toml_to_context(params);
             let output = tmpl
                 .render_ctx(&ctx)
@@ -337,10 +337,7 @@ fn shared_include_tests() {
                     .base_dir(dir.path())
                     .env(&env_pairs),
             )
-            .and_then(|(tmpl, fm)| {
-                if let Some(err) = fm.validate_field_types(&tmpl.segments).into_iter().next() {
-                    return Err(crate::error::TemplateError::syntax(err));
-                }
+            .and_then(|(tmpl, _fm)| {
                 let ctx = toml_to_context(params);
                 tmpl.render_ctx(&ctx)
             });
@@ -368,14 +365,6 @@ fn shared_inline_control_tests() {
         if let Some(expected) = tc.get("expected_output").and_then(|v| v.as_str()) {
             let tmpl = Template::from_source(&template_src)
                 .unwrap_or_else(|e| panic!("[{name}] parse failed: {e}"));
-            if let Ok((fm, _)) = crate::frontmatter::parse_frontmatter(&template_src) {
-                // Use the same compile-time checker as the `template!` proc-macro
-                // so the shared tests genuinely exercise production validation.
-                let type_errors = fm.validate_field_types(&tmpl.segments);
-                if let Some(err) = type_errors.into_iter().next() {
-                    panic!("[{name}] static type check failed: {err}");
-                }
-            }
             let ctx = toml_to_context(params);
             let output = tmpl
                 .render_ctx(&ctx)
@@ -383,13 +372,6 @@ fn shared_inline_control_tests() {
             assert_eq!(output, expected, "[{name}] output mismatch");
         } else if let Some(expected_substr) = tc.get("expected_error").and_then(|v| v.as_str()) {
             let result = Template::from_source(&template_src).and_then(|tmpl| {
-                if let Ok((fm, _)) = crate::frontmatter::parse_frontmatter(&template_src) {
-                    // Use the same compile-time checker as the `template!` proc-macro.
-                    let type_errors = fm.validate_field_types(&tmpl.segments);
-                    if let Some(err) = type_errors.into_iter().next() {
-                        return Err(crate::error::TemplateError::syntax(err));
-                    }
-                }
                 let ctx = toml_to_context(params);
                 tmpl.render_ctx(&ctx)
             });

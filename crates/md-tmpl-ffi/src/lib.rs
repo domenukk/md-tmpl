@@ -29,6 +29,7 @@ mod context;
 mod metadata;
 mod render;
 mod security;
+mod security_host;
 mod template;
 
 // Re-export the full `pt_*` FFI surface at the crate root so the public API is
@@ -38,6 +39,7 @@ pub use context::*;
 pub use metadata::*;
 pub use render::*;
 pub use security::*;
+pub use security_host::*;
 pub use template::*;
 
 // ---------------------------------------------------------------------------

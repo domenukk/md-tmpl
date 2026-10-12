@@ -54,17 +54,16 @@ fn walk_segment(
         Segment::Expr { expr, filters, .. } => match expr {
             CompiledExpr::Path(path) => {
                 validate_compiled_path(path, env, errors);
-                if env.check_displayability
-                    && (filters.is_empty()
-                        || filters.iter().all(|f| {
-                            matches!(
-                                f.kind,
-                                crate::compiled::FilterKind::Sanitize
-                                    | crate::compiled::FilterKind::Quarantine
-                                    | crate::compiled::FilterKind::Limit
-                                    | crate::compiled::FilterKind::Truncate
-                            )
-                        }))
+                if filters.is_empty()
+                    || filters.iter().all(|f| {
+                        matches!(
+                            f.kind,
+                            crate::compiled::FilterKind::Sanitize
+                                | crate::compiled::FilterKind::Quarantine
+                                | crate::compiled::FilterKind::Limit
+                                | crate::compiled::FilterKind::Truncate
+                        )
+                    })
                 {
                     if let Some(resolved) = resolve_compiled_path_type(path, env) {
                         if !resolved.is_displayable() {

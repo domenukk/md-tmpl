@@ -19,13 +19,15 @@ import {
   COMMENT_START_SPACED,
   FM_DELIMITER,
   KW_END_RAW,
-  KW_END_RAW_TRIM,
-  KW_RAW_ASSIGN_SPACED,
-  KW_RAW_CLOSE_SPACED,
-  KW_RAW_SPACED,
+  KW_RAW,
   PIPE,
+  STMT_END,
   STMT_START,
-  TRIM_SPACED,
+  TAG_RAW_ASSIGN_PREFIX,
+  TRIM_MARKER,
+  ERR_BARE_COMMENT,
+  ERR_BARE_STMT_TAG,
+  ERR_COMMENT_SPACING,
   NODE_TEXT,
   NODE_COMMENT,
   NODE_EXPR,
@@ -68,6 +70,42 @@ export function isValidTagNeighbor(line: string): boolean {
   return false;
 }
 
+/** Maximum display length of a line snippet in blockquote errors (mirrors Rust). */
+const SNIPPET_MAX_DISPLAY_LEN = 60;
+/** Truncation point that leaves room for the trailing `…` (mirrors Rust). */
+const SNIPPET_TRUNCATION_BOUNDARY = SNIPPET_MAX_DISPLAY_LEN - 3;
+
+/** A line truncated to {@link SNIPPET_MAX_DISPLAY_LEN} for error messages. */
+function displaySnippet(line: string): string {
+  const chars = Array.from(line);
+  return chars.length > SNIPPET_MAX_DISPLAY_LEN
+    ? `${chars.slice(0, SNIPPET_TRUNCATION_BOUNDARY).join("")}…`
+    : line;
+}
+
+/**
+ * Per-line flags: `true` when the whole line lies inside a raw-block body.
+ *
+ * Raw-body lines are literal text: they are emitted verbatim, exempt from
+ * blockquote rules, and count as valid neighbors of the raw block's own
+ * open/close tag lines.
+ */
+function rawBodyLineFlags(
+  body: string,
+  lines: readonly string[],
+  startLineNo: number,
+): boolean[] {
+  const ranges = rawBodyRanges(body, startLineNo);
+  let start = 0;
+  return lines.map((line) => {
+    const content = line.endsWith("\r") ? line.slice(0, -1) : line;
+    const end = start + content.length;
+    const isRaw = ranges.some((r) => r.start <= start && end <= r.end);
+    start += line.length + 1;
+    return isRaw;
+  });
+}
+
 /**
  * Strip `> ` prefix from standalone statement lines and consume the
  * trailing newline, matching how the Rust parser treats standalone tags.
@@ -77,73 +115,56 @@ export function preprocessBlockquotes(
   startLineNo = 1,
 ): [string, LineMapEntry[]] {
   const lines = body.split("\n");
+  const rawLines = rawBodyLineFlags(body, lines, startLineNo);
   let result = "";
   const lineMap: LineMapEntry[] = [];
   let afterStandalone = false;
   let pendingBlanks = 0;
-  let inRaw = false;
 
   for (const [i, line] of lines.entries()) {
     const trimmed = line.trimStart();
 
-    if (inRaw) {
-      if (
-        trimmed.includes(STMT_START) &&
-        (trimmed.includes(KW_END_RAW) || trimmed.includes(KW_END_RAW_TRIM))
-      ) {
-        inRaw = false;
-      } else {
-        // Inside raw: blank lines after a standalone tag still need
-        // the pendingBlanks mechanism to match Rust's behaviour.
-        if (afterStandalone && line.trim() === "") {
-          pendingBlanks++;
-          continue;
-        }
-        if (afterStandalone) {
-          // tag-to-raw-content: consume 1 mandatory blank, preserve extras.
-          if (pendingBlanks > 0) {
-            pendingBlanks--;
-          }
-          for (let b = 0; b < pendingBlanks; b++) {
-            result += "\n";
-          }
-          pendingBlanks = 0;
-        }
-        if (i > 0 && !afterStandalone) {
-          result += "\n";
-        }
-        afterStandalone = false;
-        lineMap.push({
-          offset: result.length,
-          lineNo: startLineNo + i,
-          snippet: line,
-          colOffset: 0,
-        });
-        result += line;
+    if (rawLines[i] === true) {
+      // Inside raw: blank lines after a standalone tag still need
+      // the pendingBlanks mechanism to match Rust's behaviour.
+      if (afterStandalone && line.trim() === "") {
+        pendingBlanks++;
         continue;
       }
-    } else if (
-      trimmed.startsWith(BLOCKQUOTE_PREFIX) &&
-      trimmed.includes(STMT_START) &&
-      (trimmed.includes(KW_RAW_SPACED) ||
-        trimmed.includes(KW_RAW_ASSIGN_SPACED) ||
-        trimmed.includes(KW_RAW_CLOSE_SPACED))
-    ) {
-      inRaw = true;
+      if (afterStandalone) {
+        // tag-to-raw-content: consume 1 mandatory blank, preserve extras.
+        if (pendingBlanks > 0) {
+          pendingBlanks--;
+        }
+        for (let b = 0; b < pendingBlanks; b++) {
+          result += "\n";
+        }
+        pendingBlanks = 0;
+      }
+      if (i > 0 && !afterStandalone) {
+        result += "\n";
+      }
+      afterStandalone = false;
+      lineMap.push({
+        offset: result.length,
+        lineNo: startLineNo + i,
+        snippet: line,
+        colOffset: 0,
+      });
+      result += line;
+      continue;
     }
 
     // Enforce bare statement and comment rules
-    if (trimmed.startsWith(STMT_START) || trimmed.startsWith(TRIM_SPACED)) {
+    const bareError = trimmed.startsWith(STMT_START)
+      ? ERR_BARE_STMT_TAG
+      : trimmed.startsWith(COMMENT_START)
+        ? ERR_BARE_COMMENT
+        : undefined;
+    if (bareError !== undefined) {
+      const snippet = displaySnippet(trimmed.replace(/\r$/, ""));
       throw new TemplateSyntaxError(
-        `Statement tags starting at the beginning of a line must have a blockquote prefix (> {% ... %}) to ensure proper Markdown rendering: '${line.trim()}'`,
-        startLineNo + i,
-        1,
-        line,
-      );
-    }
-    if (trimmed.startsWith(COMMENT_START)) {
-      throw new TemplateSyntaxError(
-        `Comments starting at the beginning of a line must have a blockquote prefix (> {# ... #}) to ensure proper Markdown rendering: '${line.trim()}'`,
+        `${bareError}: write '> ${snippet}' instead of '${snippet}'`,
         startLineNo + i,
         1,
         line,
@@ -151,23 +172,6 @@ export function preprocessBlockquotes(
     }
 
     if (trimmed.startsWith(BLOCKQUOTE_PREFIX)) {
-      if (
-        !trimmed.startsWith(BLOCKQUOTE_PREFIX_SPACED) &&
-        !trimmed.startsWith(">\t")
-      ) {
-        const afterGt = trimmed.slice(1).trimStart();
-        if (
-          afterGt.startsWith(STMT_START) ||
-          afterGt.startsWith(COMMENT_START)
-        ) {
-          throw new TemplateSyntaxError(
-            `statement tag at line start must be blockquote-prefixed with '> ': write '> ${afterGt}' instead of '${line.trim()}'`,
-            startLineNo + i,
-            1,
-            line,
-          );
-        }
-      }
       const afterGt = trimmed.replace(/^>\s*/, "");
       if (afterGt.startsWith(COMMENT_START)) {
         const closeIdx = afterGt.indexOf(COMMENT_END);
@@ -180,7 +184,7 @@ export function preprocessBlockquotes(
               afterGt[closeIdx - 1] !== "\t"))
         ) {
           throw new TemplateSyntaxError(
-            `Blockquote comments must have spaces around the content (e.g. '> {# comment #}'): '${line.trim()}'`,
+            ERR_COMMENT_SPACING,
             startLineNo + i,
             1,
             line,
@@ -245,10 +249,13 @@ export function preprocessBlockquotes(
     afterStandalone = false;
 
     if (isStandaloneTag) {
-      const isRawTag = tagLine.includes("raw");
-      if (!isRawTag && i > 0) {
+      if (i > 0) {
         const prevLine = lines[i - 1];
-        if (prevLine !== undefined && !isValidTagNeighbor(prevLine)) {
+        if (
+          prevLine !== undefined &&
+          rawLines[i - 1] !== true &&
+          !isValidTagNeighbor(prevLine)
+        ) {
           throw new TemplateSyntaxError(
             `Standalone statement tag '${line.trim()}' must be preceded by a blank line or another blockquote tag line (> {%...%})`,
             startLineNo + i,
@@ -258,9 +265,13 @@ export function preprocessBlockquotes(
         }
       }
 
-      if (!isRawTag && i + 1 < lines.length) {
+      if (i + 1 < lines.length) {
         const nextLine = lines[i + 1];
-        if (nextLine !== undefined && !isValidTagNeighbor(nextLine)) {
+        if (
+          nextLine !== undefined &&
+          rawLines[i + 1] !== true &&
+          !isValidTagNeighbor(nextLine)
+        ) {
           throw new TemplateSyntaxError(
             `Standalone statement tag '${line.trim()}' must be followed by a blank line or another blockquote tag line (> {%...%})`,
             startLineNo + i,
@@ -566,5 +577,110 @@ export function parseInlineContent(
       });
       pos = endPos;
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Raw blocks (`{% raw %}` / `{% raw=DELIM %}`)
+// ---------------------------------------------------------------------------
+
+/** Half-open byte range `[start, end)` of a raw-block body. */
+export interface RawBodyRange {
+  readonly start: number;
+  readonly end: number;
+}
+
+/**
+ * Closing keyword for a raw-block opener (`/raw` or `/DELIM`), or
+ * `undefined` when `tag` does not open a raw block.
+ */
+export function rawCloseKeyword(tag: string): string | undefined {
+  if (tag === KW_RAW) return KW_END_RAW;
+  if (tag.startsWith(TAG_RAW_ASSIGN_PREFIX)) {
+    return `/${tag.slice(TAG_RAW_ASSIGN_PREFIX.length).trim()}`;
+  }
+  return undefined;
+}
+
+/**
+ * Offset of the `{%` that closes a raw block opened before `afterTag`, or
+ * -1 when the block is unclosed.
+ */
+export function findRawClose(
+  input: string,
+  afterTag: number,
+  closeKeyword: string,
+): number {
+  for (const closeTag of [
+    `${STMT_START} ${closeKeyword} ${STMT_END}`,
+    `${STMT_START}${closeKeyword}${STMT_END}`,
+  ]) {
+    const idx = input.indexOf(closeTag, afterTag);
+    if (idx !== -1) return idx;
+  }
+  // Fall back to a close tag on its own (optionally blockquoted) line.
+  const standaloneClose = `${STMT_START} ${closeKeyword} ${STMT_END}`;
+  let offset = afterTag;
+  for (const line of input.slice(afterTag).split("\n")) {
+    const trimmed = line.trim();
+    if (
+      trimmed === standaloneClose ||
+      trimmed === `${BLOCKQUOTE_PREFIX_SPACED}${standaloneClose}`
+    ) {
+      return offset;
+    }
+    offset += line.length + 1;
+  }
+  return -1;
+}
+
+/** Statement content of a `{% ... %}` tag body, without trim markers. */
+function cleanStatement(tagContent: string): string {
+  let stmt = tagContent;
+  if (stmt.startsWith(TRIM_MARKER)) stmt = stmt.slice(TRIM_MARKER.length);
+  if (stmt.endsWith(TRIM_MARKER)) stmt = stmt.slice(0, -TRIM_MARKER.length);
+  return stmt.trim();
+}
+
+/** Number of lines before `offset` in `input`. */
+function lineIndexAt(input: string, offset: number): number {
+  return input.slice(0, offset).split("\n").length - 1;
+}
+
+/**
+ * Byte ranges of every top-level raw-block body in `input`, located with
+ * the same tag scanner and close-tag search the parser uses.
+ *
+ * @throws TemplateSyntaxError when a raw block is unclosed.
+ */
+export function rawBodyRanges(
+  input: string,
+  startLineNo: number,
+): RawBodyRange[] {
+  const ranges: RawBodyRange[] = [];
+  let pos = 0;
+  for (;;) {
+    const tagStart = findNextTag(input, pos);
+    if (tagStart === -1) return ranges;
+    const [tagContent, tagEnd] = extractTagContent(input, tagStart);
+    const stmt = cleanStatement(tagContent);
+    const closeKeyword = rawCloseKeyword(stmt);
+    if (closeKeyword === undefined) {
+      pos = tagEnd;
+      continue;
+    }
+    const closeStart = findRawClose(input, tagEnd, closeKeyword);
+    if (closeStart === -1) {
+      const line = input.split("\n")[lineIndexAt(input, tagStart)];
+      throw new TemplateSyntaxError(
+        `unclosed '{% ${stmt} %}' block`,
+        startLineNo + lineIndexAt(input, tagStart),
+        1,
+        line,
+      );
+    }
+    ranges.push({ start: tagEnd, end: closeStart });
+    const closeEnd = input.indexOf(STMT_END, closeStart);
+    pos = closeEnd === -1 ? closeStart : closeEnd + STMT_END.length;
   }
 }

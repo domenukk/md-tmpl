@@ -382,7 +382,7 @@ params:
         Template::from_source(src).expect_err("for binding 'item' should shadow param 'item'");
     let msg = err.to_string();
     assert!(
-        msg.contains("for loop binding shadows") && msg.contains("'item'"),
+        msg.contains("for-loop binding 'item' shadows a declared name"),
         "expected for-binding shadow error, got: {msg}",
     );
 }
@@ -404,7 +404,7 @@ params:
         Template::from_source(src).expect_err("for binding 'item' should shadow const 'item'");
     let msg = err.to_string();
     assert!(
-        msg.contains("for loop binding shadows") && msg.contains("'item'"),
+        msg.contains("for-loop binding 'item' shadows a declared name"),
         "expected for-binding shadow const error, got: {msg}",
     );
 }
@@ -428,7 +428,7 @@ allow_unused: true
         Template::from_source(src).expect_err("for binding 'lib' should shadow import stem 'lib'");
     let msg = err.to_string();
     assert!(
-        msg.contains("for loop binding shadows") && msg.contains("'lib'"),
+        msg.contains("for-loop binding 'lib' shadows a declared name"),
         "expected for-binding shadow import error, got: {msg}",
     );
 }
@@ -454,7 +454,7 @@ params: [title = str]
         .expect_err("for binding 'card' should shadow inline template 'card'");
     let msg = err.to_string();
     assert!(
-        msg.contains("for loop binding shadows") && msg.contains("'card'"),
+        msg.contains("for-loop binding 'card' shadows a declared name"),
         "expected for-binding shadow tmpl error, got: {msg}",
     );
 }

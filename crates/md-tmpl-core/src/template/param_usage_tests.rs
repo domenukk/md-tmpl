@@ -92,7 +92,10 @@ params: []
 {# line start #}",
     )
     .unwrap_err();
-    assert!(err.to_string().contains("blockquote prefix"), "got: {err}");
+    assert!(
+        err.to_string().contains(crate::consts::ERR_BARE_COMMENT),
+        "got: {err}"
+    );
 
     let err2 = Template::from_source(
         "---
@@ -301,7 +304,7 @@ params:
 
 {{ x }}
 
-> {% /if %}{{ y }}{{ z }}"#,
+> {% /if %}{% if has(y) %}{{ y }}{% /if %}{% if has(z) %}{{ z }}{% /if %}"#,
     )
     .unwrap();
     let defaults = tmpl.defaults();

@@ -1,0 +1,261 @@
+# Shared feature_e2e_tests: type errors that must be reported when the template
+# is compiled (`from_source`), even on branches a given render never executes.
+
+# ============================================================================
+# Missing fields
+# ============================================================================
+
+[[tests]]
+name = "missing_struct_field_in_untaken_branch"
+description = "Accessing an undeclared struct field is a compile error even in an untaken branch"
+template = '''
+---
+params: [user = struct(name = str), flag = bool]
+---
+> {% if flag %}{{ user.nme }}{% /if %}{{ user.name }}'''
+expected_error = "field 'nme' does not exist"
+
+[tests.params]
+user = { name = "a" }
+flag = false
+
+[[tests]]
+name = "missing_list_item_field_in_empty_loop"
+description = "Accessing an undeclared list-element field is a compile error even when the list is empty"
+template = '''
+---
+params: [users = list(name = str)]
+---
+> {% for u in users %}{{ u.nme }}{% /for %}'''
+expected_error = "field 'nme' does not exist"
+
+[tests.params]
+users = []
+
+[[tests]]
+name = "missing_field_in_for_else_body"
+description = "Accessing an undeclared field inside a for-else body is a compile error"
+template = '''
+---
+params: [users = list(name = str), owner = struct(name = str)]
+---
+> {% for u in users %}{{ u.name }}{% else %}{{ owner.nme }}{% /for %}'''
+expected_error = "field 'nme' does not exist"
+
+[tests.params]
+users = [{ name = "a" }]
+owner = { name = "o" }
+
+# ============================================================================
+# Non-displayable values
+# ============================================================================
+
+[[tests]]
+name = "struct_display_in_untaken_branch"
+description = "Rendering a struct directly is a compile error even in an untaken branch"
+template = '''
+---
+params: [user = struct(name = str), flag = bool]
+---
+> {% if flag %}{{ user }}{% /if %}{{ user.name }}'''
+expected_error = "cannot display value of type"
+
+[tests.params]
+user = { name = "a" }
+flag = false
+
+[[tests]]
+name = "list_display_in_untaken_branch"
+description = "Rendering a list directly is a compile error even in an untaken branch"
+template = '''
+---
+params: [xs = list(str), flag = bool]
+---
+> {% if flag %}{{ xs }}{% /if %}{{ xs | join(", ") }}'''
+expected_error = "cannot display value of type"
+
+[tests.params]
+xs = ["a"]
+flag = false
+
+[[tests]]
+name = "unnarrowed_option_display"
+description = "Rendering an option without has() or match narrowing is a compile error"
+template = '''
+---
+params: [nick = option(str)]
+---
+{{ nick }}'''
+expected_error = "cannot display value of type"
+
+[tests.params]
+nick = "x"
+
+[[tests]]
+name = "narrowed_option_display_is_accepted"
+description = "Rendering an option inside a has() branch is valid"
+template = '''
+---
+params: [nick = option(str)]
+---
+> {% if has(nick) %}{{ nick }}{% else %}anon{% /if %}'''
+expected_output = "x"
+
+[tests.params]
+nick = "x"
+
+# ============================================================================
+# Missing fields and option access in conditions, iterables, and match
+# ============================================================================
+
+[[tests]]
+name = "missing_field_in_condition"
+description = "Comparing an undeclared field is a compile error even in an untaken branch"
+template = '''
+---
+params: [user = struct(name = str), flag = bool]
+---
+> {% if flag %}{% if user.nme == "x" %}x{% /if %}{% /if %}{{ user.name }}'''
+expected_error = "field 'nme' does not exist"
+
+[tests.params]
+user = { name = "a" }
+flag = false
+
+[[tests]]
+name = "missing_field_as_for_iterable"
+description = "Iterating an undeclared field is a compile error"
+template = '''
+---
+params: [user = struct(name = str)]
+---
+> {% for x in user.items %}{{ x }}{% /for %}{{ user.name }}'''
+expected_error = "field 'items' does not exist"
+
+[tests.params]
+user = { name = "a" }
+
+[[tests]]
+name = "unnarrowed_option_field_access"
+description = "Accessing a field through an option without narrowing is a compile error"
+template = '''
+---
+params: [profile = option(struct(bio = str))]
+---
+{{ profile.bio }}'''
+expected_error = "option values must be checked before access"
+
+[tests.params]
+profile = { bio = "b" }
+
+[[tests]]
+name = "tmpl_handle_field_access"
+description = "A tmpl() parameter has no fields — render it with include"
+template = '''
+---
+params: [widget = tmpl(title = str)]
+---
+{{ widget.title }}'''
+expected_error = "cannot access field 'title' on tmpl(title = str)"
+
+# ============================================================================
+# Enum comparisons and built-in argument types
+# ============================================================================
+
+[[tests]]
+name = "enum_equality_in_untaken_branch"
+description = "Comparing an enum with == is a compile error — use match"
+template = '''
+---
+types:
+  - Stage = enum(Design, Build)
+
+params: [s = Stage, flag = bool]
+---
+> {% if flag %}{% if s == Stage.Build %}b{% /if %}{% /if %}{{ kind(s) }}'''
+expected_error = "cannot compare enum 's' with '=='"
+
+[tests.params]
+s = "Build"
+flag = false
+
+[[tests]]
+name = "enum_inequality_rejected"
+description = "Comparing an enum with != is a compile error — use match"
+template = '''
+---
+types:
+  - Stage = enum(Design, Build)
+
+params: [s = Stage]
+---
+> {% if s != Stage.Build %}not building{% /if %}'''
+expected_error = "cannot compare enum 's' with '=='"
+
+[tests.params]
+s = "Build"
+
+[[tests]]
+name = "kind_on_str_in_untaken_branch"
+description = "kind() on a str param is a compile error even in an untaken branch"
+template = '''
+---
+params: [msg = str, flag = bool]
+---
+> {% if flag %}{{ kind(msg) }}{% /if %}{{ msg }}'''
+expected_error = "'kind()' requires an enum or option type, got str on 'msg'"
+
+[tests.params]
+msg = "m"
+flag = false
+
+[[tests]]
+name = "len_on_int_in_condition"
+description = "len() on an int param inside a condition is a compile error"
+template = '''
+---
+params: [count = int]
+---
+> {% if len(count) > 0 %}some{% /if %}'''
+expected_error = "'len()' requires a list or str type, got int on 'count'"
+
+[tests.params]
+count = 1
+
+[[tests]]
+name = "has_on_str_in_condition"
+description = "has() on a str param inside a condition is a compile error"
+template = '''
+---
+params: [label = str]
+---
+> {% if has(label) %}{{ label }}{% /if %}'''
+expected_error = "'has()' requires an option type, got str on 'label'"
+
+[tests.params]
+label = "l"
+
+# ============================================================================
+# Inline include contracts
+# ============================================================================
+
+[[tests]]
+name = "inline_include_missing_param_in_untaken_branch"
+description = "Including an inline template without its required params is a compile error"
+template = '''
+---
+params: [flag = bool]
+---
+> {% tmpl greeting %}
+---
+params: [who = str]
+---
+Hello {{ who }}!
+
+> {% /tmpl %}
+
+> {% if flag %}{% include greeting %}{% /if %}'''
+expected_error = "include 'greeting': missing required param(s): who: str. Use 'with who=who' to pass them"
+
+[tests.params]
+flag = false

@@ -5,6 +5,7 @@
  */
 
 import { LIT_FALSE, LIT_TRUE } from "../consts.js";
+import { formatFloatDisplay, formatIntDisplay } from "../numeric_format.js";
 
 // ---------------------------------------------------------------------------
 // Direct display — convert any JS value to string
@@ -15,7 +16,12 @@ export function directDisplay(value: unknown): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "string") return value;
   if (typeof value === "boolean") return value ? LIT_TRUE : LIT_FALSE;
-  if (typeof value === "number") return String(value);
+  if (typeof value === "number") {
+    // Integers map to `int` and others to `float`, exactly like `fromJs`.
+    return Number.isInteger(value)
+      ? formatIntDisplay(value)
+      : formatFloatDisplay(value);
+  }
   if (Array.isArray(value)) {
     throw new Error(
       "cannot display list value directly — iterate with '{% for item in list %}' instead",

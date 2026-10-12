@@ -1,0 +1,359 @@
+# Shared feature_e2e_tests: `{% else %}` scoping across nested blocks and raw-block
+# boundaries in blockquote-prefix validation.
+
+# ============================================================================
+# `{% else %}` belongs to the innermost enclosing if / for / match block
+# ============================================================================
+
+[[tests]]
+name = "if_branch_contains_for_else_empty"
+description = "A for-else nested in an if-branch keeps its else; the if has no else"
+template = '''
+---
+params: [show = bool, xs = list(str)]
+---
+> {% if show %}{% for x in xs %}{{ x }}{% else %}empty{% /for %}{% /if %}'''
+expected_output = "empty"
+
+[tests.params]
+show = true
+xs = []
+
+[[tests]]
+name = "if_branch_contains_for_else_with_if_else"
+description = "The if-else is not confused with a for-else nested in the if-branch"
+template = '''
+---
+params: [show = bool, xs = list(str)]
+---
+> {% if show %}{% for x in xs %}{{ x }}{% else %}empty{% /for %}{% else %}hidden{% /if %}'''
+expected_output = "hidden"
+
+[tests.params]
+show = false
+xs = ["a"]
+
+[[tests]]
+name = "elif_branch_contains_for_else"
+description = "A for-else nested in an elif-branch keeps its else"
+template = '''
+---
+params: [a = bool, b = bool, xs = list(str)]
+---
+> {% if a %}A{% elif b %}{% for x in xs %}{{ x }}{% else %}none{% /for %}{% else %}C{% /if %}'''
+expected_output = "none"
+
+[tests.params]
+a = false
+b = true
+xs = []
+
+[[tests]]
+name = "if_branch_contains_match_else"
+description = "A match-else nested in an if-branch keeps its else"
+template = '''
+---
+types:
+  - State = enum(Active, Stopped)
+
+params: [show = bool, s = State]
+---
+> {% if show %}{% match s case Active %}on{% else %}off{% /match %}{% else %}hidden{% /if %}'''
+expected_output = "off"
+
+[tests.params]
+show = true
+s = "Stopped"
+
+[[tests]]
+name = "for_body_contains_match_condition_else"
+description = "A match-else nested in a for body does not split the loop"
+template = '''
+---
+types:
+  - State = enum(Active, Stopped)
+
+params: [states = list(State)]
+---
+> {% for s in states %}{% match s case Active %}on{% else %}off{% /match %};{% else %}empty{% /for %}'''
+expected_output = "on;off;"
+
+[tests.params]
+states = ["Active", "Stopped"]
+
+[[tests]]
+name = "for_body_contains_match_block_else"
+description = "A case/else match block nested in a for body does not split the loop"
+template = '''
+---
+types:
+  - State = enum(Active, Stopped)
+
+params: [states = list(State)]
+---
+> {% for s in states %}{% match s %}{% case Active %}on{% else %}off{% /match %};{% else %}empty{% /for %}'''
+expected_output = "on;off;"
+
+[tests.params]
+states = ["Active", "Stopped"]
+
+[[tests]]
+name = "for_body_contains_match_else_empty_list"
+description = "The for-else still renders for an empty list when the body holds a match-else"
+template = '''
+---
+types:
+  - State = enum(Active, Stopped)
+
+params: [states = list(State)]
+---
+> {% for s in states %}{% match s case Active %}on{% else %}off{% /match %};{% else %}empty{% /for %}'''
+expected_output = "empty"
+
+[tests.params]
+states = []
+
+[[tests]]
+name = "match_arm_contains_for_else"
+description = "A for-else nested in a match arm is not taken as the match's else arm"
+template = '''
+---
+types:
+  - State = enum(Active, Stopped)
+
+params: [s = State, xs = list(str)]
+---
+> {% match s %}{% case Active %}{% for x in xs %}{{ x }}{% else %}none{% /for %}{% else %}other{% /match %}'''
+expected_output = "none"
+
+[tests.params]
+s = "Active"
+xs = []
+
+[[tests]]
+name = "raw_else_inside_for_body_is_literal"
+description = "An else tag inside a raw block nested in a for body is literal text"
+template = '''
+---
+params: [xs = list(str)]
+---
+> {% for x in xs %}{% raw %}{% else %}{% /raw %}{% else %}empty{% /for %}'''
+expected_output = "{% else %}"
+
+[tests.params]
+xs = ["a"]
+
+[[tests]]
+name = "raw_else_inside_if_branch_is_literal"
+description = "An else tag inside a raw block nested in an if-branch is literal text"
+template = '''
+---
+params: [show = bool]
+---
+> {% if show %}{% raw %}{% else %}{% /raw %}{% else %}hidden{% /if %}'''
+expected_output = "{% else %}"
+
+[tests.params]
+show = true
+
+[[tests]]
+name = "raw_else_inside_match_arm_is_literal"
+description = "An else tag inside a raw block nested in a match arm is literal text"
+template = '''
+---
+types:
+  - State = enum(Active, Stopped)
+
+params: [s = State]
+---
+> {% match s %}{% case Active %}{% raw %}{% else %}{% /raw %}{% else %}other{% /match %}'''
+expected_output = "{% else %}"
+
+[tests.params]
+s = "Active"
+
+# ============================================================================
+# Blockquote-prefix validation tracks real raw-block boundaries
+# ============================================================================
+
+[[tests]]
+name = "custom_delimiter_raw_block_ends_validation_exemption"
+description = "A bare statement line after a closed custom-delimiter raw block is rejected"
+template = '''
+---
+params: [flag = bool]
+---
+> {% raw=# %}
+
+literal
+
+> {% /# %}
+
+{% if flag %}yes{% /if %}'''
+expected_error = "statement tag at line start must be blockquote-prefixed with '> '"
+
+[tests.params]
+flag = true
+
+[[tests]]
+name = "single_line_raw_block_ends_validation_exemption"
+description = "A bare statement line after a single-line raw block is rejected"
+template = '''
+---
+params: [flag = bool]
+---
+> {% raw %}{{ literal }}{% /raw %}
+
+{% if flag %}yes{% /if %}'''
+expected_error = "statement tag at line start must be blockquote-prefixed with '> '"
+
+[tests.params]
+flag = true
+
+[[tests]]
+name = "raw_word_in_condition_does_not_start_raw_block"
+description = "A statement mentioning the word raw does not exempt later lines from validation"
+template = '''
+---
+params: [mode = str]
+---
+> {% if mode == "a raw b" %}match{% /if %}
+
+{% if mode == "x" %}x{% /if %}'''
+expected_error = "statement tag at line start must be blockquote-prefixed with '> '"
+
+[tests.params]
+mode = "a raw b"
+
+[[tests]]
+name = "custom_delimiter_raw_block_keeps_line_start_tags_literal"
+description = "Line-start statement text inside a custom-delimiter raw block is literal"
+template = '''
+---
+params:
+---
+> {% raw=# %}
+
+{% not a tag %}
+
+> {% /# %}'''
+expected_output = "{% not a tag %}\n"
+
+[tests.params]
+
+[[tests]]
+name = "custom_delimiter_raw_block_content_is_valid_tag_neighbor"
+description = "Raw-body lines count as valid neighbors of the raw block's own tag lines"
+template = '''
+---
+params:
+---
+> {% raw=# %}
+> This outputs {% raw %}...{% /raw %} literally.
+> {% /# %}'''
+expected_output = "> This outputs {% raw %}...{% /raw %} literally.\n"
+
+[tests.params]
+
+[[tests]]
+name = "raw_block_keeps_blockquote_tag_lines_verbatim"
+description = "A blockquote statement line inside a raw body is literal, prefix and blank lines included"
+template = '''
+---
+params:
+---
+> {% raw %}
+
+> {% if x %}
+
+> {% /raw %}'''
+expected_output = "> {% if x %}\n"
+
+[tests.params]
+
+[[tests]]
+name = "bare_raw_close_tag_is_rejected"
+description = "The closing tag of a raw block follows the blockquote-prefix rule like any statement"
+template = '''
+---
+params:
+---
+> {% raw %}
+
+literal
+
+{% /raw %}'''
+expected_error = "statement tag at line start must be blockquote-prefixed with '> '"
+
+[tests.params]
+
+# ============================================================================
+# Standalone comment lines are valid neighbors of standalone tag lines
+# ============================================================================
+
+[[tests]]
+name = "consecutive_standalone_comment_lines"
+description = "Adjacent blockquote comment lines are valid neighbors of each other"
+template = '''
+---
+params:
+---
+> {# a #}
+> {# b #}
+
+text'''
+expected_output = "text"
+
+[tests.params]
+
+[[tests]]
+name = "standalone_comment_line_next_to_tag_line"
+description = "A blockquote comment line is a valid neighbor of a standalone tag line"
+template = '''
+---
+params: [flag = bool]
+---
+> {% if flag %}
+> {# shown when flag is set #}
+
+yes
+
+> {% /if %}'''
+expected_output = "yes\n"
+
+[tests.params]
+flag = true
+
+# ============================================================================
+# Static checks walk the for-loop `{% else %}` body
+# ============================================================================
+
+[[tests]]
+name = "bare_enum_literal_in_for_else_rejected"
+description = "A bare enum literal inside a for-else body is rejected like anywhere else"
+template = '''
+---
+types:
+  - Stage = enum(Design, Build)
+
+params: [xs = list(str)]
+---
+> {% for x in xs %}{{ x }}{% else %}{{ Stage.Design }}{% /for %}'''
+expected_error = "bare enum literal"
+
+[tests.params]
+xs = []
+
+[[tests]]
+name = "for_binding_in_for_else_shadowing_param_rejected"
+description = "A nested for binding inside a for-else body may not shadow a declared param"
+template = '''
+---
+params: [xs = list(str), name = str]
+---
+> {% for x in xs %}{{ x }}{{ name }}{% else %}{% for name in xs %}{{ name }}{% /for %}{% /for %}'''
+expected_error = "for-loop binding 'name' shadows a declared name (param, const, env, import stem, or inline template)"
+
+[tests.params]
+xs = []
+name = "n"

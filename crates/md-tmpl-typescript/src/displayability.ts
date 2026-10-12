@@ -13,20 +13,30 @@ import {
   TYPE_ALIAS,
   TYPE_SCALAR_LIST,
   TYPE_UNTYPED_LIST,
-  FILTER_SANITIZE,
   PIPE,
-  QUOTE_DOUBLE,
-  QUOTE_SINGLE,
   OPTION_SOME,
   MATCH_DEFAULT,
-  DOT,
   OP_IN_SPACED,
   NODE_EXPR,
   NODE_IF,
   NODE_MATCH,
   NODE_FOR,
+  NODE_INCLUDE,
+  DOT,
+  TAG_MATCH_PREFIX,
 } from "./consts.js";
 import { splitPipes } from "./evaluator.js";
+import { TypeEnv } from "./type_env.js";
+import { collectReferencedParams } from "./template/references.js";
+import type { Node } from "./parser.js";
+import {
+  comparisonError,
+  formatVarType,
+  includeContractError,
+  operandError,
+  pathAccessError,
+  splitComparison,
+} from "./type_rules.js";
 
 // ---------------------------------------------------------------------------
 // Type environment for flow-sensitive narrowing
@@ -50,28 +60,6 @@ function isDisplayableType(ty: VarType): boolean {
     ty.kind === TYPE_FLOAT ||
     ty.kind === TYPE_BOOL
   );
-}
-
-/** Built-in functions that always return a scalar (displayable) value. */
-const SCALAR_FUNCTIONS = new Set(["len", "idx", "kind", "has", TYPE_STR]);
-
-/** Human-readable label for a VarType. */
-function varTypeLabel(ty: VarType): string {
-  switch (ty.kind) {
-    case TYPE_LIST:
-    case TYPE_SCALAR_LIST:
-    case TYPE_UNTYPED_LIST:
-      return TYPE_LIST;
-    case TYPE_TMPL:
-    case TYPE_STRUCT:
-      return TYPE_STRUCT;
-    case TYPE_ENUM:
-      return TYPE_ENUM;
-    case TYPE_OPTION:
-      return TYPE_OPTION;
-    default:
-      return ty.kind;
-  }
 }
 
 /** Hint message for non-displayable types. */
@@ -116,174 +104,6 @@ function nonTruthyMessage(ty: VarType): string | undefined {
 }
 
 // ---------------------------------------------------------------------------
-
-/**
- * Immutable type environment that tracks declarations and narrowings.
- * Each scope level can override types for specific variable paths.
- */
-class TypeEnv {
-  private readonly decls: readonly VarDecl[];
-  private readonly narrowings: ReadonlyMap<string, VarType>;
-  private readonly typeAliases?: ReadonlyMap<string, VarType>;
-
-  constructor(
-    decls: readonly VarDecl[],
-    narrowings?: ReadonlyMap<string, VarType>,
-    typeAliases?: ReadonlyMap<string, VarType>,
-  ) {
-    this.decls = decls;
-    this.narrowings = narrowings ?? new Map();
-    this.typeAliases = typeAliases;
-  }
-
-  /** Create a new env with an additional narrowing. */
-  withNarrowing(path: string, ty: VarType): TypeEnv {
-    const next = new Map(this.narrowings);
-    next.set(path, ty);
-    return new TypeEnv(this.decls, next, this.typeAliases);
-  }
-
-  /** Create a new env with an additional variable binding (e.g. for-loop). */
-  withBinding(name: string, ty: VarType): TypeEnv {
-    const nextDecls = [...this.decls, { name, varType: ty }];
-    return new TypeEnv(nextDecls, this.narrowings, this.typeAliases);
-  }
-
-  /**
-   * Resolve the type of a dotted path expression.
-   *
-   * Returns `undefined` if the path cannot be resolved (unknown variable,
-   * unresolvable field). Only returns a concrete VarType when the full path
-   * can be statically typed.
-   */
-  resolveExprType(expr: string): VarType | undefined {
-    let pathStr = expr.trim();
-    if (expr.includes(PIPE)) {
-      const parts = splitPipes(expr);
-      const base = parts[0];
-      const filterStrs = parts.slice(1);
-      const allTypePreserving =
-        filterStrs.length > 0 &&
-        filterStrs.every((s) => {
-          const trimmed = s.trim();
-          return (
-            trimmed === FILTER_SANITIZE ||
-            trimmed.startsWith("sanitize(") ||
-            trimmed === "quarantine" ||
-            trimmed.startsWith("quarantine(") ||
-            trimmed.startsWith("limit(") ||
-            trimmed === "limit" ||
-            trimmed.startsWith("truncate(") ||
-            trimmed === "truncate" ||
-            trimmed.startsWith("truncate_middle(") ||
-            trimmed === "truncate_middle"
-          );
-        });
-      if (allTypePreserving && base !== undefined) {
-        pathStr = base.trim();
-      } else {
-        return undefined;
-      }
-    }
-
-    // Skip string/numeric literals
-    if (
-      pathStr.startsWith(QUOTE_DOUBLE) ||
-      pathStr.startsWith(QUOTE_SINGLE) ||
-      /^\d/.test(pathStr)
-    ) {
-      return undefined;
-    }
-
-    // Skip built-in functions — they return scalars. Match a leading
-    // `name(` function-call form and check it against the scalar builtins.
-    const funcMatch = /^([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/.exec(pathStr);
-    const funcName = funcMatch?.[1];
-    if (funcName !== undefined && SCALAR_FUNCTIONS.has(funcName)) {
-      return undefined;
-    }
-
-    // Check narrowings first (full path match)
-    const narrowed = this.narrowings.get(pathStr);
-    if (narrowed !== undefined) return narrowed;
-
-    // Split dotted path: "user.address.city" → ["user", "address", "city"]
-    const parts = pathStr.split(DOT);
-    const root = parts[0];
-    if (root === undefined) return undefined;
-
-    // Check if a prefix is narrowed (e.g. "x" narrowed, resolving "x.field")
-    const rootNarrowed = this.narrowings.get(root);
-    let currentType: VarType;
-    if (rootNarrowed !== undefined) {
-      currentType = rootNarrowed;
-    } else {
-      const rootDecl = this.decls.find((d) => d.name === root);
-      if (!rootDecl) {
-        const alias = this.typeAliases?.get(root);
-        if (!alias) return undefined;
-        currentType = alias;
-      } else {
-        currentType = rootDecl.varType;
-      }
-    }
-
-    while (currentType.kind === TYPE_ALIAS && this.typeAliases) {
-      const aliasType = this.typeAliases.get(currentType.name);
-      if (!aliasType) break;
-      currentType = aliasType;
-    }
-
-    // Walk remaining path segments
-    for (let i = 1; i < parts.length; i++) {
-      const field = parts[i];
-      if (field === undefined) continue;
-      const resolved = resolveFieldType(currentType, field);
-      if (resolved === undefined) return undefined;
-      currentType = resolved;
-      while (currentType.kind === TYPE_ALIAS && this.typeAliases) {
-        const aliasType = this.typeAliases.get(currentType.name);
-        if (!aliasType) break;
-        currentType = aliasType;
-      }
-    }
-
-    return currentType;
-  }
-}
-
-/**
- * Resolve a field access on a type. Returns the field's type,
- * or undefined if the type doesn't support field access.
- */
-function resolveFieldType(ty: VarType, field: string): VarType | undefined {
-  switch (ty.kind) {
-    case TYPE_TMPL:
-    case TYPE_STRUCT:
-    case TYPE_LIST: {
-      const fieldDecl = ty.fields.find((f) => f.name === field);
-      return fieldDecl?.varType;
-    }
-    case TYPE_ENUM: {
-      // A field is accessible if ALL variants have it
-      const allHave = ty.variants.every((v) =>
-        v.fields.some((f) => f.name === field),
-      );
-      if (!allHave) return undefined;
-      for (const v of ty.variants) {
-        const f = v.fields.find((f) => f.name === field);
-        if (f) return f.varType;
-      }
-      return undefined;
-    }
-    case TYPE_OPTION: {
-      // Transparent access through option: option(struct(x = str)).x → str
-      return resolveFieldType(ty.innerType, field);
-    }
-    default:
-      return undefined;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Flow-sensitive AST walker
@@ -364,6 +184,28 @@ interface ValidationError {
   loc?: import("./parser.js").SourceLocation;
 }
 
+/** What the type checker needs to know about an inline `{% tmpl %}` definition. */
+export interface InlineTemplateSignature {
+  /** Declared params of the inline template. */
+  readonly declarations: readonly VarDecl[];
+  /** Parsed body of the inline template. */
+  readonly nodes: readonly Node[];
+  /** Names of the inline template's own constants. */
+  readonly constNames: ReadonlySet<string>;
+}
+
+/** Shared state of one compile-time walk over a template body. */
+interface WalkContext {
+  readonly errors: ValidationError[];
+  /** Inline `{% tmpl %}` definitions of the template, by name. */
+  readonly inlineTemplates: ReadonlyMap<string, InlineTemplateSignature>;
+  /** Names valid in every scope: import stems, enum types, inline templates. */
+  readonly globalNames: ReadonlySet<string>;
+  readonly typeAliases: ReadonlyMap<string, VarType> | undefined;
+  /** Inline templates whose bodies are being walked (cycle guard). */
+  readonly visitingInline: Set<string>;
+}
+
 /** Validate static condition checks at compile time (e.g., literal in kinds(Enum), condition operand types). */
 function validateStaticCondition(
   condition: string,
@@ -440,32 +282,20 @@ function validateStaticCondition(
       return;
     }
 
-    if (
-      s.includes("==") ||
-      s.includes("!=") ||
-      s.includes("<") ||
-      s.includes(">") ||
-      s.includes(" in ") ||
-      s.startsWith("match ")
-    ) {
+    if (s.includes(OP_IN_SPACED) || s.startsWith(TAG_MATCH_PREFIX)) {
       return;
     }
 
-    const hasMatch = /^has\(\s*([^)]+?)\s*\)$/.exec(s);
-    if (hasMatch?.[1] !== undefined) {
-      const target = hasMatch[1].trim();
-      const targetType = currentEnv.resolveExprType(target);
-      if (targetType) {
-        const isOpt =
-          targetType.kind === TYPE_OPTION ||
-          (targetType.kind === TYPE_ENUM && targetType.isOption);
-        if (!isOpt) {
-          errors.push({
-            message: `'has()' requires an option type (e.g. 'option(str)'), got ${varTypeLabel(targetType)} on '${target}' — for string or list presence, use bare condition ('if ${target}'), '!= ""', or 'len(...) > 0'`,
-            loc,
-          });
-        }
-      }
+    const comparison = splitComparison(s);
+    if (comparison !== undefined) {
+      const message = comparisonError(comparison, currentEnv);
+      if (message !== undefined) errors.push({ message, loc });
+      return;
+    }
+
+    const operandMessage = operandError(s, currentEnv);
+    if (operandMessage !== undefined) {
+      errors.push({ message: operandMessage, loc });
       return;
     }
 
@@ -476,7 +306,7 @@ function validateStaticCondition(
       const nonTruthy = nonTruthyMessage(leafType);
       if (nonTruthy) {
         errors.push({
-          message: `type error in condition: ${nonTruthy}, got ${varTypeLabel(leafType)}`,
+          message: `type error in condition: ${nonTruthy}, got ${formatVarType(leafType)}`,
           loc,
         });
       }
@@ -520,17 +350,23 @@ function findTopLevelOp(str: string, ops: string[]): number {
 function walkNodesWithNarrowing(
   nodes: readonly import("./parser.js").Node[],
   env: TypeEnv,
-  errors: ValidationError[],
+  ctx: WalkContext,
 ): void {
+  const { errors } = ctx;
   for (const node of nodes) {
     switch (node.kind) {
       case NODE_EXPR: {
+        const operandMessage = operandError(node.expr, env);
+        if (operandMessage !== undefined) {
+          errors.push({ message: operandMessage, loc: node.loc });
+          break;
+        }
         const resolvedType = env.resolveExprType(node.expr);
         if (resolvedType === undefined) continue;
         if (!isDisplayableType(resolvedType)) {
           const hint = displayHint(resolvedType);
           errors.push({
-            message: `'${node.expr.trim()}': cannot display value of type ${varTypeLabel(resolvedType)} — ${hint}`,
+            message: `'${node.expr.trim()}': cannot display value of type ${formatVarType(resolvedType)} — ${hint}`,
             loc: node.loc,
           });
         }
@@ -554,7 +390,7 @@ function walkNodesWithNarrowing(
           for (const [path, innerType] of posNarrowings) {
             branchBodyEnv = branchBodyEnv.withNarrowing(path, innerType);
           }
-          walkNodesWithNarrowing(branch.body, branchBodyEnv, errors);
+          walkNodesWithNarrowing(branch.body, branchBodyEnv, ctx);
 
           const negNarrowing = extractNotHasNarrowing(
             branch.condition,
@@ -568,13 +404,17 @@ function walkNodesWithNarrowing(
           }
         }
         if (node.elseBody) {
-          walkNodesWithNarrowing(node.elseBody, currentEnv, errors);
+          walkNodesWithNarrowing(node.elseBody, currentEnv, ctx);
         }
         break;
       }
 
       case NODE_MATCH: {
         const exprPath = node.expr.trim();
+        const exprPathMessage = pathAccessError(exprPath, env);
+        if (exprPathMessage !== undefined) {
+          errors.push({ message: exprPathMessage, loc: node.loc });
+        }
         const exprType = env.resolveExprType(exprPath);
 
         if (exprType?.kind === TYPE_ENUM) {
@@ -589,15 +429,15 @@ function walkNodesWithNarrowing(
                 variants: matchedVariants,
               };
               const narrowedEnv = env.withNarrowing(exprPath, narrowedType);
-              walkNodesWithNarrowing(arm.body, narrowedEnv, errors);
+              walkNodesWithNarrowing(arm.body, narrowedEnv, ctx);
             } else if (
               arm.variants.length === 1 &&
               arm.variants[0] === MATCH_DEFAULT
             ) {
               // Default arm — no narrowing
-              walkNodesWithNarrowing(arm.body, env, errors);
+              walkNodesWithNarrowing(arm.body, env, ctx);
             } else {
-              walkNodesWithNarrowing(arm.body, env, errors);
+              walkNodesWithNarrowing(arm.body, env, ctx);
             }
           }
           if (
@@ -632,20 +472,20 @@ function walkNodesWithNarrowing(
                 exprPath,
                 exprType.innerType,
               );
-              walkNodesWithNarrowing(arm.body, narrowedEnv, errors);
+              walkNodesWithNarrowing(arm.body, narrowedEnv, ctx);
             } else {
-              walkNodesWithNarrowing(arm.body, env, errors);
+              walkNodesWithNarrowing(arm.body, env, ctx);
             }
           }
         } else {
           // Can't resolve match expression type — walk arms without narrowing
           for (const arm of node.arms) {
-            walkNodesWithNarrowing(arm.body, env, errors);
+            walkNodesWithNarrowing(arm.body, env, ctx);
           }
         }
 
         if (node.elseArm) {
-          walkNodesWithNarrowing(node.elseArm, env, errors);
+          walkNodesWithNarrowing(node.elseArm, env, ctx);
         }
 
         // Inline guard
@@ -661,16 +501,12 @@ function walkNodesWithNarrowing(
                 variants: matchedVariants,
               };
               const narrowedEnv = env.withNarrowing(exprPath, narrowedType);
-              walkNodesWithNarrowing(
-                node.inlineGuard.body,
-                narrowedEnv,
-                errors,
-              );
+              walkNodesWithNarrowing(node.inlineGuard.body, narrowedEnv, ctx);
             } else {
-              walkNodesWithNarrowing(node.inlineGuard.body, env, errors);
+              walkNodesWithNarrowing(node.inlineGuard.body, env, ctx);
             }
           } else {
-            walkNodesWithNarrowing(node.inlineGuard.body, env, errors);
+            walkNodesWithNarrowing(node.inlineGuard.body, env, ctx);
           }
         }
         break;
@@ -697,6 +533,10 @@ function walkNodesWithNarrowing(
             }
           }
         }
+        const iterPathMessage = pathAccessError(node.iterExpr, env);
+        if (iterPathMessage !== undefined) {
+          errors.push({ message: iterPathMessage, loc: node.loc });
+        }
         // Resolve the iterator expression type to determine element type
         const iterType = env.resolveExprType(node.iterExpr);
         if (iterType) {
@@ -712,25 +552,97 @@ function walkNodesWithNarrowing(
           }
           if (elementType) {
             const forEnv = env.withBinding(node.binding, elementType);
-            walkNodesWithNarrowing(node.body, forEnv, errors);
+            walkNodesWithNarrowing(node.body, forEnv, ctx);
           } else {
-            walkNodesWithNarrowing(node.body, env, errors);
+            walkNodesWithNarrowing(node.body, env, ctx);
           }
         } else {
-          walkNodesWithNarrowing(node.body, env, errors);
+          walkNodesWithNarrowing(node.body, env, ctx);
         }
 
         if (node.elseBody) {
-          walkNodesWithNarrowing(node.elseBody, env, errors);
+          walkNodesWithNarrowing(node.elseBody, env, ctx);
+        }
+        break;
+      }
+
+      case NODE_INCLUDE: {
+        for (const valueExpr of node.withMappings.values()) {
+          const message = pathAccessError(valueExpr, env);
+          if (message !== undefined) errors.push({ message, loc: node.loc });
+        }
+        const inline =
+          node.path === undefined
+            ? ctx.inlineTemplates.get(node.name)
+            : undefined;
+        if (inline !== undefined) {
+          const provided = new Set(node.withMappings.keys());
+          if (node.forBinding !== undefined) provided.add(node.forBinding);
+          const message = includeContractError(
+            node.name,
+            inline.declarations,
+            provided,
+          );
+          if (message !== undefined) errors.push({ message, loc: node.loc });
+          walkInlineTemplateBody(node.name, inline, ctx);
         }
         break;
       }
 
       default:
-        // text, comment, raw, include, tmpl — no expressions to check
+        // text, comment, raw, tmpl — no expressions to check
         break;
     }
   }
+}
+
+/**
+ * Type-check an included inline template's body in its own scope (its params
+ * and consts plus the template-wide names), once per include chain — mirrors
+ * the Rust include walker.
+ */
+function walkInlineTemplateBody(
+  name: string,
+  inline: InlineTemplateSignature,
+  ctx: WalkContext,
+): void {
+  if (ctx.visitingInline.has(name)) return;
+  ctx.visitingInline.add(name);
+  const inScope = new Set([
+    ...inline.declarations.map((d) => d.name),
+    ...inline.constNames,
+    ...ctx.globalNames,
+  ]);
+  const undeclared = [...collectReferencedParams(inline.nodes)]
+    .filter((root) => !inScope.has(root))
+    .sort();
+  for (const root of undeclared) {
+    ctx.errors.push({ message: `'${root}': undeclared variable` });
+  }
+  const childEnv = new TypeEnv(inline.declarations, undefined, ctx.typeAliases);
+  walkNodesWithNarrowing(inline.nodes, childEnv, ctx);
+  ctx.visitingInline.delete(name);
+}
+
+/**
+ * Extend an import stem's namespace struct with the stem's imported type
+ * aliases (keyed `stem.Name` in `typeAliases`), so `kinds(stem.Enum)` and
+ * `stem.Enum.Variant` resolve like in the Rust checker. Const fields win on
+ * a name collision.
+ */
+function withImportedTypeAliases(
+  stem: string,
+  nsType: VarType,
+  typeAliases: ReadonlyMap<string, VarType> | undefined,
+): VarType {
+  if (nsType.kind !== TYPE_STRUCT || typeAliases === undefined) return nsType;
+  const prefix = `${stem}${DOT}`;
+  const constNames = new Set(nsType.fields.map((f) => f.name));
+  const aliasFields: VarDecl[] = [...typeAliases]
+    .filter(([key]) => key.startsWith(prefix))
+    .map(([key, varType]) => ({ name: key.slice(prefix.length), varType }))
+    .filter((f) => !constNames.has(f.name));
+  return { kind: TYPE_STRUCT, fields: [...nsType.fields, ...aliasFields] };
 }
 
 /**
@@ -748,6 +660,8 @@ function walkNodesWithNarrowing(
  * @param consts - Constant declarations from frontmatter.
  * @param typeAliases - Type alias map from frontmatter.
  * @param importedNamespaceTypes - Typed import namespace map (stem → struct type).
+ * @param inlineTemplates - Inline `{% tmpl %}` definitions, by name.
+ * @param globalNames - Names valid in every scope (import stems, enum types, inline templates).
  * @throws {TemplateSyntaxError} If an expression resolves to a non-displayable type.
  */
 export function validateDisplayability(
@@ -756,6 +670,8 @@ export function validateDisplayability(
   consts?: readonly VarDecl[],
   typeAliases?: ReadonlyMap<string, VarType>,
   importedNamespaceTypes?: ReadonlyMap<string, VarType>,
+  inlineTemplates: ReadonlyMap<string, InlineTemplateSignature> = new Map(),
+  globalNames: ReadonlySet<string> = new Set(),
 ): void {
   const allDecls: VarDecl[] = consts
     ? [...declarations, ...consts]
@@ -764,13 +680,22 @@ export function validateDisplayability(
   // resolve field accesses on imported consts (e.g. `artist.SEVERITY_LADDER`).
   if (importedNamespaceTypes) {
     for (const [stem, nsType] of importedNamespaceTypes) {
-      allDecls.push({ name: stem, varType: nsType });
+      allDecls.push({
+        name: stem,
+        varType: withImportedTypeAliases(stem, nsType, typeAliases),
+      });
     }
   }
   const env = new TypeEnv(allDecls, undefined, typeAliases);
   const errors: ValidationError[] = [];
 
-  walkNodesWithNarrowing(nodes, env, errors);
+  walkNodesWithNarrowing(nodes, env, {
+    errors,
+    inlineTemplates,
+    globalNames,
+    typeAliases,
+    visitingInline: new Set(),
+  });
 
   if (errors.length > 0) {
     const err = errors[0];

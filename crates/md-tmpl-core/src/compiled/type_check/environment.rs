@@ -27,8 +27,6 @@ pub(crate) struct TypeEnv<'a> {
     /// Names that are valid roots but opaque to field-level type checking
     /// (e.g. import stems for imported constants like `config.NOTEBOOK_FILENAME`).
     pub(super) opaque_roots: HashSet<String>,
-    /// Whether to enforce static displayability checks (`{{ struct }}` / `{{ list }}`).
-    pub(crate) check_displayability: bool,
 }
 
 impl<'a> TypeEnv<'a> {
@@ -42,7 +40,6 @@ impl<'a> TypeEnv<'a> {
             type_aliases: HashMap::new(),
             narrowed: HashMap::new(),
             opaque_roots: HashSet::new(),
-            check_displayability: true,
         }
     }
 
@@ -63,7 +60,6 @@ impl<'a> TypeEnv<'a> {
             type_aliases: aliases,
             narrowed: HashMap::new(),
             opaque_roots: HashSet::new(),
-            check_displayability: true,
         }
     }
 

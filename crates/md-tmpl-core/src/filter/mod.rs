@@ -193,20 +193,13 @@ fn apply_fixed(value: &Value, args: Option<&str>) -> Result<Value, TemplateError
         .ok_or_else(|| TemplateError::syntax("'fixed' requires precision arg"))?
         .parse()
         .map_err(|e| TemplateError::syntax(format!("'fixed' precision must be an integer: {e}")))?;
+    let mut out = String::new();
     match value {
-        Value::Float(f) => Ok(Value::Str(format!("{f:.precision$}"))),
-        Value::Int(i) => {
-            let mut buf = itoa::Buffer::new();
-            let int_str = buf.format(*i);
-            if precision == 0 {
-                Ok(Value::Str(int_str.to_string()))
-            } else {
-                let zeros = "0".repeat(precision);
-                Ok(Value::Str(format!("{int_str}.{zeros}")))
-            }
-        }
-        _ => Err(TemplateError::syntax("'fixed' requires a number")),
+        Value::Float(f) => crate::compiled::render::write_fixed_float(*f, precision, &mut out),
+        Value::Int(i) => crate::compiled::render::write_fixed_int(*i, precision, &mut out),
+        _ => return Err(TemplateError::syntax("'fixed' requires a number")),
     }
+    Ok(Value::Str(out))
 }
 
 /// Strip surrounding single or double quotes from a filter argument and apply
@@ -632,5 +625,7 @@ pub(crate) fn try_apply_str_filters_into(
     Ok(true)
 }
 
+#[cfg(test)]
+mod host_primitive_tests;
 #[cfg(test)]
 mod tests;

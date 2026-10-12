@@ -584,7 +584,7 @@ params:
 
 allow_unused: true
 ---
-{{ outcome }}""")
+{{ kind(outcome) }}""")
             path = f.name
 
         try:

@@ -7,7 +7,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { Template } from "../index.js";
+import { Template, TemplateSyntaxError } from "../index.js";
 import { toPascalCase } from "../validation.js";
 import { defined } from "./template_helpers.js";
 
@@ -152,7 +152,7 @@ describe("Statement whitespace trimming (standalone blockquote — redundant)", 
 // tmpl() type parsing
 // ---------------------------------------------------------------------------
 describe("tmpl() type parsing", () => {
-  it("tmpl(field = type) is parsed as struct-like type", () => {
+  it("rejects field access on a tmpl(field = type) handle", () => {
     const src = [
       `---`,
       "params:",
@@ -160,10 +160,10 @@ describe("tmpl() type parsing", () => {
       `---`,
       "{{ sub.title }}: {{ sub.count }}",
     ].join("\n");
-    const result = Template.fromSource(src).render({
-      sub: { title: "hello", count: 42 },
-    });
-    assert.strictEqual(result, "hello: 42");
+    assert.throws(
+      () => Template.fromSource(src),
+      /cannot access field 'title' on tmpl\(title = str, count = int\)/,
+    );
   });
 
   it("tmpl() declarations are accessible", () => {
@@ -172,7 +172,7 @@ describe("tmpl() type parsing", () => {
       "params:",
       "  - sub = tmpl(title = str)",
       `---`,
-      "{{ sub.title }}",
+      '> {% include sub with title="hello" %}',
     ].join("\n");
     const decls = Template.fromSource(src).declarations();
     assert.strictEqual(decls.length, 1);
@@ -589,8 +589,9 @@ consts:
   // ── Validation not in lenient mode ──────────────────────────────────
 
   describe("Validation scope", () => {
-    it("fromSourceAllowingUnused does NOT run collision validation", () => {
-      // This has a param↔const conflict which would fail in strict mode
+    it("fromSourceAllowingUnused still runs frontmatter collision validation", () => {
+      // Only the unused-param check is relaxed — a param↔const conflict is
+      // rejected exactly as in strict mode (Rust `CompileOptions::allow_unused`).
       const src = `---
 params:
   - level = str
@@ -599,9 +600,44 @@ consts:
   - level = int := 5
 ---
 {{ level }}`;
-      // Should NOT throw in lenient mode
+      assert.throws(
+        () => Template.fromSourceAllowingUnused(src),
+        TemplateSyntaxError,
+      );
+    });
+
+    it("fromSourceAllowingUnused still rejects reserved names", () => {
+      const src = `---
+params:
+  - str = str
+---
+{{ str }}`;
+      assert.throws(
+        () => Template.fromSourceAllowingUnused(src),
+        /reserved keyword/,
+      );
+    });
+
+    it("fromSourceAllowingUnused still rejects for-loop binding shadowing", () => {
+      const src = `---
+params:
+  - name = str
+  - names = list(str)
+---
+> {% for name in names %}{{ name }}{% /for %}`;
+      assert.throws(() => Template.fromSourceAllowingUnused(src), /shadows/);
+    });
+
+    it("fromSourceAllowingUnused only relaxes the unused-param check", () => {
+      const src = `---
+params:
+  - used = str
+  - unused = str
+---
+{{ used }}`;
+      assert.throws(() => Template.fromSource(src), /unused/);
       const tmpl = Template.fromSourceAllowingUnused(src);
-      assert.ok(tmpl.declarations().length > 0);
+      assert.strictEqual(tmpl.render({ used: "u", unused: "x" }), "u");
     });
 
     it("renderUnchecked does NOT re-run validation", () => {

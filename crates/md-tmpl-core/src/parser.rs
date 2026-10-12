@@ -1,17 +1,16 @@
 //! Template tag and expression parsing.
 //!
 //! Provides scanning for `{{ expr }}` and `{% stmt %}` tags, closing-block
-//! detection with nesting support, else-block splitting, and expression
-//! evaluation with filter pipelines.
+//! detection with nesting support, and expression evaluation with filter
+//! pipelines.
 
 use alloc::{string::ToString, vec::Vec};
 
 use crate::{
     Value,
     consts::{
-        CLOSE_IF, COMMENT_END, COMMENT_START, EXPR_END, EXPR_START, KW_ELSE, KW_IN_SPACED,
-        STMT_END, STMT_START, TAG_ELIF_PREFIX, TAG_FOR_PREFIX, TAG_IF_PREFIX, TAG_INCLUDE_PREFIX,
-        TAG_WITH_PREFIX, TAG_WITH_SPACED, TRIM_MARKER,
+        COMMENT_END, COMMENT_START, EXPR_END, EXPR_START, KW_IN_SPACED, STMT_END, STMT_START,
+        TAG_FOR_PREFIX, TAG_INCLUDE_PREFIX, TAG_WITH_PREFIX, TAG_WITH_SPACED, TRIM_MARKER,
     },
     error::TemplateError,
     scope::Scope,
@@ -324,125 +323,6 @@ fn find_block_close(haystack: &str, close_keyword: &str) -> Option<(usize, usize
     None
 }
 
-/// Split an if-block body into `(condition, body)` branches for
-/// `{% if %}` / `{% elif %}` / `{% else %}` chains.
-///
-/// Returns a list of `(condition_str, branch_body)` pairs plus an
-/// optional else body. The first entry's condition string is empty
-/// (since the real condition comes from the opening `{% if %}` tag).
-pub(crate) fn split_elif_chain(body: &str) -> (Vec<(&str, &str)>, Option<&str>) {
-    let mut branches: Vec<(&str, &str)> = Vec::new();
-    let mut depth: u32 = 0;
-    let mut branch_start: usize = 0;
-    // For the first branch the condition is in the opening if-tag, so we
-    // pass an empty string as placeholder.
-    let mut branch_cond: &str = "";
-    let mut search_from: usize = 0;
-
-    while search_from < body.len() {
-        let next_if = find_tag_start(&body[search_from..], TAG_IF_PREFIX).map(|p| p + search_from);
-        let next_close_if =
-            find_block_close(&body[search_from..], CLOSE_IF).map(|(p, _)| p + search_from);
-        let next_elif = find_elif_tag(&body[search_from..]).map(|(p, _len, _cond)| p + search_from);
-        let next_else =
-            find_block_close(&body[search_from..], KW_ELSE).map(|(p, _)| p + search_from);
-
-        let candidates = [
-            next_if.map(|p| (p, 'i')),
-            next_elif.map(|p| (p, 'l')),
-            next_else.map(|p| (p, 'e')),
-            next_close_if.map(|p| (p, 'c')),
-        ];
-        let earliest = candidates.into_iter().flatten().min_by_key(|&(pos, _)| pos);
-
-        match earliest {
-            Some((pos, 'i')) => {
-                depth += 1;
-                search_from = pos + STMT_START.len();
-            }
-            Some((pos, 'c')) => {
-                if depth == 0 {
-                    break;
-                }
-                depth -= 1;
-                let (_, len) = find_block_close(&body[pos..], CLOSE_IF).expect("just found");
-                search_from = pos + len;
-            }
-            Some((pos, 'l')) if depth == 0 => {
-                // Save current branch.
-                branches.push((branch_cond, &body[branch_start..pos]));
-                // Parse elif condition and advance.
-                let (_, tag_len, cond) = find_elif_tag(&body[pos..]).expect("just found");
-                branch_cond = cond;
-                branch_start = pos + tag_len;
-                search_from = branch_start;
-            }
-            Some((pos, 'e')) if depth == 0 => {
-                // else branch — finish the current branch and return.
-                branches.push((branch_cond, &body[branch_start..pos]));
-                let (_, len) = find_block_close(&body[pos..], KW_ELSE).expect("just found");
-                return (branches, Some(&body[pos + len..]));
-            }
-            Some((pos, tag)) => {
-                // Nested elif or else — skip.
-                let skip_len = match tag {
-                    'l' => find_elif_tag(&body[pos..]).map_or(STMT_START.len(), |(_, l, _)| l),
-                    'e' => {
-                        find_block_close(&body[pos..], KW_ELSE).map_or(STMT_START.len(), |(_, l)| l)
-                    }
-                    _ => STMT_START.len(),
-                };
-                search_from = pos + skip_len;
-            }
-            None => break,
-        }
-    }
-    // Push the final (or only) branch.
-    branches.push((branch_cond, &body[branch_start..]));
-    (branches, None)
-}
-
-/// Find a `{% elif <condition> %}` tag (or trim variant) at the start
-/// of `haystack`. Returns `(offset, tag_len, condition_str)`.
-fn find_elif_tag(haystack: &str) -> Option<(usize, usize, &str)> {
-    let mut pos = 0;
-    while pos < haystack.len() {
-        let start = haystack[pos..].find(STMT_START)?;
-        let abs_start = pos + start;
-        let after_open = abs_start + STMT_START.len();
-
-        let after_dash = if haystack[after_open..].starts_with(TRIM_MARKER) {
-            after_open + 1
-        } else {
-            after_open
-        };
-
-        let content_start = after_dash
-            + haystack[after_dash..]
-                .find(|c: char| !c.is_whitespace())
-                .unwrap_or(haystack[after_dash..].len());
-
-        if haystack[content_start..].starts_with(TAG_ELIF_PREFIX) {
-            let cond_start = content_start + TAG_ELIF_PREFIX.len();
-            // Find closing `%}` or `-%}`.
-            let rest = &haystack[cond_start..];
-            // Find end: `-%}` or `%}`
-            if let Some(close_pos) = rest.find(STMT_END) {
-                let before_close = &rest[..close_pos];
-                let (cond, tag_end) = if let Some(stripped) = before_close.strip_suffix(TRIM_MARKER)
-                {
-                    (stripped.trim(), cond_start + close_pos + STMT_END.len())
-                } else {
-                    (before_close.trim(), cond_start + close_pos + STMT_END.len())
-                };
-                return Some((abs_start, tag_end - abs_start, cond));
-            }
-        }
-        pos = abs_start + STMT_START.len();
-    }
-    None
-}
-
 /// Split an expression at the first `|` that is NOT inside quotes or parentheses.
 ///
 /// Returns `(path, filter_chain)`. If there's no top-level pipe, the entire
@@ -709,52 +589,6 @@ fn parse_markdown_link_path(input: &str) -> Result<(&str, &str), TemplateError> 
 mod tests {
     use super::*;
 
-    fn split_else_block(body: &str) -> (&str, Option<&str>) {
-        let mut depth: u32 = 0;
-        let mut search_from = 0;
-
-        while search_from < body.len() {
-            let next_if =
-                find_tag_start(&body[search_from..], TAG_IF_PREFIX).map(|p| p + search_from);
-            let next_close_if =
-                find_block_close(&body[search_from..], CLOSE_IF).map(|(p, _)| p + search_from);
-            let next_else =
-                find_block_close(&body[search_from..], KW_ELSE).map(|(p, _)| p + search_from);
-
-            let candidates = [
-                next_if.map(|p| (p, 'i')),
-                next_else.map(|p| (p, 'e')),
-                next_close_if.map(|p| (p, 'c')),
-            ];
-            let earliest = candidates.into_iter().flatten().min_by_key(|&(pos, _)| pos);
-
-            match earliest {
-                Some((pos, 'i')) => {
-                    depth += 1;
-                    search_from = pos + STMT_START.len();
-                }
-                Some((pos, 'c')) => {
-                    if depth == 0 {
-                        break;
-                    }
-                    depth -= 1;
-                    let (_, len) = find_block_close(&body[pos..], CLOSE_IF).expect("just found");
-                    search_from = pos + len;
-                }
-                Some((pos, 'e')) if depth == 0 => {
-                    let (_, len) = find_block_close(&body[pos..], KW_ELSE).expect("just found");
-                    return (&body[..pos], Some(&body[pos + len..]));
-                }
-                Some((pos, _)) => {
-                    let (_, len) = find_block_close(&body[pos..], KW_ELSE).expect("just found");
-                    search_from = pos + len;
-                }
-                None => break,
-            }
-        }
-        (body, None)
-    }
-
     #[test]
     fn scan_literal_only() {
         match scan_next_tag("Hello world!").unwrap() {
@@ -820,28 +654,6 @@ mod tests {
     #[test]
     fn find_closing_block_missing() {
         find_closing_block("body", "for ", "/for").expect_err("missing closing block should fail");
-    }
-
-    #[test]
-    fn split_no_else() {
-        let (then, else_part) = split_else_block("then body");
-        assert_eq!(then, "then body");
-        assert!(else_part.is_none());
-    }
-
-    #[test]
-    fn split_with_else() {
-        let (then, else_part) = split_else_block("then{% else %}else body");
-        assert_eq!(then, "then");
-        assert_eq!(else_part.unwrap(), "else body");
-    }
-
-    #[test]
-    fn split_else_nested_if() {
-        let body = "{% if x %}a{% else %}b{% /if %}{% else %}outer";
-        let (then, else_part) = split_else_block(body);
-        assert!(then.contains("{% /if %}"));
-        assert_eq!(else_part.unwrap(), "outer");
     }
 
     #[test]

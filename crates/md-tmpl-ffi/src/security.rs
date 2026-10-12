@@ -35,7 +35,10 @@ unsafe fn bytes_to_str<'a>(data: *const u8, len: usize) -> Result<&'a str, Strin
 /// # Safety
 ///
 /// If `len > 0`, `data` must point to `len` valid initialized bytes.
-unsafe fn bytes_to_str_lossy<'a>(data: *const u8, len: usize) -> Result<Cow<'a, str>, String> {
+pub(crate) unsafe fn bytes_to_str_lossy<'a>(
+    data: *const u8,
+    len: usize,
+) -> Result<Cow<'a, str>, String> {
     if len == 0 {
         return Ok(Cow::Borrowed(EMPTY_STR));
     }
@@ -51,7 +54,7 @@ unsafe fn bytes_to_str_lossy<'a>(data: *const u8, len: usize) -> Result<Cow<'a, 
 /// # Safety
 ///
 /// If non-null, `ptr` must point to a valid NUL-terminated UTF-8 C string.
-unsafe fn opt_cstr_to_str<'a>(ptr: *const c_char) -> Result<Option<&'a str>, String> {
+pub(crate) unsafe fn opt_cstr_to_str<'a>(ptr: *const c_char) -> Result<Option<&'a str>, String> {
     if ptr.is_null() {
         Ok(None)
     } else {
@@ -59,7 +62,7 @@ unsafe fn opt_cstr_to_str<'a>(ptr: *const c_char) -> Result<Option<&'a str>, Str
     }
 }
 
-fn serialize_delimiter_pairs(pairs: &[(&str, &str)]) -> String {
+pub(crate) fn serialize_delimiter_pairs(pairs: &[(&str, &str)]) -> String {
     let mut out = String::with_capacity(pairs.len() * 48 + 2);
     out.push('[');
     for (i, &(raw, escaped)) in pairs.iter().enumerate() {

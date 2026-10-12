@@ -43,14 +43,15 @@ class TestKindFunction:
         assert output.strip() == "Confirmed"
 
     def test_kind_rejects_non_enum(self) -> None:
-        tmpl = Template.from_source(textwrap.dedent("""\
-            ---
-            params:
-              - count = int
-            ---
-            {{ kind(count) }}"""))
-        with pytest.raises(ValueError, match="enum"):
-            tmpl.render(count=42)
+        with pytest.raises(
+            ValueError, match="'kind\\(\\)' requires an enum or option type"
+        ):
+            Template.from_source(textwrap.dedent("""\
+                ---
+                params:
+                  - count = int
+                ---
+                {{ kind(count) }}"""))
 
 
 # ---------------------------------------------------------------------------

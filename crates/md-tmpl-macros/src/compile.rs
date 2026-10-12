@@ -314,16 +314,20 @@ pub(crate) fn resolve_includes_recursive(
                 resolve_single_include(inc, base_dir, visited_paths, deps, depth + 1)?;
                 visited_paths.remove(&canonical);
             }
-            md_tmpl_core::compiled::Segment::ForLoop { body, .. } => {
-                resolve_includes_recursive(
-                    body,
-                    base_dir,
-                    visited_paths,
-                    inline_templates,
-                    tmpl_params,
-                    deps,
-                    depth,
-                )?;
+            md_tmpl_core::compiled::Segment::ForLoop {
+                body, else_body, ..
+            } => {
+                for loop_body in [body, else_body] {
+                    resolve_includes_recursive(
+                        loop_body,
+                        base_dir,
+                        visited_paths,
+                        inline_templates,
+                        tmpl_params,
+                        deps,
+                        depth,
+                    )?;
+                }
             }
             md_tmpl_core::compiled::Segment::If {
                 branches,

@@ -382,18 +382,9 @@ params: [widget = tmpl(name = str)]
 	}
 }
 
-func TestSetTmplIsTruthy(t *testing.T) {
-	// A tmpl() param should be truthy when set (works in {% if %} guards).
-	helper, err := FromSourceAllowingUnused(`---
-params: []
----
-present`)
-	if err != nil {
-		t.Fatalf("helper FromSource: %v", err)
-	}
-	defer helper.Close()
-
-	main, err := FromSource(`---
+func TestTmplConditionRejectedAtCompile(t *testing.T) {
+	// A tmpl() param has no truthiness: `{% if widget %}` is a compile error.
+	_, err := FromSource(`---
 params: [widget = tmpl()]
 ---
 > {% if widget %}
@@ -401,23 +392,11 @@ params: [widget = tmpl()]
 yes
 
 > {% /if %}`)
-	if err != nil {
-		t.Fatalf("main FromSource: %v", err)
+	if err == nil {
+		t.Fatal("expected compile error for tmpl() truthiness")
 	}
-	defer main.Close()
-
-	ctx := NewContext()
-	defer ctx.Close()
-	if err := ctx.SetTmpl("widget", helper); err != nil {
-		t.Fatalf("SetTmpl: %v", err)
-	}
-
-	result, err := main.Render(ctx)
-	if err != nil {
-		t.Fatalf("Render: %v", err)
-	}
-	if !strings.Contains(result, "yes") {
-		t.Errorf("tmpl should be truthy, got %q", result)
+	if !strings.Contains(err.Error(), "truthiness of template handle") {
+		t.Errorf("unexpected error: %v", err)
 	}
 }
 

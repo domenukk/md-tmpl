@@ -22,7 +22,7 @@ params:
   - msg = str
 ---
 {{ kind(msg) }}'''
-expected_error = "kind() requires an enum"
+expected_error = "requires an enum or option"
 [tests.params]
 msg = "hello"
 
@@ -35,7 +35,7 @@ params:
   - label = str
 ---
 {{ has(label) }}'''
-expected_error = "has() requires an option"
+expected_error = "requires an option"
 [tests.params]
 label = "hello"
 
@@ -48,7 +48,7 @@ params:
   - count = int
 ---
 {{ len(count) }}'''
-expected_error = "len() requires a list or str"
+expected_error = "requires a list or str"
 [tests.params]
 count = 42
 

@@ -44,6 +44,7 @@ import {
   ERR_TMPL_REQUIRES_NAME,
   KW_RAW,
   KW_END_RAW,
+  STMT_END,
   NODE_FOR,
   NODE_IF,
   NODE_MATCH,
@@ -53,7 +54,12 @@ import {
   NODE_PANIC,
 } from "./consts.js";
 import { isValidPathPrefix } from "./frontmatter.js";
-import { findBlockEnd, getLoc } from "./parser_utils.js";
+import {
+  findBlockEnd,
+  findRawClose,
+  getLoc,
+  rawCloseKeyword,
+} from "./parser_utils.js";
 import { parseBody, parseBlock, parseBlockWithClosing } from "./parser.js";
 
 export function handleStatement(
@@ -502,41 +508,13 @@ function handleRaw(
   lineMap?: LineMapEntry[],
   tagStart?: number,
 ): [Node[], number] {
-  let closeTag = KW_END_RAW;
-  if (tag.startsWith(TAG_RAW_ASSIGN_PREFIX)) {
-    const delim = tag.slice(4).trim();
-    closeTag = `/${delim}`;
-  }
-
-  // Find the closing raw tag
-  const closeStr = `{% ${closeTag} %}`;
-  const closeStrTrimmed = `{%${closeTag}%}`;
-  let endIdx = input.indexOf(closeStr, afterTag);
-  if (endIdx === -1) {
-    endIdx = input.indexOf(closeStrTrimmed, afterTag);
-  }
-  // Also try with blockquote prefix stripped
-  if (endIdx === -1) {
-    const lines = input.slice(afterTag).split("\n");
-    let offset = afterTag;
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (
-        trimmed === `> {% ${closeTag} %}` ||
-        trimmed === `{% ${closeTag} %}`
-      ) {
-        endIdx = offset;
-        break;
-      }
-      offset += line.length + 1;
-    }
-  }
+  const closeKeyword = rawCloseKeyword(tag) ?? KW_END_RAW;
+  const endIdx = findRawClose(input, afterTag, closeKeyword);
 
   if (endIdx === -1) {
     const loc = getLoc(tagStart, lineMap);
-    const keyword = tag.startsWith(TAG_RAW_ASSIGN_PREFIX) ? tag : KW_RAW;
     throw new TemplateSyntaxError(
-      `unclosed '{% ${keyword} %}' block`,
+      `unclosed '{% ${tag} %}' block`,
       loc?.line,
       loc?.column,
       loc?.snippet,
@@ -545,8 +523,8 @@ function handleRaw(
 
   const rawText = input.slice(afterTag, endIdx);
   // Find end of closing tag
-  const closeEnd = input.indexOf("%}", endIdx);
-  const finalEnd = closeEnd === -1 ? endIdx : closeEnd + 2;
+  const closeEnd = input.indexOf(STMT_END, endIdx);
+  const finalEnd = closeEnd === -1 ? endIdx : closeEnd + STMT_END.length;
 
   return [
     [{ kind: NODE_RAW, text: rawText, loc: getLoc(tagStart, lineMap) }],

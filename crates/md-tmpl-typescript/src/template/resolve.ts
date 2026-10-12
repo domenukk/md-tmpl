@@ -12,7 +12,6 @@ import {
   type VarType,
   interpolatePathStr,
   parseFrontmatter,
-  parseLiteral,
   varTypeToString,
 } from "../frontmatter.js";
 import {
@@ -24,7 +23,10 @@ import {
   ENUM_TAG_KEY,
   ENUM_VARIANTS_KEY,
   type Value,
+  bool,
+  float,
   fromJs,
+  int,
   list,
   str,
   structVal,
@@ -32,13 +34,22 @@ import {
 } from "../value.js";
 import {
   EXPR_START,
+  LIT_FALSE,
+  LIT_TRUE,
+  TYPE_ALIAS,
   TYPE_BOOL,
+  TYPE_ENUM,
   TYPE_FLOAT,
   TYPE_INT,
+  TYPE_LIST,
+  TYPE_SCALAR_LIST,
   TYPE_STR,
   TYPE_STRUCT,
   isValidResolvedPath,
 } from "../consts.js";
+import { parseF64, parseI64 } from "../filter_args.js";
+import { typeCheckValue } from "./type_check.js";
+import { toPascalCase } from "../validation.js";
 import { getFs, getPath } from "./utils.js";
 
 /**
@@ -240,6 +251,12 @@ export function resolveImportedConsts(
     for (const [typeName, specs] of importedFm.typeAliasSanitize) {
       mergedTypeAliasSanitize.set(`${imp.stem}.${typeName}`, specs);
     }
+
+    registerImplicitImportedTypes(
+      imp.stem,
+      [...importedFm.params, ...importedFm.consts],
+      mergedTypeAliases,
+    );
   }
 
   let mergedParamSanitize: ReadonlyMap<string, SanitizeSpec> = fm.paramSanitize;
@@ -354,11 +371,151 @@ export function resolveImportedConsts(
   };
 }
 
+/** Declared kinds that get an implicit PascalCase type name (Rust `add_implicit_param_types`). */
+const IMPLICIT_TYPE_KINDS: ReadonlySet<string> = new Set([
+  TYPE_LIST,
+  TYPE_SCALAR_LIST,
+  TYPE_STRUCT,
+  TYPE_ENUM,
+]);
+
+/**
+ * Expose an imported template's list/struct/enum params and consts as types
+ * `stem.PascalName` (unless an explicit alias exists) and `stem.raw_name`,
+ * mirroring Rust `add_implicit_param_types` and `ImportedNamespace.param_types`.
+ */
+function registerImplicitImportedTypes(
+  stem: string,
+  decls: readonly VarDecl[],
+  mergedTypeAliases: Map<string, VarType>,
+): void {
+  for (const decl of decls) {
+    if (!IMPLICIT_TYPE_KINDS.has(decl.varType.kind)) continue;
+    for (const name of [toPascalCase(decl.name), decl.name]) {
+      const key = `${stem}.${name}`;
+      if (!mergedTypeAliases.has(key)) {
+        mergedTypeAliases.set(key, decl.varType);
+      }
+    }
+  }
+}
+
+/** Detail for a required `env:` declaration that received no value. */
+const ENV_ERR_NO_VALUE = "no value provided and no default";
+
+function envError(decl: VarDecl, detail: string): TemplateSyntaxError {
+  return new TemplateSyntaxError(
+    `env variable '${decl.name}': ${detail}`,
+    decl.loc?.line,
+    decl.loc?.column,
+    decl.loc?.snippet,
+  );
+}
+
+/** Resolve a (possibly aliased) declared type to its underlying type. */
+function resolveAliasedType(
+  varType: VarType,
+  typeAliases: ReadonlyMap<string, VarType>,
+): VarType {
+  let current = varType;
+  const seen = new Set<string>();
+  while (current.kind === TYPE_ALIAS && !seen.has(current.name)) {
+    seen.add(current.name);
+    const target = typeAliases.get(current.name);
+    if (target === undefined) {
+      return current;
+    }
+    current = target;
+  }
+  return current;
+}
+
+/**
+ * Coerce a string `env:` value for a bare scalar type exactly like the Rust core:
+ * `int` via `str::parse::<i64>()`, `float` via `str::parse::<f64>()`, and `bool`
+ * only from `true` / `false`. Returns `undefined` for non-scalar declared types.
+ */
+function coerceEnvString(
+  decl: VarDecl,
+  raw: string,
+  varType: VarType,
+): Value | undefined {
+  switch (varType.kind) {
+    case TYPE_INT: {
+      const outcome = parseI64(raw);
+      if (!outcome.ok) {
+        throw envError(decl, `expected int, got '${raw}' (${outcome.reason})`);
+      }
+      return int(Number(outcome.value));
+    }
+    case TYPE_FLOAT: {
+      const outcome = parseF64(raw);
+      if (!outcome.ok) {
+        throw envError(
+          decl,
+          `expected float, got '${raw}' (${outcome.reason})`,
+        );
+      }
+      return float(outcome.value);
+    }
+    case TYPE_BOOL:
+      if (raw === LIT_TRUE) return bool(true);
+      if (raw === LIT_FALSE) return bool(false);
+      throw envError(decl, `expected bool, got '${raw}'`);
+    default:
+      return undefined;
+  }
+}
+
+/** Returns `true` if `value` satisfies `varType` (runtime parameter type rules). */
+function envValueMatches(
+  value: Value,
+  varType: VarType,
+  typeAliases: ReadonlyMap<string, VarType>,
+): boolean {
+  try {
+    typeCheckValue("", value, varType, typeAliases);
+    return true;
+  } catch (err) {
+    if (err instanceof TemplateError) {
+      return false;
+    }
+    throw err;
+  }
+}
+
+/**
+ * Validate and coerce a provided `env:` value against its declared type
+ * (byte-identical rules and messages to Rust `validate_env_value`).
+ */
+function validateEnvValue(
+  decl: VarDecl,
+  provided: unknown,
+  typeAliases: ReadonlyMap<string, VarType>,
+): Value {
+  const value = fromJs(provided);
+  const varType = resolveAliasedType(decl.varType, typeAliases);
+  if (value.type === TYPE_STR) {
+    const coerced = coerceEnvString(decl, value.value, varType);
+    if (coerced !== undefined) {
+      return coerced;
+    }
+  }
+  if (envValueMatches(value, varType, typeAliases)) {
+    return value;
+  }
+  throw envError(
+    decl,
+    `expected ${varTypeToString(decl.varType)}, got ${value.type}`,
+  );
+}
+
 /**
  * Resolve `env:` declarations against provided compile-time values.
  *
  * For each env declaration:
- * - If a value is provided, parse the string to the declared type.
+ * - If a value is provided, validate it against the declared type (strings
+ *   are coerced only for bare `int` / `float` / `bool`).
  * - If no value is provided and a default exists, use the default.
  * - If no value is provided and no default exists, throw a compile error.
  *
@@ -377,77 +534,18 @@ export function resolveEnvDeclarations(
   for (const decl of fm.env) {
     const provided = envValues[decl.name];
     if (provided !== undefined) {
-      let parsedValue: Value;
-      try {
-        if (typeof provided === "string") {
-          // String value: parse according to declared type (backward compat).
-          parsedValue = parseEnvStringValue(provided, decl.varType);
-        } else {
-          // Already typed value: convert directly.
-          parsedValue = fromJs(provided);
-        }
-      } catch (err) {
-        throw new TemplateSyntaxError(
-          `env variable '${decl.name}': failed to convert value: ${err instanceof Error ? err.message : String(err)}`,
-          decl.loc?.line,
-          decl.loc?.column,
-          decl.loc?.snippet,
-        );
-      }
       resolvedEnv.push({
         name: decl.name,
         varType: decl.varType,
-        defaultValue: parsedValue,
+        defaultValue: validateEnvValue(decl, provided, fm.typeAliases),
         loc: decl.loc,
       });
     } else if (decl.defaultValue !== undefined) {
       resolvedEnv.push(decl);
     } else {
-      throw new TemplateSyntaxError(
-        `env variable '${decl.name}': no value provided and no default`,
-        decl.loc?.line,
-        decl.loc?.column,
-        decl.loc?.snippet,
-      );
+      throw envError(decl, ENV_ERR_NO_VALUE);
     }
   }
 
   return { ...fm, env: resolvedEnv };
-}
-
-/**
- * Parse a string value into a typed Value based on the declared VarType.
- *
- * This is used for env: values which are always provided as strings
- * and need to be converted to the appropriate typed value.
- */
-function parseEnvStringValue(value: string, varType: VarType): Value {
-  switch (varType.kind) {
-    case TYPE_STR:
-      return str(value);
-    case TYPE_INT: {
-      const n = parseInt(value, 10);
-      if (Number.isNaN(n) || String(n) !== value.trim()) {
-        throw new TemplateSyntaxError(`invalid integer value: '${value}'`);
-      }
-      return { type: TYPE_INT, value: n };
-    }
-    case TYPE_FLOAT: {
-      const f = parseFloat(value);
-      if (Number.isNaN(f)) {
-        throw new TemplateSyntaxError(`invalid float value: '${value}'`);
-      }
-      return { type: TYPE_FLOAT, value: f };
-    }
-    case TYPE_BOOL: {
-      if (value === "true") return { type: TYPE_BOOL, value: true };
-      if (value === "false") return { type: TYPE_BOOL, value: false };
-      throw new TemplateSyntaxError(
-        `invalid bool value: '${value}' (expected 'true' or 'false')`,
-      );
-    }
-    default:
-      // For other types, try parseLiteral as fallback
-      return parseLiteral(value, varType);
-  }
 }

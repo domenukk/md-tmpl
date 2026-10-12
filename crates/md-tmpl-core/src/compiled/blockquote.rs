@@ -4,15 +4,13 @@
 //! transparently stripped before compilation so the template engine
 //! sees plain tags.
 
-use alloc::{
-    string::{String, ToString},
-    vec::Vec,
-};
+use alloc::{borrow::Cow, string::String, vec::Vec};
 
 use crate::{
     consts::{
         BLOCKQUOTE_COMPACT_OPEN, BLOCKQUOTE_PREFIX, BLOCKQUOTE_PREFIX_SPACED,
-        BLOCKQUOTE_SPACED_OPEN, ERR_BARE_STMT_TAG, STMT_END, STMT_START,
+        BLOCKQUOTE_SPACED_OPEN, COMMENT_START, ERR_BARE_COMMENT, ERR_BARE_STMT_TAG, STMT_END,
+        STMT_START,
     },
     error::TemplateError,
 };
@@ -27,116 +25,146 @@ const SNIPPET_TRUNCATION_BOUNDARY: usize = SNIPPET_MAX_DISPLAY_LEN - 3;
 /// Valid neighbors are:
 /// - Empty / blank lines
 /// - `---` (frontmatter delimiter)
-/// - Other blockquote tag lines (`> {% ... %}`)
+/// - Other blockquote tag or comment lines (`> {% ... %}`, `> {# ... #}`)
 ///
-/// Content lines starting with `>` that do NOT contain `{% %}` are NOT valid.
+/// Content lines starting with `>` that are not tag or comment lines are NOT valid.
 fn is_valid_tag_neighbor(line: &str) -> bool {
     let trimmed = line.trim_start();
     if trimmed.is_empty() || trimmed.starts_with("---") {
         return true;
     }
-    // A `>` line is only valid if it's itself a blockquote tag line.
-    if trimmed.starts_with('>') {
-        let stripped = strip_blockquote_line(line);
-        let was_stripped = !core::ptr::eq(stripped, line);
-        return was_stripped && stripped.trim_start().starts_with(STMT_START);
+    // A `>` line is only valid if it's itself a blockquote tag/comment line;
+    // `strip_blockquote_line` only strips those.
+    trimmed.starts_with(BLOCKQUOTE_PREFIX) && !core::ptr::eq(strip_blockquote_line(line), line)
+}
+
+/// A body line classified against raw-block bodies.
+struct BodyLine<'a> {
+    /// Line text as split on `\n` (a CRLF line keeps its trailing `\r`).
+    text: &'a str,
+    /// `true` when the whole line lies inside a `{% raw %}` body, so it is
+    /// literal text exempt from blockquote rules and stripping.
+    is_raw: bool,
+}
+
+impl BodyLine<'_> {
+    /// Line text without a trailing `\r`.
+    fn content(&self) -> &str {
+        self.text.strip_suffix('\r').unwrap_or(self.text)
     }
-    false
+}
+
+/// Split `input` on `\n`, marking lines that lie fully inside a raw-block body.
+fn classify_lines(input: &str) -> Result<Vec<BodyLine<'_>>, TemplateError> {
+    let raw_ranges = super::block_scan::raw_body_ranges(input)?;
+    let mut start = 0;
+    Ok(input
+        .split('\n')
+        .map(|text| {
+            let line = BodyLine {
+                text,
+                is_raw: false,
+            };
+            let end = start + line.content().len();
+            let is_raw = raw_ranges
+                .iter()
+                .any(|range| range.start <= start && end <= range.end);
+            start += text.len() + 1;
+            BodyLine { is_raw, ..line }
+        })
+        .collect())
+}
+
+/// Validate blockquote rules on a template body, then strip the `>` prefix
+/// from statement/comment tag lines.
+///
+/// # Errors
+///
+/// Returns [`TemplateError::Syntax`] for bare line-start statement tags or
+/// comments, standalone tag lines without valid neighbors, and malformed or
+/// unclosed tags found while locating raw blocks.
+pub(super) fn preprocess_blockquotes(input: &str) -> Result<Cow<'_, str>, TemplateError> {
+    let lines = classify_lines(input).map_err(|e| super::enrich_error(e, input))?;
+    validate_blockquote_prefix(&lines)?;
+    Ok(strip_blockquote_tags(input, &lines))
 }
 
 /// Validate that every line starting with `{% ` has a blockquote `>` prefix,
 /// and that standalone tag lines are surrounded by blank lines or other tags.
 ///
 /// This check runs on the raw body **before** blockquote stripping. Lines
-/// inside `{% raw %}` blocks are exempted since their content is literal.
+/// entirely inside `{% raw %}` / `{% raw=DELIM %}` bodies are exempted since
+/// their content is literal; such lines also count as valid neighbors of the
+/// raw block's own open/close tag lines.
 ///
 /// Only lines whose first non-whitespace characters are `{%` are checked —
 /// `{{ }}` expressions and mid-line `{% %}` tags are always allowed without
 /// a `>` prefix.
-pub(super) fn validate_blockquote_prefix(input: &str) -> Result<(), TemplateError> {
-    let mut in_raw = false;
-    let lines: Vec<&str> = input.lines().collect();
-    for (i, &line) in lines.iter().enumerate() {
-        let trimmed = line.trim_start();
-
-        if in_raw {
-            // Inside raw block — look for close tag (with or without `>`)
-            // to resume checking. Raw blocks don't nest.
-            if trimmed.contains("{%") && (trimmed.contains("/raw") || trimmed.contains("- /raw")) {
-                in_raw = false;
-                let stripped = strip_blockquote_line(line);
-                let was_stripped = !core::ptr::eq(stripped, line);
-                if was_stripped && is_standalone_tag(stripped) {
-                    validate_tag_neighbors(&lines, i, line)?;
-                }
-            }
+fn validate_blockquote_prefix(lines: &[BodyLine<'_>]) -> Result<(), TemplateError> {
+    for (i, line) in lines.iter().enumerate() {
+        if line.is_raw {
             continue;
         }
+        let text = line.content();
+        let trimmed = text.trim_start();
 
-        // Detect raw block open: `> {% raw %}` or `> {% raw=X %}`
-        if trimmed.starts_with('>')
-            && trimmed.contains("{%")
-            && (trimmed.contains(" raw ") || trimmed.contains(" raw=") || trimmed.contains(" raw%"))
-        {
-            in_raw = true;
-            continue;
-        }
-
-        // Check for comments starting at line beginning without blockquote prefix
-        if trimmed.starts_with(crate::consts::COMMENT_START) {
-            return Err(TemplateError::syntax(
-                "Comments starting at the beginning of a line must have a blockquote prefix (> {# ... #}) to ensure proper Markdown rendering",
-            ));
-        }
-
-        // Main check: line starts with `{%` (or `{%-`) without `>` prefix.
-        if trimmed.starts_with(STMT_START) {
-            // Truncate for a clean error message.
-            let snippet = if trimmed.len() > SNIPPET_MAX_DISPLAY_LEN {
-                // Find a safe truncation point at a char boundary.
-                let end = crate::error::floor_char_boundary(trimmed, SNIPPET_TRUNCATION_BOUNDARY);
-                format!("{}…", &trimmed[..end])
-            } else {
-                trimmed.to_string()
-            };
+        // Line starts with `{%` / `{#` (or a trim variant) without a `>` prefix.
+        let bare_error = if trimmed.starts_with(STMT_START) {
+            Some(ERR_BARE_STMT_TAG)
+        } else if trimmed.starts_with(COMMENT_START) {
+            Some(ERR_BARE_COMMENT)
+        } else {
+            None
+        };
+        if let Some(error) = bare_error {
+            let snippet = display_snippet(trimmed);
             return Err(TemplateError::syntax(format!(
-                "{ERR_BARE_STMT_TAG}: write '> {snippet}' instead of '{snippet}'"
+                "{error}: write '> {snippet}' instead of '{snippet}'"
             )));
         }
 
-        let stripped = strip_blockquote_line(line);
-        let was_stripped = !core::ptr::eq(stripped, line);
+        let stripped = strip_blockquote_line(text);
+        let was_stripped = !core::ptr::eq(stripped, text);
         if was_stripped && is_standalone_tag(stripped) {
-            validate_tag_neighbors(&lines, i, line)?;
+            validate_tag_neighbors(lines, i)?;
         }
     }
     Ok(())
 }
 
-/// Check that a standalone tag at index `i` is surrounded by valid neighbors.
-fn validate_tag_neighbors(lines: &[&str], i: usize, line: &str) -> Result<(), TemplateError> {
-    if i > 0 {
-        if let Some(&prev_line) = lines.get(i - 1) {
-            if !is_valid_tag_neighbor(prev_line) {
-                return Err(TemplateError::syntax(format!(
-                    "Standalone statement tag '{}' must be preceded by a blank line or another blockquote tag line (> {{%...%}})",
-                    line.trim()
-                )));
-            }
-        }
+/// A line truncated to [`SNIPPET_MAX_DISPLAY_LEN`] for error messages.
+fn display_snippet(line: &str) -> Cow<'_, str> {
+    if line.len() > SNIPPET_MAX_DISPLAY_LEN {
+        // Find a safe truncation point at a char boundary.
+        let end = crate::error::floor_char_boundary(line, SNIPPET_TRUNCATION_BOUNDARY);
+        Cow::Owned(format!("{}…", &line[..end]))
+    } else {
+        Cow::Borrowed(line)
     }
+}
 
-    if i + 1 < lines.len() {
-        if let Some(&next_line) = lines.get(i + 1) {
-            if !is_valid_tag_neighbor(next_line) {
-                return Err(TemplateError::syntax(format!(
-                    "Standalone statement tag '{}' must be followed by a blank line or another blockquote tag line (> {{%...%}})",
-                    line.trim()
-                )));
-            }
-        }
+/// Returns `true` when `line` may sit directly next to a standalone tag line.
+fn is_valid_neighbor_line(line: &BodyLine<'_>) -> bool {
+    line.is_raw || is_valid_tag_neighbor(line.content())
+}
+
+/// Check that the standalone tag at index `i` is surrounded by valid neighbors.
+fn validate_tag_neighbors(lines: &[BodyLine<'_>], i: usize) -> Result<(), TemplateError> {
+    let tag_line = lines[i].content().trim();
+    if let Some(prev) = i.checked_sub(1).and_then(|p| lines.get(p))
+        && !is_valid_neighbor_line(prev)
+    {
+        return Err(TemplateError::syntax(format!(
+            "Standalone statement tag '{tag_line}' must be preceded by a blank line or another blockquote tag line (> {{%...%}})"
+        )));
     }
-
+    if let Some(next) = lines.get(i + 1)
+        && !is_valid_neighbor_line(next)
+    {
+        return Err(TemplateError::syntax(format!(
+            "Standalone statement tag '{tag_line}' must be followed by a blank line or another blockquote tag line (> {{%...%}})"
+        )));
+    }
     Ok(())
 }
 
@@ -147,26 +175,28 @@ fn validate_tag_neighbors(lines: &[&str], i: usize, line: &str) -> Result<(), Te
 /// before compilation so the template engine sees plain `{% if x %}`.
 ///
 /// Supports both `>{%` (compact) and `> {%` (spaced). Lines without `{%`
-/// are left untouched, preserving actual markdown blockquotes.
-///
-/// This function is idempotent — calling it on already-processed text is safe.
-pub(super) fn strip_blockquote_tags(input: &str) -> alloc::borrow::Cow<'_, str> {
+/// are left untouched, preserving actual markdown blockquotes, and lines
+/// inside raw-block bodies are kept verbatim.
+fn strip_blockquote_tags<'a>(input: &'a str, lines: &[BodyLine<'_>]) -> Cow<'a, str> {
     // Fast path: no blockquote tags present.
     if !input.contains(BLOCKQUOTE_COMPACT_OPEN)
         && !input.contains(BLOCKQUOTE_SPACED_OPEN)
         && !input.contains(">{#")
         && !input.contains("> {#")
     {
-        return alloc::borrow::Cow::Borrowed(input);
+        return Cow::Borrowed(input);
     }
 
-    let lines: Vec<&str> = input.split('\n').collect();
     let mut result = String::with_capacity(input.len());
     let mut after_standalone = false;
     let mut pending_blanks: usize = 0;
-    for (i, &line) in lines.iter().enumerate() {
-        let stripped = strip_blockquote_line(line);
-        let was_stripped = !core::ptr::eq(stripped, line);
+    for (i, line) in lines.iter().enumerate() {
+        let stripped = if line.is_raw {
+            line.text
+        } else {
+            strip_blockquote_line(line.text)
+        };
+        let was_stripped = !core::ptr::eq(stripped, line.text);
         let is_blank = stripped.trim().is_empty();
         let is_standalone = was_stripped && is_standalone_tag(stripped);
 
@@ -205,7 +235,7 @@ pub(super) fn strip_blockquote_tags(input: &str) -> alloc::borrow::Cow<'_, str> 
         }
         result.push_str(stripped);
     }
-    alloc::borrow::Cow::Owned(result)
+    Cow::Owned(result)
 }
 
 /// Returns `true` when the line is a standalone template tag — the entire
@@ -258,6 +288,15 @@ fn strip_blockquote_line(line: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn validate_blockquote_prefix(input: &str) -> Result<(), TemplateError> {
+        super::validate_blockquote_prefix(&classify_lines(input)?)
+    }
+
+    fn strip_blockquote_tags(input: &str) -> Cow<'_, str> {
+        let lines = classify_lines(input).expect("well-formed tags");
+        super::strip_blockquote_tags(input, &lines)
+    }
 
     #[test]
     fn strip_indented_blockquote_tags() {
@@ -375,6 +414,43 @@ Content without blank line.
     fn is_valid_tag_neighbor_blockquote_tag() {
         assert!(is_valid_tag_neighbor("> {% if x %}"));
         assert!(is_valid_tag_neighbor("> {% /for %}"));
+    }
+
+    #[test]
+    fn is_valid_tag_neighbor_blockquote_comment() {
+        assert!(is_valid_tag_neighbor("> {# note #}"));
+        assert!(is_valid_tag_neighbor(">{# note #}"));
+    }
+
+    #[test]
+    fn validate_accepts_consecutive_comment_lines() {
+        validate_blockquote_prefix("> {# a #}\n> {# b #}\n\ntext")
+            .expect("adjacent blockquote comment lines are valid neighbors");
+    }
+
+    #[test]
+    fn validate_resumes_after_custom_delimiter_raw_block() {
+        let input = "> {% raw=# %}\n\n{% literal %}\n\n> {% /# %}\n\n{% if x %}y{% /if %}";
+        let err = validate_blockquote_prefix(input).unwrap_err();
+        assert!(
+            err.to_string().contains("{% if x %}"),
+            "only the line after the raw block is rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_ignores_raw_word_outside_raw_tags() {
+        let input = "> {% if mode == \"a raw b\" %}m{% /if %}\n\n{% if x %}y{% /if %}";
+        validate_blockquote_prefix(input).expect_err("bare tag after a non-raw statement");
+    }
+
+    #[test]
+    fn strip_keeps_raw_body_lines_verbatim() {
+        let input = "> {% raw %}\n\n> {% if x %}\n\n> {% /raw %}";
+        assert_eq!(
+            strip_blockquote_tags(input).as_ref(),
+            "{% raw %}> {% if x %}\n{% /raw %}"
+        );
     }
 
     #[test]

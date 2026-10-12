@@ -23,6 +23,7 @@ import {
   LIT_TRUE,
   LIT_FALSE,
 } from "./consts.js";
+import { formatFloatDisplay, formatIntDisplay } from "./numeric_format.js";
 
 export {
   TYPE_STR,
@@ -228,9 +229,9 @@ export function display(v: Value): string {
     case TYPE_BOOL:
       return v.value ? LIT_TRUE : LIT_FALSE;
     case TYPE_INT:
-      return String(v.value);
+      return formatIntDisplay(v.value);
     case TYPE_FLOAT:
-      return String(v.value);
+      return formatFloatDisplay(v.value);
     case TYPE_LIST:
       throw new Error(
         "cannot display list value directly — iterate with '{% for item in list %}' instead",

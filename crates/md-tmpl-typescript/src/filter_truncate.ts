@@ -10,7 +10,8 @@
 
 import { type Value, str, list } from "./value.js";
 import { TemplateSyntaxError } from "./errors.js";
-import { unescapeStringLiteral } from "./consts.js";
+import { FILTER_TRUNCATE, unescapeStringLiteral } from "./consts.js";
+import { TRUNCATE_ARG_LABEL, parseUsizeFilterArg } from "./filter_args.js";
 
 /** Default multi-line string truncation marker. */
 export const DEFAULT_TRUNCATE_MARKER =
@@ -200,6 +201,44 @@ export function truncateMiddleString(
   return headStr + marker + tailStr;
 }
 
+/**
+ * Truncate `items` in the middle (head/tail middle-out), keeping at most `limit`
+ * items; the omitted run is replaced by one marker item built with `makeMarker`
+ * from `markerTemplate` (`undefined` = default list marker, `""` = no marker).
+ */
+export function truncateMiddleItems<T>(
+  items: readonly T[],
+  limit: number,
+  markerTemplate: string | undefined,
+  makeMarker: (text: string) => T,
+): T[] {
+  const total = items.length;
+  if (total <= limit) return [...items];
+  if (limit === 0) return [];
+  const skippedItems = total - limit;
+  const headCount = Math.floor(limit / 2);
+  const tailCount = limit - headCount;
+  const head = items.slice(0, headCount);
+  const tail = items.slice(total - tailCount);
+  if (markerTemplate === "") {
+    return [...head, ...tail];
+  }
+  const marker = substituteMarker(
+    markerTemplate ?? DEFAULT_LIST_TRUNCATE_MARKER,
+    skippedItems,
+  );
+  return [...head, makeMarker(marker), ...tail];
+}
+
+/** Truncate a list of template values in the middle (port of Rust `truncate_middle_list`). */
+export function truncateMiddleList(
+  items: readonly Value[],
+  limit: number,
+  markerTemplate?: string,
+): Value[] {
+  return truncateMiddleItems(items, limit, markerTemplate, str);
+}
+
 /** Apply the `truncate` / `truncate_middle` filter to a {@link Value}. */
 export function applyTruncate(value: Value, args: string | undefined): Value {
   if (args === undefined || args.trim().length === 0) {
@@ -214,42 +253,18 @@ export function applyTruncate(value: Value, args: string | undefined): Value {
       ? stripQuotesLocal(args.slice(commaIdx + 1).trim())
       : undefined;
 
-  const limit = Number(limitStr);
-  if (Number.isNaN(limit) || !Number.isInteger(limit) || limit < 0) {
-    throw new TemplateSyntaxError(
-      `'truncate' limit must be an integer: ${limitStr}`,
-    );
-  }
+  const limit = parseUsizeFilterArg(
+    limitStr,
+    FILTER_TRUNCATE,
+    TRUNCATE_ARG_LABEL,
+  );
 
   if (value.type === "str") {
     return str(truncateMiddleString(value.value, limit, markerArg));
   }
 
   if (value.type === "list") {
-    const total = value.items.length;
-    if (total <= limit) return value;
-    if (limit === 0) return list([]);
-
-    const skippedItems = total - limit;
-    const headCount = Math.floor(limit / 2);
-    const tailCount = limit - headCount;
-
-    let markerItem: Value | undefined;
-    if (markerArg === undefined) {
-      markerItem = str(
-        substituteMarker(DEFAULT_LIST_TRUNCATE_MARKER, skippedItems),
-      );
-    } else if (markerArg.length > 0) {
-      markerItem = str(substituteMarker(markerArg, skippedItems));
-    }
-
-    const head = value.items.slice(0, headCount);
-    const tail = value.items.slice(total - tailCount);
-    const resultItems =
-      markerItem !== undefined
-        ? [...head, markerItem, ...tail]
-        : [...head, ...tail];
-    return list(resultItems);
+    return list(truncateMiddleList(value.items, limit, markerArg));
   }
 
   throw new TemplateSyntaxError("'truncate' requires a string or a list");

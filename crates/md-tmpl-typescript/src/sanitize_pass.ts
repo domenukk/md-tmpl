@@ -12,6 +12,7 @@ import {
   DOT,
   FILTER_QUARANTINE,
   FILTER_SANITIZE,
+  FILTER_SANITIZE_ENCLOSED,
   FILTER_SANITIZE_TOKENS,
   NODE_EXPR,
   NODE_FOR,
@@ -24,11 +25,14 @@ import {
   PIPE_SPACED,
   PREFIX_PARAMS_DOT,
   QUOTE_DOUBLE,
-  QUOTE_SINGLE,
   SANITIZE_KIND_INLINE,
 } from "./consts.js";
 import { splitPipes } from "./evaluator.js";
-import { INLINE_HEADING_SENTINEL, parseFilter } from "./filters.js";
+import {
+  INLINE_HEADING_SENTINEL,
+  parseFilter,
+  stripQuotes,
+} from "./filters.js";
 import {
   type SanitizeSpec,
   parseSanitizeFilterArgs,
@@ -48,36 +52,15 @@ const CHAR_LT = 60;
 const CHAR_GT = 62;
 const MIN_HEADING_LEVEL = 1;
 const MAX_HEADING_LEVEL = 6;
-const ESCAPED_NEWLINE_CHAR = "n";
-const ESCAPED_TAB_CHAR = "t";
 const NEWLINE_CHAR = "\n";
-const TAB_CHAR = "\t";
 
-/** Parse a `sanitize_notice:` frontmatter value, stripping optional surrounding quotes. */
+/**
+ * Parse a `sanitize_notice:` frontmatter value, stripping optional surrounding quotes and
+ * decoding the standard string-literal escapes (`\\`, `\"`, `\'`; any other `\X` is kept
+ * verbatim), exactly like every other md-tmpl string literal.
+ */
 export function parseSanitizeNoticeValue(raw: string): string {
-  const trimmed = raw.trim();
-  if (
-    trimmed.length >= 2 &&
-    ((trimmed.startsWith(QUOTE_DOUBLE) && trimmed.endsWith(QUOTE_DOUBLE)) ||
-      (trimmed.startsWith(QUOTE_SINGLE) && trimmed.endsWith(QUOTE_SINGLE)))
-  ) {
-    const inner = trimmed.slice(1, -1);
-    let out = "";
-    for (let i = 0; i < inner.length; i++) {
-      const ch = inner[i];
-      if (ch === BACKSLASH && i + 1 < inner.length) {
-        const nextCh = inner[i + 1];
-        i++;
-        if (nextCh === ESCAPED_NEWLINE_CHAR) out += NEWLINE_CHAR;
-        else if (nextCh === ESCAPED_TAB_CHAR) out += TAB_CHAR;
-        else if (nextCh !== undefined) out += nextCh;
-      } else if (ch !== undefined) {
-        out += ch;
-      }
-    }
-    return out;
-  }
-  return trimmed;
+  return stripQuotes(raw.trim());
 }
 
 // ---------------------------------------------------------------------------
@@ -182,6 +165,7 @@ function rewriteExprForSanitize(
         const [fName] = parseFilter(f);
         return (
           fName === FILTER_SANITIZE ||
+          fName === FILTER_SANITIZE_ENCLOSED ||
           fName === FILTER_QUARANTINE ||
           fName === FILTER_SANITIZE_TOKENS
         );
@@ -196,20 +180,21 @@ function rewriteExprForSanitize(
     return expr;
   }
 
-  // 2. Rewrite any `sanitize` / `sanitize_tokens` filter for template-level `sanitizeNotice` and `openTags`
+  // 2. Rewrite any `sanitize` filter for template-level `sanitizeNotice` and `openTags`
   let modified = filterStrings.length !== parts.length - 1;
   const updatedFilters = filterStrings.map((fStr) => {
     const [fName, fArgs] = parseFilter(fStr);
-    if (fName === FILTER_SANITIZE_TOKENS) {
-      const parsedTokens = parseSanitizeFilterArgs(fArgs);
+    if (fName === FILTER_SANITIZE_ENCLOSED) {
+      // Re-run after include resolution: merge newly visible enclosing tags.
+      const existingTags = fArgs === undefined ? undefined : stripQuotes(fArgs);
       const mergedTags = mergeEnclosingTagsIntoSpec(
-        parsedTokens?.tagSpec,
+        existingTags,
         openTags,
         inAtxHeading,
       );
-      if (mergedTags !== undefined && mergedTags !== parsedTokens?.tagSpec) {
+      if (mergedTags !== undefined && mergedTags !== existingTags) {
         modified = true;
-        return `${FILTER_SANITIZE_TOKENS}(${quoteFilterArg(mergedTags)})`;
+        return `${FILTER_SANITIZE_ENCLOSED}(${quoteFilterArg(mergedTags)})`;
       }
       return fStr;
     }
@@ -218,7 +203,7 @@ function rewriteExprForSanitize(
     }
     const parsed = parseSanitizeFilterArgs(fArgs);
     if (parsed === undefined) {
-      // 0-arg `| sanitize`: if inside enclosing XML tags or ATX heading, rewrite to `sanitize_tokens("tags")`
+      // 0-arg `| sanitize`: inside enclosing XML tags or an ATX heading, carry the tags internally.
       const mergedTags = mergeEnclosingTagsIntoSpec(
         undefined,
         openTags,
@@ -226,7 +211,7 @@ function rewriteExprForSanitize(
       );
       if (mergedTags !== undefined) {
         modified = true;
-        return `${FILTER_SANITIZE_TOKENS}(${quoteFilterArg(mergedTags)})`;
+        return `${FILTER_SANITIZE_ENCLOSED}(${quoteFilterArg(mergedTags)})`;
       }
       return fStr;
     }

@@ -314,7 +314,7 @@ params:
   - meta = struct(author = str, version = int)
   - status = enum(Active, Paused)
 ---
-{{ items }}{{ meta }}{{ status }}`,
+> {% for item in items %}{{ item.name }}{% /for %}{{ meta.author }}{{ status }}`,
     );
     const decls = t.declarations();
     assert.equal(decls.length, 3);

@@ -181,33 +181,35 @@ params:
     );
   });
 
-  it("rejects kind() on plain str parameter at render time", () => {
+  it("rejects kind() on plain str parameter at compile time", () => {
     const src = `---
 params:
   - msg = str
 ---
 {{ kind(msg) }}`;
-    const tmpl = Template.fromSource(src);
     assert.throws(
-      () => tmpl.render({ msg: "hello" }),
+      () => Template.fromSource(src),
       (err: unknown) =>
         err instanceof Error &&
-        err.message.includes("kind() requires an enum or option value"),
+        err.message.includes(
+          "'kind()' requires an enum or option type, got str on 'msg'",
+        ),
     );
   });
 
-  it("rejects has() on plain str parameter at render time", () => {
+  it("rejects has() on plain str parameter at compile time", () => {
     const src = `---
 params:
   - msg = str
 ---
 {{ has(msg) }}`;
-    const tmpl = Template.fromSource(src);
     assert.throws(
-      () => tmpl.render({ msg: "hello" }),
+      () => Template.fromSource(src),
       (err: unknown) =>
         err instanceof Error &&
-        err.message.includes("has() requires an option value"),
+        err.message.includes(
+          "'has()' requires an option type, got str on 'msg'",
+        ),
     );
   });
 

@@ -7,21 +7,34 @@
  * @module
  */
 
-import { type Value, str, int, float, list, display } from "./value.js";
+import { type Value, str, list, display } from "./value.js";
 import { TemplateSyntaxError, UnknownFilterError } from "./errors.js";
 import {
+  FILTER_ADD,
+  FILTER_FIXED,
+  FILTER_LIMIT,
+  FILTER_SUB,
+  FILTER_QUARANTINE,
   FILTER_SANITIZE,
-  TYPE_BOOL,
+  FILTER_SANITIZE_ENCLOSED,
+  FILTER_SANITIZE_TOKENS,
   TYPE_FLOAT,
   TYPE_INT,
   TYPE_LIST,
-  TYPE_NONE,
-  TYPE_STR,
-  TYPE_STRUCT,
-  TYPE_TMPL,
   unescapeStringLiteral,
 } from "./consts.js";
 import { applySanitizeFilterStr } from "./sanitize_pass.js";
+import {
+  ArithFilter,
+  FIXED_ARG_LABEL,
+  LIMIT_ARG_LABEL,
+  applyArith,
+  applyFixed,
+  parseArithArg,
+  parseUsizeFilterArg,
+} from "./filter_args.js";
+import { applyToJson } from "./filter_json.js";
+import { escapeJsonBody } from "./json_escape.js";
 
 /** Parse a filter expression like `fixed(2)` into `[name, args?]`. */
 export function parseFilter(filter: string): [string, string | undefined] {
@@ -65,19 +78,18 @@ export function applyFilter(
       return applyLower(value);
     case "trim":
       return applyTrim(value);
-    case "fixed":
-      return applyFixed(value, args);
+    case FILTER_FIXED:
+      return applyFixedFilter(value, args);
     case "join":
       return applyJoin(value, args);
-    case "limit":
+    case FILTER_LIMIT:
       return applyLimit(value, args);
     case "truncate":
     case "truncate_middle":
       return applyTruncate(value, args);
-    case "add":
-      return applyAdd(value, args);
-    case "sub":
-      return applySub(value, args);
+    case FILTER_ADD:
+    case FILTER_SUB:
+      return applyArithFilter(value, filterName, args);
     case "escape_xml":
     case "xml":
       return applyEscapeXml(value);
@@ -98,6 +110,11 @@ export function applyFilter(
         throw new TemplateSyntaxError(`'${FILTER_SANITIZE}' requires a string`);
       }
       return str(applySanitizeFilterStr(value.value, args));
+    case FILTER_SANITIZE_ENCLOSED:
+      if (value.type !== "str") {
+        throw new TemplateSyntaxError(`'${FILTER_SANITIZE}' requires a string`);
+      }
+      return str(sanitizeEnclosedString(value.value, args));
     default:
       throw new UnknownFilterError(filterName);
   }
@@ -124,26 +141,15 @@ function applyTrim(value: Value): Value {
   return str(value.value.trim());
 }
 
-function applyFixed(value: Value, args: string | undefined): Value {
-  if (args === undefined) {
-    throw new TemplateSyntaxError("'fixed' requires precision arg");
-  }
-  const precision = parseInt(args, 10);
-  if (Number.isNaN(precision)) {
-    throw new TemplateSyntaxError(
-      `'fixed' precision must be an integer: ${args}`,
-    );
-  }
-  if (value.type === "float") {
-    return str(value.value.toFixed(precision));
-  }
-  if (value.type === "int") {
-    if (precision === 0) {
-      return str(String(value.value));
+function applyFixedFilter(value: Value, args: string | undefined): Value {
+  if (value.type !== TYPE_FLOAT && value.type !== TYPE_INT) {
+    if (args === undefined) {
+      throw new TemplateSyntaxError("'fixed' requires precision arg");
     }
-    return str(value.value.toFixed(precision));
+    parseUsizeFilterArg(args, FILTER_FIXED, FIXED_ARG_LABEL);
+    throw new TemplateSyntaxError("'fixed' requires a number");
   }
-  throw new TemplateSyntaxError("'fixed' requires a number");
+  return str(applyFixed(value, args));
 }
 
 function applyJoin(value: Value, args: string | undefined): Value {
@@ -159,13 +165,8 @@ function applyLimit(value: Value, args: string | undefined): Value {
   if (args === undefined) {
     throw new TemplateSyntaxError("'limit' requires a limit argument");
   }
-  const limit = parseInt(args, 10);
-  if (Number.isNaN(limit)) {
-    throw new TemplateSyntaxError(
-      `'limit' argument must be an integer: ${args}`,
-    );
-  }
-  if (value.type === "list") {
+  const limit = parseUsizeFilterArg(args, FILTER_LIMIT, LIMIT_ARG_LABEL);
+  if (value.type === TYPE_LIST) {
     return list(value.items.slice(0, limit));
   }
   throw new TemplateSyntaxError("'limit' requires a list");
@@ -190,45 +191,16 @@ export {
   truncateMiddleString,
 };
 
-function parseNumArg(arg: string | undefined, filterName: string): number {
-  if (arg === undefined) {
-    throw new TemplateSyntaxError(`'${filterName}' requires a number argument`);
+function applyArithFilter(
+  value: Value,
+  filter: ArithFilter,
+  args: string | undefined,
+): Value {
+  const arg = parseArithArg(args, filter);
+  if (value.type !== TYPE_INT && value.type !== TYPE_FLOAT) {
+    throw new TemplateSyntaxError(`'${filter}' requires a number`);
   }
-  const n = Number(arg);
-  if (Number.isNaN(n)) {
-    throw new TemplateSyntaxError(
-      `'${filterName}' argument must be a number: ${arg}`,
-    );
-  }
-  return n;
-}
-
-function applyAdd(value: Value, args: string | undefined): Value {
-  const operand = parseNumArg(args, "add");
-  if (value.type === "int") {
-    const result = value.value + operand;
-    return Number.isInteger(result) && Number.isInteger(operand)
-      ? int(result)
-      : float(result);
-  }
-  if (value.type === "float") {
-    return float(value.value + operand);
-  }
-  throw new TemplateSyntaxError("'add' requires a number");
-}
-
-function applySub(value: Value, args: string | undefined): Value {
-  const operand = parseNumArg(args, "sub");
-  if (value.type === "int") {
-    const result = value.value - operand;
-    return Number.isInteger(result) && Number.isInteger(operand)
-      ? int(result)
-      : float(result);
-  }
-  if (value.type === "float") {
-    return float(value.value - operand);
-  }
-  throw new TemplateSyntaxError("'sub' requires a number");
+  return applyArith(value, filter, arg);
 }
 
 // ---------------------------------------------------------------------------
@@ -286,57 +258,10 @@ function applyEscapeXml(value: Value): Value {
  * Escape JSON string body characters.
  *
  * Escapes quotes, backslashes, control characters, U+2028/U+2029, and forward
- * slashes (`/` to `\/` for HTML script tag safety). Caller supplies quotes.
+ * slashes (`/` to `\\/` for HTML script tag safety). Caller supplies quotes.
  */
 export function escapeJsonString(s: string): string {
-  let out: string | undefined;
-  let lastCopied = 0;
-  for (let i = 0; i < s.length; i++) {
-    const code = s.charCodeAt(i);
-    let replacement: string | undefined;
-    switch (code) {
-      case 92 /* '\\' */:
-        replacement = "\\\\";
-        break;
-      case 34 /* '"' */:
-        replacement = '\\"';
-        break;
-      case 47 /* '/' */:
-        replacement = "\\/";
-        break;
-      case 10 /* '\n' */:
-        replacement = "\\n";
-        break;
-      case 13 /* '\r' */:
-        replacement = "\\r";
-        break;
-      case 9 /* '\t' */:
-        replacement = "\\t";
-        break;
-      case 8 /* '\b' */:
-        replacement = "\\b";
-        break;
-      case 12 /* '\f' */:
-        replacement = "\\f";
-        break;
-      case 0x2028:
-        replacement = "\\u2028";
-        break;
-      case 0x2029:
-        replacement = "\\u2029";
-        break;
-      default:
-        if (code < 0x20) {
-          replacement = `\\u${code.toString(16).padStart(4, "0")}`;
-        }
-        break;
-    }
-    if (replacement !== undefined) {
-      out = (out ?? "") + s.slice(lastCopied, i) + replacement;
-      lastCopied = i + 1;
-    }
-  }
-  return out !== undefined ? out + s.slice(lastCopied) : s;
+  return escapeJsonBody(s, true);
 }
 
 function applyEscapeJson(value: Value): Value {
@@ -344,55 +269,6 @@ function applyEscapeJson(value: Value): Value {
     throw new TemplateSyntaxError("'escape_json' requires a string");
   }
   return str(escapeJsonString(value.value));
-}
-
-export function valueToJsSorted(v: Value): unknown {
-  switch (v.type) {
-    case TYPE_STR:
-      return v.value;
-    case TYPE_BOOL:
-      return v.value;
-    case TYPE_INT:
-      return v.value;
-    case TYPE_FLOAT:
-      return v.value;
-    case TYPE_LIST:
-      return v.items.map(valueToJsSorted);
-    case TYPE_STRUCT: {
-      const sortedKeys = Array.from(v.fields.keys()).sort();
-      const obj: Record<string, unknown> = {};
-      for (const k of sortedKeys) {
-        const val = v.fields.get(k);
-        if (val !== undefined) {
-          obj[k] = valueToJsSorted(val);
-        }
-      }
-      return obj;
-    }
-    case TYPE_TMPL:
-      throw new TemplateSyntaxError("cannot serialize template to JSON");
-    case TYPE_NONE:
-      return null;
-  }
-}
-
-export function applyToJson(value: Value, args?: string): Value {
-  if (value.type === TYPE_TMPL) {
-    throw new TemplateSyntaxError("cannot serialize template to JSON");
-  }
-  let indent: number | undefined;
-  if (args !== undefined && args.trim().length > 0) {
-    const parsed = Number(args.trim());
-    if (!Number.isInteger(parsed) || parsed < 0) {
-      throw new TemplateSyntaxError(
-        `'tojson' indent argument must be a non-negative integer, got '${args.trim()}'`,
-      );
-    }
-    indent = parsed;
-  }
-  const jsVal = valueToJsSorted(value);
-  const jsonStr = JSON.stringify(jsVal, null, indent);
-  return str(jsonStr);
 }
 
 /** Minimum length of any rule in `TOKEN_DELIMITERS` (`"</s>"`, `4` chars). */
@@ -527,6 +403,18 @@ export const TOKEN_DELIMITERS: readonly [string, string][] = [
 export const ROLE_TOKEN_DELIMITERS: readonly [string, string][] =
   TOKEN_DELIMITERS.slice(0, ROLE_DELIMITER_COUNT);
 
+/** Anthropic `\n\nHuman:` / `\n\nAssistant:` turn markers (matched anywhere). */
+const ANTHROPIC_TURN_RULES: readonly [string, string][] = [
+  ["\n\nHuman:", "\n\nHuman&#58;"],
+  ["\n\nAssistant:", "\n\nAssistant&#58;"],
+];
+
+/** Single-newline `\nHuman:` / `\nAssistant:` turn markers (matched only at input start). */
+const ANTHROPIC_START_TURN_RULES: readonly [string, string][] = [
+  ["\nHuman:", "\nHuman&#58;"],
+  ["\nAssistant:", "\nAssistant&#58;"],
+];
+
 const BRACKET_TOKEN_RULES: readonly [string, string][] =
   ROLE_TOKEN_DELIMITERS.filter(([pat]) => pat.charCodeAt(0) === 91 /* '[' */);
 
@@ -642,14 +530,17 @@ function matchControlTokenAt(
   const c0 = s.charCodeAt(i);
   const c1 = s.charCodeAt(i + 1);
   if (c0 === 10 /* '\n' */) {
-    if (c1 !== 10) {
-      return undefined;
+    // `\n\nHuman:` anywhere, or `\nHuman:` at the very start of the input.
+    let turnRules: readonly [string, string][] = [];
+    if (c1 === 10) {
+      turnRules = ANTHROPIC_TURN_RULES;
+    } else if (i === 0) {
+      turnRules = ANTHROPIC_START_TURN_RULES;
     }
-    if (s.startsWith("\n\nHuman:", i)) {
-      return { kind: "rule", len: 8, replacement: "\n\nHuman&#58;" };
-    }
-    if (s.startsWith("\n\nAssistant:", i)) {
-      return { kind: "rule", len: 12, replacement: "\n\nAssistant&#58;" };
+    for (const [pat, replacement] of turnRules) {
+      if (s.startsWith(pat, i)) {
+        return { kind: "rule", len: pat.length, replacement };
+      }
     }
     return undefined;
   }
@@ -702,6 +593,13 @@ export const DEFAULT_QUARANTINE_TAG = "untrusted_content";
 
 function toAsciiLowerCode(c: number): number {
   return c >= 65 && c <= 90 ? c + 32 : c;
+}
+
+/** ASCII-only lowercasing (Rust `to_ascii_lowercase`): non-ASCII code units are kept as-is. */
+function toAsciiLowerString(s: string): string {
+  return s.replace(/[A-Z]/g, (ch) =>
+    String.fromCharCode(ch.charCodeAt(0) | 32),
+  );
 }
 
 function ncnameFirstCharBit(c: number): number {
@@ -764,21 +662,33 @@ function collapseHeadingLineBreaks(s: string): string {
   return last === 0 ? s : out + s.slice(last);
 }
 
-function validateQuarantineTagSpec(spec: string): [string, string[]] {
+/**
+ * Validate a single or comma-separated list of XML `NCName` boundary tags for
+ * `filterName`, returning `[primaryTag, spec]` (mirrors Rust
+ * `validate_tag_spec_for_filter`). The internal `#heading` sentinel is rejected.
+ */
+export function validateTagSpecForFilter(
+  spec: string,
+  filterName: string,
+): [string, string] {
   if (spec.length === 0) {
     throw new TemplateSyntaxError(
-      "'quarantine' tag name must be a valid XML NCName: ''",
+      `'${filterName}' tag name must be a valid XML NCName: ''`,
     );
   }
   const parts = spec.split(",").map((p) => p.trim());
   for (const part of parts) {
-    if (part !== INLINE_HEADING_SENTINEL && !isValidNcname(part)) {
+    if (!isValidNcname(part)) {
       throw new TemplateSyntaxError(
-        `'quarantine' tag name must be a valid XML NCName: '${spec}'`,
+        `'${filterName}' tag name must be a valid XML NCName: '${spec}'`,
       );
     }
   }
-  return [parts[0] ?? DEFAULT_QUARANTINE_TAG, parts];
+  return [parts[0] ?? DEFAULT_QUARANTINE_TAG, spec];
+}
+
+function validateQuarantineTagSpec(spec: string): [string, string] {
+  return validateTagSpecForFilter(spec, FILTER_QUARANTINE);
 }
 
 interface ParsedTagSpec {
@@ -793,7 +703,7 @@ function parseTagSpec(tagSpec: string | undefined): ParsedTagSpec | undefined {
   let firstCharMask = 0;
   const tagsLower: string[] = [];
   if (!tagSpec.includes(",")) {
-    const trimmed = tagSpec.trim().toLowerCase();
+    const trimmed = toAsciiLowerString(tagSpec.trim());
     if (trimmed.length > 0) {
       const bit = ncnameFirstCharBit(trimmed.charCodeAt(0));
       if (bit !== 0) {
@@ -804,7 +714,7 @@ function parseTagSpec(tagSpec: string | undefined): ParsedTagSpec | undefined {
     return { firstCharMask, tagsLower };
   }
   for (const raw of tagSpec.split(",")) {
-    const trimmed = raw.trim().toLowerCase();
+    const trimmed = toAsciiLowerString(raw.trim());
     if (trimmed.length === 0) {
       continue;
     }
@@ -996,13 +906,28 @@ export function sanitizeTokensWithArgs(s: string, tagArg?: string): string {
   if (tagArg === undefined) {
     return sanitizeTokensString(s);
   }
-  const rawSpec = stripQuotes(tagArg);
-  validateQuarantineTagSpec(rawSpec);
-  const sanitized = sanitizeUntrustedString(s, rawSpec);
-  if (rawSpec.split(",").some((t) => t.trim() === INLINE_HEADING_SENTINEL)) {
-    return collapseHeadingLineBreaks(sanitized);
+  const [, validSpec] = validateTagSpecForFilter(
+    stripQuotes(tagArg),
+    FILTER_SANITIZE_TOKENS,
+  );
+  return sanitizeUntrustedString(s, validSpec);
+}
+
+/**
+ * Apply the compiler-generated `sanitize#enclosed("tags")` filter: in-place
+ * sanitization of control tokens plus the statically enclosing XML tags, with
+ * line breaks collapsed when the tags include the `#heading` sentinel (mirrors
+ * Rust `SanitizeFilterMode::Inline { enclosing_tags }`).
+ */
+export function sanitizeEnclosedString(s: string, tagArg?: string): string {
+  const tags = tagArg === undefined ? "" : stripQuotes(tagArg);
+  if (tags.length === 0) {
+    return sanitizeTokensString(s);
   }
-  return sanitized;
+  const sanitized = sanitizeUntrustedString(s, tags);
+  return tags.split(",").some((t) => t.trim() === INLINE_HEADING_SENTINEL)
+    ? collapseHeadingLineBreaks(sanitized)
+    : sanitized;
 }
 
 function applySanitizeTokens(value: Value, args: string | undefined): Value {

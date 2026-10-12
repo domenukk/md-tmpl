@@ -66,7 +66,7 @@ def test_adv_cyclic_dict_handling() -> None:
 params:
   - data = struct(self = str)
 ---
-Hello {% if data %}world{% /if %}!"""
+Hello {% if data.self %}world{% /if %}!"""
     tmpl = md_tmpl.Template.from_source(src)
     d: dict[str, Any] = {}
     d["self"] = d

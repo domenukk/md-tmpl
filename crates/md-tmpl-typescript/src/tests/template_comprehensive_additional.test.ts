@@ -7,11 +7,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import {
-  Template,
-  TemplateSyntaxError,
-  UndefinedVariableError,
-} from "../index.js";
+import { Template, TemplateSyntaxError } from "../index.js";
 import { fromJs, display, isTruthy } from "../value.js";
 
 // ---------------------------------------------------------------------------
@@ -270,15 +266,15 @@ params:
     assert.strictEqual(tmpl.render({ items: [] }).trim(), "0");
   });
 
-  it("len() on struct is rejected — only list and string are valid", () => {
-    const tmpl = Template.fromSource(`---
+  it("len() on struct is rejected at compile time — only list and string are valid", () => {
+    assert.throws(
+      () =>
+        Template.fromSource(`---
 params:
   - obj = struct(a = str, b = int)
 ---
-{{ len(obj) }}`);
-    assert.throws(
-      () => tmpl.render({ obj: { a: "x", b: 1 } }),
-      (err: Error) => err.message.includes("len()"),
+{{ len(obj) }}`),
+      /'len\(\)' requires a list or str type, got struct\(a = str, b = int\) on 'obj'/,
     );
   });
 
@@ -500,15 +496,15 @@ params:
     );
   });
 
-  it("throws on undefined nested field", () => {
-    const tmpl = Template.fromSource(`---
+  it("rejects an undeclared nested field at compile time", () => {
+    assert.throws(
+      () =>
+        Template.fromSource(`---
 params:
   - obj = struct(name = str)
 ---
-{{ obj.nonexistent }}`);
-    assert.throws(
-      () => tmpl.render({ obj: { name: "hi" } }),
-      UndefinedVariableError,
+{{ obj.nonexistent }}`),
+      /'obj\.nonexistent': field 'nonexistent' does not exist on dict\. \(declared fields: name\)/,
     );
   });
 });
@@ -558,7 +554,7 @@ before{# this is a comment #}after`);
 params: []
 ---
 {# line start #}`),
-      /blockquote prefix/,
+      /comment at line start must be blockquote-prefixed/,
     );
     assert.throws(
       () =>

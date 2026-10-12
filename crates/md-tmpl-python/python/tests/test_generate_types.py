@@ -317,7 +317,7 @@ class TestGenerateTypesSource:
               - name = str
               - title = option(str)
             ---
-            Hello {{ name }} {{ title }}"""))
+            Hello {{ name }}{% if has(title) %} {{ title }}{% /if %}"""))
 
         from md_tmpl import generate_types_source
 

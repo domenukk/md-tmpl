@@ -27,7 +27,12 @@ import {
   validateFilters,
 } from "./parser_utils.js";
 import { handleStatement } from "./statement_handlers.js";
-import { NODE_TEXT, NODE_COMMENT, NODE_EXPR } from "./consts.js";
+import {
+  ERR_COMMENT_SPACING,
+  NODE_TEXT,
+  NODE_COMMENT,
+  NODE_EXPR,
+} from "./consts.js";
 
 // Re-export core types and functions for external consumers
 export {
@@ -139,9 +144,7 @@ export function parseNodes(
           rawInner !== "" &&
           (!/^\s/.test(rawInner) || !/\s$/.test(rawInner))
         ) {
-          throw new TemplateSyntaxError(
-            "Comments must have spaces around the content (e.g. `{# comment #}` or `{#- comment -#}`)",
-          );
+          throw new TemplateSyntaxError(ERR_COMMENT_SPACING);
         }
         // Apply {#- trim: strip trailing whitespace from previous text node
         if (trimBefore && nodes.length > 0) {

@@ -24,6 +24,7 @@ import {
   sanitizeTokensString,
   sanitizeUntrustedString,
   stripQuotes,
+  validateTagSpecForFilter,
 } from "./filters.js";
 
 export {
@@ -81,35 +82,9 @@ export function isAsciiWhitespaceCode(c: number): boolean {
   return c === CHAR_SPACE || c === CHAR_TAB || c === CHAR_LF || c === CHAR_CR;
 }
 
-function isValidNcname(name: string): boolean {
-  if (name.length === 0 || !isNcnameStartCode(name.charCodeAt(0))) {
-    return false;
-  }
-  for (let i = 1; i < name.length; i++) {
-    if (!isNcnameContinueCode(name.charCodeAt(i))) {
-      return false;
-    }
-  }
-  return true;
-}
-
 /** Validate a comma-separated XML tag specification for `sanitize`, returning `[primaryTag, validSpec]`. */
 export function validateSanitizeTagSpec(spec: string): [string, string] {
-  const trimmed = spec.trim();
-  if (trimmed.length === 0) {
-    throw new TemplateSyntaxError(
-      `'${FILTER_SANITIZE}' tag name must be a valid XML NCName: ''`,
-    );
-  }
-  const parts = trimmed.split(COMMA).map((p) => p.trim());
-  for (const part of parts) {
-    if (!isValidNcname(part)) {
-      throw new TemplateSyntaxError(
-        `'${FILTER_SANITIZE}' tag name must be a valid XML NCName: '${trimmed}'`,
-      );
-    }
-  }
-  return [parts[0] ?? DEFAULT_SANITIZE_TAG, trimmed];
+  return validateTagSpecForFilter(spec, FILTER_SANITIZE);
 }
 
 /**

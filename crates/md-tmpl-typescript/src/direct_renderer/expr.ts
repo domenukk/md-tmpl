@@ -8,6 +8,15 @@ import { TemplateSyntaxError, UnknownFilterError } from "../errors.js";
 import {
   ENUM_TAG_KEY,
   EXPR_START,
+  FILTER_ADD,
+  FILTER_FIXED,
+  FILTER_LIMIT,
+  FILTER_SANITIZE_ENCLOSED,
+  FILTER_SUB,
+  FILTER_TRUNCATE,
+  TYPE_FLOAT,
+  TYPE_INT,
+  TYPE_STR,
   LIT_FALSE,
   LIT_TRUE,
   OPTION_NONE,
@@ -22,18 +31,25 @@ import { ENUM_VARIANTS_KEY } from "../value.js";
 import {
   escapeXmlString,
   escapeJsonString,
+  sanitizeEnclosedString,
   sanitizeTokensWithArgs,
   fenceString,
   quarantineString,
   quarantineUntrustedString,
   truncateMiddleString,
-  DEFAULT_LIST_TRUNCATE_MARKER,
-  TRUNCATE_PLACEHOLDER_SKIPPED,
-  TRUNCATE_PLACEHOLDER_COUNT,
+  applyFilter,
   parseFilter,
   stripQuotes,
 } from "../filters.js";
 import { applySanitizeFilterStr } from "../sanitize_pass.js";
+import {
+  LIMIT_ARG_LABEL,
+  TRUNCATE_ARG_LABEL,
+  parseUsizeFilterArg,
+} from "../filter_args.js";
+import { truncateMiddleItems } from "../filter_truncate.js";
+import { parseJsonIndent, serializeJson } from "../filter_json.js";
+import { fromJs } from "../value.js";
 import { splitPipes } from "../evaluator.js";
 import { DirectScope } from "./scope.js";
 import { directDisplay } from "./display.js";
@@ -231,20 +247,21 @@ export function findLoopBinding(scope: DirectScope): string | undefined {
 // Direct filters
 // ---------------------------------------------------------------------------
 
-function parseDirectNumArg(
-  arg: string | undefined,
+/**
+ * Apply `fixed` / `add` / `sub` to a raw JS value through the typed filter
+ * implementation (integers map to `int`, like `fromJs`), unwrapping the result.
+ */
+function directNumericFilter(
+  value: unknown,
   filterName: string,
-): number {
-  if (arg === undefined) {
-    throw new TemplateSyntaxError(`'${filterName}' requires a number argument`);
-  }
-  const n = Number(arg);
-  if (Number.isNaN(n)) {
-    throw new TemplateSyntaxError(
-      `'${filterName}' argument must be a number: ${arg}`,
-    );
-  }
-  return n;
+  rawArg: string | undefined,
+): unknown {
+  const result = applyFilter(fromJs(value), filterName, rawArg);
+  return result.type === TYPE_STR ||
+    result.type === TYPE_INT ||
+    result.type === TYPE_FLOAT
+    ? result.value
+    : result;
 }
 
 /** Apply a filter to a direct JS value. */
@@ -266,24 +283,10 @@ export function applyDirectFilter(
       if (typeof value !== "string")
         throw new TemplateSyntaxError("'trim' requires a string");
       return value.trim();
-    case "fixed": {
-      if (rawArg === undefined) {
-        throw new TemplateSyntaxError("'fixed' requires precision arg");
-      }
-      const digits = parseInt(rawArg, 10);
-      if (Number.isNaN(digits)) {
-        throw new TemplateSyntaxError(
-          `'fixed' precision must be an integer: ${rawArg}`,
-        );
-      }
-      if (typeof value !== "number") {
-        throw new TemplateSyntaxError("'fixed' requires a number");
-      }
-      if (digits === 0 && Number.isInteger(value)) {
-        return String(value);
-      }
-      return value.toFixed(digits);
-    }
+    case FILTER_FIXED:
+    case FILTER_ADD:
+    case FILTER_SUB:
+      return directNumericFilter(value, filterName, rawArg);
     case "join": {
       const sep = rawArg !== undefined ? stripQuotes(rawArg) : "";
       if (!Array.isArray(value)) {
@@ -291,34 +294,17 @@ export function applyDirectFilter(
       }
       return value.map((v) => directDisplay(v)).join(sep);
     }
-    case "limit": {
+    case FILTER_LIMIT: {
+      if (!Array.isArray(value)) {
+        return applyFilter(fromJs(value), filterName, rawArg);
+      }
       if (rawArg === undefined) {
         throw new TemplateSyntaxError("'limit' requires a limit argument");
       }
-      const max = parseInt(rawArg, 10);
-      if (Number.isNaN(max)) {
-        throw new TemplateSyntaxError(
-          `'limit' argument must be an integer: ${rawArg}`,
-        );
-      }
-      if (!Array.isArray(value)) {
-        throw new TemplateSyntaxError("'limit' requires a list");
-      }
-      return value.slice(0, max);
-    }
-    case "add": {
-      const n = parseDirectNumArg(rawArg, "add");
-      if (typeof value !== "number") {
-        throw new TemplateSyntaxError("'add' requires a number");
-      }
-      return value + n;
-    }
-    case "sub": {
-      const n = parseDirectNumArg(rawArg, "sub");
-      if (typeof value !== "number") {
-        throw new TemplateSyntaxError("'sub' requires a number");
-      }
-      return value - n;
+      return value.slice(
+        0,
+        parseUsizeFilterArg(rawArg, FILTER_LIMIT, LIMIT_ARG_LABEL),
+      );
     }
     case "escape_xml":
     case "xml":
@@ -333,19 +319,8 @@ export function applyDirectFilter(
       return escapeJsonString(value);
     case "tojson":
     case "to_json":
-    case "json": {
-      let indent: number | undefined;
-      if (rawArg !== undefined && rawArg.trim().length > 0) {
-        const parsed = Number(rawArg.trim());
-        if (!Number.isInteger(parsed) || parsed < 0) {
-          throw new TemplateSyntaxError(
-            `'${filterName}' indent argument must be a non-negative integer, got '${rawArg.trim()}'`,
-          );
-        }
-        indent = parsed;
-      }
-      return directToJson(value, indent);
-    }
+    case "json":
+      return directToJson(value, parseJsonIndent(rawArg));
     case "sanitize_tokens":
       if (typeof value !== "string") {
         throw new TemplateSyntaxError("'sanitize_tokens' requires a string");
@@ -366,6 +341,11 @@ export function applyDirectFilter(
         throw new TemplateSyntaxError("'sanitize' requires a string");
       }
       return applySanitizeFilterStr(value, rawArg);
+    case FILTER_SANITIZE_ENCLOSED:
+      if (typeof value !== "string") {
+        throw new TemplateSyntaxError("'sanitize' requires a string");
+      }
+      return sanitizeEnclosedString(value, rawArg);
     case "truncate":
     case "truncate_middle": {
       if (rawArg === undefined || rawArg.trim().length === 0) {
@@ -381,39 +361,21 @@ export function applyDirectFilter(
         commaIdx !== -1
           ? stripQuotes(rawArg.slice(commaIdx + 1).trim())
           : undefined;
-      const limit = Number(limitStr);
-      if (Number.isNaN(limit) || !Number.isInteger(limit) || limit < 0) {
-        throw new TemplateSyntaxError(
-          `'truncate' limit must be an integer: ${limitStr}`,
-        );
-      }
+      const limit = parseUsizeFilterArg(
+        limitStr,
+        FILTER_TRUNCATE,
+        TRUNCATE_ARG_LABEL,
+      );
       if (typeof value === "string") {
         return truncateMiddleString(value, limit, markerArg);
       }
       if (Array.isArray(value)) {
-        const total = value.length;
-        if (total <= limit) return value;
-        if (limit === 0) return [];
-        const skippedItems = total - limit;
-        const headCount = Math.floor(limit / 2);
-        const tailCount = limit - headCount;
-        let markerItem: string | undefined;
-        if (markerArg === undefined) {
-          markerItem = DEFAULT_LIST_TRUNCATE_MARKER.replaceAll(
-            TRUNCATE_PLACEHOLDER_SKIPPED,
-            String(skippedItems),
-          ).replaceAll(TRUNCATE_PLACEHOLDER_COUNT, String(skippedItems));
-        } else if (markerArg.length > 0) {
-          markerItem = markerArg
-            .replaceAll(TRUNCATE_PLACEHOLDER_SKIPPED, String(skippedItems))
-            .replaceAll(TRUNCATE_PLACEHOLDER_COUNT, String(skippedItems));
-        }
-        const items = value as unknown[];
-        const head = items.slice(0, headCount);
-        const tail = items.slice(total - tailCount);
-        return markerItem !== undefined
-          ? [...head, markerItem, ...tail]
-          : [...head, ...tail];
+        return truncateMiddleItems(
+          value as unknown[],
+          limit,
+          markerArg,
+          (text): unknown => text,
+        );
       }
       throw new TemplateSyntaxError("'truncate' requires a string or a list");
     }
@@ -477,32 +439,9 @@ export function evaluateDirectExpr(expr: string, scope: DirectScope): unknown {
   return value;
 }
 
-function directSortKeys(val: unknown): unknown {
-  if (val === null || val === undefined) return null;
-  if (Array.isArray(val)) return val.map(directSortKeys);
-  if (typeof val === "object") {
-    if (
-      typeof (val as { renderForInclude?: unknown }).renderForInclude ===
-      "function"
-    ) {
-      throw new TemplateSyntaxError("cannot serialize template to JSON");
-    }
-    const keys = Object.keys(val).sort();
-    const sorted: Record<string, unknown> = {};
-    for (const k of keys) {
-      if (k === ENUM_TAG_KEY) continue;
-      const v = (val as Record<string, unknown>)[k];
-      sorted[k] = directSortKeys(v);
-    }
-    return sorted;
-  }
-  return val;
-}
-
 export function directToJson(value: unknown, indent?: number): string {
   if (typeof value === "function") {
     throw new TemplateSyntaxError("cannot serialize template to JSON");
   }
-  const sorted = directSortKeys(value);
-  return JSON.stringify(sorted, null, indent);
+  return serializeJson(fromJs(value), indent);
 }

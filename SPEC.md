@@ -72,14 +72,22 @@ is enforced via `serde_yaml` cross-validation tests. In practice:
   `enum(A, B)`, `list(name = str, score = int)`, or defaults with `[…]` —
   will break because YAML splits on `,` inside flow sequences `[…]`.
   Use the block list format for anything beyond simple scalars.
+- A block list must be followed by a blank line before the next top-level
+  key (`params:`, `types:`, …).
+- **Comments**: a frontmatter line whose first non-whitespace character is
+  `#` is a comment. A ` #` (space + hash) later on a line starts a trailing
+  comment, so a `#` inside a default value must not follow a space
+  (`- tag = str := "a#b"` is fine; `- tag = str := "a #b"` is truncated
+  to `"a`).
 
 **Standalone control-flow tags** (`{% %}`) and comments (`{# #}`) at
 line start must carry a `> ` blockquote prefix — see
 [Markdown Blockquotes, Statement Tags, and Comments](#markdown-blockquotes-statement-tags-and-comments)
-for the full rules. **Inline tags** on a single line work without any prefix:
+for the full rules. **Inline tags** that follow other text on the same line
+work without any prefix:
 
 ```markdown
-{% if x %}yes{% else %}no{% /if %}
+Answer: {% if x %}yes{% else %}no{% /if %}
 ```
 
 **Line endings:** All backends normalize `\r\n` (CRLF) to `\n` (LF) at the
@@ -100,7 +108,9 @@ mandatory. Omitted keys default to empty / absent.
   parameters and type aliases (default: `false`).
 - **`sanitize_notice:`** — optional template-wide override for the
   untrusted-data boundary notice inserted by `| sanitize("tag")` blocks
-  (use `""` to omit the notice line by default in that template).
+  (use `""` to omit the notice line by default in that template). The value
+  is a [string literal](#string-literal-syntax): only `\\`, `\"`, and `\'`
+  are decoded; any other `\X` (including `\n`) is kept verbatim.
 
 ### Frontmatter Binding Summary
 
@@ -508,8 +518,10 @@ like `Name = Base`) are also rejected. **Enum types are exempt** — they
 are implicitly used as namespace constants (see
 [Enum Literal Expressions](#enum-literal-expressions)).
 
-Disable both checks with `allow_unused: true` in frontmatter, or call
-`Template::from_source_allowing_unused()`.
+Disable both checks with `allow_unused: true` in frontmatter, or
+programmatically with `CompileOptions::default().allow_unused(true)` (Rust,
+via `Template::compile`) / `Template.fromSourceAllowingUnused()`
+(TypeScript). All other validation still runs.
 
 > **Note:** Undeclared params (referenced in the body but absent from
 > `params:`) are always rejected, even with `allow_unused: true`.
@@ -526,7 +538,7 @@ and preserve the compiler's ability to catch genuinely unused declarations:
 
 **Import tracking is root-level.** The unused-variable check tracks
 imports by their **stem** (root name), not individual sub-fields. Using
-_any_ sub-field — `{{ lib.TypeA }}`, `{{ lib.CONST_X }}`, or even
+_any_ sub-field — `{{ lib.CONST_X }}`, a `lib.Severity` param type, or
 `{{ kinds(lib.ForumTag) }}` — marks the entire import as used.
 There is **no need** to claim individual sub-fields in comments:
 
@@ -534,13 +546,11 @@ There is **no need** to claim individual sub-fields in comments:
 ---
 imports:
   - "[lib](./lib.tmpl.md)"
-
-params: []
 ---
 
-> {# ✅ Using lib.TypeA is enough — lib.TypeC and lib.CONST_Y
-> do NOT need separate {# unused #} claims #}
-> Type: {{ lib.TypeA }}
+> {# ✅ Using lib.CONST_X is enough — lib.ForumTag and lib.CONST_Y need no separate claims #}
+
+Limit: {{ lib.CONST_X }}
 ```
 
 **Note:** Unused imports are silently allowed — the unused-variable
@@ -574,8 +584,9 @@ types:
 
 Statement tags (`{% ... %}`) and comments (`{# ... #}`) that start a line **must** be prefixed with a markdown blockquote `> `. This is enforced at compile time — bare tags or comments at line start are syntax errors.
 
-- **Tags and Comments at line start**: If `{%` or `{#` is at the beginning of a line, it **must** start with `> ` (e.g., `> {% ... %}` or `> {# ... #}`). For comments, spaces are required around the content (`{# comment #}`).
-- **Mandatory Blank Lines**: If `{%` or `{#` is at the beginning of a line, the line before and after **must** be blank unless the adjacent line is frontmatter (`---`) or also starts with a blockquote tag/comment (`> {%` or `> {#`).
+- **Tags and Comments at line start**: If `{%` or `{#` is the first non-whitespace content of a line, the line **must** start with `> ` (e.g., `> {% ... %}` or `> {# ... #}`). The compact form `>{% ... %}` (no space) is also accepted. Tags and comments that follow other text on the same line need no prefix.
+- **Delimiter spacing**: The content of a statement tag must be separated from its delimiters by whitespace (`{% if x %}`, `{%- if x -%}`); `{%if x%}` is a syntax error. Comments likewise require spaces around their content (`{# comment #}`).
+- **Mandatory Blank Lines**: A **standalone** tag line — a `> ` line consisting of exactly one `{% ... %}` tag or one `{# ... #}` comment — must be preceded and followed by a blank line, a `---` frontmatter delimiter, or another standalone tag/comment line (`> {%` or `> {#`). Lines carrying a tag plus other content (e.g. `> {% if x %}yes{% /if %}`) are inline and exempt.
 - **Whitespace Preservation**: Standalone tags consume surrounding blank lines so they produce no spurious whitespace in the output:
   - **Tag ↔ content**: The mandatory blank line between a standalone tag and adjacent content is consumed. Extra blank lines beyond the mandatory one are preserved as intentional whitespace: N blank lines → N−1 extra newlines in the output.
   - **Tag ↔ tag**: Between consecutive standalone tags (e.g., `> {% if %}` followed by `> {% for %}`), **all** blank lines are consumed — they are purely structural and never produce output whitespace.
@@ -631,11 +642,14 @@ then be used anywhere a type is expected in `params:`.
 
 When a type name appears in `params:`, it is resolved in this order:
 
-1. **Built-in types** — `str`, `bool`, `int`, `float`, `list(…)`, `struct(…)`, `enum(…)`, `tmpl(…)`
+1. **Built-in types** — `str`, `bool`, `int`, `float`, `list(…)`, `struct(…)`, `enum(…)`, `option(…)`, `tmpl(…)`
 2. **Local `types:` entries** — exact name match from the same template's `types:` block
 3. **Imported types via dotted path** — `stem.TypeName` from `imports:` (see [Cross-Template Imports](#cross-template-imports))
 
-If a type name is not found in any of these, it is an "unknown type" error.
+If a type name is not found in any of these, it is a compile error:
+`declaration 'x': unknown type 'foo'` (in `params:`, `consts:`, `env:`) or
+`type 'Name': unknown type 'foo'` (in `types:`). `types:` entries cannot
+reference imported types.
 
 ### Chained Aliases
 
@@ -695,7 +709,7 @@ imports:
   - "[task_list_item](./task_list_item.tmpl.md)"
 
 params:
-  - tasks = task_list_item.tasks
+  - tasks = task_list_item.Tasks
   - label = task_list_item.Category
 ---
 ```
@@ -704,7 +718,7 @@ The `[stem]` part is the namespace prefix used in dotted paths.
 The `(path.tmpl.md)` is the file path, resolved relative to the
 importing template's directory (same as `{% include %}`).
 
-**Strict Path Requirement**: All relative file import paths **must** begin explicitly with `./` or `../`. Bare relative filenames (e.g., `[my_types](my_types.tmpl.md)`) are rejected with syntax errors. Absolute paths beginning with `/` are also permitted.
+**Strict Path Requirement**: All relative file import paths **must** begin explicitly with `./` or `../` (Windows-style `.\` and `..\` are accepted as equivalents). Bare relative filenames (e.g., `[my_types](my_types.tmpl.md)`) are rejected with syntax errors. Absolute paths beginning with `/` are also permitted.
 
 ### Dynamic Import Path Interpolation
 
@@ -785,7 +799,7 @@ Both explicit `types:` entries and implicit param types (compound params)
 from the imported template are available via `stem.Name`:
 
 - `task_list_item.Category` — references a `types:` entry named `Category`
-- `task_list_item.tasks` — references the implicit type from a compound param named `tasks`
+- `task_list_item.Tasks` — references the implicit type from a compound param named `tasks` (the raw param name, `task_list_item.tasks`, is accepted as an equivalent spelling; PascalCase is canonical)
 
 ### Circular and Duplicate Import Detection
 
@@ -1036,17 +1050,23 @@ Env vars **without** defaults are required — omitting them from
 `CompileOptions` produces a compile-time error:
 
 ```text
-compile error: env variable 'PROMPTS_DIR' is required but not provided
+env variable 'PROMPTS_DIR': no value provided and no default
 ```
 
 ### Type Checking
 
 Env values are type-checked at compile time:
 
-- Values are provided as typed `Value` variants (e.g., `Value::Int(42)`
-  for `int`, `Value::Bool(true)` for `bool`). The provided type must
-  match the declared type.
-- Type mismatches produce a compile-time error.
+- A **string** provided for a bare `int`, `float`, or `bool` env var is
+  coerced strictly: `int` uses `i64` syntax (optional sign, digits, no
+  whitespace), `float` uses `f64` syntax (`1.5`, `1e3`, `.5`, `inf`, `nan`),
+  and `bool` accepts exactly `true` / `false`. Failures are compile errors:
+  `env variable 'X': expected int, got '<raw>' (<parse error>)`
+  (`expected bool, got '<raw>'` for booleans).
+- Any other value must already match the declared type, with the same rules
+  as runtime params (an `int` satisfies `float`). Strings are never parsed
+  into `list`, `struct`, `enum`, or `option` values. Mismatches are compile
+  errors: `env variable 'X': expected <type>, got <value type>`.
 - Defaults are type-checked at compile time, same as `consts:` defaults.
 
 ### Scoping
@@ -1206,13 +1226,13 @@ is a **compile-time error**. Setting it directly in `Context` causes a
 runtime panic. Use `kind(expr)` to extract variant names instead.
 
 **No duplicate names** — within each block (`params:`, `consts:`,
-`types:`), names must be unique.
+`types:`, `env:`), names must be unique.
 
 **Cross-namespace uniqueness** — the following names must all be
-distinct from each other: param names, const names, type alias names,
-import stems, and inline template names. Additionally, the `PascalCase`
-form of a param/const name must not collide with a type alias or
-import stem.
+distinct from each other: param names, const names, env names, type alias
+names, import stems, and inline template names. Additionally, the
+`PascalCase` form of a param/const name must not collide with a type alias
+or import stem.
 
 **PascalCase type binding** — if a `types:` entry exists whose name
 equals the `PascalCase` of a param or const (e.g., type `Tasks` and
@@ -1223,7 +1243,7 @@ param or const is rejected (unless `allow_unused: true`). Enum types
 are exempt — their variants are injected as namespace constants.
 
 **For-loop binding shadowing** — a `{% for %}` binding must not shadow
-a declared param, const, import stem, or inline template name.
+a declared param, const, env name, import stem, or inline template name.
 Sequential loops may reuse the same binding name.
 
 **Target-language keywords** — keywords from host languages (Rust's
@@ -1277,13 +1297,13 @@ These prefixes are optional syntactic sugar for readability and are stripped dur
 
 Only **scalar types** and **unit-only `enum` types** (where every variant has zero payload fields, e.g. `enum(Active, Paused)`) can appear directly in `{{ }}` expressions:
 
-| Type               | Rendered as                                           |
-| ------------------ | ----------------------------------------------------- |
-| `str`              | The raw string value verbatim (no automatic escaping) |
-| `int`              | Decimal integer (e.g. `42`)                           |
-| `float`            | Decimal float (e.g. `3.14`)                           |
-| `bool`             | `true` or `false`                                     |
-| `enum` (unit-only) | The active variant name (e.g. `Active`)               |
+| Type               | Rendered as                                                                                                                 |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| `str`              | The raw string value verbatim (no automatic escaping)                                                                       |
+| `int`              | Decimal integer (e.g. `42`)                                                                                                 |
+| `float`            | Shortest round-trip decimal, never exponent notation (e.g. `3.14`, `1e21` → `1000000000000000000000`); `inf`, `-inf`, `NaN` |
+| `bool`             | `true` or `false`                                                                                                           |
+| `enum` (unit-only) | The active variant name (e.g. `Active`)                                                                                     |
 
 Attempting to render a non-scalar type (or a data `enum` with payload fields when not narrowed to a unit variant inside `{% case %}`) directly is a **compile-time error**.
 Use the appropriate construct instead:
@@ -1316,9 +1336,9 @@ Anywhere an expression is accepted — `{{ }}` output, filter input
 
 A literal renders exactly as a variable of the same type would (see
 [Renderable Types](#renderable-types)). This **auto-stringification applies
-only to scalars at the display boundary** — non-scalar values
-(`list`/`struct`/`enum`/`option`) still cannot be rendered directly and must be
-unwrapped/iterated as shown above. There is no `str()` cast: display already
+only to scalars at the display boundary** — non-renderable values (`list`,
+`struct`, `option`, and data-carrying `enum`) still cannot be rendered directly
+and must be unwrapped/iterated as shown above. There is no `str()` cast: display already
 stringifies scalars, and filters that require a string value (e.g. `upper`) still
 reject non-string values by type (`{{ 42 | upper }}` is an error).
 
@@ -1332,8 +1352,10 @@ fractional part (`3.0` → `3`), and negative zero renders `0` (`-0.0` → `0`).
 String literals support the same escapes and `{{ }}` interpolation as
 [string defaults](#string-literal-syntax).
 
-> **Note:** built-in functions (`len`, `has`, `kind`, `kinds`, `idx`) take a
-> variable or loop binding as their argument, not a literal.
+> **Note:** built-in functions (`len`, `has`, `kind`, `idx`) take a variable,
+> field path, or loop binding as their argument, not a literal. `kind()` also
+> accepts an enum literal (`kind(Stage.Design)`), and `kinds()` takes an enum
+> type name (`kinds(Stage)`).
 
 ---
 
@@ -1350,22 +1372,45 @@ All filters — including escaping and sanitization filters — are **strictly o
 {{ items | join(", ") }}
 ```
 
-| Filter                                     | Input      | Output     | Description                                                                                    |
-| ------------------------------------------ | ---------- | ---------- | ---------------------------------------------------------------------------------------------- |
-| `upper`                                    | str        | str        | UPPERCASE                                                                                      |
-| `lower`                                    | str        | str        | lowercase                                                                                      |
-| `trim`                                     | str        | str        | Strip leading/trailing whitespace                                                              |
-| `fixed(N)`                                 | number     | str        | Format with N decimal places                                                                   |
-| `join("sep")`                              | list       | str        | Join list items with separator                                                                 |
-| `limit(N)`                                 | list       | list       | Take first N elements                                                                          |
-| `truncate(limit, [marker])`                | str / list | str / list | Middle-out truncation with `{skipped}` byte/item replacement placeholder                       |
-| `add(N)`                                   | number     | number     | Add N to the value                                                                             |
-| `sub(N)`                                   | number     | number     | Subtract N from the value                                                                      |
-| `escape_xml`                               | str        | str        | Escape XML entities (`&`, `<`, `>`, `"`, `'`) and strip control chars                          |
-| `escape_json`                              | str        | str        | Escape JSON string body (`"`, `\`, `/`, control chars, `U+2028`/`U+2029`)                      |
-| `json` / `json(N)`                         | any        | str        | Serialize value to JSON string (optional indentation space count `N`, e.g. `json(2)`)          |
-| `sanitize` / `sanitize("tag", ["notice"])` | str        | str        | Unified untrusted data sanitizer (in-place or `<tag>` block with passive data boundary notice) |
-| `fence` / `fence("lang")`                  | str        | str        | Wrap in Markdown code fences with adaptive backtick count (`max(3, max_backticks + 1)`)        |
+| Filter                                     | Input      | Output     | Description                                                                                      |
+| ------------------------------------------ | ---------- | ---------- | ------------------------------------------------------------------------------------------------ |
+| `upper`                                    | str        | str        | UPPERCASE                                                                                        |
+| `lower`                                    | str        | str        | lowercase                                                                                        |
+| `trim`                                     | str        | str        | Strip leading/trailing whitespace                                                                |
+| `fixed(N)`                                 | number     | str        | Format with exactly N decimal places (see [Numeric filter arguments](#numeric-filter-arguments)) |
+| `join("sep")`                              | list       | str        | Join list items with separator                                                                   |
+| `limit(N)`                                 | list       | list       | Take first N elements (N = non-negative integer)                                                 |
+| `truncate(limit, [marker])`                | str / list | str / list | Middle-out truncation with `{skipped}` byte/item replacement placeholder                         |
+| `add(N)`                                   | number     | number     | Add N to the value (`int + int` saturates at the `i64` bounds)                                   |
+| `sub(N)`                                   | number     | number     | Subtract N from the value (`int - int` saturates at the `i64` bounds)                            |
+| `escape_xml`                               | str        | str        | Escape XML entities (`&`, `<`, `>`, `"`, `'`) and strip control chars                            |
+| `escape_json`                              | str        | str        | Escape JSON string body (`"`, `\`, `/`, control chars, `U+2028`/`U+2029`)                        |
+| `json` / `json(N)`                         | any        | str        | Serialize value to JSON string (optional indentation space count `N`, e.g. `json(2)`)            |
+| `sanitize` / `sanitize("tag", ["notice"])` | str        | str        | Unified untrusted data sanitizer (in-place or `<tag>` block with passive data boundary notice)   |
+| `sanitize_tokens` / `sanitize_tokens("t")` | str        | str        | Neutralize LLM control tokens in place; escapes only the explicitly listed XML tags              |
+| `quarantine` / `quarantine("t")`           | str        | str        | Wrap in `<t>` boundary tags (default `untrusted_content`), escaping embedded `<t>` / `</t>`      |
+| `fence` / `fence("lang")`                  | str        | str        | Wrap in Markdown code fences with adaptive backtick count (`max(3, max_backticks + 1)`)          |
+
+#### Numeric filter arguments
+
+Numeric arguments are parsed identically in every backend:
+
+- `fixed(N)` and `limit(N)` take a non-negative integer (an optional leading
+  `+` is accepted). Anything else is an error:
+  `'fixed' precision must be an integer: <reason>` /
+  `'limit' argument must be an integer: <reason>`.
+- `add(N)` / `sub(N)` parse `N` as an `i64` first (`int ± int` stays `int`
+  and saturates at the `i64` bounds), otherwise as a float literal (`1.5`,
+  `1e5`, `.5`, `1.`, `inf`, `nan`), producing a float. Hex, `_` separators,
+  and whitespace are errors. TypeScript integers are IEEE-754 doubles, so
+  values beyond ±2^53 lose precision there.
+- `fixed(N)` rounds the exact binary value half away from zero. A `-` sign is
+  printed only for values below zero (`-0.0 | fixed(2)` → `0.00`); `NaN`,
+  `inf`, and `-inf` print as such.
+
+**Filter aliases:** `xml` = `escape_xml`; `tojson` and `to_json` = `json`;
+`truncate_middle` = `truncate`. Aliases behave identically to the canonical
+name; error messages use the canonical name.
 
 > **Note:** `join()` is designed for **scalar lists** (`list(str)`, `list(int)`,
 > etc.). Applying `join()` to a struct-typed list (e.g., `list(name = str,
@@ -1408,7 +1453,20 @@ Serialize any template value (`struct`, `list`, `str`, `int`, `float`, `bool`, `
 - **Input / Output:** `any` → `str`
 - **Arguments:** `indent` (optional integer `N`): indentation space count for multi-line formatting (e.g. `2`). Defaults to compact representation without newlines or indentation when omitted.
 
-Struct fields are serialized with keys sorted lexicographically for deterministic output across runs and engine platforms. `None` serializes as `null`.
+Output is byte-identical across backends:
+
+- Struct keys are sorted by Unicode code point. `None` serializes as `null`.
+- Strings escape `"`, `\`, `\n`, `\r`, `\t`, `\b`, `\f`, `U+2028`, `U+2029`, and
+  other C0 control characters as `\u00xx`; `/` is not escaped (unlike
+  `escape_json`).
+- Floats use the shortest round-trip digits in positional notation
+  (`1e21` → `1000000000000000000000`, `1e-7` → `0.0000001`); `NaN` and
+  `±inf` serialize as `null`.
+- Enum struct variants keep their `__kind__` key
+  (`{"__kind__":"Paused","reason":"..."}`); unit variants serialize as their
+  variant name string.
+- `json(N)` accepts any non-negative integer indent; anything else is an
+  error (`'tojson' indent argument must be a non-negative integer, got '<N>'`).
 
 ```markdown
 {{ message | json }}
@@ -1425,7 +1483,7 @@ Unified untrusted data sanitization filter. Neutralizes all LLM control tokens a
   - `{{ expr | sanitize("tag", "custom notice") }}` (2 args): overrides the boundary notice for that specific block (`""` omits the notice line completely).
 - **Input / Output:** `str` → `str`
 - **Arguments:**
-  - `tag` (optional string): XML boundary tag name, or comma-separated list of XML boundary tag names (up to 64 tags) when additional ancestor tags must also be neutralized. Every tag name must be a valid ASCII XML `NCName`.
+  - `tag` (optional string): XML boundary tag name, or comma-separated list of XML boundary tag names (any number) when additional ancestor tags must also be neutralized. Every tag name must be a valid ASCII XML `NCName`; anything else (including the reserved `#heading`) is rejected with `'<filter>' tag name must be a valid XML NCName: '<spec>'`, where `<filter>` is `sanitize`, `sanitize_tokens`, or `quarantine`.
   - `notice` (optional string): custom boundary notice template. Can contain `{tag}` to refer to the primary tag name. When empty (`""`), the notice line is omitted.
 
 #### Neutralized Control Tokens & XML Breakouts
@@ -1439,7 +1497,7 @@ Replaces delimiter characters (`<` → `&lt;`, `>` → `&gt;`, `[` → `&#91;`, 
 - **Reasoning / DeepSeek V3:** `<think>`, `</think>`, `<｜begin▁of▁sentence｜>`, `<｜end▁of▁sentence｜>`, `<｜begin▁of▁thought｜>`, `<｜end▁of▁thought｜>`, `<｜User｜>`, `<｜Assistant｜>`, `<｜tool▁calls▁begin｜>`, `<｜tool▁calls▁end｜>`, `<｜tool▁call▁begin｜>`, `<｜tool▁call▁end｜>`, `<｜tool▁sep｜>`, `<｜tool▁outputs▁begin｜>`, `<｜tool▁outputs▁end｜>`, `<｜tool▁output▁begin｜>`, `<｜tool▁output▁end｜>`
 - **Phi-3/4, Command-R, Bailing & Harmony:** `<|user|>`, `<|assistant|>`, `<|system|>`, `<|end|>`, `<|start|>`, `<|channel|>`, `<|message|>`, `<|call|>`, `<|return|>`, `<|constrain|>`, `<|role_end|>`, `<|START_OF_TURN_TOKEN|>`, `<|END_OF_TURN_TOKEN|>`, `<role>`, `</role>`
 - **Mistral & Ministral:** `[SYSTEM_PROMPT]`, `[/SYSTEM_PROMPT]`, `[TOOL_CALLS]`, `[AVAILABLE_TOOLS]`, `[/TOOL_CALLS]`, `[/AVAILABLE_TOOLS]`, `[TOOL_RESULTS]`, `[/TOOL_RESULTS]`, `[TOOL_CONTENT]`, `[ARGS]`, `[/ARGS]`, `[THINK]`, `[/THINK]`
-- **Anthropic:** `\n\nHuman:`, `\n\nAssistant:`
+- **Anthropic:** `\n\nHuman:`, `\n\nAssistant:` anywhere, plus `\nHuman:` / `\nAssistant:` at the very start of the value
 - **Generic Pipe-Delimited Control Tokens:** Any `<|...|>` (ASCII pipe) or `<｜...｜>` (fullwidth pipe) span (`1..=64` inner UTF-8 bytes without ASCII whitespace or angle brackets) is escaped to `&lt;|...|&gt;` / `&lt;｜...｜&gt;` with its inner slice recursively sanitized (e.g. `<|[INST]|>` → `&lt;|&#91;INST&#93;|&gt;`).
 - **XML Boundary Tag Breakouts:** Any opening `<tag...>` or closing `</tag...>` matching the active boundary or enclosing static tags (matched ASCII case-insensitively, including whitespace-padded `< /tag>`, attribute-bearing `</tag attr="1">`, self-closing `</tag/>`, and unclosed `<tag` prefixes) is escaped in the same single pass.
 
@@ -1471,8 +1529,8 @@ Declaring a parameter or field as `untrusted str` automatically applies in-place
 
 - LLM control tokens and chat-turn delimiters are neutralized automatically.
 - If the interpolation is surrounded by static XML tags in the template (e.g. `<search>{{ query }}</search>`, including across inline `{% include %}` sites), closing tag breakouts (such as `</search>`) are automatically neutralized to `&lt;/search&gt;` without double-wrapping.
-- If the interpolation appears on a Markdown ATX heading line (`# ...` through `###### ...`), embedded line breaks (`\r\n`, `\n`, `\r`) are collapsed to a single space so untrusted input cannot break out of the heading line to inject new Markdown sections or directives.
-- When full XML block encapsulation with a boundary notice is desired at a specific site in the template body, apply `{{ document | sanitize("user_document") }}` directly at that interpolation site (or declare `document = untrusted("user_document") str` in frontmatter):
+- If the interpolation appears on a Markdown ATX heading line (`# ...` through `###### ...`), each line-break character (`\n`, `\r`, U+000B, U+000C, U+0085, U+2028, U+2029) is replaced by one space (so `\r\n` becomes two spaces) so untrusted input cannot break out of the heading line to inject new Markdown sections or directives.
+- When full XML block encapsulation with a boundary notice is desired at a specific site in the template body, apply `{{ document | sanitize("user_document") }}` directly at that interpolation site (or declare `document = str | sanitize("user_document")` in frontmatter). Explicit `sanitize_tokens` filters escape only the tags they list; enclosing-tag and heading detection is applied only by 0-arg `sanitize` and `untrusted` types. Two different `| sanitize("tag", …)` specs on the same declaration or field are a compile error (`declaration 'x': conflicting sanitization specifications on '<type>'`); identical repeats are allowed:
 
 ```markdown
 ---
@@ -1529,6 +1587,7 @@ Middle-out truncation filter for strings and lists. Preserves context at both th
 4. **Zero Allocations When Under Limit:** When the input string byte length or list element count is `<= limit`, the input is returned verbatim with zero string allocations or copies.
 5. **List Truncation:** When applied to a list with more than `limit` elements, `limit` real elements (`limit / 2` head + `limit - limit / 2` tail) are preserved and a single marker string element containing `{skipped}` (`total - limit`) is inserted in the middle (producing `limit + 1` elements total, or `limit` elements when `marker` is `""`).
 
+<!-- prettier-ignore -->
 ```markdown
 {{ large_tool_output | truncate(1024) }}
 {{ trace_log | truncate(2048, "\n[TRUNCATED: {skipped} bytes omitted]\n") }}
@@ -1536,29 +1595,56 @@ Middle-out truncation filter for strings and lists. Preserves context at both th
 > {% for item in long_results | truncate(20) %}
 
 - {{ item }}
-  > {% /for %}
+
+> {% /for %}
 ```
 
 ### Host Sanitization Primitives
 
-All backends and language bindings also expose the underlying zero-allocation check predicates, string sanitizers, and delimiter tables directly:
+All backends and language bindings expose the underlying check predicates, string sanitizers, and delimiter tables directly. Every function behaves identically across backends (verified by a shared expectation table):
 
-| Capability                                                           | Rust (`md_tmpl`)          | TypeScript (`md-tmpl`)    | Python (`md_tmpl`)        | Go (`md_tmpl`)                                    | WASM (`md-tmpl-wasm`)     |
-| -------------------------------------------------------------------- | ------------------------- | ------------------------- | ------------------------- | ------------------------------------------------- | ------------------------- |
-| Default sanitize tag (`"untrusted_content"`)                         | `DEFAULT_SANITIZE_TAG`    | `DEFAULT_SANITIZE_TAG`    | `DEFAULT_SANITIZE_TAG`    | `DefaultSanitizeTag`                              | `defaultSanitizeTag()`    |
-| Default sanitize boundary notice                                     | `DEFAULT_SANITIZE_NOTICE` | `DEFAULT_SANITIZE_NOTICE` | `DEFAULT_SANITIZE_NOTICE` | `DefaultSanitizeNotice`                           | `defaultSanitizeNotice()` |
-| Full control token delimiters (102 entries: role + tool-call tags)   | `TOKEN_DELIMITERS`        | `TOKEN_DELIMITERS`        | `TOKEN_DELIMITERS`        | `TokenDelimiters()`                               | `tokenDelimiters()`       |
-| Role/turn-only delimiters (79 entries: preserves `<tool_call>` tags) | `ROLE_TOKEN_DELIMITERS`   | `ROLE_TOKEN_DELIMITERS`   | `ROLE_TOKEN_DELIMITERS`   | `RoleTokenDelimiters()`                           | `roleTokenDelimiters()`   |
-| Escape XML (`&`, `<`, `>`, `"`, `'`)                                 | `escape_xml_str`          | `escapeXmlString`         | `escape_xml`              | `EscapeXML`                                       | `escapeXmlString`         |
-| Escape JSON string body                                              | `escape_json_str`         | `escapeJsonString`        | `escape_json`             | `EscapeJSON`                                      | `escapeJsonString`        |
-| Detect any LLM control token ($O(n)$ zero-alloc)                     | `has_control_tokens`      | `hasControlTokens`        | `has_control_tokens`      | `HasControlTokens`                                | `hasControlTokens`        |
-| Detect role/turn control token ($O(n)$ zero-alloc)                   | `has_role_control_tokens` | `hasRoleControlTokens`    | `has_role_control_tokens` | `HasRoleControlTokens`                            | `hasRoleControlTokens`    |
-| Detect control tokens OR XML tag breakout ($O(n)$ single-pass)       | `has_untrusted_breakout`  | `hasUntrustedBreakout`    | `has_untrusted_breakout`  | `HasUntrustedBreakout`                            | `hasUntrustedBreakout`    |
-| Unified inline sanitizer (`NCName`-validated optional tags)          | `sanitize_str`            | `sanitizeString`          | `sanitize`                | `Sanitize`                                        | `sanitizeString`          |
-| Unified block sanitizer (`<tag>\n{notice}\n{sanitized}\n</tag>`)     | `sanitize_block_str`      | `sanitizeBlockString`     | `sanitize_block`          | `SanitizeBlock` / `SanitizeBlockWithNotice`       | `sanitizeBlockString`     |
-| Verify `sanitize_block` envelope + zero inner breakouts/tokens       | `is_sanitized_block_str`  | `isSanitizedBlockString`  | `is_sanitized_block`      | `IsSanitizedBlock` / `IsSanitizedBlockWithNotice` | `isSanitizedBlockString`  |
-| Extract inner payload from verified `sanitize_block` envelope        | `unsanitize_block_str`    | `unsanitizeBlockString`   | `unsanitize_block`        | `UnsanitizeBlock` / `UnsanitizeBlockWithNotice`   | `unsanitizeBlockString`   |
-| Adaptive Markdown code fence                                         | `fence_str`               | `fenceString`             | `fence`                   | `Fence`                                           | `fenceString`             |
+| Capability                                                           | Rust (`md_tmpl`)                                                                             | TypeScript (`md-tmpl`)                | Python (`md_tmpl`)                | Go (`md_tmpl`)                                                                       | WASM (`md-tmpl-wasm`)                                                      |
+| -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------ | -------------------------------------------------------------------------- |
+| Default sanitize tag (`"untrusted_content"`)                         | `DEFAULT_SANITIZE_TAG`                                                                       | `DEFAULT_SANITIZE_TAG`                | `DEFAULT_SANITIZE_TAG`            | `DefaultSanitizeTag`                                                                 | `defaultSanitizeTag()`                                                     |
+| Default sanitize boundary notice                                     | `DEFAULT_SANITIZE_NOTICE`                                                                    | `DEFAULT_SANITIZE_NOTICE`             | `DEFAULT_SANITIZE_NOTICE`         | `DefaultSanitizeNotice`                                                              | `defaultSanitizeNotice()`                                                  |
+| Notice `{tag}` placeholder                                           | `SANITIZE_NOTICE_TAG_PLACEHOLDER`                                                            | `SANITIZE_NOTICE_TAG_PLACEHOLDER`     | `SANITIZE_NOTICE_TAG_PLACEHOLDER` | `SanitizeNoticeTagPlaceholder`                                                       | `sanitizeNoticeTagPlaceholder()`                                           |
+| Default quarantine tag                                               | `DEFAULT_QUARANTINE_TAG`                                                                     | `DEFAULT_QUARANTINE_TAG`              | `DEFAULT_QUARANTINE_TAG`          | `DefaultQuarantineTag`                                                               | `defaultQuarantineTag()`                                                   |
+| Tool-output envelope tags                                            | `TOOL_OUTPUT_QUARANTINE_TAG` / `_OPEN_TAG` / `_CLOSE_TAG`                                    | same as Rust                          | same as Rust                      | `ToolOutputQuarantineTag` / `…OpenTag` / `…CloseTag`                                 | `toolOutputQuarantineTag()` / `…OpenTag()` / `…CloseTag()`                 |
+| Untrusted tool-output tags                                           | `UNTRUSTED_TOOL_OUTPUT_TAG`, `UNTRUSTED_QUARANTINE_OPEN_TAG` / `_CLOSE_TAG`                  | same as Rust                          | same as Rust                      | `UntrustedToolOutputTag`, `UntrustedQuarantineOpenTag` / `…CloseTag`                 | `untrustedToolOutputTag()`, `untrustedQuarantineOpenTag()` / `…CloseTag()` |
+| XML entity decode pairs                                              | `XML_DECODE_PAIRS`                                                                           | `XML_DECODE_PAIRS`                    | `XML_DECODE_PAIRS`                | `XMLDecodePairs()`                                                                   | `xmlDecodePairs()`                                                         |
+| Full control token delimiters (102 entries: role + tool-call tags)   | `TOKEN_DELIMITERS`                                                                           | `TOKEN_DELIMITERS`                    | `TOKEN_DELIMITERS`                | `TokenDelimiters()`                                                                  | `tokenDelimiters()`                                                        |
+| Role/turn-only delimiters (79 entries: preserves `<tool_call>` tags) | `ROLE_TOKEN_DELIMITERS`                                                                      | `ROLE_TOKEN_DELIMITERS`               | `ROLE_TOKEN_DELIMITERS`           | `RoleTokenDelimiters()`                                                              | `roleTokenDelimiters()`                                                    |
+| Escape XML (`&`, `<`, `>`, `"`, `'`)                                 | `escape_xml_str`                                                                             | `escapeXmlString`                     | `escape_xml`                      | `EscapeXML`                                                                          | `escapeXmlString`                                                          |
+| Escape XML attribute value                                           | `escape_xml_attr_str`                                                                        | `escapeXmlAttrString`                 | `escape_xml_attr`                 | `EscapeXMLAttr`                                                                      | `escapeXmlAttrString`                                                      |
+| Escape XML element body                                              | `escape_xml_body_str`                                                                        | `escapeXmlBodyString`                 | `escape_xml_body`                 | `EscapeXMLBody`                                                                      | `escapeXmlBodyString`                                                      |
+| Decode XML entities                                                  | `decode_xml_str`                                                                             | `decodeXmlString`                     | `decode_xml`                      | `DecodeXML`                                                                          | `decodeXmlString`                                                          |
+| Escape JSON string body                                              | `escape_json_str`                                                                            | `escapeJsonString`                    | `escape_json`                     | `EscapeJSON`                                                                         | `escapeJsonString`                                                         |
+| Detect any LLM control token ($O(n)$ zero-alloc)                     | `has_control_tokens`                                                                         | `hasControlTokens`                    | `has_control_tokens`              | `HasControlTokens`                                                                   | `hasControlTokens`                                                         |
+| Detect role/turn control token ($O(n)$ zero-alloc)                   | `has_role_control_tokens`                                                                    | `hasRoleControlTokens`                | `has_role_control_tokens`         | `HasRoleControlTokens`                                                               | `hasRoleControlTokens`                                                     |
+| Detect XML boundary tag breakout                                     | `has_quarantine_tag_breakout`                                                                | `hasQuarantineTagBreakout`            | `has_quarantine_tag_breakout`     | `HasQuarantineTagBreakout`                                                           | `hasQuarantineTagBreakout`                                                 |
+| Detect control tokens OR XML tag breakout ($O(n)$ single-pass)       | `has_untrusted_breakout`                                                                     | `hasUntrustedBreakout`                | `has_untrusted_breakout`          | `HasUntrustedBreakout`                                                               | `hasUntrustedBreakout`                                                     |
+| Neutralize control tokens                                            | `sanitize_tokens_str`                                                                        | `sanitizeTokensString`                | `sanitize_tokens`                 | `SanitizeTokens`                                                                     | `sanitizeTokensString`                                                     |
+| Neutralize role/turn tokens only                                     | `sanitize_role_tokens_str`                                                                   | `sanitizeRoleTokensString`            | `sanitize_role_tokens`            | `SanitizeRoleTokens`                                                                 | `sanitizeRoleTokensString`                                                 |
+| Neutralize control tokens + boundary tags                            | `sanitize_untrusted_str`                                                                     | `sanitizeUntrustedString`             | `sanitize_untrusted`              | `SanitizeUntrusted`                                                                  | `sanitizeUntrustedString`                                                  |
+| Neutralize boundary tags only                                        | `sanitize_quarantine_payload`                                                                | `sanitizeQuarantinePayload`           | `sanitize_quarantine_payload`     | `SanitizeQuarantinePayload`                                                          | `sanitizeQuarantinePayload`                                                |
+| Unified inline sanitizer (`NCName`-validated optional tags)          | `sanitize_str`                                                                               | `sanitizeString`                      | `sanitize`                        | `Sanitize`                                                                           | `sanitizeString`                                                           |
+| Unified block sanitizer (`<tag>\n{notice}\n{sanitized}\n</tag>`)     | `sanitize_block_str`                                                                         | `sanitizeBlockString`                 | `sanitize_block`                  | `SanitizeBlock` / `SanitizeBlockWithNotice`                                          | `sanitizeBlockString`                                                      |
+| Idempotent block sanitizer                                           | `sanitize_block_idempotent_str`                                                              | `sanitizeBlockIdempotentString`       | `sanitize_block_idempotent`       | `SanitizeBlockIdempotent` / `SanitizeBlockIdempotentWithNotice`                      | `sanitizeBlockIdempotentString`                                            |
+| Verify `sanitize_block` envelope + zero inner breakouts/tokens       | `is_sanitized_block_str`                                                                     | `isSanitizedBlockString`              | `is_sanitized_block`              | `IsSanitizedBlock` / `IsSanitizedBlockWithNotice`                                    | `isSanitizedBlockString`                                                   |
+| Extract inner payload from verified `sanitize_block` envelope        | `unsanitize_block_str`                                                                       | `unsanitizeBlockString`               | `unsanitize_block`                | `UnsanitizeBlock` / `UnsanitizeBlockWithNotice`                                      | `unsanitizeBlockString`                                                    |
+| Format boundary notice                                               | `format_sanitize_notice`                                                                     | `formatSanitizeNotice`                | `format_sanitize_notice`          | `FormatSanitizeNotice` / `FormatSanitizeNoticeWithTemplate`                          | `formatSanitizeNotice`                                                     |
+| Quarantine envelope                                                  | `quarantine_str`                                                                             | `quarantineString`                    | `quarantine`                      | `Quarantine`                                                                         | `quarantineString`                                                         |
+| Quarantine envelope + token neutralization                           | `quarantine_untrusted_str`                                                                   | `quarantineUntrustedString`           | `quarantine_untrusted`            | `QuarantineUntrusted`                                                                | `quarantineUntrustedString`                                                |
+| Idempotent quarantine                                                | `quarantine_untrusted_idempotent_str`                                                        | `quarantineUntrustedIdempotentString` | `quarantine_untrusted_idempotent` | `QuarantineUntrustedIdempotent`                                                      | `quarantineUntrustedIdempotentString`                                      |
+| Verify quarantine envelope                                           | `is_quarantined_str`                                                                         | `isQuarantinedString`                 | `is_quarantined`                  | `IsQuarantined`                                                                      | `isQuarantinedString`                                                      |
+| Unwrap verified quarantine                                           | `unquarantine_str`                                                                           | `unquarantineString`                  | `unquarantine`                    | `Unquarantine`                                                                       | `unquarantineString`                                                       |
+| Strip outer quarantine tag                                           | `strip_outer_quarantine_tag`                                                                 | `stripOuterQuarantineTag`             | `strip_outer_quarantine_tag`      | `StripOuterQuarantineTag`                                                            | `stripOuterQuarantineTag`                                                  |
+| Adaptive Markdown code fence                                         | `fence_str`                                                                                  | `fenceString`                         | `fence`                           | `Fence`                                                                              | `fenceString`                                                              |
+| Middle-out string truncation                                         | `truncate_middle_str`                                                                        | `truncateMiddleString`                | `truncate_middle`                 | `TruncateMiddle` / `TruncateMiddleWithMarker`                                        | `truncateMiddleString`                                                     |
+| Middle-out list truncation                                           | `truncate_middle_list`                                                                       | `truncateMiddleList`                  | `truncate_middle_list`            | `TruncateMiddleList` / `TruncateMiddleListWithMarker`                                | `truncateMiddleList`                                                       |
+| Truncation markers                                                   | `DEFAULT_TRUNCATE_MARKER`, `DEFAULT_TRUNCATE_MARKER_COMPACT`, `DEFAULT_LIST_TRUNCATE_MARKER` | same as Rust                          | same as Rust                      | `DefaultTruncateMarker`, `DefaultTruncateMarkerCompact`, `DefaultListTruncateMarker` | —                                                                          |
+
+Rust additionally exposes the buffer-appending `sanitize_block_into` and UTF-8 `*_char_boundary` helpers. Go also exposes every constant through `SecurityConstants()`.
 
 ---
 
@@ -1661,8 +1747,9 @@ regex snippets is unaffected. C-style whitespace escapes like `\n` and `\t` are
 **not** interpreted.
 
 Escapes are honored everywhere a string literal appears: statement conditions,
-`{% case %}` / `{% match %}` labels, `include … with` arguments, and frontmatter
-`:= …` defaults (including inside `list`, `struct`, and enum-variant literals).
+`{% case %}` / `{% match %}` labels, `include … with` arguments, frontmatter
+`:= …` defaults (including inside `list`, `struct`, and enum-variant literals),
+and the `sanitize_notice:` value.
 Because `\"` does not close a string, a quoted element like `["a\", b", "c"]`
 parses as two items rather than a parse error.
 
@@ -1789,24 +1876,19 @@ From highest to lowest:
 #### Boolean Expression Examples
 
 ```markdown
-{# AND: both conditions must be true #}
-
+> {# AND: both conditions must be true #}
 > {% if a > 0 && b > 0 %}both positive{% /if %}
 
-{# OR: at least one condition must be true #}
-
+> {# OR: at least one condition must be true #}
 > {% if a > 0 || b > 0 %}at least one positive{% /if %}
 
-{# NOT: negate a function call #}
-
+> {# NOT: negate a function call #}
 > {% if !has(x) %}x is missing{% /if %}
 
-{# NOT with grouping: negate a comparison #}
-
+> {# NOT with grouping: negate a comparison #}
 > {% if !(a > 0) %}a is not positive{% /if %}
 
-{# Combined: grouping controls evaluation order #}
-
+> {# Combined: grouping controls evaluation order #}
 > {% if (a || b) && c %}complex condition met{% /if %}
 ```
 
@@ -1887,10 +1969,16 @@ It must be the last arm — placing `{% case %}` after `{% else %}` is a compile
 
 <!-- prettier-ignore -->
 ```markdown
-
+> {% match verdict %}
 > {% case Confirmed | ConfirmedWithCaveats %}
 
 Evidence found.
+
+> {% case Rejected %}
+
+No evidence.
+
+> {% /match %}
 ```
 
 **Inline guard** (renders only if variant matches):
@@ -1939,7 +2027,16 @@ Unknown status.
 **Multi-value arm** (shared body for several values):
 
 ```markdown
+> {% match state %}
 > {% case "Active" | "Pending" %}
+
+In progress.
+
+> {% else %}
+
+Done.
+
+> {% /match %}
 ```
 
 **Scalar matching** (`int`, `bool`, `float`):
@@ -2079,7 +2176,9 @@ with `&&`, `||`, and `!` like any other boolean expression:
 
 ```markdown
 > {% if match status case Approved | Pending && count > 0 %}
-> process items
+
+process items
+
 > {% /if %}
 ```
 
@@ -2094,7 +2193,9 @@ rendered only if both the variant matches **and** the guard is truthy:
 
 ```markdown
 > {% match status case Approved && status.score > 80 %}
-> high-scoring approval: {{ status.score }}
+
+high-scoring approval: {{ status.score }}
+
 > {% /match %}
 ```
 
@@ -2102,7 +2203,9 @@ rendered only if both the variant matches **and** the guard is truthy:
 
 ```markdown
 > {% match status case Approved | Pending && count > 0 %}
-> actionable item
+
+actionable item
+
 > {% /match %}
 ```
 
@@ -2120,7 +2223,7 @@ variant's fields are accessible via `expr.field` as usual.
 ```yaml
 params:
   - name = option(str) # required — caller MUST provide a value or null
-  - score = option(int) := None # optional — defaults to absent (no automatic None default!)
+  - score = option(int) := None # optional — explicit `:= None` default (options are never implicitly optional)
   - label = option(str) := "hello" # optional — defaults to "hello" (auto-wrapped to Some)
 ```
 
@@ -2201,7 +2304,7 @@ _(no name provided)_
 > {% /match %}
 ```
 
-Inside `{% case Some %}`, `name` is narrowed to its inner type `T` and `{{ name }}` renders the inner value directly. Outside a narrowed branch (`{% if has(name) %}` or `{% case Some %}`), rendering an `option(T)` directly is rejected at compile time by `include_template!` (see [Renderable Types](#renderable-types)); in dynamic runtime rendering (`Template::from_source`), a `NoneValue` formats as `""` (empty string).
+Inside `{% case Some %}`, `name` is narrowed to its inner type `T` and `{{ name }}` renders the inner value directly. Outside a narrowed branch (`{% if has(name) %}` or `{% case Some %}`), rendering an `option(T)` directly is a compile-time error in every backend (proc macros and runtime `Template::from_source` / `Template.fromSource` alike; see [Renderable Types](#renderable-types)).
 
 ### Nesting
 
@@ -2251,7 +2354,7 @@ The `{% panic(...) %}` statement tag halts rendering with a fatal error.
 - The `[name]` part is a standard markdown link — clickable in editors.
 - The `(path.tmpl.md)` is the file path, resolved **relative to the including
   template's directory**. The same [strict path requirement](#cross-template-imports)
-  applies — relative paths must begin with `./` or `../`.
+  applies — relative paths must begin with `./` or `../` (or `.\` / `..\`).
   Named template references (`{% include my_tmpl %}`) and absolute paths
   starting with `/` do not require relative prefixes.
 - **Dynamic include path interpolation**: file paths support `{{ expr }}`
@@ -2451,38 +2554,54 @@ enables included templates to use strongly typed parameters from imported
 enum types, access imported constants, and perform `{% match %}`/`{% case %}`
 dispatch on imported enums.
 
-```yaml
-# types.tmpl.md — shared type definitions
+`types.tmpl.md` — shared type definitions:
+
+```markdown
 ---
 name: types
-types: [Role = enum(admin, editor, viewer)]
+allow_unused: true
+types:
+  - Role = enum(Admin, Editor, Viewer)
 ---
 ```
 
-```yaml
-# child.tmpl.md — included by a parent template
+`child.tmpl.md` — included by a parent template:
+
+<!-- prettier-ignore -->
+```markdown
 ---
 imports:
   - "[types](./types.tmpl.md)"
 
-params: [role = types.Role]
+params:
+  - role = types.Role
 ---
+
 > {% match role %}
-> {% case admin %}
+> {% case Admin %}
+
 Admin panel
-> {% case editor %}
+
+> {% case Editor %}
+
 Editor view
-> {% case viewer %}
+
+> {% case Viewer %}
+
 Read-only
+
 > {% /match %}
 ```
 
-```yaml
-# parent.tmpl.md — includes child.tmpl.md
+`parent.tmpl.md` — includes `child.tmpl.md`:
+
+```markdown
 ---
-params: [role = str]
+params:
+  - role = str
 ---
-> {% include [child](./child.tmpl.md) with role=role %}
+
+> {% include [child](./child.tmpl.md) with role = role %}
 ```
 
 Key rules:
@@ -2513,16 +2632,14 @@ Key rules:
 
 Define reusable fragments inline, without separate files:
 
+<!-- prettier-ignore -->
 ```markdown
 > {% tmpl task_row %}
 
 ---
-
 params:
-
-- title = str
-- priority = str
-
+  - title = str
+  - priority = str
 ---
 
 - **{{ title }}** ({{ priority }})
@@ -2530,7 +2647,7 @@ params:
 > {% /tmpl %}
 
 > {% for task in tasks %}
-> {% include task_row with title=task.title, priority=task.priority %}
+> {% include task_row with title = task.title, priority = task.priority %}
 > {% /for %}
 ```
 
@@ -2543,19 +2660,24 @@ For parameterless reusable fragments that do not need `params:`, `consts:`,
 `types:`, or `imports:`, the inner `---` frontmatter block may be omitted
 entirely:
 
+<!-- prettier-ignore -->
 ```markdown
-> {% tmpl divider %}
+> {% tmpl signature %}
 
----
+— The Review Bot
 
 > {% /tmpl %}
 
 Section A
 
-> {% include divider %}
+> {% include signature %}
 
 Section B
 ```
+
+A body whose first line is `---` is always parsed as an inner frontmatter
+block, so a parameterless template cannot start with a literal `---`
+thematic break.
 
 Inline templates support: typed frontmatter (including `types:`, `consts:`,
 `imports:`, `allow_unused:`, and `sanitize_notice:`), `with` parameter
@@ -2620,7 +2742,11 @@ Resolution order for type names in an inline template:
 parent) are inherited by inline templates automatically.
 
 **Params** are _not_ inherited — they must be explicitly passed via
-`with` at the include site.
+`with` at the include site. Inline template bodies are type-checked at
+compile time with only their own params plus the inherited constants, type
+aliases, import stems, enum types, and inline template names in scope, so a
+reference to a parent param inside an inline template is an undeclared
+variable error.
 
 This is by design: constants are file-scoped values (analogous to
 `#define`), while params are function arguments that flow through
@@ -2653,7 +2779,9 @@ Custom delimiter to escape `{% /raw %}` itself:
 
 ```markdown
 > {% raw=# %}
-> This outputs {% raw %}...{% /raw %} literally.
+
+This outputs {% raw %}...{% /raw %} literally.
+
 > {% /# %}
 ```
 
@@ -2672,17 +2800,20 @@ Template comments are stripped from output. Parameters referenced inside
 Bare variable names (without `{{ }}`) do **not** count:
 
 ```markdown
-{# This comment won't appear in output #}
-{# {{ reserved_var }} — suppresses unused-parameter error #}
-{# reserved_var — bare name, does NOT suppress the error #}
-Hello {{ name }}!
+> {# This comment won't appear in output #}
+> {# {{ reserved_var }} — suppresses unused-parameter error #}
+> {# reserved_var — bare name, does NOT suppress the error #}
+
+Hello {{ name }}! {# inline comments need no prefix #}
 ```
 
 Use the `{# unused: ... #}` pattern to document intentionally unused parameters:
 
 ```markdown
-{# unused: {{ role_type }}, {{ agent_name }} #}
+> {# unused: {{ role_type }}, {{ agent_name }} #}
 ```
+
+Comments do not nest: a comment ends at the first `#}`.
 
 Multiple `{{ }}` references in a single comment are all tracked. Dotted paths
 like `{{ item.label }}` track the root variable (`item`).

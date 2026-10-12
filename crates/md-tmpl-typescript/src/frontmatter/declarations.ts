@@ -14,8 +14,17 @@ import {
   QUOTE_DOUBLE,
   QUOTE_SINGLE,
   TYPE_ALIAS,
+  TYPE_BOOL,
   TYPE_ENUM,
+  TYPE_FLOAT,
+  TYPE_INT,
+  TYPE_LIST,
   TYPE_OPTION,
+  TYPE_SCALAR_LIST,
+  TYPE_STR,
+  TYPE_STRUCT,
+  TYPE_TMPL,
+  TYPE_UNTYPED_LIST,
   unescapeStringLiteral,
 } from "../consts.js";
 import { type ImportDecl, type VarDecl, type VarType } from "./types.js";
@@ -184,6 +193,60 @@ export function parseParamDeclDeferred(
     constValues,
   );
   return [{ name, varType, defaultValue }, undefined, relSpecs];
+}
+
+/** Collect every type-alias reference (`TYPE_ALIAS` name) inside `varType`. */
+function collectAliasRefs(varType: VarType, out: string[]): void {
+  switch (varType.kind) {
+    case TYPE_ALIAS:
+      out.push(varType.name);
+      return;
+    case TYPE_LIST:
+    case TYPE_STRUCT:
+    case TYPE_TMPL:
+      for (const field of varType.fields) collectAliasRefs(field.varType, out);
+      return;
+    case TYPE_SCALAR_LIST:
+      collectAliasRefs(varType.elementType, out);
+      return;
+    case TYPE_OPTION:
+      collectAliasRefs(varType.innerType, out);
+      return;
+    case TYPE_ENUM:
+      for (const variant of varType.variants) {
+        for (const field of variant.fields)
+          collectAliasRefs(field.varType, out);
+      }
+      return;
+    case TYPE_STR:
+    case TYPE_BOOL:
+    case TYPE_INT:
+    case TYPE_FLOAT:
+    case TYPE_UNTYPED_LIST:
+      return;
+  }
+}
+
+/**
+ * Reject type references that resolve to no known type, mirroring the Rust core's
+ * `unknown type '<name>'` error. `label` is the error prefix (`declaration 'x'`
+ * or `type 'Name'`). A dotted `stem.Type` reference is accepted when `stem` is a
+ * declared import (it is resolved once the import is loaded).
+ */
+export function assertKnownTypeRefs(
+  label: string,
+  varType: VarType,
+  typeAliases: ReadonlyMap<string, VarType>,
+  importStems: ReadonlySet<string>,
+): void {
+  const refs: string[] = [];
+  collectAliasRefs(varType, refs);
+  for (const ref of refs) {
+    if (typeAliases.has(ref)) continue;
+    const dotIdx = ref.indexOf(DOT);
+    if (dotIdx !== -1 && importStems.has(ref.slice(0, dotIdx))) continue;
+    throw new TemplateSyntaxError(`${label}: unknown type '${ref}'`);
+  }
 }
 
 /** Parse `Name = type` for type aliases. */

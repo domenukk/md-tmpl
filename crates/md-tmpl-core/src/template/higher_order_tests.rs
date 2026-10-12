@@ -277,55 +277,28 @@ params: [widget = tmpl(name = str)]
     );
 }
 
-/// Using `{{ widget }}` with a `tmpl()` param errors at render time
+/// Using `{{ widget }}` with a `tmpl()` param is a compile error
 /// (templates are not directly renderable — use `{% include %}` instead).
-///
-/// NOTE: The SPEC says this should be a compile-time error, and it IS
-/// rejected at compile-time through the `compile()` / proc-macro path
-/// (validated by `is_displayable()` in `type_check.rs`). The `from_source()`
-/// interpretation path only catches this at render time.
 #[test]
-fn test_higher_order_display_tmpl_rejected_at_render() {
-    let main = Template::from_source(
+fn test_higher_order_display_tmpl_rejected_at_compile() {
+    let err = Template::from_source(
         r"---
 params: [widget = tmpl()]
 ---
 {{ widget }}",
     )
-    .unwrap();
-
-    let helper = Template::from_source(
-        r"---
-params: []
----
-content",
-    )
-    .unwrap();
-
-    let mut ctx = crate::Context::new();
-    ctx.set("widget", Value::Tmpl(Arc::new(helper)));
-
-    let err = main.render_ctx(&ctx).unwrap_err();
+    .unwrap_err();
     assert!(
-        err.to_string().contains("display")
-            || err.to_string().contains("cannot")
-            || err.to_string().contains("tmpl"),
+        err.to_string()
+            .contains("cannot display value of type tmpl()"),
         "expected display error for tmpl() param, got: {err}"
     );
 }
 
-/// `tmpl()` param is truthy when set (should work in {% if %} guards).
+/// A `tmpl()` param has no truthiness: `{% if widget %}` is a compile error.
 #[test]
-fn test_higher_order_tmpl_is_truthy() {
-    let helper = Template::from_source(
-        r"---
-params: []
----
-present",
-    )
-    .unwrap();
-
-    let main = Template::from_source(
+fn test_higher_order_tmpl_condition_rejected_at_compile() {
+    let err = Template::from_source(
         r"---
 params: [widget = tmpl()]
 ---
@@ -335,15 +308,10 @@ yes
 
 > {% /if %}",
     )
-    .unwrap();
-
-    let mut ctx = crate::Context::new();
-    ctx.set("widget", Value::Tmpl(Arc::new(helper)));
-
-    let result = main.render_ctx(&ctx).unwrap();
+    .unwrap_err();
     assert!(
-        result.contains("yes"),
-        "tmpl should be truthy, got: {result}"
+        err.to_string().contains("truthiness of template handle"),
+        "expected truthiness error for tmpl() param, got: {err}"
     );
 }
 

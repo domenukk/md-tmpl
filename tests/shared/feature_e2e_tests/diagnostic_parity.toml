@@ -1,0 +1,160 @@
+# Shared feature_e2e_tests: diagnostics that every backend reports with the
+# same message (blockquote rules, frontmatter rules).
+
+# ============================================================================
+# Blockquote prefix rules
+# ============================================================================
+
+[[tests]]
+name = "bare_statement_tag_message"
+description = "A line-start statement tag without '>' reports the canonical message with a fix"
+template = '''
+---
+params: [flag = bool]
+---
+{% if flag %}yes{% /if %}'''
+expected_error = "statement tag at line start must be blockquote-prefixed with '> ': write '> {% if flag %}yes{% /if %}' instead of '{% if flag %}yes{% /if %}'"
+
+[tests.params]
+flag = true
+
+[[tests]]
+name = "bare_comment_message"
+description = "A line-start comment without '>' reports the canonical message with a fix"
+template = '''
+---
+params: []
+---
+{# note #}
+text'''
+expected_error = "comment at line start must be blockquote-prefixed with '> ': write '> {# note #}' instead of '{# note #}'"
+
+[[tests]]
+name = "bare_statement_tag_snippet_truncated"
+description = "Long bare statement lines are truncated to 57 characters plus an ellipsis"
+template = '''
+---
+params: [flag = bool]
+---
+{% if flag %}aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa{% /if %}'''
+expected_error = "write '> {% if flag %}aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa…' instead of"
+
+[tests.params]
+flag = true
+
+[[tests]]
+name = "compact_blockquote_prefix_accepted"
+description = "The compact '>{% ... %}' form without a space is accepted"
+template = '''
+---
+params: [flag = bool]
+---
+>{% if flag %}yes{% /if %}'''
+expected_output = "yes"
+
+[tests.params]
+flag = true
+
+[[tests]]
+name = "blockquote_comment_without_spaces_rejected"
+description = "A blockquote comment needs whitespace around its content"
+template = '''
+---
+params: []
+---
+> {#note#}
+
+text'''
+expected_error = "Comments must have spaces around the content (e.g. `{# comment #}` or `{#- comment -#}`)"
+
+[[tests]]
+name = "standalone_tag_followed_by_content_message"
+description = "A standalone tag line directly followed by content reports the neighbor rule"
+template = '''
+---
+params: [flag = bool]
+---
+> {% if flag %}
+yes
+
+> {% /if %}'''
+expected_error = "Standalone statement tag '> {% if flag %}' must be followed by a blank line or another blockquote tag line (> {%...%})"
+
+[tests.params]
+flag = true
+
+[[tests]]
+name = "standalone_tag_preceded_by_content_message"
+description = "A standalone tag line directly preceded by content reports the neighbor rule"
+template = '''
+---
+params: [flag = bool]
+---
+> {% if flag %}
+
+yes
+> {% /if %}'''
+expected_error = "Standalone statement tag '> {% /if %}' must be preceded by a blank line or another blockquote tag line (> {%...%})"
+
+[tests.params]
+flag = true
+
+# ============================================================================
+# Frontmatter rules
+# ============================================================================
+
+[[tests]]
+name = "unused_type_alias_with_only_env_declarations"
+description = "An unused struct alias is rejected when the template declares only env variables"
+template = '''
+---
+types:
+  - Unused = struct(a = str)
+
+env: [MODE = str := "dev"]
+
+params: []
+---
+{{ MODE }}'''
+expected_error = "unused type alias: 'Unused'"
+
+[[tests]]
+name = "unused_type_alias_without_declarations_allowed"
+description = "A template with no params, consts, or env may declare a type library"
+template = '''
+---
+types:
+  - Unused = struct(a = str)
+
+params: []
+---
+static'''
+expected_output = "static"
+
+# ============================================================================
+# `env:` is resolved when the template is compiled
+# ============================================================================
+
+[[tests]]
+name = "from_source_rejects_missing_env_value"
+description = "Compiling a template whose env variable has neither a value nor a default fails"
+template = '''
+---
+env: [PROMPTS_DIR = str]
+
+params: []
+---
+Dir: {{ PROMPTS_DIR }}'''
+expected_error = "env variable 'PROMPTS_DIR': no value provided and no default"
+
+[[tests]]
+name = "from_source_uses_env_default"
+description = "Compiling without env values falls back to the declared default"
+template = '''
+---
+env: [MODE = str := "dev"]
+
+params: []
+---
+Mode: {{ MODE }}'''
+expected_output = "Mode: dev"

@@ -227,3 +227,173 @@ pub fn unsanitize_block_string(
     drop(custom_notice);
     res
 }
+
+/// Return the `{tag}` placeholder substituted in sanitize boundary notices.
+#[wasm_bindgen(js_name = "sanitizeNoticeTagPlaceholder")]
+#[must_use]
+pub fn sanitize_notice_tag_placeholder() -> String {
+    md_tmpl::SANITIZE_NOTICE_TAG_PLACEHOLDER.to_string()
+}
+
+/// Return the canonical `tool_output_quarantine` tag name.
+#[wasm_bindgen(js_name = "toolOutputQuarantineTag")]
+#[must_use]
+pub fn tool_output_quarantine_tag() -> String {
+    md_tmpl::TOOL_OUTPUT_QUARANTINE_TAG.to_string()
+}
+
+/// Return the canonical `<tool_output_quarantine>` opening tag.
+#[wasm_bindgen(js_name = "toolOutputQuarantineOpenTag")]
+#[must_use]
+pub fn tool_output_quarantine_open_tag() -> String {
+    md_tmpl::TOOL_OUTPUT_QUARANTINE_OPEN_TAG.to_string()
+}
+
+/// Return the canonical `</tool_output_quarantine>` closing tag.
+#[wasm_bindgen(js_name = "toolOutputQuarantineCloseTag")]
+#[must_use]
+pub fn tool_output_quarantine_close_tag() -> String {
+    md_tmpl::TOOL_OUTPUT_QUARANTINE_CLOSE_TAG.to_string()
+}
+
+/// Return the canonical `untrusted_tool_output` tag name.
+#[wasm_bindgen(js_name = "untrustedToolOutputTag")]
+#[must_use]
+pub fn untrusted_tool_output_tag() -> String {
+    md_tmpl::UNTRUSTED_TOOL_OUTPUT_TAG.to_string()
+}
+
+/// Return the canonical `<untrusted_tool_output>` opening tag.
+#[wasm_bindgen(js_name = "untrustedQuarantineOpenTag")]
+#[must_use]
+pub fn untrusted_quarantine_open_tag() -> String {
+    md_tmpl::UNTRUSTED_QUARANTINE_OPEN_TAG.to_string()
+}
+
+/// Return the canonical `</untrusted_tool_output>` closing tag.
+#[wasm_bindgen(js_name = "untrustedQuarantineCloseTag")]
+#[must_use]
+pub fn untrusted_quarantine_close_tag() -> String {
+    md_tmpl::UNTRUSTED_QUARANTINE_CLOSE_TAG.to_string()
+}
+
+/// Return `XML_DECODE_PAIRS` as a JS array of `[entity, decoded]` pairs.
+#[wasm_bindgen(js_name = "xmlDecodePairs")]
+#[must_use]
+pub fn xml_decode_pairs() -> Array {
+    delimiters_to_js(md_tmpl::XML_DECODE_PAIRS)
+}
+
+/// Decode the standard XML entity references in a single pass.
+#[wasm_bindgen(js_name = "decodeXmlString")]
+#[must_use]
+pub fn decode_xml_string(s: &str) -> String {
+    md_tmpl::decode_xml_str(s).into_owned()
+}
+
+/// Escape a string for an XML attribute value.
+#[wasm_bindgen(js_name = "escapeXmlAttrString")]
+#[must_use]
+pub fn escape_xml_attr_string(s: &str) -> String {
+    md_tmpl::escape_xml_attr_str(s).into_owned()
+}
+
+/// Escape an XML element body value (`&`, `<`, `>`, and NUL).
+#[wasm_bindgen(js_name = "escapeXmlBodyString")]
+#[must_use]
+pub fn escape_xml_body_string(s: &str) -> String {
+    md_tmpl::escape_xml_body_str(s).into_owned()
+}
+
+/// Format the boundary notice for `primary_tag` (`custom_notice` defaults to the standard notice).
+#[wasm_bindgen(js_name = "formatSanitizeNotice")]
+#[must_use]
+pub fn format_sanitize_notice(primary_tag: &str, custom_notice: Option<String>) -> String {
+    let res = md_tmpl::format_sanitize_notice(primary_tag, custom_notice.as_deref()).into_owned();
+    drop(custom_notice);
+    res
+}
+
+/// Strip outer `<tag_name>` / `</tag_name>` tags (and one envelope newline per side), or `None`.
+#[wasm_bindgen(js_name = "stripOuterQuarantineTag")]
+#[must_use]
+pub fn strip_outer_quarantine_tag(s: &str, tag_name: &str) -> Option<String> {
+    md_tmpl::strip_outer_quarantine_tag(s, tag_name).map(str::to_owned)
+}
+
+/// Extract the inner payload of a verified quarantine envelope, or `None` if invalid.
+#[wasm_bindgen(js_name = "unquarantineString")]
+#[must_use]
+pub fn unquarantine_string(s: &str, tag_spec: Option<String>) -> Option<String> {
+    let res = md_tmpl::unquarantine_str(s, tag_spec.as_deref()).map(str::to_owned);
+    drop(tag_spec);
+    res
+}
+
+/// Idempotently sanitize and wrap `s` in a quarantine envelope.
+///
+/// # Errors
+///
+/// Returns a JS `Error` (`kind = "syntax"`) if any tag name in `tag_spec` is not a valid ASCII XML `NCName`.
+#[wasm_bindgen(js_name = "quarantineUntrustedIdempotentString")]
+pub fn quarantine_untrusted_idempotent_string(
+    s: &str,
+    tag_spec: Option<String>,
+) -> Result<String, JsValue> {
+    let res = md_tmpl::quarantine_untrusted_idempotent_str(s, tag_spec.as_deref())
+        .map_err(|e| js_error(&e));
+    drop(tag_spec);
+    res
+}
+
+/// Idempotently sanitize and wrap `s` in a `sanitizeBlockString` envelope.
+///
+/// # Errors
+///
+/// Returns a JS `Error` (`kind = "syntax"`) if any tag name in `tag_spec` is not a valid ASCII XML `NCName`.
+#[wasm_bindgen(js_name = "sanitizeBlockIdempotentString")]
+pub fn sanitize_block_idempotent_string(
+    s: &str,
+    tag_spec: Option<String>,
+    custom_notice: Option<String>,
+) -> Result<String, JsValue> {
+    let res =
+        md_tmpl::sanitize_block_idempotent_str(s, tag_spec.as_deref(), custom_notice.as_deref())
+            .map_err(|e| js_error(&e));
+    drop(tag_spec);
+    drop(custom_notice);
+    res
+}
+
+/// Truncate `s` in the middle, keeping at most `limit` UTF-8 bytes (`marker` may use `{skipped}`).
+#[wasm_bindgen(js_name = "truncateMiddleString")]
+#[must_use]
+pub fn truncate_middle_string(s: &str, limit: usize, marker: Option<String>) -> String {
+    let res = md_tmpl::truncate_middle_str(s, limit, marker.as_deref()).into_owned();
+    drop(marker);
+    res
+}
+
+/// Truncate a JS array in the middle, keeping at most `limit` items around one marker item.
+///
+/// # Errors
+///
+/// Returns a JS `Error` if an item cannot be converted to a template value.
+#[wasm_bindgen(js_name = "truncateMiddleList")]
+pub fn truncate_middle_list(
+    items: &Array,
+    limit: usize,
+    marker: Option<String>,
+) -> Result<Array, JsValue> {
+    let values = items
+        .iter()
+        .map(|item| crate::js_to_env_value(&item))
+        .collect::<Result<Vec<_>, _>>()?;
+    let truncated = md_tmpl::truncate_middle_list(&values, limit, marker.as_deref());
+    drop(marker);
+    let out = Array::new_with_length(u32_from_usize(truncated.len()));
+    for (i, value) in truncated.iter().enumerate() {
+        out.set(u32_from_usize(i), crate::value_to_js(value));
+    }
+    Ok(out)
+}

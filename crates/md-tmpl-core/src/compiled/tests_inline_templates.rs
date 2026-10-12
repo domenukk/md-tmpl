@@ -48,11 +48,8 @@ Hello {{ who }}!
 > {% /tmpl %}
 
 > {% include greeting %}";
-    let tmpl = crate::Template::from_source(src).unwrap();
-    let ctx = Context::new();
-    let err = tmpl
-        .render_ctx(&ctx)
-        .expect_err("missing params should error");
+    let err =
+        crate::Template::from_source(src).expect_err("missing include params are a compile error");
     let msg = err.to_string();
     assert!(
         msg.contains("who"),

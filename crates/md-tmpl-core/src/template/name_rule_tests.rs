@@ -167,7 +167,7 @@ params:
     .unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("for loop binding shadows") && msg.contains("'x'"),
+        msg.contains("for-loop binding 'x' shadows a declared name"),
         "Expected for-binding shadow error, got: {msg}"
     );
 }
@@ -189,7 +189,7 @@ params:
     .unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("for loop binding shadows") && msg.contains("'x'"),
+        msg.contains("for-loop binding 'x' shadows a declared name"),
         "Expected for-binding shadow const error, got: {msg}"
     );
 }
@@ -213,7 +213,7 @@ allow_unused: true
     .unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("for loop binding shadows") && msg.contains("'shared'"),
+        msg.contains("for-loop binding 'shared' shadows a declared name"),
         "Expected for-binding shadow import error, got: {msg}"
     );
 }
@@ -239,7 +239,7 @@ hi {{ name }}
     .unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("for loop binding shadows") && msg.contains("'greeting'"),
+        msg.contains("for-loop binding 'greeting' shadows a declared name"),
         "Expected for-binding shadow tmpl error, got: {msg}"
     );
 }
@@ -265,7 +265,7 @@ params:
     .unwrap_err();
     let msg = err.to_string();
     assert!(
-        msg.contains("for loop binding shadows") && msg.contains("'x'"),
+        msg.contains("for-loop binding 'x' shadows a declared name"),
         "Expected nested for-binding shadow error, got: {msg}"
     );
 }

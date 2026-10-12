@@ -39,6 +39,7 @@ import {
   ENUM_VARIANTS_KEY,
   LIT_TRUE,
   LIT_FALSE,
+  ERR_FOR_BINDING_SHADOWS,
 } from "./consts.js";
 
 // ---------------------------------------------------------------------------
@@ -424,7 +425,7 @@ export function validateFrontmatter(fm: Frontmatter): void {
   if (
     !fm.allowUnused &&
     localAliasNames.size > 0 &&
-    (fm.params.length > 0 || fm.consts.length > 0)
+    (fm.params.length > 0 || fm.consts.length > 0 || fm.env.length > 0)
   ) {
     for (const [aliasName, aliasType] of fm.typeAliases) {
       if (!localAliasNames.has(aliasName)) continue;
@@ -513,7 +514,7 @@ export function validateBodyCollisions(
   for (const binding of forBindings) {
     if (declaredNames.has(binding)) {
       throw new TemplateSyntaxError(
-        `for-loop binding '${binding}' shadows a declared name (param, const, or import stem)`,
+        `for-loop binding '${binding}' ${ERR_FOR_BINDING_SHADOWS}`,
       );
     }
   }

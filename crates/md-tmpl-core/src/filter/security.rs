@@ -814,7 +814,8 @@ pub(super) fn sanitize_tokens_with_args<'a>(
         None => Ok(sanitize_tokens_str(s)),
         Some(raw_arg) => {
             let tag_cow = strip_quotes(raw_arg);
-            let (_, valid_spec) = validate_quarantine_tag_spec(&tag_cow)?;
+            let (_, valid_spec) =
+                validate_tag_spec_for_filter(&tag_cow, crate::consts::FILTER_SANITIZE_TOKENS)?;
             Ok(match sanitize_untrusted_str(s, valid_spec) {
                 Cow::Borrowed(_) => Cow::Borrowed(s),
                 Cow::Owned(sanitized) => Cow::Owned(sanitized),

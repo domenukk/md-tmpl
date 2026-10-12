@@ -585,16 +585,13 @@ params:
         errors[0]
     );
 
-    // Also verify runtime Scope rejects kind(plain_str_param)
-    let tmpl = crate::Template::from_source(tmpl_str).unwrap();
-    let mut ctx = crate::Context::new();
-    ctx.set("msg", "hello");
-    let render_err = tmpl.render_ctx(&ctx).unwrap_err();
+    // `Template::from_source` runs the same checker at compile time.
+    let compile_err = crate::Template::from_source(tmpl_str).unwrap_err();
     assert!(
-        render_err
+        compile_err
             .to_string()
-            .contains("kind() requires an enum or option value, got str on 'msg'"),
-        "unexpected render error: {render_err}"
+            .contains("'kind()' requires an enum or option type, got str on 'msg'"),
+        "unexpected compile error: {compile_err}"
     );
 }
 
@@ -639,16 +636,13 @@ params:
         errors[0]
     );
 
-    // Also verify runtime Scope rejects has(plain_str_param)
-    let tmpl = crate::Template::from_source(tmpl_str).unwrap();
-    let mut ctx = crate::Context::new();
-    ctx.set("label", "hello");
-    let render_err = tmpl.render_ctx(&ctx).unwrap_err();
+    // `Template::from_source` runs the same checker at compile time.
+    let compile_err = crate::Template::from_source(tmpl_str).unwrap_err();
     assert!(
-        render_err
+        compile_err
             .to_string()
-            .contains("has() requires an option value, got str on 'label'"),
-        "unexpected render error: {render_err}"
+            .contains("'has()' requires an option type, got str on 'label'"),
+        "unexpected compile error: {compile_err}"
     );
 }
 

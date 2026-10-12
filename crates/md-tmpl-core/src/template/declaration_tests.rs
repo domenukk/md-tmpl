@@ -545,7 +545,7 @@ fn type_mismatch_shows_nested_path() {
         "---
 params: [tasks = list(title = str, priority = int)]
 ---
-{{ tasks }}",
+> {% for task in tasks %}{{ task.title }}{{ task.priority }}{% /for %}",
     )
     .unwrap();
     let mut ctx = Context::new();

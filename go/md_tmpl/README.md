@@ -366,7 +366,7 @@ result, _ := tmpl.RenderMap(map[string]any{"name": "Alice"})
 ### Includes
 
 ```markdown
-> {% include [header](header.tmpl.md) with title=title %}
+> {% include [header](./header.tmpl.md) with title = title %}
 ```
 
 ### Constants

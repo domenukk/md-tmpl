@@ -57,6 +57,7 @@ import {
 import { getFs, getPath, hashString } from "./utils.js";
 import { jsToValue } from "./conversion.js";
 import { collectOptionPaths } from "./option_paths.js";
+import { closestName } from "../suggest.js";
 import { typeCheckValue } from "./type_check.js";
 import {
   injectEnumTypeConstants,
@@ -81,37 +82,6 @@ import {
   extractInterpolationRefs,
 } from "./references.js";
 import { type TemplateCache } from "./cache.js";
-
-/**
- * Compute the Levenshtein edit distance between two strings.
- *
- * Returns the minimum number of single-character edits (insertions,
- * deletions, or substitutions) required to transform `a` into `b`.
- * Mirrors the Rust core's `levenshtein_distance` so the "did you mean"
- * suggestions in undeclared-variable errors match byte-for-byte.
- */
-function levenshteinDistance(a: string, b: string): number {
-  const aLen = a.length;
-  const bLen = b.length;
-  if (aLen === 0) return bLen;
-  if (bLen === 0) return aLen;
-  let prev: number[] = Array.from({ length: bLen + 1 }, (_, i) => i);
-  let curr: number[] = new Array<number>(bLen + 1).fill(0);
-  for (let i = 0; i < aLen; i++) {
-    curr[0] = i + 1;
-    for (let j = 0; j < bLen; j++) {
-      const cost = a[i] === b[j] ? 0 : 1;
-      // Non-null: indices are within the pre-sized arrays above.
-      curr[j + 1] = Math.min(
-        (prev[j] ?? 0) + cost,
-        (prev[j + 1] ?? 0) + 1,
-        (curr[j] ?? 0) + 1,
-      );
-    }
-    [prev, curr] = [curr, prev];
-  }
-  return prev[bLen] ?? 0;
-}
 
 // ---------------------------------------------------------------------------
 // Template class
@@ -265,30 +235,35 @@ export class Template implements ITemplate, TmplRef {
     );
   }
 
-  private finalizeCompile(
-    body: string,
-    allowUnused = false,
-    checkCollisions = true,
-  ): this {
+  private finalizeCompile(body: string, allowUnused = false): this {
     this.checkUndeclaredVariables(body);
     if (!this.fm.allowUnused && !allowUnused) {
       this.checkUnusedParams(body);
     }
     this.checkBareEnumAccess();
     this.checkMatchTypeSafety();
-    if (checkCollisions) {
-      validateBodyCollisions(
-        this.fm,
-        collectInlineTemplateNames(this.nodes),
-        collectForBindings(this.nodes),
-      );
-    }
+    validateBodyCollisions(
+      this.fm,
+      collectInlineTemplateNames(this.nodes),
+      collectForBindings(this.nodes),
+    );
     validateDisplayability(
       this.nodes,
       this.fm.params,
       this.fm.consts,
       this.fm.typeAliases,
       this.fm.importedNamespaceTypes,
+      new Map(
+        [...this.inlineTemplates].map(([name, entry]) => [
+          name,
+          {
+            declarations: entry.declarations,
+            nodes: entry.nodes,
+            constNames: new Set(entry.consts.keys()),
+          },
+        ]),
+      ),
+      this.templateWideNames(),
     );
     applySanitizeAstPass(
       this.nodes,
@@ -310,11 +285,9 @@ export class Template implements ITemplate, TmplRef {
    * @throws {TemplateSyntaxError} If the source contains syntax errors.
    */
   static fromSource(source: string): Template {
-    const [fm, body] = parseFrontmatter(source);
-    validateFrontmatter(fm);
-    const nodes = parseBody(body, false, fm.bodyStartLine ?? 1);
-    walkNodesForConditionSyntax(nodes);
-    return new Template(fm, body, nodes, source).finalizeCompile(body);
+    // `env:` declarations resolve to their defaults (or fail at compile time
+    // when a value is required), exactly like the Rust `from_source`.
+    return Template.fromSourceWithOptions(source, {});
   }
 
   /**
@@ -378,14 +351,7 @@ export class Template implements ITemplate, TmplRef {
    * Parse a template, allowing declared parameters that aren't used.
    */
   static fromSourceAllowingUnused(source: string): Template {
-    const [fm, body] = parseFrontmatter(source);
-    const nodes = parseBody(body, false, fm.bodyStartLine ?? 1);
-    walkNodesForConditionSyntax(nodes);
-    return new Template(fm, body, nodes, source).finalizeCompile(
-      body,
-      true,
-      false,
-    );
+    return Template.fromSourceWithOptions(source, { allowUnused: true });
   }
 
   /**
@@ -904,6 +870,18 @@ params:
    * template names. Unknown references produce a syntax error with optional
    * Levenshtein "did you mean" suggestions, byte-for-byte identical to Rust.
    */
+  /** Names valid in every scope: import stems, enum types, inline templates. */
+  private templateWideNames(): Set<string> {
+    const names = new Set<string>(this.fm.imports.map((imp) => imp.stem));
+    for (const [name, ty] of this.fm.typeAliases) {
+      if (ty.kind === TYPE_ENUM) names.add(name);
+    }
+    for (const name of collectInlineTemplateNames(this.nodes)) {
+      names.add(name);
+    }
+    return names;
+  }
+
   private checkUndeclaredVariables(body: string): void {
     const referenced = collectReferencedParams(this.nodes);
     // Include {{ expr }} references inside {# comments #}: the Rust core stores
@@ -914,17 +892,10 @@ params:
       extractInterpolationRefs(match[1] ?? "", referenced, new Set());
     }
 
-    const declared = new Set<string>();
+    const declared = this.templateWideNames();
     for (const decl of this.fm.params) declared.add(decl.name);
     for (const decl of this.fm.consts) declared.add(decl.name);
     for (const decl of this.fm.env) declared.add(decl.name);
-    for (const imp of this.fm.imports) declared.add(imp.stem);
-    for (const [name, ty] of this.fm.typeAliases) {
-      if (ty.kind === TYPE_ENUM) declared.add(name);
-    }
-    for (const name of collectInlineTemplateNames(this.nodes)) {
-      declared.add(name);
-    }
 
     const undeclared: string[] = [];
     for (const name of referenced) {
@@ -935,15 +906,9 @@ params:
 
     const suggestions: string[] = [];
     for (const name of undeclared) {
-      let best: { candidate: string; dist: number } | undefined;
-      for (const candidate of declared) {
-        const dist = levenshteinDistance(name, candidate);
-        if (dist > 0 && dist <= 2 && (best === undefined || dist < best.dist)) {
-          best = { candidate, dist };
-        }
-      }
-      if (best) {
-        suggestions.push(`'${name}' (did you mean '${best.candidate}'?)`);
+      const best = closestName(name, declared);
+      if (best !== undefined) {
+        suggestions.push(`'${name}' (did you mean '${best}'?)`);
       }
     }
     const suffix =

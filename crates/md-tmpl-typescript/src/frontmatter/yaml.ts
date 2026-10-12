@@ -30,6 +30,7 @@ import {
 } from "./types.js";
 import { interpolateImports } from "./paths.js";
 import {
+  assertKnownTypeRefs,
   parseTypeAlias,
   parseConstDecl,
   parseImportDecl,
@@ -45,6 +46,14 @@ import {
 // ---------------------------------------------------------------------------
 // Parser
 // ---------------------------------------------------------------------------
+
+/** `types:` aliases cannot reference imported types (mirrors Rust `empty_imports`). */
+const NO_IMPORT_STEMS: ReadonlySet<string> = new Set();
+
+/** Error prefix for `params:` / `consts:` / `env:` declarations. */
+function declarationLabel(name: string): string {
+  return `declaration '${name}'`;
+}
 
 /**
  * Parse the frontmatter and body from a template source string.
@@ -422,6 +431,12 @@ export function parseFrontmatterYaml(
                 `duplicate type alias '${aliasName}'`,
               );
             }
+            assertKnownTypeRefs(
+              `type '${aliasName}'`,
+              aliasType,
+              typeAliases,
+              NO_IMPORT_STEMS,
+            );
             localTypeAliasNames.add(aliasName);
             typeAliases.set(aliasName, aliasType);
             if (relSpecs.size > 0) {
@@ -488,6 +503,12 @@ export function parseFrontmatterYaml(
                 `duplicate type alias '${aliasName}'`,
               );
             }
+            assertKnownTypeRefs(
+              `type '${aliasName}'`,
+              aliasType,
+              typeAliases,
+              NO_IMPORT_STEMS,
+            );
             localTypeAliasNames.add(aliasName);
             typeAliases.set(aliasName, aliasType);
             if (relSpecs.size > 0) {
@@ -523,12 +544,22 @@ export function parseFrontmatterYaml(
     }
   }
 
+  const importStems: ReadonlySet<string> = new Set(
+    imports.map((imp) => imp.stem),
+  );
+
   // Phase 1: Parse consts (they can reference earlier consts)
   const consts: VarDecl[] = [];
   const constValues = new Map<string, Value>();
   for (const item of rawConsts) {
     try {
       const decl = parseConstDecl(item.raw, constValues);
+      assertKnownTypeRefs(
+        declarationLabel(decl.name),
+        decl.varType,
+        typeAliases,
+        importStems,
+      );
       consts.push({ ...decl, loc: item.loc });
       if (decl.defaultValue !== undefined) {
         constValues.set(decl.name, decl.defaultValue);
@@ -551,6 +582,12 @@ export function parseFrontmatterYaml(
   for (const item of rawEnv) {
     try {
       const decl = parseConstDecl(item.raw, constValues);
+      assertKnownTypeRefs(
+        declarationLabel(decl.name),
+        decl.varType,
+        typeAliases,
+        importStems,
+      );
       env.push({ ...decl, loc: item.loc });
     } catch (err) {
       if (err instanceof TemplateSyntaxError && err.line === undefined) {
@@ -584,6 +621,12 @@ export function parseFrontmatterYaml(
         constValues,
         false,
         typeAliasSanitize,
+      );
+      assertKnownTypeRefs(
+        declarationLabel(decl.name),
+        decl.varType,
+        typeAliases,
+        importStems,
       );
       params.push({ ...decl, loc: item.loc });
       if (unresolved !== undefined) {

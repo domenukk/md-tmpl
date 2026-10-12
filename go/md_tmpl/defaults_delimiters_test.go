@@ -231,7 +231,7 @@ params:
 
 allow_unused: true
 ---
-{{ tags }} {{ config.msg }} {{ rows }}`
+{{ tags | join(", ") }} {{ config.msg }} > {% for row in rows %}{{ row.tier }}{% /for %}`
 
 	code, err := GenerateTypes(src, WithPackageName("gen"), WithRenderHelper(false))
 	if err != nil {
