@@ -11,6 +11,7 @@ Bare `// NOLINT` without a reason is itself flagged as a violation.
 Stale NOLINTs (where the next line doesn't trigger any check) are also flagged.
 """
 
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -566,6 +567,7 @@ def run_packaging_invariant_check() -> bool:
 
 
 def main() -> int:
+    os.chdir(Path(__file__).resolve().parent.parent)
     failed = run_pattern_checks()
     failed = run_bare_nolint_check() or failed
     failed = run_empty_catch_check() or failed
@@ -582,3 +584,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

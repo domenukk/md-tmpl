@@ -1,4 +1,4 @@
-//! Native Rust code generation for `{% match %}` blocks (option, enum, and scalar).
+//! Native Rust code generation for `{% match %}` blocks over `Option`, enums, and scalars.
 
 use md_tmpl_core::{
     Value, VarType, VariantDecl,

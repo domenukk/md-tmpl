@@ -927,7 +927,7 @@ Constants are type-checked at compile time. The value is mandatory — a
   including inside `{% for %}`, `{% if %}`, and `{% match %}` blocks.
 - **Inherited by inline templates**: `{% tmpl %}` blocks inherit the
   parent template's constants automatically (see
-  [Inline Templates — Scoping Rules](#scoping-rules)).
+  [Inline Templates — Type & Sanitization Inheritance](#type--sanitization-inheritance-in-inline-templates)).
 - **Not passed via `with`**: constants are injected automatically into
   the template's scope. They do not appear in `params:` and cannot be
   overridden at render time.

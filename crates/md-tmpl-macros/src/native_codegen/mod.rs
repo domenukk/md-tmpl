@@ -5,8 +5,8 @@
 //! [`Value`]s, allocating [`HashMap`]s, or walking the runtime AST interpreter.
 
 mod control;
-mod loops;
-mod matching;
+mod loops_and_includes;
+mod match_codegen;
 
 use hashbrown::HashMap;
 use md_tmpl_core::{
@@ -18,8 +18,8 @@ use quote::{format_ident, quote};
 
 use self::{
     control::codegen_if,
-    loops::{codegen_for_loop, codegen_include},
-    matching::codegen_match,
+    loops_and_includes::{codegen_for_loop, codegen_include},
+    match_codegen::codegen_match,
 };
 use crate::{
     codegen::{codegen_parsed_filter, is_scalar},
