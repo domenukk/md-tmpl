@@ -425,8 +425,7 @@ describe("End-to-end type workflow", () => {
         readonly done: boolean;
       }[];
       readonly outcome:
-        | { readonly __kind__: "Success"; readonly msg: string }
-        | "Failure";
+        { readonly __kind__: "Success"; readonly msg: string } | "Failure";
     }
 
     const tmpl = TypedTemplate.fromSource<Params>(TEMPLATE_SRC);

@@ -542,12 +542,10 @@ function collectLabelsInner(nodes: readonly Node[], labels: Set<string>): void {
       for (const arm of node.arms) {
         for (const variant of arm.variants) {
           // Only collect unquoted labels (not quoted strings)
-          if (
-            !(
-              (variant.startsWith('"') && variant.endsWith('"')) ||
-              (variant.startsWith("'") && variant.endsWith("'"))
-            )
-          ) {
+          if (!(
+            (variant.startsWith('"') && variant.endsWith('"')) ||
+            (variant.startsWith("'") && variant.endsWith("'"))
+          )) {
             labels.add(variant);
           }
         }

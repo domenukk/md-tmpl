@@ -470,10 +470,10 @@ function matchGenericPipeToken(s: string, i: number): number | undefined {
   let closePipeCode: number;
   if (s.startsWith("<|", i)) {
     openLen = 2;
-    closePipeCode = 124 /* '|' */;
+    closePipeCode = 124; /* '|' */
   } else if (s.startsWith(FULLWIDTH_PIPE_OPEN, i)) {
     openLen = FULLWIDTH_PIPE_OPEN.length;
-    closePipeCode = 0xff5c /* '｜' */;
+    closePipeCode = 0xff5c; /* '｜' */
   } else {
     return undefined;
   }
