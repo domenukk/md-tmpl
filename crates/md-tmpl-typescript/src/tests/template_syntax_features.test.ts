@@ -265,18 +265,6 @@ params:
     assert.strictEqual(defs.flag, true);
   });
 
-  it("renderUnchecked uses defaults", () => {
-    const tmpl = Template.fromSource(
-      `---
-params:
-  - greeting = str := "Hi"
-  - name = str
----
-{{ greeting }} {{ name }}`,
-    );
-    assert.strictEqual(tmpl.renderUnchecked({ name: "Bob" }), "Hi Bob");
-  });
-
   it("defaults can be overridden", () => {
     const tmpl = Template.fromSource(
       `---

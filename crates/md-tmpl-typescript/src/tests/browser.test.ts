@@ -462,22 +462,6 @@ A:{{ x }}`,
     assert.strictEqual(await tmpl.renderEmptyAsync(), "A:dflt");
   });
 
-  it("renderUnchecked renders synchronously when cache is warm", async () => {
-    const { fetch } = fakeFetch({
-      [`${ORIGIN}/tu/main.tmpl.md`]: `---
-params: [x = str]
----
-{{ x }}!`,
-    });
-
-    const tmpl = await loadTemplate("/tu/main.tmpl.md", {
-      fetch,
-      baseUrl: ORIGIN,
-    });
-    // No includes, so sync render is fine.
-    assert.strictEqual(tmpl.renderUnchecked({ x: "fast" }), "fast!");
-  });
-
   it("clearCache forces re-fetch on next load", async () => {
     const files: Record<string, string> = {
       [`${ORIGIN}/tc/main.tmpl.md`]: `---

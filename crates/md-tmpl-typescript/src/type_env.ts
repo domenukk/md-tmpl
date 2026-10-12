@@ -15,14 +15,13 @@ import {
   TYPE_ALIAS,
   FILTER_SANITIZE,
   PIPE,
-  QUOTE_DOUBLE,
-  QUOTE_SINGLE,
   DOT,
 } from "./consts.js";
 import { splitPipes } from "./evaluator.js";
 
 /** Built-in functions that always return a scalar (displayable) value. */
 const SCALAR_FUNCTIONS = new Set(["len", "idx", "kind", "has", TYPE_STR]);
+const EMPTY_NARROWINGS: ReadonlyMap<string, VarType> = new Map();
 
 /**
  * Immutable type environment that tracks declarations and narrowings.
@@ -39,7 +38,7 @@ export class TypeEnv {
     typeAliases?: ReadonlyMap<string, VarType>,
   ) {
     this.decls = decls;
-    this.narrowings = narrowings ?? new Map();
+    this.narrowings = narrowings ?? EMPTY_NARROWINGS;
     this.typeAliases = typeAliases;
   }
 
@@ -94,27 +93,46 @@ export class TypeEnv {
     }
 
     // Skip string/numeric literals
+    const firstCode = pathStr.charCodeAt(0);
     if (
-      pathStr.startsWith(QUOTE_DOUBLE) ||
-      pathStr.startsWith(QUOTE_SINGLE) ||
-      /^\d/.test(pathStr)
+      firstCode === 34 /* " */ ||
+      firstCode === 39 /* ' */ ||
+      (firstCode >= 48 && firstCode <= 57)
     ) {
       return undefined;
     }
 
     // Skip built-in functions — they return scalars. Match a leading
     // `name(` function-call form and check it against the scalar builtins.
-    const funcMatch = /^([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/.exec(pathStr);
-    const funcName = funcMatch?.[1];
-    if (funcName !== undefined && SCALAR_FUNCTIONS.has(funcName)) {
-      return undefined;
+    if (pathStr.includes("(")) {
+      const funcMatch = /^([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/.exec(pathStr);
+      const funcName = funcMatch?.[1];
+      if (funcName !== undefined && SCALAR_FUNCTIONS.has(funcName)) {
+        return undefined;
+      }
     }
 
     // Check narrowings first (full path match)
-    const narrowed = this.narrowings.get(pathStr);
-    if (narrowed !== undefined) return narrowed;
+    if (this.narrowings.size > 0) {
+      const narrowed = this.narrowings.get(pathStr);
+      if (narrowed !== undefined) return narrowed;
+    }
 
-    // Split dotted path: "user.address.city" → ["user", "address", "city"]
+    const dotIdx = pathStr.indexOf(DOT);
+    if (dotIdx === -1) {
+      return this.lookupRoot(pathStr);
+    }
+
+    if (!pathStr.includes(DOT, dotIdx + 1)) {
+      const root = pathStr.slice(0, dotIdx);
+      const rootType = this.lookupRoot(root);
+      if (rootType === undefined) return undefined;
+      const field = pathStr.slice(dotIdx + 1);
+      const resolved = resolveFieldType(rootType, field);
+      return resolved === undefined ? undefined : this.resolveAlias(resolved);
+    }
+
+    // Split multi-dot path: "user.address.city" → ["user", "address", "city"]
     const parts = pathStr.split(DOT);
     const root = parts[0];
     if (root === undefined) return undefined;
@@ -141,15 +159,24 @@ export class TypeEnv {
    * binding, then a type alias (enum namespaces) — with aliases followed.
    */
   lookupRoot(root: string): VarType | undefined {
-    const ty =
-      this.narrowings.get(root) ??
-      this.decls.find((d) => d.name === root)?.varType ??
-      this.typeAliases?.get(root);
-    return ty === undefined ? undefined : this.resolveAlias(ty);
+    if (this.narrowings.size > 0) {
+      const narrowed = this.narrowings.get(root);
+      if (narrowed !== undefined) return this.resolveAlias(narrowed);
+    }
+    const decls = this.decls;
+    for (let i = decls.length - 1; i >= 0; i--) {
+      const d = decls[i];
+      if (d?.name === root) {
+        return this.resolveAlias(d.varType);
+      }
+    }
+    const alias = this.typeAliases?.get(root);
+    return alias === undefined ? undefined : this.resolveAlias(alias);
   }
 
   /** Narrowed type of a full dotted path (e.g. `task.cat` inside a match). */
   narrowingOf(path: string): VarType | undefined {
+    if (this.narrowings.size === 0) return undefined;
     const ty = this.narrowings.get(path);
     return ty === undefined ? undefined : this.resolveAlias(ty);
   }
@@ -170,13 +197,18 @@ export class TypeEnv {
  * Resolve a field access on a type. Returns the field's type,
  * or undefined if the type doesn't support field access.
  */
-function resolveFieldType(ty: VarType, field: string): VarType | undefined {
+export function resolveFieldType(
+  ty: VarType,
+  field: string,
+): VarType | undefined {
   switch (ty.kind) {
     case TYPE_TMPL:
     case TYPE_STRUCT:
     case TYPE_LIST: {
-      const fieldDecl = ty.fields.find((f) => f.name === field);
-      return fieldDecl?.varType;
+      for (const f of ty.fields) {
+        if (f.name === field) return f.varType;
+      }
+      return undefined;
     }
     case TYPE_ENUM: {
       // A field is accessible if ALL variants have it

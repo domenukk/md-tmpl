@@ -57,7 +57,7 @@ Hello {{ name }}`;
       );
     });
 
-    it("renderUncheckedFlexbuffers handles malformed byte buffers cleanly without panicking", () => {
+    it("renderAllowingExtraFlexbuffers handles malformed byte buffers cleanly without panicking", () => {
       const src = `---
 params:
   - name = str
@@ -67,16 +67,16 @@ Hello {{ name }}`;
 
       assert.throws(
         () => {
-          tmpl.renderUncheckedFlexbuffers(new Uint8Array([0x00, 0x01, 0x02]));
+          tmpl.renderAllowingExtraFlexbuffers(new Uint8Array([0x00, 0x01, 0x02]));
         },
         /flexbuffers/i,
-        "Expected renderUncheckedFlexbuffers to throw clean error on garbage bytes",
+        "Expected renderAllowingExtraFlexbuffers to throw clean error on garbage bytes",
       );
     });
   });
 
-  describe("3. Unchecked Rendering with Inline Templates (Parity Verification)", () => {
-    it("renderUnchecked in WASM preserves inline template includes (unlike TS)", () => {
+  describe("3. Allowing-Extra Rendering with Inline Templates (Parity Verification)", () => {
+    it("renderAllowingExtra in WASM preserves inline template includes", () => {
       const src = `---
 params:
   - name = str
@@ -98,10 +98,8 @@ Hello {{ name }}!
       const checked = tmpl.render(params);
       assert.strictEqual(checked, "Hello Alice!\n");
 
-      // In WASM, renderUnchecked delegates directly to Rust render_ctx_unchecked,
-      // so it correctly outputs the inline template (unlike TS renderUnchecked).
-      const unchecked = tmpl.renderUnchecked(params);
-      assert.strictEqual(unchecked, "Hello Alice!\n");
+      const allowingExtra = tmpl.renderAllowingExtra(params);
+      assert.strictEqual(allowingExtra, "Hello Alice!\n");
     });
   });
 });

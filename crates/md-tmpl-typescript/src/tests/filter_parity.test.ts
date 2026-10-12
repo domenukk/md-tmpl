@@ -196,7 +196,7 @@ describe("tag-spec validation and enclosed sanitization", () => {
     assert.strictEqual(sanitizeEnclosedString("a\nb", '"h"'), "a\nb");
   });
 
-  it("renderUnchecked displays large and small floats positionally", () => {
+  it("render displays large and small floats positionally", () => {
     const tmpl = Template.fromSource(`---
 params:
   - a = float
@@ -206,10 +206,9 @@ params:
     const params = { a: 1e21, b: 1e-7 };
     const expected = "1000000000000000000000 0.0000001";
     assert.strictEqual(tmpl.render(params), expected);
-    assert.strictEqual(tmpl.renderUnchecked(params), expected);
   });
 
-  it("renderUnchecked matches render for json, fixed, and enum values", () => {
+  it("render formats json, fixed, and enum values", () => {
     const tmpl = Template.fromSource(`---
 types:
   - E = enum(A(v = str), B)
@@ -222,7 +221,6 @@ params:
     const params = { e: { __kind__: "A", v: "q" }, f: 2.5 };
     const expected = '{"__kind__":"A","v":"q"} 3 2.5';
     assert.strictEqual(tmpl.render(params), expected);
-    assert.strictEqual(tmpl.renderUnchecked(params), expected);
   });
 });
 

@@ -435,39 +435,6 @@ static output",
 }
 
 #[test]
-fn test_render_unchecked() {
-    let source = CString::new(
-        "\
----
-params: [name = str]
----
-Hi {{ name }}",
-    )
-    .unwrap();
-    let mut tmpl: *mut PtTemplate = ptr::null_mut();
-    let err = unsafe { pt_template_from_source(source.as_ptr(), &raw mut tmpl) };
-    assert!(err.is_null());
-
-    let ctx = pt_context_new();
-    let key = CString::new("name").unwrap();
-    let val = CString::new("Ada").unwrap();
-    let err = unsafe { pt_context_set_str(ctx, key.as_ptr(), val.as_ptr()) };
-    assert!(err.is_null());
-
-    let mut render_err: *mut c_char = ptr::null_mut();
-    let result = unsafe { pt_template_render_unchecked(tmpl, ctx, &raw mut render_err) };
-    assert!(render_err.is_null());
-    let result_str = unsafe { CStr::from_ptr(result) }.to_str().unwrap();
-    assert_eq!(result_str, "Hi Ada");
-
-    unsafe {
-        pt_free_string(result);
-        pt_context_free(ctx);
-        pt_template_free(tmpl);
-    }
-}
-
-#[test]
 fn test_render_cached() {
     let source = CString::new(
         "\

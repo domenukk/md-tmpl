@@ -199,8 +199,8 @@ params:
   });
 });
 
-describe("option(T) renderUnchecked", () => {
-  it("renders option value directly in unchecked mode", () => {
+describe("option(T) direct rendering", () => {
+  it("renders option value directly", () => {
     const tmpl = Template.fromSource(`---
 params:
   - x = option(int)
@@ -210,11 +210,11 @@ params:
 {{ x }}
 
 > {% /if %}`);
-    const output = tmpl.renderUnchecked({ x: 42 });
+    const output = tmpl.render({ x: 42 });
     assert.strictEqual(output.trim(), "42");
   });
 
-  it("has() works in unchecked mode", () => {
+  it("has() works with null and value", () => {
     const tmpl = Template.fromSource(`---
 params:
   - x = option(int)
@@ -228,8 +228,8 @@ yes
 no
 
 > {% /if %}`);
-    assert.ok(tmpl.renderUnchecked({ x: null }).includes("no"));
-    assert.ok(tmpl.renderUnchecked({ x: 42 }).includes("yes"));
+    assert.ok(tmpl.render({ x: null }).includes("no"));
+    assert.ok(tmpl.render({ x: 42 }).includes("yes"));
   });
 });
 

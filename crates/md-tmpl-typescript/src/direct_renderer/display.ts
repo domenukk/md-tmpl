@@ -13,15 +13,16 @@ import { formatFloatDisplay, formatIntDisplay } from "../numeric_format.js";
 
 /** Convert a JS value to its display string. */
 export function directDisplay(value: unknown): string {
-  if (value === null || value === undefined) return "";
   if (typeof value === "string") return value;
-  if (typeof value === "boolean") return value ? LIT_TRUE : LIT_FALSE;
   if (typeof value === "number") {
+    if (Number.isSafeInteger(value)) return String(value);
     // Integers map to `int` and others to `float`, exactly like `fromJs`.
     return Number.isInteger(value)
       ? formatIntDisplay(value)
       : formatFloatDisplay(value);
   }
+  if (typeof value === "boolean") return value ? LIT_TRUE : LIT_FALSE;
+  if (value === null || value === undefined) return "";
   if (Array.isArray(value)) {
     throw new Error(
       "cannot display list value directly — iterate with '{% for item in list %}' instead",

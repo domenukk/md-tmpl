@@ -2,6 +2,60 @@ use quote::{format_ident, quote};
 
 use crate::{crate_path, type_gen::string_to_variant_ident};
 
+/// Maximum number of `Segment` pushes emitted inline in a single block before
+/// outlining into cold helper functions so `rustc` never builds a large stack frame.
+const MAX_INLINE_SEGMENT_PUSHES: usize = 32;
+
+/// Generate a `Vec<Segment>` construction expression without intermediate `[Segment; N]`
+/// stack array literals (avoiding `clippy::large_stack_arrays` on large templates).
+pub(crate) fn codegen_segment_vec(
+    segs: &[md_tmpl_core::compiled::Segment],
+) -> proc_macro2::TokenStream {
+    let cp = crate_path();
+    let len = segs.len();
+    if len == 0 {
+        return quote! { #cp::__private::Vec::new() };
+    }
+    if len <= MAX_INLINE_SEGMENT_PUSHES {
+        let pushes = segs.iter().map(|s| {
+            let tok = codegen_segment(s);
+            quote! { __segs.push(#tok); }
+        });
+        return quote! {
+            {
+                let mut __segs = #cp::__private::Vec::with_capacity(#len);
+                #(#pushes)*
+                __segs
+            }
+        };
+    }
+    let mut chunk_fns = Vec::new();
+    let mut chunk_calls = Vec::new();
+    for (idx, chunk) in segs.chunks(MAX_INLINE_SEGMENT_PUSHES).enumerate() {
+        let fn_ident = format_ident!("__push_segment_chunk_{}", idx);
+        let pushes = chunk.iter().map(|s| {
+            let tok = codegen_segment(s);
+            quote! { __segs.push(#tok); }
+        });
+        chunk_fns.push(quote! {
+            #[cold]
+            #[inline(never)]
+            fn #fn_ident(__segs: &mut #cp::__private::Vec<#cp::compiled::Segment>) {
+                #(#pushes)*
+            }
+        });
+        chunk_calls.push(quote! { #fn_ident(&mut __segs); });
+    }
+    quote! {
+        {
+            #(#chunk_fns)*
+            let mut __segs = #cp::__private::Vec::with_capacity(#len);
+            #(#chunk_calls)*
+            __segs
+        }
+    }
+}
+
 pub(crate) fn codegen_segment(seg: &md_tmpl_core::compiled::Segment) -> proc_macro2::TokenStream {
     use md_tmpl_core::compiled::Segment;
     let cp = crate_path();
@@ -27,16 +81,16 @@ pub(crate) fn codegen_segment(seg: &md_tmpl_core::compiled::Segment) -> proc_mac
             else_body,
         } => {
             let filters_tokens = filters.iter().map(codegen_parsed_filter);
-            let body_tokens = body.iter().map(codegen_segment);
-            let else_body_tokens = else_body.iter().map(codegen_segment);
+            let body_vec = codegen_segment_vec(body);
+            let else_body_vec = codegen_segment_vec(else_body);
             let list_expr_tokens = codegen_compiled_expr(list_expr);
             quote! {
                 #cp::compiled::Segment::ForLoop {
                     binding: #cp::__private::Cow::Borrowed(#binding),
                     list_expr: #list_expr_tokens,
                     filters: #cp::__private::vec![#(#filters_tokens),*],
-                    body: #cp::__private::vec![#(#body_tokens),*],
-                    else_body: #cp::__private::vec![#(#else_body_tokens),*],
+                    body: #body_vec,
+                    else_body: #else_body_vec,
                 }
             }
         }
@@ -46,16 +100,16 @@ pub(crate) fn codegen_segment(seg: &md_tmpl_core::compiled::Segment) -> proc_mac
         } => {
             let branch_tokens = branches.iter().map(|(cond, body)| {
                 let cond_tokens = codegen_condition(cond);
-                let body_tokens = body.iter().map(codegen_segment);
+                let body_vec = codegen_segment_vec(body);
                 quote! {
-                    (#cond_tokens, #cp::__private::vec![#(#body_tokens),*])
+                    (#cond_tokens, #body_vec)
                 }
             });
-            let else_tokens = else_body.iter().map(codegen_segment);
+            let else_vec = codegen_segment_vec(else_body);
             quote! {
                 #cp::compiled::Segment::If {
                     branches: #cp::__private::vec![#(#branch_tokens),*],
-                    else_body: #cp::__private::vec![#(#else_tokens),*],
+                    else_body: #else_vec,
                 }
             }
         }
@@ -74,9 +128,9 @@ pub(crate) fn codegen_segment(seg: &md_tmpl_core::compiled::Segment) -> proc_mac
             is_option,
         } => codegen_segment_match(expr, arms, *is_option),
         Segment::Panic(segs) => {
-            let segs_tokens = segs.iter().map(codegen_segment);
+            let segs_vec = codegen_segment_vec(segs);
             quote! {
-                #cp::compiled::Segment::Panic(#cp::__private::vec![#(#segs_tokens),*])
+                #cp::compiled::Segment::Panic(#segs_vec)
             }
         }
     }
@@ -120,7 +174,7 @@ fn codegen_segment_match(
 ) -> proc_macro2::TokenStream {
     let cp = crate_path();
     let arm_tokens = arms.iter().map(|arm| {
-        let body_tokens = arm.body.iter().map(codegen_segment);
+        let body_vec = codegen_segment_vec(&arm.body);
         let variant_tokens = arm.variants.iter().map(|v| {
             quote! { #cp::__private::Cow::Borrowed(#v) }
         });
@@ -135,7 +189,7 @@ fn codegen_segment_match(
             #cp::compiled::MatchArm {
                 variants: #cp::__private::vec![#(#variant_tokens),*],
                 guard: #guard_tokens,
-                body: #cp::__private::vec![#(#body_tokens),*],
+                body: #body_vec,
             }
         }
     });
@@ -377,8 +431,8 @@ fn codegen_condition_operand(
             quote! { #cp::compiled::ConditionOperand::Has(#path_tokens) }
         }
         ConditionOperand::InterpolatedStr(segs) => {
-            let segs_tokens = segs.iter().map(codegen_segment);
-            quote! { #cp::compiled::ConditionOperand::InterpolatedStr(#cp::__private::vec![#(#segs_tokens),*]) }
+            let segs_vec = codegen_segment_vec(segs);
+            quote! { #cp::compiled::ConditionOperand::InterpolatedStr(#segs_vec) }
         }
     }
 }
@@ -406,7 +460,7 @@ pub(crate) fn codegen_compiled_inline_template(
 ) -> proc_macro2::TokenStream {
     let cp = crate_path();
     let referenced = collect_referenced_const_keys(&t.segments);
-    let segments_tokens = t.segments.iter().map(codegen_segment);
+    let segments_vec = codegen_segment_vec(&t.segments);
     let decls_tokens = t.declarations.iter().map(codegen_var_decl);
     let const_entries = t
         .consts
@@ -430,7 +484,7 @@ pub(crate) fn codegen_compiled_inline_template(
             #[inline(never)]
             fn __init_inline() -> #cp::compiled::CompiledInlineTemplate {
                 #cp::compiled::CompiledInlineTemplate {
-                    segments: #cp::__private::Arc::from([#(#segments_tokens),*]),
+                    segments: #cp::__private::Arc::from(#segments_vec),
                     declarations: #cp::__private::Arc::from([#(#decls_tokens),*]),
                     consts: #cp::__private::Arc::new([#(#const_entries),*].into_iter().collect()),
                     imported_consts: #cp::__private::Arc::new([#(#imported_const_entries),*].into_iter().collect()),

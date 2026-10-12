@@ -24,7 +24,6 @@ const EXPONENT_MARKER = "e";
 const ZERO_DIGIT = "0";
 
 /** IEEE-754 binary64 layout. */
-const F64_BYTES = 8;
 const F64_MANTISSA_BITS = 52n;
 const F64_EXPONENT_MASK = 0x7ffn;
 const F64_EXPONENT_BIAS = 1075n;
@@ -34,9 +33,38 @@ const F64_MANTISSA_MASK = F64_IMPLICIT_BIT - 1n;
 
 const BIGINT_ZERO = 0n;
 const BIGINT_ONE = 1n;
-const BIGINT_TWO = 2n;
-const BIGINT_FIVE = 5n;
 const BIGINT_TEN = 10n;
+
+/** Bounds within which `Number#toString` never emits exponential notation. */
+const POSITIONAL_FLOAT_MIN = 1e-6;
+const POSITIONAL_FLOAT_MAX = 1e21;
+
+/** Reusable typed-array views for zero-allocation IEEE-754 binary64 bit extraction. */
+const F64_SCRATCH_ARRAY = new Float64Array(1);
+const U32_SCRATCH_ARRAY = new Uint32Array(F64_SCRATCH_ARRAY.buffer);
+const U64_SCRATCH_ARRAY = new BigUint64Array(F64_SCRATCH_ARRAY.buffer);
+
+/** Pre-computed powers of 10 (`10n ** BigInt(p)`) for common precisions `0..=20`. */
+const POW10_TABLE: readonly bigint[] = Array.from(
+  { length: 21 },
+  (_, i) => BIGINT_TEN ** BigInt(i),
+);
+const POW10_NUM_TABLE = [1, 10, 100, 1000, 10000, 100000, 1000000] as const;
+const POW2_NUM_TABLE: readonly number[] = Array.from(
+  { length: 54 },
+  (_, i) => 2 ** i,
+);
+const ZERO_PAD_TABLE: readonly string[] = Array.from({ length: 21 }, (_, i) =>
+  ZERO_DIGIT.repeat(i),
+);
+const MAX_FAST_FIXED_PREC = 6;
+const MAX_FAST_FIXED_ABS = 67108864;
+const LIMB_26_BASE = 67108864;
+const LIMB_26_HALF = 33554432;
+const LIMB_26_MASK = 0x3ffffff;
+const F64_HI_MANTISSA_MASK = 0xfffff;
+const F64_HI_IMPLICIT_BIT = 0x100000;
+const F64_EXPONENT_BIAS_NUM = 1075;
 
 /** Returns `true` if `x` has its sign bit set (including `-0`). */
 function isSignNegative(x: number): boolean {
@@ -57,11 +85,15 @@ function formatNonFinite(x: number): string {
  * `1e-7` → `"0.0000001"`, `1.0` → `"1"`, `-0.0` → `"-0"`).
  */
 export function formatFloatDisplay(x: number): string {
+  const abs = Math.abs(x);
+  if (abs >= POSITIONAL_FLOAT_MIN && abs < POSITIONAL_FLOAT_MAX) {
+    return String(x);
+  }
   if (!Number.isFinite(x)) {
     return formatNonFinite(x);
   }
   const sign = isSignNegative(x) ? MINUS_SIGN : "";
-  const repr = String(Math.abs(x));
+  const repr = String(abs);
   const expIdx = repr.indexOf(EXPONENT_MARKER);
   if (expIdx === -1) {
     return `${sign}${repr}`;
@@ -89,22 +121,14 @@ export function formatIntDisplay(n: number): string {
 
 /** Decompose a finite, non-negative float into `[mantissa, exponent]` with `x = mantissa * 2^exponent`. */
 function decomposeFinite(x: number): readonly [bigint, bigint] {
-  const view = new DataView(new ArrayBuffer(F64_BYTES));
-  view.setFloat64(0, x);
-  const bits = view.getBigUint64(0);
+  F64_SCRATCH_ARRAY[0] = x;
+  const bits = U64_SCRATCH_ARRAY[0] ?? BIGINT_ZERO;
   const biasedExp = (bits >> F64_MANTISSA_BITS) & F64_EXPONENT_MASK;
   const fraction = bits & F64_MANTISSA_MASK;
   if (biasedExp === BIGINT_ZERO) {
     return [fraction, F64_SUBNORMAL_EXPONENT];
   }
   return [fraction | F64_IMPLICIT_BIT, biasedExp - F64_EXPONENT_BIAS];
-}
-
-/** Round `numerator / denominator` (both non-negative) to the nearest integer, ties away from zero. */
-function divRoundHalfAway(numerator: bigint, denominator: bigint): bigint {
-  const quotient = numerator / denominator;
-  const twiceRemainder = (numerator % denominator) * BIGINT_TWO;
-  return twiceRemainder >= denominator ? quotient + BIGINT_ONE : quotient;
 }
 
 /**
@@ -114,26 +138,94 @@ function divRoundHalfAway(numerator: bigint, denominator: bigint): bigint {
  * a sign), and non-finite values print as `NaN` / `inf` / `-inf`.
  */
 export function formatFixedFloat(x: number, precision: number): string {
+  if (x === 0) {
+    return precision === 0
+      ? ZERO_DIGIT
+      : `${ZERO_DIGIT}${DECIMAL_POINT}${ZERO_PAD_TABLE[precision] ?? ZERO_DIGIT.repeat(precision)}`;
+  }
+  const abs = x < 0 ? -x : x;
+  if (
+    precision <= MAX_FAST_FIXED_PREC &&
+    abs >= POSITIONAL_FLOAT_MIN &&
+    abs < MAX_FAST_FIXED_ABS
+  ) {
+    const scale = POW10_NUM_TABLE[precision] ?? 1;
+    const prod = abs * scale;
+    const fl = Math.floor(prod);
+    const frac = prod - fl;
+    let scaled: number | undefined;
+    if (frac < 0.499) {
+      scaled = fl;
+    } else if (frac > 0.501) {
+      scaled = fl + 1;
+    } else {
+      F64_SCRATCH_ARRAY[0] = abs;
+      const lo = U32_SCRATCH_ARRAY[0] ?? 0;
+      const hi = U32_SCRATCH_ARRAY[1] ?? 0;
+      const biasedExp = (hi >>> 20) & 0x7ff;
+      if (biasedExp > 0 && biasedExp < 0x7ff) {
+        const shift = F64_EXPONENT_BIAS_NUM - biasedExp;
+        if (shift >= 26 && shift <= 78) {
+          const mLo = lo & LIMB_26_MASK;
+          const mHi =
+            ((hi & F64_HI_MANTISSA_MASK) | F64_HI_IMPLICIT_BIT) * 64 +
+            (lo >>> 26);
+          const pLo = mLo * scale;
+          const pLoCarry = Math.floor(pLo / LIMB_26_BASE);
+          const pHi = mHi * scale + pLoCarry;
+          const s = shift - 26;
+          if (s === 0) {
+            scaled =
+              pHi + (pLo - pLoCarry * LIMB_26_BASE >= LIMB_26_HALF ? 1 : 0);
+          } else {
+            const half = POW2_NUM_TABLE[s - 1] ?? 1;
+            const div = POW2_NUM_TABLE[s] ?? 2;
+            scaled = Math.floor((pHi + half) / div);
+          }
+        }
+      }
+    }
+    if (scaled !== undefined) {
+      const sign = x < 0 ? MINUS_SIGN : "";
+      if (precision === 0) {
+        return `${sign}${String(scaled)}`;
+      }
+      if (precision === 1) {
+        const intPart = Math.floor(scaled / 10);
+        const fracPart = scaled - intPart * 10;
+        return `${sign}${String(intPart)}${DECIMAL_POINT}${String(fracPart)}`;
+      }
+      const raw = String(scaled);
+      if (raw.length > precision) {
+        const pt = raw.length - precision;
+        return `${sign}${raw.slice(0, pt)}${DECIMAL_POINT}${raw.slice(pt)}`;
+      }
+      return `${sign}${ZERO_DIGIT}${DECIMAL_POINT}${ZERO_PAD_TABLE[precision - raw.length] ?? ""}${raw}`;
+    }
+  }
   if (!Number.isFinite(x)) {
     return formatNonFinite(x);
   }
   const sign = x < 0 ? MINUS_SIGN : "";
-  const [mantissa, exponent] = decomposeFinite(Math.abs(x));
-  const scale = BIGINT_TEN ** BigInt(precision);
+  const [mantissa, exponent] = decomposeFinite(abs);
+  const scale = POW10_TABLE[precision] ?? BIGINT_TEN ** BigInt(precision);
+  const product = mantissa * scale;
   let scaled: bigint;
   if (exponent >= BIGINT_ZERO) {
-    scaled = (mantissa << exponent) * scale;
+    scaled = product << exponent;
   } else {
-    const fracDigits = -exponent;
-    const exactDecimal = mantissa * BIGINT_FIVE ** fracDigits;
-    scaled = divRoundHalfAway(exactDecimal * scale, BIGINT_TEN ** fracDigits);
+    const shift = -exponent;
+    scaled = (product + (BIGINT_ONE << (shift - BIGINT_ONE))) >> shift;
   }
   if (precision === 0) {
     return `${sign}${scaled.toString()}`;
   }
-  const digits = scaled.toString().padStart(precision + 1, ZERO_DIGIT);
-  const pointPos = digits.length - precision;
-  return `${sign}${digits.slice(0, pointPos)}${DECIMAL_POINT}${digits.slice(pointPos)}`;
+  const rawDigits = scaled.toString();
+  if (rawDigits.length > precision) {
+    const pointPos = rawDigits.length - precision;
+    return `${sign}${rawDigits.slice(0, pointPos)}${DECIMAL_POINT}${rawDigits.slice(pointPos)}`;
+  }
+  return `${sign}${ZERO_DIGIT}${DECIMAL_POINT}${ZERO_DIGIT.repeat(precision - rawDigits.length)}${rawDigits}`;
 }
 
 /** Format an integer with `precision` zero fractional digits, matching Rust's `write_fixed_int`. */
@@ -142,5 +234,5 @@ export function formatFixedInt(n: number, precision: number): string {
   if (precision === 0) {
     return intText;
   }
-  return `${intText}${DECIMAL_POINT}${ZERO_DIGIT.repeat(precision)}`;
+  return `${intText}${DECIMAL_POINT}${ZERO_PAD_TABLE[precision] ?? ZERO_DIGIT.repeat(precision)}`;
 }

@@ -1,11 +1,11 @@
-use quote::{format_ident, quote};
+use quote::quote;
 
 use crate::{
     codegen::{codegen_value_as_rust_literal, is_scalar},
     crate_path,
     type_gen::{
-        enum_value_setter, typed_dict_codegen, typed_enum_codegen, typed_list_codegen,
-        typed_option_codegen,
+        contains_tmpl_field, fields_are_eq_and_hash, typed_dict_codegen, typed_enum_codegen,
+        typed_list_codegen, typed_option_codegen,
     },
 };
 
@@ -47,7 +47,7 @@ fn render_method_tokens(
     } else {
         quote! {
             let ctx = self.to_context();
-            template().render_ctx_into_unchecked(&ctx, __out)
+            template().render_ctx_into(&ctx, __out)
         }
     };
     quote! {
@@ -117,27 +117,14 @@ pub(crate) fn generate_struct_tokens(
     for decl in &frontmatter.declarations {
         let field_name = crate::make_ident(&decl.name);
         let var_name_str = &decl.name;
-        let (field_type, field_set) = if let Some(path) = imported_type_paths.get(&decl.name) {
-            // Reference the imported enum directly. Emit a `pub type` alias named
-            // like the enum this template would otherwise have generated, so any
-            // external references (and generated docs) keep working.
-            let alias_ident = format_ident!(
-                "{struct_name_str}{}",
-                md_tmpl_core::to_pascal_case(&decl.name)
-            );
-            sub_structs.push(quote! {
-                /// Alias to an imported enum type (shared across templates).
-                pub type #alias_ident = #path;
-            });
-            (quote! { #alias_ident }, enum_value_setter())
-        } else {
-            var_type_to_rust(
-                &decl.var_type,
-                &struct_name_str,
-                &decl.name,
-                &mut sub_structs,
-            )
-        };
+        let alias_override = imported_type_paths.get(&decl.name);
+        let (field_type, field_set) = var_type_to_rust_with_alias(
+            &decl.var_type,
+            &struct_name_str,
+            &decl.name,
+            &mut sub_structs,
+            alias_override,
+        );
 
         let builder_attrs = builder_field_attrs(&decl.var_type);
         let rename_attr = crate::serde_rename_attr(&decl.name);
@@ -156,11 +143,9 @@ pub(crate) fn generate_struct_tokens(
     let path_for_docs = (*doc_path).to_string();
     let doc_attrs = build_struct_docs(frontmatter, &path_for_docs);
 
-    let has_tmpl_fields = frontmatter
-        .declarations
-        .iter()
-        .any(|d| matches!(d.var_type, md_tmpl_core::VarType::Tmpl(_)));
-    let derive_attrs = struct_derive_attrs(has_tmpl_fields);
+    let has_tmpl_fields = contains_tmpl_field(&frontmatter.declarations);
+    let is_eq_and_hash = fields_are_eq_and_hash(&frontmatter.declarations);
+    let derive_attrs = struct_derive_attrs(has_tmpl_fields, is_eq_and_hash);
 
     let render_methods = render_method_tokens(frontmatter, segments, struct_name);
     let cp = crate_path();
@@ -349,19 +334,29 @@ pub(crate) fn build_struct_docs(
 /// on `md-tmpl-macros`, the proc-macro emits `#[derive(Serialize, Deserialize)]`
 /// into the generated code, relying on the user's own `serde` dependency to
 /// resolve the derive.
-pub(crate) fn struct_derive_attrs(has_tmpl_fields: bool) -> proc_macro2::TokenStream {
+pub(crate) fn struct_derive_attrs(
+    has_tmpl_fields: bool,
+    is_eq_and_hash: bool,
+) -> proc_macro2::TokenStream {
     let cp = crate_path();
     let use_serde = cfg!(feature = "serde") && !has_tmpl_fields;
-    if use_serde {
-        quote! {
+    match (use_serde, is_eq_and_hash) {
+        (true, true) => quote! {
+            #[derive(Debug, Clone, PartialEq, Eq, Hash, ::serde::Serialize, ::serde::Deserialize, #cp::__private::TypedBuilder)]
+            #[builder(crate_module_path = #cp::__private::typed_builder)]
+        },
+        (true, false) => quote! {
             #[derive(Debug, Clone, PartialEq, ::serde::Serialize, ::serde::Deserialize, #cp::__private::TypedBuilder)]
             #[builder(crate_module_path = #cp::__private::typed_builder)]
-        }
-    } else {
-        quote! {
+        },
+        (false, true) => quote! {
+            #[derive(Debug, Clone, PartialEq, Eq, Hash, #cp::__private::TypedBuilder)]
+            #[builder(crate_module_path = #cp::__private::typed_builder)]
+        },
+        (false, false) => quote! {
             #[derive(Debug, Clone, PartialEq, #cp::__private::TypedBuilder)]
             #[builder(crate_module_path = #cp::__private::typed_builder)]
-        }
+        },
     }
 }
 
@@ -387,6 +382,19 @@ pub(crate) fn var_type_to_rust(
     field_name: &str,
     sub_structs: &mut Vec<proc_macro2::TokenStream>,
 ) -> (proc_macro2::TokenStream, SetterFn) {
+    var_type_to_rust_with_alias(var_type, parent_struct, field_name, sub_structs, None)
+}
+
+/// Map a `VarType` to a Rust type token and a setter closure, optionally
+/// aliasing the generated type (or inner `list(T)` / `option(T)` type) to an
+/// existing nominal type (`types:` alias or imported type).
+pub(crate) fn var_type_to_rust_with_alias(
+    var_type: &md_tmpl_core::VarType,
+    parent_struct: &str,
+    field_name: &str,
+    sub_structs: &mut Vec<proc_macro2::TokenStream>,
+    alias_override: Option<&proc_macro2::TokenStream>,
+) -> (proc_macro2::TokenStream, SetterFn) {
     use md_tmpl_core::VarType;
     let cp = crate_path();
 
@@ -397,48 +405,21 @@ pub(crate) fn var_type_to_rust(
         VarType::Bool => (quote! { bool }, simple_setter("")),
         VarType::List(fields) if !fields.is_empty() => {
             if fields.len() == 1 && fields[0].name.is_empty() {
-                let (inner_type, inner_set) =
-                    var_type_to_rust(&fields[0].var_type, parent_struct, field_name, sub_structs);
-                let cp2 = cp.clone();
-                let is_copy_scalar = matches!(
-                    fields[0].var_type,
-                    VarType::Int | VarType::Float | VarType::Bool
-                );
-                let is_string = matches!(fields[0].var_type, VarType::Str);
-                (
-                    quote! { #cp::__private::Vec<#inner_type> },
-                    Box::new(move |val, name| {
-                        let name_lit = name.to_string();
-                        let cp = &cp2;
-                        // For scalar Copy types, dereference the iterator item.
-                        // For String, clone it. For complex types, use as-is.
-                        let item_binding = if is_copy_scalar {
-                            quote! { let item = *item_ref; }
-                        } else if is_string {
-                            quote! { let item = item_ref.clone(); }
-                        } else {
-                            quote! { let item = item_ref; }
-                        };
-                        // IMPORTANT: inner_set generates `ctx.set(...)` but inside
-                        // the .map() closure we must use `inner_ctx` to avoid borrowing
-                        // the outer `ctx` mutably. We use a local binding to shadow `ctx`.
-                        let stmts = inner_set(quote! { item }, "item");
-                        quote! {
-                            ctx.set(#name_lit, #cp::Value::List(#cp::__private::Arc::new(
-                                #val.iter().map(|item_ref| {
-                                    #item_binding
-                                    // Shadow `ctx` with `inner_ctx` so that the inner
-                                    // setter's `ctx.set(...)` actually calls `inner_ctx.set(...)`.
-                                    let mut ctx = #cp::Context::new();
-                                    #stmts
-                                    ctx.get("item").cloned().unwrap_or(#cp::Value::Str(#cp::__private::String::new()))
-                                }).collect()
-                            )));
-                        }
-                    }),
+                scalar_list_codegen(
+                    &fields[0].var_type,
+                    parent_struct,
+                    field_name,
+                    sub_structs,
+                    alias_override,
                 )
             } else {
-                typed_list_codegen(fields, parent_struct, field_name, sub_structs)
+                typed_list_codegen(
+                    fields,
+                    parent_struct,
+                    field_name,
+                    sub_structs,
+                    alias_override,
+                )
             }
         }
         VarType::List(_) => (quote! { Vec<#cp::Value> }, {
@@ -449,9 +430,13 @@ pub(crate) fn var_type_to_rust(
                 quote! { ctx.set(#name_lit, #cp::Value::List(#cp::__private::Arc::new(#val.clone()))); }
             })
         }),
-        VarType::Struct(fields) if !fields.is_empty() => {
-            typed_dict_codegen(fields, parent_struct, field_name, sub_structs)
-        }
+        VarType::Struct(fields) if !fields.is_empty() => typed_dict_codegen(
+            fields,
+            parent_struct,
+            field_name,
+            sub_structs,
+            alias_override,
+        ),
         VarType::Struct(_) => (quote! { #cp::Value }, {
             let cp2 = cp.clone();
             Box::new(move |val, name| {
@@ -460,12 +445,20 @@ pub(crate) fn var_type_to_rust(
                 quote! { ctx.set(#name_lit, #val.clone()); }
             })
         }),
-        VarType::Enum(_) if var_type.is_option() => {
-            typed_option_codegen(var_type, parent_struct, field_name, sub_structs)
-        }
-        VarType::Enum(variants) => {
-            typed_enum_codegen(variants, parent_struct, field_name, sub_structs)
-        }
+        VarType::Enum(_) if var_type.is_option() => typed_option_codegen(
+            var_type,
+            parent_struct,
+            field_name,
+            sub_structs,
+            alias_override,
+        ),
+        VarType::Enum(variants) => typed_enum_codegen(
+            variants,
+            parent_struct,
+            field_name,
+            sub_structs,
+            alias_override,
+        ),
         VarType::Tmpl(_) => (quote! { #cp::__private::Arc<#cp::Template> }, {
             let cp2 = cp.clone();
             Box::new(move |val, name| {
@@ -474,16 +467,64 @@ pub(crate) fn var_type_to_rust(
                 quote! { ctx.set(#name_lit, #cp::Value::Tmpl(#val.clone())); }
             })
         }),
-        VarType::Option(inner) => {
-            // Desugar to enum-style option codegen
-            typed_option_codegen(
-                &VarType::Option(inner.clone()),
-                parent_struct,
-                field_name,
-                sub_structs,
-            )
-        }
+        VarType::Option(inner) => typed_option_codegen(
+            &VarType::Option(inner.clone()),
+            parent_struct,
+            field_name,
+            sub_structs,
+            alias_override,
+        ),
     }
+}
+
+/// Generate a `Vec<T>` and setter closure for a single-element unnamed `list(T)` (scalar/enum/nested).
+fn scalar_list_codegen(
+    inner_var_type: &md_tmpl_core::VarType,
+    parent_struct: &str,
+    field_name: &str,
+    sub_structs: &mut Vec<proc_macro2::TokenStream>,
+    alias_override: Option<&proc_macro2::TokenStream>,
+) -> (proc_macro2::TokenStream, SetterFn) {
+    use md_tmpl_core::VarType;
+    let cp = crate_path();
+    let (inner_type, inner_set) = var_type_to_rust_with_alias(
+        inner_var_type,
+        parent_struct,
+        field_name,
+        sub_structs,
+        alias_override,
+    );
+    let cp2 = cp.clone();
+    let is_copy_scalar = matches!(
+        inner_var_type,
+        VarType::Int | VarType::Float | VarType::Bool
+    );
+    let is_string = matches!(inner_var_type, VarType::Str);
+    (
+        quote! { #cp::__private::Vec<#inner_type> },
+        Box::new(move |val, name| {
+            let name_lit = name.to_string();
+            let cp = &cp2;
+            let item_binding = if is_copy_scalar {
+                quote! { let item = *item_ref; }
+            } else if is_string {
+                quote! { let item = item_ref.clone(); }
+            } else {
+                quote! { let item = ::core::clone::Clone::clone(item_ref); }
+            };
+            let stmts = inner_set(quote! { item }, "item");
+            quote! {
+                ctx.set(#name_lit, #cp::Value::List(#cp::__private::Arc::new(
+                    #val.iter().map(|item_ref| {
+                        #item_binding
+                        let mut ctx = #cp::Context::new();
+                        #stmts
+                        ctx.get("item").cloned().unwrap_or(#cp::Value::Str(#cp::__private::String::new()))
+                    }).collect()
+                )));
+            }
+        }),
+    )
 }
 
 /// Create a setter that calls `ctx.set(name, val)` or `ctx.set(name, val.as_str())`.

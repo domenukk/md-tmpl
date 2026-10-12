@@ -92,12 +92,14 @@ export function parseParamDecl(
   constValues?: ReadonlyMap<string, Value>,
   isConstant = false,
   typeAliasSanitize?: ReadonlyMap<string, ReadonlyMap<string, SanitizeSpec>>,
+  loc?: VarDecl["loc"],
 ): VarDecl {
   return parseParamDeclDeferred(
     raw,
     constValues,
     isConstant,
     typeAliasSanitize,
+    loc,
   )[0];
 }
 
@@ -106,6 +108,7 @@ export function parseParamDeclDeferred(
   constValues?: ReadonlyMap<string, Value>,
   isConstant = false,
   typeAliasSanitize?: ReadonlyMap<string, ReadonlyMap<string, SanitizeSpec>>,
+  loc?: VarDecl["loc"],
 ): [
   VarDecl,
   { text: string; varType: VarType } | undefined,
@@ -146,7 +149,7 @@ export function parseParamDeclDeferred(
 
   const varType = parseVarType(cleanedType);
   if (cleanedDefaultLit === undefined) {
-    return [{ name, varType }, undefined, relSpecs];
+    return [{ name, varType, loc }, undefined, relSpecs];
   }
   const trimmedDefault = cleanedDefaultLit.trim();
 
@@ -176,13 +179,17 @@ export function parseParamDeclDeferred(
         varType,
         constValues,
       );
-      return [{ name, varType, defaultValue }, undefined, relSpecs];
+      return [{ name, varType, defaultValue, loc }, undefined, relSpecs];
     } catch (err: unknown) {
       if (!(err instanceof TemplateSyntaxError)) {
         throw err;
       }
       // Defer to imported const resolution
-      return [{ name, varType }, { text: trimmedDefault, varType }, relSpecs];
+      return [
+        { name, varType, loc },
+        { text: trimmedDefault, varType },
+        relSpecs,
+      ];
     }
   }
 
@@ -192,39 +199,7 @@ export function parseParamDeclDeferred(
     varType,
     constValues,
   );
-  return [{ name, varType, defaultValue }, undefined, relSpecs];
-}
-
-/** Collect every type-alias reference (`TYPE_ALIAS` name) inside `varType`. */
-function collectAliasRefs(varType: VarType, out: string[]): void {
-  switch (varType.kind) {
-    case TYPE_ALIAS:
-      out.push(varType.name);
-      return;
-    case TYPE_LIST:
-    case TYPE_STRUCT:
-    case TYPE_TMPL:
-      for (const field of varType.fields) collectAliasRefs(field.varType, out);
-      return;
-    case TYPE_SCALAR_LIST:
-      collectAliasRefs(varType.elementType, out);
-      return;
-    case TYPE_OPTION:
-      collectAliasRefs(varType.innerType, out);
-      return;
-    case TYPE_ENUM:
-      for (const variant of varType.variants) {
-        for (const field of variant.fields)
-          collectAliasRefs(field.varType, out);
-      }
-      return;
-    case TYPE_STR:
-    case TYPE_BOOL:
-    case TYPE_INT:
-    case TYPE_FLOAT:
-    case TYPE_UNTYPED_LIST:
-      return;
-  }
+  return [{ name, varType, defaultValue, loc }, undefined, relSpecs];
 }
 
 /**
@@ -239,13 +214,40 @@ export function assertKnownTypeRefs(
   typeAliases: ReadonlyMap<string, VarType>,
   importStems: ReadonlySet<string>,
 ): void {
-  const refs: string[] = [];
-  collectAliasRefs(varType, refs);
-  for (const ref of refs) {
-    if (typeAliases.has(ref)) continue;
-    const dotIdx = ref.indexOf(DOT);
-    if (dotIdx !== -1 && importStems.has(ref.slice(0, dotIdx))) continue;
-    throw new TemplateSyntaxError(`${label}: unknown type '${ref}'`);
+  switch (varType.kind) {
+    case TYPE_STR:
+    case TYPE_BOOL:
+    case TYPE_INT:
+    case TYPE_FLOAT:
+    case TYPE_UNTYPED_LIST:
+      return;
+    case TYPE_ALIAS: {
+      const ref = varType.name;
+      if (typeAliases.has(ref)) return;
+      const dotIdx = ref.indexOf(DOT);
+      if (dotIdx !== -1 && importStems.has(ref.slice(0, dotIdx))) return;
+      throw new TemplateSyntaxError(`${label}: unknown type '${ref}'`);
+    }
+    case TYPE_LIST:
+    case TYPE_STRUCT:
+    case TYPE_TMPL:
+      for (const field of varType.fields) {
+        assertKnownTypeRefs(label, field.varType, typeAliases, importStems);
+      }
+      return;
+    case TYPE_SCALAR_LIST:
+      assertKnownTypeRefs(label, varType.elementType, typeAliases, importStems);
+      return;
+    case TYPE_OPTION:
+      assertKnownTypeRefs(label, varType.innerType, typeAliases, importStems);
+      return;
+    case TYPE_ENUM:
+      for (const variant of varType.variants) {
+        for (const field of variant.fields) {
+          assertKnownTypeRefs(label, field.varType, typeAliases, importStems);
+        }
+      }
+      return;
   }
 }
 
@@ -277,8 +279,9 @@ export function parseTypeAlias(
 export function parseConstDecl(
   raw: string,
   constValues?: ReadonlyMap<string, Value>,
+  loc?: VarDecl["loc"],
 ): VarDecl {
-  return parseParamDecl(raw, constValues, true);
+  return parseParamDecl(raw, constValues, true, undefined, loc);
 }
 
 /** Parse `"[stem](path.tmpl.md)"` for imports. */

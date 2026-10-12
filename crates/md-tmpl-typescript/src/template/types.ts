@@ -35,9 +35,6 @@ export interface ITemplate {
   /** Render the template with the given parameters. */
   render(params: Record<string, unknown>): string;
 
-  /** Render without strict parameter validation. */
-  renderUnchecked(params: Record<string, unknown>): string;
-
   /** Return parameter declarations as `[name, typeString]` tuples. */
   declarations(): [string, string][];
 

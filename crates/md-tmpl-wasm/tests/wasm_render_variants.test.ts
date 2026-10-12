@@ -1,5 +1,5 @@
 /**
- * WASM binding tests: JSON, empty, unchecked, and allowing-extra render entry points.
+ * WASM binding tests: JSON, empty, and allowing-extra render entry points.
  *
  * Uses Node.js built-in test runner (`node:test`) and `node:assert/strict`.
  */
@@ -130,68 +130,6 @@ params:
 });
 
 // =========================================================================
-// 22. Template.renderUncheckedJson (JSON + unchecked)
-// =========================================================================
-
-describe("Template.renderUncheckedJson", () => {
-  it("allows extra params via JSON", () => {
-    const t = WasmTemplate.fromSource(
-      `---
-params:
-  - name = str
----
-Hello {{ name }}!`,
-    );
-    const result = t.renderUncheckedJson(
-      JSON.stringify({ name: "world", extra: "ok" }),
-    );
-    assert.equal(result, "Hello world!");
-  });
-
-  it("matches renderUnchecked() output exactly", () => {
-    const source = `---
-params:
-  - name = str
----
-Hello {{ name }}!`;
-    const t = WasmTemplate.fromSource(source);
-    const params = { name: "world", extra: "ok" };
-    assert.equal(
-      t.renderUncheckedJson(JSON.stringify(params)),
-      t.renderUnchecked(params),
-    );
-  });
-
-  it("renders correctly without extras", () => {
-    const t = WasmTemplate.fromSource(
-      `---
-params:
-  - a = str
-  - b = int
----
-{{ a }}-{{ b }}`,
-    );
-    assert.equal(
-      t.renderUncheckedJson(JSON.stringify({ a: "foo", b: 5 })),
-      "foo-5",
-    );
-  });
-
-  it("throws on invalid JSON", () => {
-    const t = WasmTemplate.fromSource(
-      `---
-params:
-  - name = str
----
-Hello {{ name }}!`,
-    );
-    assert.throws(() => {
-      t.renderUncheckedJson("not json");
-    });
-  });
-});
-
-// =========================================================================
 // 27. API review — renderEmpty
 // =========================================================================
 
@@ -245,53 +183,6 @@ params:
 {{ greeting }}!`;
     const t = WasmTemplate.fromSource(source);
     assert.equal(t.renderEmpty(), t.render({}));
-  });
-});
-
-// =========================================================================
-// 28. API review — renderUnchecked skips ALL validation
-// =========================================================================
-
-describe("Template.renderUnchecked (skips all validation)", () => {
-  it("does NOT throw on a wrong-typed param and renders it as-is", () => {
-    const t = WasmTemplate.fromSource(
-      `---
-params:
-  - n = int
----
-value={{ n }}`,
-    );
-    // Strict render would reject a string for an int param; unchecked skips it.
-    assert.throws(() => t.render({ n: "oops" }));
-    assert.equal(t.renderUnchecked({ n: "oops" }), "value=oops");
-  });
-
-  it("does NOT throw on extra undeclared params", () => {
-    const t = WasmTemplate.fromSource(
-      `---
-params:
-  - name = str
----
-Hello {{ name }}!`,
-    );
-    assert.equal(
-      t.renderUnchecked({ name: "world", extra: "ignored" }),
-      "Hello world!",
-    );
-  });
-
-  it("renderUncheckedJson mirrors renderUnchecked (wrong type tolerated)", () => {
-    const source = `---
-params:
-  - n = int
----
-value={{ n }}`;
-    const t = WasmTemplate.fromSource(source);
-    const params = { n: "oops" };
-    assert.equal(
-      t.renderUncheckedJson(JSON.stringify(params)),
-      t.renderUnchecked(params),
-    );
   });
 });
 

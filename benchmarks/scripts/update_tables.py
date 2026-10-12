@@ -71,16 +71,25 @@ def format_us(us: float) -> str:
 # ---------------------------------------------------------------------------
 
 RUST_ENGINES_DISPLAY = {
+    "md_tmpl_macro": "md-tmpl (macro)",
     "md_tmpl": "md-tmpl",
     "tera": "Tera",
     "minijinja": "`MiniJinja`",
     "handlebars": "Handlebars",
 }
 
-RUST_ENGINES_ORDER = ["md_tmpl", "tera", "minijinja", "handlebars"]
+RUST_ENGINES_ORDER = [
+    "md_tmpl_macro",
+    "md_tmpl",
+    "tera",
+    "minijinja",
+    "handlebars",
+]
 RUST_SCENARIOS = ["simple", "loop", "conditional", "hero", "mega"]
-
-
+RUST_E2E_SCENARIOS = [
+    ("hero_e2e", "hero (e2e)"),
+    ("mega_e2e", "mega (e2e)"),
+]
 
 
 def build_rust_table(
@@ -126,6 +135,58 @@ def build_rust_table(
             winner = None
 
         row = f"| **{scenario}** {'':>{scenario_width - len(scenario) - 4}}|"
+        for engine, width in zip(RUST_ENGINES_ORDER, col_widths):
+            if engine in values:
+                formatted = format_ns(values[engine])
+                if engine == winner:
+                    cell = f"**{formatted}** 🏆"
+                else:
+                    cell = formatted
+                row += f" {cell:>{width}} |"
+            else:
+                row += f" {'N/A':>{width}} |"
+        lines.append(row)
+
+    return "\n".join(lines)
+
+
+def build_rust_e2e_table(
+    data: dict[str, dict[str, float]],
+    engine_display: dict[str, str] | None = None,
+) -> str:
+    """Build a markdown table for Rust E2E benchmark results."""
+    if engine_display is None:
+        engine_display = RUST_ENGINES_DISPLAY
+
+    header_names = [engine_display[e] for e in RUST_ENGINES_ORDER]
+    scenario_width = max(
+        len("Scenario (E2E)"),
+        max(len(f"**{display}**") for _, display in RUST_E2E_SCENARIOS),
+    )
+    col_widths = [max(len(name), 10) for name in header_names]
+
+    lines = []
+    header = f"| {'Scenario (E2E)':<{scenario_width}} |"
+    separator = f"| {'-' * scenario_width} |"
+    for name, width in zip(header_names, col_widths):
+        header += f" {name:>{width}} |"
+        separator += f" {'-' * width}: |"
+    lines.append(header)
+    lines.append(separator)
+
+    for group_key, display_name in RUST_E2E_SCENARIOS:
+        if group_key not in data:
+            continue
+
+        row_data = data[group_key]
+        values = {
+            engine: row_data[engine]
+            for engine in RUST_ENGINES_ORDER
+            if engine in row_data
+        }
+        winner = min(values, key=lambda e: values[e]) if values else None
+
+        row = f"| **{display_name}** {'':>{scenario_width - len(display_name) - 4}}|"
         for engine, width in zip(RUST_ENGINES_ORDER, col_widths):
             if engine in values:
                 formatted = format_ns(values[engine])
@@ -307,6 +368,59 @@ def build_go_table(
     return "\n".join(lines)
 
 
+GO_FILTERS = [
+    ("FilterUpper", "upper"),
+    ("FilterChain", "trim+upper"),
+]
+
+
+def build_go_filter_table(
+    pt_data: dict[str, dict[str, Any]],
+    go_data: dict[str, dict[str, Any]],
+) -> str:
+    """Build the Go filter comparison table."""
+    filter_width = max(len("Filter"), 10)
+    pt_width = max(len("md-tmpl"), 12)
+    go_width = max(len("Go `text/template`"), 18)
+    speedup_width = max(len("Speedup"), 7)
+
+    lines = [
+        f"| {'Filter':<{filter_width}} "
+        f"| {'md-tmpl':>{pt_width}} "
+        f"| {'Go `text/template`':>{go_width}} "
+        f"| {'Speedup':>{speedup_width}} |",
+        f"| {'-' * filter_width} "
+        f"| {'-' * pt_width}: "
+        f"| {'-' * go_width}: "
+        f"| {'-' * speedup_width}: |",
+    ]
+
+    for key, display in GO_FILTERS:
+        pt_ns = pt_data.get(key, {}).get("ns")
+        go_ns = go_data.get(key, {}).get("ns")
+        if pt_ns is None or go_ns is None:
+            continue
+
+        pt_formatted = format_ns_go(pt_ns)
+        go_formatted = format_ns_go(go_ns)
+        speedup = go_ns / pt_ns if pt_ns > 0 else 0
+        if speedup >= 1.05:
+            speedup_str = f"{speedup:.1f}×"
+            pt_cell = f"**{pt_formatted}** 🏆"
+        else:
+            speedup_str = "~1.0×"
+            pt_cell = pt_formatted
+
+        lines.append(
+            f"| {display:<{filter_width}} "
+            f"| {pt_cell:>{pt_width}} "
+            f"| {go_formatted:>{go_width}} "
+            f"| {speedup_str:>{speedup_width}} |"
+        )
+
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # File updating
 # ---------------------------------------------------------------------------
@@ -376,7 +490,11 @@ def update_readme(readme_path: Path, data: dict[str, Any]) -> bool:
     # Rust table
     if "rust" in data:
         rust_table = build_rust_table(data["rust"], RUST_ENGINES_DISPLAY)
-        for marker in ("### Rust (render-only, pre-parsed)", "### vs Competitors"):
+        for marker in (
+            "### Rust (render-only, pre-parsed)",
+            "#### Render Only (Pre-built Context / Typed Params)",
+            "### vs Competitors",
+        ):
             new_content = replace_table(
                 content,
                 marker,
@@ -386,6 +504,17 @@ def update_readme(readme_path: Path, data: dict[str, Any]) -> bool:
                 content = new_content
                 changes_made = True
                 log.info("Updated Rust table in %s after marker %s", readme_path, marker)
+
+        if any(k in data["rust"] for k, _ in RUST_E2E_SCENARIOS):
+            rust_e2e_table = build_rust_e2e_table(
+                data["rust"], RUST_ENGINES_DISPLAY
+            )
+            e2e_marker = "#### End-to-End (`_e2e`: Struct → Context → Render → String)"
+            new_content = replace_table(content, e2e_marker, rust_e2e_table)
+            if new_content != content:
+                content = new_content
+                changes_made = True
+                log.info("Updated Rust E2E table in %s", readme_path)
 
     if changes_made:
         readme_path.write_text(content)
@@ -483,6 +612,14 @@ def update_go_readme(readme_path: Path, data: dict[str, Any]) -> bool:
         changes_made = True
         log.info("Updated Go round-trip table")
 
+    # Filters table
+    go_filter_table = build_go_filter_table(pt_data, go_data)
+    new_content = replace_table(content, "**Filters:**", go_filter_table)
+    if new_content != content:
+        content = new_content
+        changes_made = True
+        log.info("Updated Go filters table")
+
     if changes_made:
         readme_path.write_text(content)
     return changes_made
@@ -492,20 +629,22 @@ def update_go_readme(readme_path: Path, data: dict[str, Any]) -> bool:
 # ---------------------------------------------------------------------------
 
 TS_INTERNAL_SCENARIOS = [
-    "simple (1 str)",
-    "multi-param (4 types)",
-    "list (2 items)",
-    "list (20 items)",
-    "enum unit variant",
-    "enum struct variant",
-    "filters (idx+add, upper)",
-    "if/elif/else",
+    ("simple (1 str)", "simple (1 param)"),
+    ("multi-param (4 types)", "multi-param (4 params)"),
+    ("list (2 items)", "list + for loop"),
+    ("list (20 items)", "list + for loop"),
+    ("enum unit variant", "enum + match"),
+    ("enum struct variant", "enum + match"),
+    ("filters (idx+add, upper)", "filters + functions"),
+    ("if/elif/else", "if/elif/else"),
+    ("hero (nested + fixed)", "hero (nested + fixed)"),
+    ("mega (3 teams, 15 members)", "mega (3 teams, 15 members)"),
 ]
 
 
 def _strip_ts_prefix(name: str) -> str:
-    """Strip 'render: ' or 'renderUnchecked: ' prefix from bench scenario name."""
-    for prefix in ("render: ", "renderUnchecked: "):
+    """Strip 'render: ' or 'parse: ' prefix from bench scenario name."""
+    for prefix in ("render: ", "parse: "):
         if name.startswith(prefix):
             return name[len(prefix):]
     return name
@@ -518,30 +657,24 @@ def _format_ns_comma(ns: float) -> str:
 
 def build_ts_internal_table(
     render_data: dict[str, float],
-    unchecked_data: dict[str, float],
+    parse_data: dict[str, float],
 ) -> str:
-    """Build the TS internal benchmarks table (render vs renderUnchecked)."""
+    """Build the TS internal benchmarks table (render + cold parse)."""
     render = {_strip_ts_prefix(k): v for k, v in render_data.items()}
-    unchecked = {_strip_ts_prefix(k): v for k, v in unchecked_data.items()}
+    parse = {_strip_ts_prefix(k): v for k, v in parse_data.items()}
 
     lines = []
-    lines.append("| Scenario              |    render | renderUnchecked |")
-    lines.append("| --------------------- | --------: | --------------: |")
+    lines.append("| Scenario                   |   render | cold parse |")
+    lines.append("| -------------------------- | -------: | ---------: |")
 
-    for scenario in TS_INTERNAL_SCENARIOS:
-        r_ns = render.get(scenario)
-        u_ns = unchecked.get(scenario)
+    for render_key, parse_key in TS_INTERNAL_SCENARIOS:
+        r_ns = render.get(render_key)
+        p_ns = parse.get(parse_key)
 
         r_str = _format_ns_comma(r_ns) if r_ns else "N/A"
-        u_str = _format_ns_comma(u_ns) if u_ns else "N/A"
+        p_str = _format_ns_comma(p_ns) if p_ns else "N/A"
 
-        # Bold the faster one
-        if r_ns and u_ns and u_ns <= r_ns:
-            u_str = f"**{u_str}**"
-        elif r_ns and u_ns and r_ns < u_ns:
-            r_str = f"**{r_str}**"
-
-        lines.append(f"| {scenario:<21} | {r_str:>9} | {u_str:>15} |")
+        lines.append(f"| {render_key:<26} | {r_str:>8} | {p_str:>10} |")
 
     return "\n".join(lines)
 
@@ -550,69 +683,29 @@ def build_ts_internal_table(
 # Table generation — TypeScript (comparison vs Handlebars/Mustache)
 # ---------------------------------------------------------------------------
 
-TS_COMP_SCENARIOS = ["simple", "loop (5 items)", "conditional"]
+TS_COMP_SCENARIOS = [
+    "simple",
+    "loop (3 items)",
+    "conditional",
+    "hero",
+    "mega",
+]
 
 
-def build_ts_comparison_render_table(
-    render_data: dict[str, dict[str, float]],
-    unchecked_data: dict[str, dict[str, float]],
+def build_ts_comparison_table(
+    table_data: dict[str, dict[str, float]],
 ) -> str:
-    """Build TS comparison render table (render + unchecked + HBS + Mustache)."""
+    """Build TS comparison table (md-tmpl vs Handlebars vs Mustache)."""
     lines = []
     lines.append(
-        "| Scenario           | render() | renderUnchecked() | Handlebars |        Mustache |"
+        "| Scenario           |        md-tmpl |     Handlebars |       Mustache |"
     )
     lines.append(
-        "| ------------------ | -------: | ----------------: | ---------: | --------------: |"
+        "| ------------------ | -------------: | -------------: | -------------: |"
     )
 
     for scenario in TS_COMP_SCENARIOS:
-        r = render_data.get(scenario, {})
-        u = unchecked_data.get(scenario, {})
-
-        vals = {
-            "pt_r": r.get("pt"),
-            "pt_u": u.get("pt"),
-            "hbs": r.get("hbs"),
-            "mus": r.get("mus"),
-        }
-
-        # Find winner among all 4
-        candidates = {k: v for k, v in vals.items() if v is not None}
-        winner = min(candidates, key=lambda k: candidates[k]) if candidates else None
-
-        def fmt(key: str, width: int, _vals: dict[str, Any] = vals, _winner: str | None = winner) -> str:
-            v = _vals.get(key)
-            if v is None:
-                return f"{'N/A':>{width}}"
-            s = _format_ns_comma(v)
-            if key == _winner:
-                s = f"**{s}** 🏆"
-            return f"{s:>{width}}"
-
-        pad = max(0, 15 - len(scenario) - 4)
-        lines.append(
-            f"| **{scenario}**{'':<{pad}} "
-            f"| {fmt('pt_r', 8)} | {fmt('pt_u', 17)} | {fmt('hbs', 15)} | {fmt('mus', 15)} |"
-        )
-
-    return "\n".join(lines)
-
-
-def build_ts_comparison_roundtrip_table(
-    rt_data: dict[str, dict[str, float]],
-) -> str:
-    """Build TS comparison round-trip table."""
-    lines = []
-    lines.append(
-        "| Scenario   | md-tmpl | Handlebars |        Mustache |"
-    )
-    lines.append(
-        "| ---------- | ---------------: | ---------: | --------------: |"
-    )
-
-    for scenario in TS_COMP_SCENARIOS:
-        r = rt_data.get(scenario, {})
+        r = table_data.get(scenario, {})
         pt = r.get("pt")
         hbs = r.get("hbs")
         mus = r.get("mus")
@@ -620,10 +713,21 @@ def build_ts_comparison_roundtrip_table(
         if pt is None and hbs is None and mus is None:
             continue
 
-        candidates = {k: v for k, v in {"pt": pt, "hbs": hbs, "mus": mus}.items() if v is not None}
-        winner = min(candidates, key=lambda k: candidates[k]) if candidates else None
+        candidates = {
+            k: v
+            for k, v in {"pt": pt, "hbs": hbs, "mus": mus}.items()
+            if v is not None
+        }
+        winner = (
+            min(candidates, key=lambda k: candidates[k]) if candidates else None
+        )
 
-        def fmt(key: str, val: float | None, width: int, _winner: str | None = winner) -> str:
+        def fmt(
+            key: str,
+            val: float | None,
+            width: int,
+            _winner: str | None = winner,
+        ) -> str:
             if val is None:
                 return f"{'N/A':>{width}}"
             s = _format_ns_comma(val)
@@ -631,10 +735,10 @@ def build_ts_comparison_roundtrip_table(
                 s = f"**{s}** 🏆"
             return f"{s:>{width}}"
 
-        pad = max(0, 10 - len(scenario) - 4)
+        pad = max(0, 18 - len(scenario) - 4)
         lines.append(
             f"| **{scenario}**{'':<{pad}} "
-            f"| {fmt('pt', pt, 16)} | {fmt('hbs', hbs, 10)} | {fmt('mus', mus, 15)} |"
+            f"| {fmt('pt', pt, 14)} | {fmt('hbs', hbs, 14)} | {fmt('mus', mus, 14)} |"
         )
 
     return "\n".join(lines)
@@ -650,8 +754,11 @@ WASM_REPRESENTATIVE_SCENARIOS = [
     "render simple (1 param)",
     "render list/for (20 items)",
     "render complex (nested+list+filter)",
+    "render hero (nested + fixed)",
+    "render mega (3 teams, 15 members)",
     "declarations()",
     "renderJson complex (nested+list+filter)",
+    "renderJson mega (3 teams, 15 members)",
 ]
 
 
@@ -696,7 +803,7 @@ def build_wasm_table(wasm_data: dict[str, Any]) -> str:
 
 
 def update_ts_readme(readme_path: Path, data: dict[str, Any]) -> bool:
-    """Update benchmark tables in the TypeScript/WASM README.md."""
+    """Update benchmark tables in the TypeScript README.md."""
     content = readme_path.read_text()
     changes_made = False
 
@@ -704,9 +811,9 @@ def update_ts_readme(readme_path: Path, data: dict[str, Any]) -> bool:
     if "ts" in data:
         ts = data["ts"]
         render = ts.get("render", {})
-        unchecked = ts.get("unchecked", {})
+        parse = ts.get("parse", {})
         if render:
-            new_table = build_ts_internal_table(render, unchecked)
+            new_table = build_ts_internal_table(render, parse)
             new_content = replace_table(content, "### Internal Benchmarks", new_table)
             if new_content != content:
                 content = new_content
@@ -717,9 +824,8 @@ def update_ts_readme(readme_path: Path, data: dict[str, Any]) -> bool:
     if "ts_comparison" in data:
         tc = data["ts_comparison"]
         render = tc.get("render", {})
-        unchecked = tc.get("unchecked", {})
         if render:
-            new_table = build_ts_comparison_render_table(render, unchecked)
+            new_table = build_ts_comparison_table(render)
             new_content = replace_table(
                 content,
                 "**Render only** (pre-parsed template + data",
@@ -733,7 +839,7 @@ def update_ts_readme(readme_path: Path, data: dict[str, Any]) -> bool:
         # 3. Comparison round-trip table
         rt = tc.get("roundtrip", {})
         if rt:
-            new_table = build_ts_comparison_roundtrip_table(rt)
+            new_table = build_ts_comparison_table(rt)
             new_content = replace_table(
                 content,
                 "**Round-trip** (parse + render",
@@ -914,17 +1020,17 @@ def main() -> None:
             ts = data["ts"]
             if "render" in ts:
                 print("=== TypeScript (internal) ===")
-                print(build_ts_internal_table(ts.get("render", {}), ts.get("unchecked", {})))
+                print(build_ts_internal_table(ts.get("render", {}), ts.get("parse", {})))
                 print()
         if "ts_comparison" in data:
             tc = data["ts_comparison"]
             if "render" in tc:
                 print("=== TypeScript (render comparison) ===")
-                print(build_ts_comparison_render_table(tc.get("render", {}), tc.get("unchecked", {})))
+                print(build_ts_comparison_table(tc.get("render", {})))
                 print()
             if "roundtrip" in tc:
                 print("=== TypeScript (round-trip comparison) ===")
-                print(build_ts_comparison_roundtrip_table(tc["roundtrip"]))
+                print(build_ts_comparison_table(tc["roundtrip"]))
                 print()
         if "wasm" in data:
             print("=== WASM vs TypeScript ===")

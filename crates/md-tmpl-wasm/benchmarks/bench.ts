@@ -302,6 +302,102 @@ DB: {{ config.db.host }}:{{ config.db.port }} (retries={{ config.retries }})
 
 By: {{ name | trim }}`;
 
+const HERO_SRC = `---
+params:
+  - title = str
+  - sections = list(heading = str, entries = list(name = str, active = bool, score = float, tags = list(label = str)))
+---
+# {{ title }}
+
+> {% for section in sections %}
+
+## {{ section.heading }}
+
+> {% for entry in section.entries %}
+
+### {{ entry.name }}
+
+> {% if entry.active %}
+
+- Status: active
+- Score: {{ entry.score | fixed(1) }}
+
+> {% elif entry.score > 0 %}
+
+- Status: inactive (score {{ entry.score | fixed(1) }})
+
+> {% else %}
+
+- Status: inactive
+
+> {% /if %}
+> {% for tag in entry.tags %}
+
+  - tag: {{ tag.label }}
+
+> {% /for %}
+> {% /for %}
+> {% /for %}`;
+
+const MEGA_SRC = `---
+params:
+  - org = str
+  - teams = list(name = str, lead = str, active = bool, idx = int, members = list(name = str, role = str, score = float, skills = list(name = str)))
+---
+# {{ org }} Organization Report
+
+> {% for team in teams %}
+
+## {{ team.idx }}. {{ team.name }}
+
+Lead: {{ team.lead }}
+
+> {% if team.active %}
+
+Status: ACTIVE
+
+> {% else %}
+
+Status: INACTIVE
+
+> {% /if %}
+
+> {% for member in team.members %}
+
+### {{ member.name }} ({{ member.role }})
+
+Score: {{ member.score | fixed(1) }}
+
+> {% if member.score > 90 %}
+
+Rating: Outstanding
+
+> {% elif member.score > 70 %}
+
+Rating: Good
+
+> {% elif member.score > 50 %}
+
+Rating: Average
+
+> {% else %}
+
+Rating: Needs Improvement
+
+> {% /if %}
+
+Skills:
+
+> {% for skill in member.skills %}
+
+  - {{ skill.name }}
+
+> {% /for %}
+> {% /for %}
+
+---
+> {% /for %}`;
+
 // ---------------------------------------------------------------------------
 // Parameters
 // ---------------------------------------------------------------------------
@@ -327,6 +423,114 @@ const complexParams: Record<string, unknown> = {
   config: { db: { host: "localhost", port: 5432 }, retries: 3 },
   items: [{ label: "alpha" }, { label: "beta" }, { label: "gamma" }],
   name: "  Admin  ",
+};
+const heroParams: Record<string, unknown> = {
+  title: "System Report",
+  sections: [
+    {
+      heading: "Overview",
+      entries: [
+        {
+          name: "Service-A",
+          active: true,
+          score: 98.7,
+          tags: [{ label: "prod" }, { label: "critical" }],
+        },
+        {
+          name: "Service-B",
+          active: false,
+          score: 45.2,
+          tags: [{ label: "staging" }],
+        },
+        {
+          name: "Service-C",
+          active: false,
+          score: 0.0,
+          tags: [{ label: "deprecated" }],
+        },
+      ],
+    },
+    {
+      heading: "Metrics",
+      entries: [
+        {
+          name: "Latency",
+          active: true,
+          score: 12.3,
+          tags: [{ label: "p99" }],
+        },
+        {
+          name: "Throughput",
+          active: false,
+          score: 0.0,
+          tags: [{ label: "batch" }],
+        },
+      ],
+    },
+  ],
+};
+
+function makeMegaMember(
+  name: string,
+  role: string,
+  score: number,
+  skills: readonly string[],
+): Record<string, unknown> {
+  return {
+    name,
+    role,
+    score,
+    skills: skills.map((s) => ({ name: s })),
+  };
+}
+
+const megaParams: Record<string, unknown> = {
+  org: "Acme Corp",
+  teams: [
+    {
+      name: "Backend",
+      lead: "Alice",
+      active: true,
+      idx: 1,
+      members: [
+        makeMegaMember("Bob", "Senior", 95.5, ["Rust", "Go", "SQL"]),
+        makeMegaMember("Carol", "Mid", 78.3, ["Python", "Docker"]),
+        makeMegaMember("Dave", "Junior", 62.1, ["JavaScript", "HTML"]),
+        makeMegaMember("Eve", "Senior", 91.0, ["Java", "Kotlin", "gRPC"]),
+        makeMegaMember("Frank", "Intern", 45.0, ["Python"]),
+      ],
+    },
+    {
+      name: "Frontend",
+      lead: "Grace",
+      active: true,
+      idx: 2,
+      members: [
+        makeMegaMember("Heidi", "Senior", 88.7, ["React", "TypeScript", "CSS"]),
+        makeMegaMember("Ivan", "Mid", 71.2, ["Vue", "JavaScript"]),
+        makeMegaMember("Judy", "Junior", 55.0, ["HTML", "CSS"]),
+        makeMegaMember("Karl", "Senior", 92.4, ["Angular", "RxJS", "SCSS"]),
+        makeMegaMember("Liam", "Mid", 68.9, ["Svelte"]),
+      ],
+    },
+    {
+      name: "SRE",
+      lead: "Mallory",
+      active: false,
+      idx: 3,
+      members: [
+        makeMegaMember("Nancy", "Senior", 97.1, [
+          "Kubernetes",
+          "Terraform",
+          "Go",
+        ]),
+        makeMegaMember("Oscar", "Mid", 73.5, ["Ansible", "Bash"]),
+        makeMegaMember("Peggy", "Junior", 51.2, ["Linux"]),
+        makeMegaMember("Quentin", "Senior", 89.3, ["Prometheus", "Grafana"]),
+        makeMegaMember("Ruth", "Intern", 38.0, ["Python"]),
+      ],
+    },
+  ],
 };
 
 // ---------------------------------------------------------------------------
@@ -381,6 +585,16 @@ const scenarios: ScenarioConfig[] = [
     setup: (T) => T.fromSource(COMPLEX_SRC),
     params: complexParams,
   },
+  {
+    name: "render hero (nested + fixed)",
+    setup: (T) => T.fromSource(HERO_SRC),
+    params: heroParams,
+  },
+  {
+    name: "render mega (3 teams, 15 members)",
+    setup: (T) => T.fromSource(MEGA_SRC),
+    params: megaParams,
+  },
   // Metadata access
   {
     name: "sourceHash()",
@@ -423,6 +637,12 @@ Max={{ MAX }}, prefix={{ PREFIX }}`),
     setup: (T) => T.fromSource(COMPLEX_SRC),
     jsonParams: JSON.stringify(complexParams),
     params: complexParams,
+  },
+  {
+    name: "renderJson mega (3 teams, 15 members)",
+    setup: (T) => T.fromSource(MEGA_SRC),
+    jsonParams: JSON.stringify(megaParams),
+    params: megaParams,
   },
 ];
 

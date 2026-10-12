@@ -51,9 +51,8 @@ function extractRootVariable(
     const funcName = trimmed.slice(0, parenIdx).trim();
     if (BUILTIN_FUNCTIONS.has(funcName)) {
       const arg = stripPathPrefix(trimmed.slice(parenIdx + 1, -1).trim());
-      // split() always yields at least one element; the fallback satisfies
-      // noUncheckedIndexedAccess without a non-null assertion.
-      const root = (arg.split(PATH_SEP)[0] ?? arg).trim();
+      const dotIdx = arg.indexOf(PATH_SEP);
+      const root = (dotIdx >= 0 ? arg.slice(0, dotIdx) : arg).trim();
       if (
         !loopBindings.has(root) &&
         !isLiteralToken(root) &&
@@ -70,7 +69,8 @@ function extractRootVariable(
   const base = stripPathPrefix(
     (pipeIdx >= 0 ? trimmed.slice(0, pipeIdx) : trimmed).trim(),
   );
-  const root = (base.split(PATH_SEP)[0] ?? base).trim();
+  const dotIdx = base.indexOf(PATH_SEP);
+  const root = (dotIdx >= 0 ? base.slice(0, dotIdx) : base).trim();
   // isValidIdentifier rejects malformed roots (e.g. fragments containing
   // whitespace or operators), mirroring the Rust core exactly.
   if (
@@ -89,15 +89,17 @@ function extractRootVariable(
  * `params.`) from a token, mirroring the Rust core's `extract_root_variable`.
  */
 function stripPathPrefix(token: string): string {
-  for (const prefix of [
-    PREFIX_CONSTS_DOT,
-    PREFIX_OPTS_DOT,
-    PREFIX_OPTIONS_DOT,
-    PREFIX_PARAMS_DOT,
-  ]) {
-    if (token.startsWith(prefix)) {
-      return token.slice(prefix.length).trim();
-    }
+  if (token.startsWith(PREFIX_CONSTS_DOT)) {
+    return token.slice(PREFIX_CONSTS_DOT.length).trim();
+  }
+  if (token.startsWith(PREFIX_OPTS_DOT)) {
+    return token.slice(PREFIX_OPTS_DOT.length).trim();
+  }
+  if (token.startsWith(PREFIX_OPTIONS_DOT)) {
+    return token.slice(PREFIX_OPTIONS_DOT.length).trim();
+  }
+  if (token.startsWith(PREFIX_PARAMS_DOT)) {
+    return token.slice(PREFIX_PARAMS_DOT.length).trim();
   }
   return token;
 }
@@ -109,19 +111,43 @@ function stripPathPrefix(token: string): string {
  * otherwise produce spurious "undeclared variable" errors.
  */
 function isValidIdentifier(token: string): boolean {
-  return /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(token);
+  const len = token.length;
+  if (len === 0) return false;
+  const first = token.charCodeAt(0);
+  const validStart =
+    (first >= 65 && first <= 90) ||
+    (first >= 97 && first <= 122) ||
+    first === 95;
+  if (!validStart) {
+    return false;
+  }
+  for (let i = 1; i < len; i++) {
+    const c = token.charCodeAt(i);
+    const validCont =
+      (c >= 65 && c <= 90) ||
+      (c >= 97 && c <= 122) ||
+      (c >= 48 && c <= 57) ||
+      c === 95;
+    if (!validCont) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /** Returns true if the token looks like a literal (string, number, bool). */
 function isLiteralToken(token: string): boolean {
   if (token === "true" || token === "false") return true;
+  const first = token.charCodeAt(0);
   if (
-    (token.startsWith('"') && token.endsWith('"')) ||
-    (token.startsWith("'") && token.endsWith("'"))
+    (first === 34 /* '"' */ && token.endsWith('"')) ||
+    (first === 39 /* "'" */ && token.endsWith("'"))
   ) {
     return true;
   }
-  if (/^-?\d+(\.\d+)?$/.test(token)) return true;
+  if ((first >= 48 && first <= 57) || first === 45 /* '-' */) {
+    return /^-?\d+(\.\d+)?$/.test(token);
+  }
   return false;
 }
 
@@ -166,6 +192,7 @@ function extractConditionVariables(
 
   // Try to split on top-level && or ||
   for (const delim of [" && ", " || "]) {
+    if (!trimmed.includes(delim)) continue;
     const parts = splitTopLevel(trimmed, delim);
     if (parts.length > 1) {
       for (const part of parts) {
@@ -187,15 +214,13 @@ function extractConditionVariables(
   }
 
   // Handle comparisons: ==, !=, <=, >=, <, >, ' in ', ' not in '
-  for (const op of ["==", "!=", "<=", ">=", "<", ">", " in ", " not in "]) {
-    const idx = findTopLevelOp(trimmed, op);
-    if (idx >= 0) {
-      const left = trimmed.slice(0, idx).trim();
-      const right = trimmed.slice(idx + op.length).trim();
-      extractOperandRefs(left, refs, loopBindings);
-      extractOperandRefs(right, refs, loopBindings);
-      return;
-    }
+  const cmp = findFirstTopLevelComparison(trimmed);
+  if (cmp !== undefined) {
+    const left = trimmed.slice(0, cmp.idx).trim();
+    const right = trimmed.slice(cmp.idx + cmp.len).trim();
+    extractOperandRefs(left, refs, loopBindings);
+    extractOperandRefs(right, refs, loopBindings);
+    return;
   }
 
   // Plain truthiness: extract the root variable of the operand only.
@@ -287,33 +312,48 @@ function splitTopLevel(s: string, delim: string): string[] {
   return parts;
 }
 
-/** Find the first top-level occurrence of an operator string. */
-function findTopLevelOp(s: string, op: string): number {
+/** Find the first top-level comparison operator in `s` in a single pass. */
+function findFirstTopLevelComparison(
+  s: string,
+): { idx: number; len: number } | undefined {
   let depth = 0;
-  for (let i = 0; i < s.length; i++) {
-    // Capture once so control-flow narrowing proves `quote` is defined,
-    // avoiding a non-null assertion under noUncheckedIndexedAccess.
-    const ch = s[i];
-    if (ch === "(") depth++;
-    else if (ch === ")") depth--;
-    else if (ch === "'" || ch === '"') {
-      const quote = ch;
+  let ltGtIdx = -1;
+  let inIdx = -1;
+  let notInIdx = -1;
+  const len = s.length;
+  for (let i = 0; i < len; i++) {
+    const code = s.charCodeAt(i);
+    if (code === 40 /* '(' */) depth++;
+    else if (code === 41 /* ')' */) depth--;
+    else if (code === 39 /* "'" */ || code === 34 /* '"' */) {
       i++;
-      // A backslash escapes the next char so an escaped quote does not close
-      // the literal (mirrors the Rust analysis parser).
-      while (i < s.length && s[i] !== quote) {
-        if (s[i] === BACKSLASH && i + 1 < s.length) i += 2;
+      while (i < len && s.charCodeAt(i) !== code) {
+        if (s.charCodeAt(i) === 92 /* '\\' */ && i + 1 < len) i += 2;
         else i++;
       }
-    } else if (
-      depth === 0 &&
-      i + op.length <= s.length &&
-      s.slice(i, i + op.length) === op
-    ) {
-      return i;
+    } else if (depth === 0) {
+      const next = s.charCodeAt(i + 1);
+      if (
+        (code === 61 || code === 33 || code === 60 || code === 62) &&
+        next === 61
+      ) {
+        return { idx: i, len: 2 };
+      }
+      if ((code === 60 || code === 62) && ltGtIdx === -1) {
+        ltGtIdx = i;
+      } else if (code === 32 /* ' ' */) {
+        if (inIdx === -1 && s.startsWith(" in ", i)) {
+          inIdx = i;
+        } else if (notInIdx === -1 && s.startsWith(" not in ", i)) {
+          notInIdx = i;
+        }
+      }
     }
   }
-  return -1;
+  if (ltGtIdx !== -1) return { idx: ltGtIdx, len: 1 };
+  if (inIdx !== -1) return { idx: inIdx, len: 4 };
+  if (notInIdx !== -1) return { idx: notInIdx, len: 8 };
+  return undefined;
 }
 
 /**
@@ -331,10 +371,21 @@ export function collectReferencedParams(nodes: readonly Node[]): Set<string> {
   return refs;
 }
 
+export function collectRefsAndForBindings(
+  nodes: readonly Node[],
+): [Set<string>, Set<string>] {
+  const refs = new Set<string>();
+  const loopBindings = new Set<string>();
+  const forBindings = new Set<string>();
+  collectRefsInner(nodes, refs, loopBindings, forBindings);
+  return [refs, forBindings];
+}
+
 function collectRefsInner(
   nodes: readonly Node[],
   refs: Set<string>,
   loopBindings: Set<string>,
+  forBindings?: Set<string>,
 ): void {
   for (const node of nodes) {
     switch (node.kind) {
@@ -354,18 +405,19 @@ function collectRefsInner(
         // Collect refs from the list expression
         const iterRoot = extractRootVariable(node.iterExpr, loopBindings);
         if (iterRoot) refs.add(iterRoot);
+        forBindings?.add(node.binding);
         // The binding and `loop` are local — track them to exclude from refs
         loopBindings.add(node.binding);
         const hadLoop = loopBindings.has("loop");
         loopBindings.add("loop");
-        collectRefsInner(node.body, refs, loopBindings);
+        collectRefsInner(node.body, refs, loopBindings, forBindings);
         if (!hadLoop) {
           loopBindings.delete("loop");
         }
         loopBindings.delete(node.binding);
         // else_body runs when the list is empty — binding NOT in scope
         if (node.elseBody) {
-          collectRefsInner(node.elseBody, refs, loopBindings);
+          collectRefsInner(node.elseBody, refs, loopBindings, forBindings);
         }
         break;
       }
@@ -373,10 +425,10 @@ function collectRefsInner(
       case NODE_IF:
         for (const branch of node.branches) {
           extractConditionVariables(branch.condition, refs, loopBindings);
-          collectRefsInner(branch.body, refs, loopBindings);
+          collectRefsInner(branch.body, refs, loopBindings, forBindings);
         }
         if (node.elseBody) {
-          collectRefsInner(node.elseBody, refs, loopBindings);
+          collectRefsInner(node.elseBody, refs, loopBindings, forBindings);
         }
         break;
 
@@ -401,18 +453,26 @@ function collectRefsInner(
               );
             }
           }
-          collectRefsInner(arm.body, refs, loopBindings);
+          collectRefsInner(arm.body, refs, loopBindings, forBindings);
         }
         if (node.elseArm) {
-          collectRefsInner(node.elseArm, refs, loopBindings);
+          collectRefsInner(node.elseArm, refs, loopBindings, forBindings);
         }
         if (node.inlineGuard) {
-          collectRefsInner(node.inlineGuard.body, refs, loopBindings);
+          collectRefsInner(
+            node.inlineGuard.body,
+            refs,
+            loopBindings,
+            forBindings,
+          );
         }
         break;
       }
 
       case NODE_INCLUDE:
+        if (node.forBinding) {
+          forBindings?.add(node.forBinding);
+        }
         // Include with-mappings reference variables. A quoted value is a
         // string literal that may embed {{ expr }} interpolation (mirrors the
         // renderer); collect those refs the same way. An unquoted value is a
@@ -467,7 +527,7 @@ function collectRefsInner(
         break;
 
       case NODE_PANIC:
-        collectRefsInner(node.body, refs, loopBindings);
+        collectRefsInner(node.body, refs, loopBindings, forBindings);
         break;
     }
   }
@@ -476,49 +536,42 @@ function collectRefsInner(
 /** Collect all for-loop binding names from parsed nodes (recursive). */
 export function collectForBindings(nodes: readonly Node[]): Set<string> {
   const bindings = new Set<string>();
+  collectForBindingsInto(nodes, bindings);
+  return bindings;
+}
+
+function collectForBindingsInto(
+  nodes: readonly Node[],
+  bindings: Set<string>,
+): void {
   for (const node of nodes) {
     if (node.kind === "for") {
       bindings.add(node.binding);
-      for (const b of collectForBindings(node.body)) {
-        bindings.add(b);
-      }
+      collectForBindingsInto(node.body, bindings);
       if (node.elseBody) {
-        for (const b of collectForBindings(node.elseBody)) {
-          bindings.add(b);
-        }
+        collectForBindingsInto(node.elseBody, bindings);
       }
     } else if (node.kind === "if") {
       for (const branch of node.branches) {
-        for (const b of collectForBindings(branch.body)) {
-          bindings.add(b);
-        }
+        collectForBindingsInto(branch.body, bindings);
       }
       if (node.elseBody) {
-        for (const b of collectForBindings(node.elseBody)) {
-          bindings.add(b);
-        }
+        collectForBindingsInto(node.elseBody, bindings);
       }
     } else if (node.kind === "match") {
       for (const arm of node.arms) {
-        for (const b of collectForBindings(arm.body)) {
-          bindings.add(b);
-        }
+        collectForBindingsInto(arm.body, bindings);
       }
       if (node.elseArm) {
-        for (const b of collectForBindings(node.elseArm)) {
-          bindings.add(b);
-        }
+        collectForBindingsInto(node.elseArm, bindings);
       }
       if (node.inlineGuard) {
-        for (const b of collectForBindings(node.inlineGuard.body)) {
-          bindings.add(b);
-        }
+        collectForBindingsInto(node.inlineGuard.body, bindings);
       }
     } else if (node.kind === "include" && node.forBinding) {
       bindings.add(node.forBinding);
     }
   }
-  return bindings;
 }
 
 /**
@@ -542,10 +595,11 @@ function collectLabelsInner(nodes: readonly Node[], labels: Set<string>): void {
       for (const arm of node.arms) {
         for (const variant of arm.variants) {
           // Only collect unquoted labels (not quoted strings)
-          if (!(
-            (variant.startsWith('"') && variant.endsWith('"')) ||
-            (variant.startsWith("'") && variant.endsWith("'"))
-          )) {
+          const isDoubleQuoted =
+            variant.startsWith('"') && variant.endsWith('"');
+          const isSingleQuoted =
+            variant.startsWith("'") && variant.endsWith("'");
+          if (!isDoubleQuoted && !isSingleQuoted) {
             labels.add(variant);
           }
         }

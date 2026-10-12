@@ -1,5 +1,5 @@
 /**
- * Tests for the md-tmpl TypeScript bindings: nested types, TypedTemplate, renderUnchecked, match() and isVariant().
+ * Tests for the md-tmpl TypeScript bindings: nested types, TypedTemplate, match() and isVariant().
  *
  * Uses Node.js built-in test runner (`node:test`).
  */
@@ -8,6 +8,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  Context,
   Template,
   TypedTemplate,
   defineVariants,
@@ -137,124 +138,6 @@ params:
     const defs = tmpl.defaults();
     assert.strictEqual(defs.name, "World");
     assert.strictEqual(defs.count, undefined);
-  });
-
-  it("renderUnchecked produces correct output", () => {
-    interface P {
-      readonly x: string;
-    }
-    const tmpl = TypedTemplate.fromSource<P>(
-      `---
-params: [x = str]
----
-{{ x }}`,
-    );
-    assert.strictEqual(tmpl.renderUnchecked({ x: "fast" }), "fast");
-  });
-
-  it("renderTrusted validates on first call", () => {
-    interface P {
-      readonly x: string;
-    }
-    const tmpl = TypedTemplate.fromSource<P>(
-      `---
-params: [x = str]
----
-{{ x }}`,
-    );
-    // First call: validated
-    assert.strictEqual(tmpl.renderTrusted({ x: "first" }), "first");
-    // Subsequent calls: unchecked (but still correct)
-    assert.strictEqual(tmpl.renderTrusted({ x: "second" }), "second");
-    assert.strictEqual(tmpl.renderTrusted({ x: "third" }), "third");
-  });
-
-  it("renderTrusted rejects bad types on first call", () => {
-    interface P {
-      readonly x: string;
-    }
-    const tmpl = TypedTemplate.fromSource<P>(
-      `---
-params: [x = bool]
----
-{{ x }}`,
-    );
-    // First call with wrong type should throw
-    assert.throws(() => tmpl.renderTrusted({ x: "not a bool" }));
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Template.renderUnchecked
-// ---------------------------------------------------------------------------
-
-describe("Template.renderUnchecked", () => {
-  it("renders without type checking", () => {
-    const tmpl = Template.fromSource(
-      `---
-params: [name = str, count = int]
----
-{{ name }}: {{ count }}`,
-    );
-    assert.strictEqual(
-      tmpl.renderUnchecked({ name: "Bob", count: 7 }),
-      "Bob: 7",
-    );
-  });
-
-  it("renders with defaults when params omitted", () => {
-    const tmpl = Template.fromSource(
-      `---
-params:
-  - name = str := "World"
----
-Hello {{ name }}!`,
-    );
-    assert.strictEqual(tmpl.renderUnchecked({}), "Hello World!");
-  });
-
-  it("is faster than render for list templates", () => {
-    const tmpl = Template.fromSource(
-      `---
-params:
-  - items = list(name = str, score = int)
----
-> {% for item in items %}
-
-{{ item.name }}: {{ item.score }}
-
-> {% /for %}`,
-    );
-    const data = {
-      items: Array.from({ length: 10 }, (_, i) => ({
-        name: `item${String(i)}`,
-        score: i * 10,
-      })),
-    };
-
-    // Warmup JIT and inline caches
-    for (let i = 0; i < 100; i++) {
-      tmpl.render(data);
-      tmpl.renderUnchecked(data);
-    }
-
-    const start = performance.now();
-    for (let i = 0; i < 500; i++) {
-      tmpl.renderUnchecked(data);
-    }
-    const uncheckedMs = performance.now() - start;
-
-    const start2 = performance.now();
-    for (let i = 0; i < 500; i++) {
-      tmpl.render(data);
-    }
-    const checkedMs = performance.now() - start2;
-
-    // renderUnchecked should be faster for list templates
-    assert.ok(
-      uncheckedMs < checkedMs,
-      `renderUnchecked (${uncheckedMs.toFixed(2)}ms) should be faster than render (${checkedMs.toFixed(2)}ms) for list templates`,
-    );
   });
 });
 
@@ -417,6 +300,10 @@ describe("End-to-end type workflow", () => {
   });
 
   it("TypedTemplate rejects wrong params at runtime", () => {
+    interface SuccessOutcome {
+      readonly __kind__: "Success";
+      readonly msg: string;
+    }
     interface Params {
       readonly title: string;
       readonly count: number;
@@ -424,8 +311,7 @@ describe("End-to-end type workflow", () => {
         readonly label: string;
         readonly done: boolean;
       }[];
-      readonly outcome:
-        { readonly __kind__: "Success"; readonly msg: string } | "Failure";
+      readonly outcome: SuccessOutcome | "Failure";
     }
 
     const tmpl = TypedTemplate.fromSource<Params>(TEMPLATE_SRC);
@@ -624,7 +510,7 @@ params: []
 ---
 `);
     assert.strictEqual(tmpl.render(), "");
-    assert.strictEqual(tmpl.renderUnchecked(), "");
+    assert.strictEqual(tmpl.renderEmpty(), "");
     assert.deepStrictEqual(tmpl.defaults(), {});
     assert.deepStrictEqual(tmpl.consts(), {});
   });
@@ -640,7 +526,7 @@ params: []
 Hello {{ NAME }}!`,
     );
     assert.strictEqual(tmpl.render(), "Hello test!");
-    assert.strictEqual(tmpl.renderUnchecked(), "Hello test!");
+    assert.strictEqual(tmpl.renderEmpty(), "Hello test!");
     assert.deepStrictEqual(tmpl.consts(), { NAME: "test" });
   });
 
@@ -678,19 +564,7 @@ params:
     );
   });
 
-  it("defaults are injected in renderUnchecked", () => {
-    const tmpl = Template.fromSource(
-      `---
-params:
-  - greeting = str := "Hi"
-  - name = str
----
-{{ greeting }} {{ name }}`,
-    );
-    assert.strictEqual(tmpl.renderUnchecked({ name: "Bob" }), "Hi Bob");
-  });
-
-  it("render and renderUnchecked produce same output for simple templates", () => {
+  it("render and renderContext produce same output for simple templates", () => {
     const tmpl = Template.fromSource(
       `---
 params:
@@ -700,6 +574,9 @@ params:
 {{ x }} has {{ n }} items`,
     );
     const params = { x: "Alice", n: 42 };
-    assert.strictEqual(tmpl.render(params), tmpl.renderUnchecked(params));
+    assert.strictEqual(
+      tmpl.render(params),
+      tmpl.renderContext(Context.from(params)),
+    );
   });
 });

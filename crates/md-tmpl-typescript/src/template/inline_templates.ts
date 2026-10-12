@@ -20,6 +20,7 @@ import {
   type VarType,
   parseFrontmatter,
 } from "../frontmatter.js";
+import { nodeLoc } from "../ast.js";
 import { type Node, parseBody } from "../parser.js";
 import { applySanitizeAstPass, type SanitizeSpec } from "../sanitize_pass.js";
 import { validateFrontmatter } from "../validation.js";
@@ -184,11 +185,12 @@ export function collectInlineTemplateMap(
   for (const n of nodes) {
     if (n.kind !== NODE_TMPL) continue;
     if (rawEntries.has(n.name)) {
+      const loc = nodeLoc(n);
       throw new TemplateSyntaxError(
         `${ERR_DUPLICATE_INLINE_TMPL_PREFIX}'${n.name}'`,
-        n.loc?.line,
-        n.loc?.column,
-        n.loc?.snippet,
+        loc?.line,
+        loc?.column,
+        loc?.snippet,
       );
     }
     if (n.source.trimStart().startsWith(FM_DELIMITER)) {

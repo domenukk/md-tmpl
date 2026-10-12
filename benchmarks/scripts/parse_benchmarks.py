@@ -37,8 +37,22 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # Criterion benchmark groups map to scenarios
-CRITERION_GROUPS = ["simple", "loop", "conditional", "hero", "mega"]
-CRITERION_ENGINES = ["md_tmpl", "tera", "minijinja", "handlebars"]
+CRITERION_GROUPS = [
+    "simple",
+    "loop",
+    "conditional",
+    "hero",
+    "mega",
+    "hero_e2e",
+    "mega_e2e",
+]
+CRITERION_ENGINES = [
+    "md_tmpl_macro",
+    "md_tmpl",
+    "tera",
+    "minijinja",
+    "handlebars",
+]
 
 
 def parse_criterion_dir(criterion_dir: Path) -> dict[str, Any]:
@@ -272,12 +286,11 @@ TS_BENCH_RE = re.compile(
 def parse_ts_output(text: str) -> dict[str, Any]:
     """Parse TypeScript benchmark output.
 
-    Returns: {"parse": {name: ns, ...}, "render": {name: ns, ...}, "unchecked": {name: ns, ...}}
+    Returns: {"parse": {name: ns, ...}, "render": {name: ns, ...}}
     """
     results: dict[str, dict[str, float]] = {
         "parse": {},
         "render": {},
-        "unchecked": {},
     }
 
     current_section = None
@@ -285,11 +298,8 @@ def parse_ts_output(text: str) -> dict[str, Any]:
         if "Parse benchmarks:" in line:
             current_section = "parse"
             continue
-        elif "Render benchmarks:" in line and "Unchecked" not in line:
+        elif "Render benchmarks:" in line:
             current_section = "render"
-            continue
-        elif "Render unchecked" in line:
-            current_section = "unchecked"
             continue
         elif line.startswith("="):
             current_section = None
@@ -322,29 +332,29 @@ def parse_ts_comparison_output(text: str) -> dict[str, Any]:
     """Parse TypeScript comparison benchmark output (comparison.ts).
 
     Returns: {
+        "compile": {scenario: {"pt": ns, "hbs": ns, "mus": ns}, ...},
         "render": {scenario: {"pt": ns, "hbs": ns, "mus": ns}, ...},
         "roundtrip": {scenario: {...}, ...},
-        "unchecked": {scenario: {...}, ...},
     }
     """
     results: dict[str, dict[str, dict[str, float]]] = {
+        "compile": {},
         "render": {},
         "roundtrip": {},
-        "unchecked": {},
     }
 
     current: str | None = None
     for line in text.split("\n"):
-        if "Render (pre-compiled):" in line:
+        if "Compile (" in line:
+            current = "compile"
+            continue
+        elif "Render (pre-compiled):" in line:
             current = "render"
             continue
         elif "Round-trip" in line:
             current = "roundtrip"
             continue
-        elif "Render unchecked" in line:
-            current = "unchecked"
-            continue
-        elif line.startswith("=") or "Compile (parse):" in line:
+        elif line.startswith("="):
             current = None
             continue
 

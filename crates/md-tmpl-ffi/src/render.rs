@@ -114,47 +114,6 @@ pub unsafe extern "C" fn pt_template_render_empty(
     }
 }
 
-/// Render a template **without** context validation.
-///
-/// Skips the check that context values match frontmatter declarations. Use
-/// only when the caller has already validated the context (e.g. via a prior
-/// strict render) and wants to avoid redundant validation.
-///
-/// Returns the rendered output as a C string (caller must free with
-/// `pt_free_string`). On error, writes the error string to `*out_err`
-/// and returns null.
-///
-/// # Safety
-///
-/// - `tmpl` must be a valid template handle.
-/// - `ctx` must be a valid context handle.
-/// - `out_err` must be a valid pointer to a `*mut c_char`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn pt_template_render_unchecked(
-    tmpl: *const PtTemplate,
-    ctx: *const PtContext,
-    out_err: *mut *mut c_char,
-) -> *mut c_char {
-    let Some(tmpl) = (unsafe { tmpl.as_ref() }) else {
-        unsafe { *out_err = err_to_cstring(ERR_NULL_TEMPLATE) };
-        return ptr::null_mut();
-    };
-    let Some(ctx) = (unsafe { ctx.as_ref() }) else {
-        unsafe { *out_err = err_to_cstring(ERR_NULL_CONTEXT) };
-        return ptr::null_mut();
-    };
-    match tmpl.inner.render_ctx_unchecked(&ctx.inner) {
-        Ok(rendered) => {
-            unsafe { *out_err = ptr::null_mut() };
-            into_cstring_raw(rendered)
-        }
-        Err(e) => {
-            unsafe { *out_err = terr_to_cstring(&e) };
-            ptr::null_mut()
-        }
-    }
-}
-
 /// Render a template, resolving `{% include %}` directives through a cache.
 ///
 /// Like [`pt_template_render`], but included templates are looked up in the

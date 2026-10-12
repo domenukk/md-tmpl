@@ -28,13 +28,14 @@ import {
 import { splitPipes } from "./evaluator.js";
 import { TypeEnv } from "./type_env.js";
 import { collectReferencedParams } from "./template/references.js";
+import { nodeLoc } from "./ast.js";
 import type { Node } from "./parser.js";
 import {
   comparisonError,
   formatVarType,
   includeContractError,
-  operandError,
   pathAccessError,
+  resolveExprWithCheck,
   splitComparison,
 } from "./type_rules.js";
 
@@ -148,6 +149,7 @@ function extractAllHasNarrowings(
   condition: string,
   env: TypeEnv,
 ): [string, VarType][] {
+  if (!condition.includes("has(")) return [];
   const results: [string, VarType][] = [];
   const opIdx = findTopLevelOp(condition, ["&&"]);
   if (opIdx !== -1) {
@@ -171,6 +173,7 @@ function extractNotHasNarrowing(
   condition: string,
   env: TypeEnv,
 ): [string, VarType] | undefined {
+  if (!condition.includes("has(")) return undefined;
   const trimmed = condition.trim();
   if (trimmed.startsWith("!")) {
     const inner = trimmed.slice(1).trim();
@@ -181,7 +184,7 @@ function extractNotHasNarrowing(
 
 interface ValidationError {
   message: string;
-  loc?: import("./parser.js").SourceLocation;
+  node?: Parameters<typeof nodeLoc>[0];
 }
 
 /** What the type checker needs to know about an inline `{% tmpl %}` definition. */
@@ -206,12 +209,97 @@ interface WalkContext {
   readonly visitingInline: Set<string>;
 }
 
+const EMPTY_INLINE_SIGS: ReadonlyMap<string, InlineTemplateSignature> =
+  new Map();
+const EMPTY_GLOBAL_NAMES: ReadonlySet<string> = new Set();
+
+function checkConditionLeaf(
+  sub: string,
+  currentEnv: TypeEnv,
+  errors: ValidationError[],
+  node?: Parameters<typeof nodeLoc>[0],
+): void {
+  let s = sub.trim();
+  while (s.startsWith("(") && s.endsWith(")")) {
+    s = s.slice(1, -1).trim();
+  }
+  while (s.startsWith("!")) {
+    s = s.slice(1).trim();
+    while (s.startsWith("(") && s.endsWith(")")) {
+      s = s.slice(1, -1).trim();
+    }
+  }
+  if (!s) return;
+
+  const opIdx =
+    s.includes("&&") || s.includes("||") ? findTopLevelOp(s, ["&&", "||"]) : -1;
+  if (opIdx !== -1) {
+    const op = s.slice(opIdx, opIdx + 2);
+    const leftStr = s.slice(0, opIdx).trim();
+    const rightStr = s.slice(opIdx + 2).trim();
+    checkConditionLeaf(leftStr, currentEnv, errors, node);
+    let rightEnv = currentEnv;
+    if (op === "&&" && leftStr.startsWith("has(")) {
+      const hasMatch = /^has\(\s*([^)]+?)\s*\)$/.exec(leftStr);
+      if (hasMatch?.[1]) {
+        const target = hasMatch[1].trim();
+        const targetType = currentEnv.resolveExprType(target);
+        if (
+          targetType &&
+          (targetType.kind === TYPE_OPTION ||
+            (targetType.kind === TYPE_ENUM && targetType.isOption))
+        ) {
+          const inner =
+            targetType.kind === TYPE_OPTION
+              ? targetType.innerType
+              : targetType.variants.find((v) => v.name === "Some")?.fields[0]
+                  ?.varType;
+          if (inner) {
+            rightEnv = currentEnv.withNarrowing(target, inner);
+          }
+        }
+      }
+    }
+    checkConditionLeaf(rightStr, rightEnv, errors, node);
+    return;
+  }
+
+  if (s.includes(OP_IN_SPACED) || s.startsWith(TAG_MATCH_PREFIX)) {
+    return;
+  }
+
+  const comparison = splitComparison(s);
+  if (comparison !== undefined) {
+    const message = comparisonError(comparison, currentEnv);
+    if (message !== undefined) errors.push({ message, node });
+    return;
+  }
+
+  const leafRes = resolveExprWithCheck(s, currentEnv);
+  if (typeof leafRes === "string") {
+    errors.push({ message: leafRes, node });
+    return;
+  }
+
+  // Bare truthiness: struct, enum (non-option), tmpl, and option have no
+  // truthiness and cannot be used directly as a condition.
+  if (leafRes !== undefined) {
+    const nonTruthy = nonTruthyMessage(leafRes);
+    if (nonTruthy) {
+      errors.push({
+        message: `type error in condition: ${nonTruthy}, got ${formatVarType(leafRes)}`,
+        node,
+      });
+    }
+  }
+}
+
 /** Validate static condition checks at compile time (e.g., literal in kinds(Enum), condition operand types). */
 function validateStaticCondition(
   condition: string,
   env: TypeEnv,
   errors: ValidationError[],
-  loc?: import("./parser.js").SourceLocation,
+  node?: Parameters<typeof nodeLoc>[0],
 ): void {
   const trimmed = condition.trim();
 
@@ -229,7 +317,7 @@ function validateStaticCondition(
           if (!enumType.variants.some((v) => v.name === strVal)) {
             errors.push({
               message: `static string "${strVal}" is not a valid variant of enum '${enumName}'`,
-              loc,
+              node,
             });
           }
         }
@@ -237,83 +325,7 @@ function validateStaticCondition(
     }
   }
 
-  function checkLeaf(sub: string, currentEnv: TypeEnv): void {
-    let s = sub.trim();
-    while (s.startsWith("(") && s.endsWith(")")) {
-      s = s.slice(1, -1).trim();
-    }
-    while (s.startsWith("!")) {
-      s = s.slice(1).trim();
-      while (s.startsWith("(") && s.endsWith(")")) {
-        s = s.slice(1, -1).trim();
-      }
-    }
-    if (!s) return;
-
-    const opIdx = findTopLevelOp(s, ["&&", "||"]);
-    if (opIdx !== -1) {
-      const op = s.slice(opIdx, opIdx + 2);
-      const leftStr = s.slice(0, opIdx).trim();
-      const rightStr = s.slice(opIdx + 2).trim();
-      checkLeaf(leftStr, currentEnv);
-      let rightEnv = currentEnv;
-      if (op === "&&") {
-        const hasMatch = /^has\(\s*([^)]+?)\s*\)$/.exec(leftStr);
-        if (hasMatch?.[1]) {
-          const target = hasMatch[1].trim();
-          const targetType = currentEnv.resolveExprType(target);
-          if (
-            targetType &&
-            (targetType.kind === TYPE_OPTION ||
-              (targetType.kind === TYPE_ENUM && targetType.isOption))
-          ) {
-            const inner =
-              targetType.kind === TYPE_OPTION
-                ? targetType.innerType
-                : targetType.variants.find((v) => v.name === "Some")?.fields[0]
-                    ?.varType;
-            if (inner) {
-              rightEnv = currentEnv.withNarrowing(target, inner);
-            }
-          }
-        }
-      }
-      checkLeaf(rightStr, rightEnv);
-      return;
-    }
-
-    if (s.includes(OP_IN_SPACED) || s.startsWith(TAG_MATCH_PREFIX)) {
-      return;
-    }
-
-    const comparison = splitComparison(s);
-    if (comparison !== undefined) {
-      const message = comparisonError(comparison, currentEnv);
-      if (message !== undefined) errors.push({ message, loc });
-      return;
-    }
-
-    const operandMessage = operandError(s, currentEnv);
-    if (operandMessage !== undefined) {
-      errors.push({ message: operandMessage, loc });
-      return;
-    }
-
-    // Bare truthiness: struct, enum (non-option), tmpl, and option have no
-    // truthiness and cannot be used directly as a condition.
-    const leafType = currentEnv.resolveExprType(s);
-    if (leafType) {
-      const nonTruthy = nonTruthyMessage(leafType);
-      if (nonTruthy) {
-        errors.push({
-          message: `type error in condition: ${nonTruthy}, got ${formatVarType(leafType)}`,
-          loc,
-        });
-      }
-    }
-  }
-
-  checkLeaf(trimmed, env);
+  checkConditionLeaf(trimmed, env, errors, node);
 }
 
 function findTopLevelOp(str: string, ops: string[]): number {
@@ -356,18 +368,17 @@ function walkNodesWithNarrowing(
   for (const node of nodes) {
     switch (node.kind) {
       case NODE_EXPR: {
-        const operandMessage = operandError(node.expr, env);
-        if (operandMessage !== undefined) {
-          errors.push({ message: operandMessage, loc: node.loc });
+        const res = resolveExprWithCheck(node.expr, env);
+        if (typeof res === "string") {
+          errors.push({ message: res, node });
           break;
         }
-        const resolvedType = env.resolveExprType(node.expr);
-        if (resolvedType === undefined) continue;
-        if (!isDisplayableType(resolvedType)) {
-          const hint = displayHint(resolvedType);
+        if (res === undefined) continue;
+        if (!isDisplayableType(res)) {
+          const hint = displayHint(res);
           errors.push({
-            message: `'${node.expr.trim()}': cannot display value of type ${formatVarType(resolvedType)} — ${hint}`,
-            loc: node.loc,
+            message: `'${node.expr.trim()}': cannot display value of type ${formatVarType(res)} — ${hint}`,
+            node,
           });
         }
         break;
@@ -376,12 +387,7 @@ function walkNodesWithNarrowing(
       case NODE_IF: {
         let currentEnv = env;
         for (const branch of node.branches) {
-          validateStaticCondition(
-            branch.condition,
-            currentEnv,
-            errors,
-            node.loc,
-          );
+          validateStaticCondition(branch.condition, currentEnv, errors, node);
           const posNarrowings = extractAllHasNarrowings(
             branch.condition,
             currentEnv,
@@ -413,7 +419,7 @@ function walkNodesWithNarrowing(
         const exprPath = node.expr.trim();
         const exprPathMessage = pathAccessError(exprPath, env);
         if (exprPathMessage !== undefined) {
-          errors.push({ message: exprPathMessage, loc: node.loc });
+          errors.push({ message: exprPathMessage, node });
         }
         const exprType = env.resolveExprType(exprPath);
 
@@ -460,7 +466,7 @@ function walkNodesWithNarrowing(
                   : `Try adding explicit arm: ${cases}`;
               errors.push({
                 message: `match on '${exprPath}': non-exhaustive — missing variant(s): ${missing.join(", ")}. ${suggestion}`,
-                loc: node.loc,
+                node,
               });
             }
           }
@@ -528,17 +534,19 @@ function walkNodesWithNarrowing(
             ) {
               errors.push({
                 message: `for-loop iterable '${node.iterExpr.trim()}': filter '${fname}' does not return a list (only 'limit' and 'truncate' are valid on for-loop iterables)`,
-                loc: node.loc,
+                node,
               });
             }
           }
         }
-        const iterPathMessage = pathAccessError(node.iterExpr, env);
-        if (iterPathMessage !== undefined) {
-          errors.push({ message: iterPathMessage, loc: node.loc });
+        const iterRes = resolveExprWithCheck(node.iterExpr, env);
+        let iterType: VarType | undefined;
+        if (typeof iterRes === "string") {
+          errors.push({ message: iterRes, node });
+          iterType = env.resolveExprType(node.iterExpr);
+        } else {
+          iterType = iterRes;
         }
-        // Resolve the iterator expression type to determine element type
-        const iterType = env.resolveExprType(node.iterExpr);
         if (iterType) {
           let elementType: VarType | undefined;
           if (iterType.kind === TYPE_LIST) {
@@ -569,7 +577,7 @@ function walkNodesWithNarrowing(
       case NODE_INCLUDE: {
         for (const valueExpr of node.withMappings.values()) {
           const message = pathAccessError(valueExpr, env);
-          if (message !== undefined) errors.push({ message, loc: node.loc });
+          if (message !== undefined) errors.push({ message, node });
         }
         const inline =
           node.path === undefined
@@ -583,7 +591,7 @@ function walkNodesWithNarrowing(
             inline.declarations,
             provided,
           );
-          if (message !== undefined) errors.push({ message, loc: node.loc });
+          if (message !== undefined) errors.push({ message, node });
           walkInlineTemplateBody(node.name, inline, ctx);
         }
         break;
@@ -670,21 +678,29 @@ export function validateDisplayability(
   consts?: readonly VarDecl[],
   typeAliases?: ReadonlyMap<string, VarType>,
   importedNamespaceTypes?: ReadonlyMap<string, VarType>,
-  inlineTemplates: ReadonlyMap<string, InlineTemplateSignature> = new Map(),
-  globalNames: ReadonlySet<string> = new Set(),
+  inlineTemplates: ReadonlyMap<
+    string,
+    InlineTemplateSignature
+  > = EMPTY_INLINE_SIGS,
+  globalNames: ReadonlySet<string> = EMPTY_GLOBAL_NAMES,
 ): void {
-  const allDecls: VarDecl[] = consts
-    ? [...declarations, ...consts]
-    : [...declarations];
-  // Register typed import stems as declarations so the type checker can
-  // resolve field accesses on imported consts (e.g. `artist.SEVERITY_LADDER`).
-  if (importedNamespaceTypes) {
-    for (const [stem, nsType] of importedNamespaceTypes) {
-      allDecls.push({
-        name: stem,
-        varType: withImportedTypeAliases(stem, nsType, typeAliases),
-      });
+  const hasConsts = consts !== undefined && consts.length > 0;
+  const hasImportedNs =
+    importedNamespaceTypes !== undefined && importedNamespaceTypes.size > 0;
+  let allDecls: readonly VarDecl[] = declarations;
+  if (hasConsts || hasImportedNs) {
+    const merged: VarDecl[] = hasConsts
+      ? [...declarations, ...consts]
+      : [...declarations];
+    if (hasImportedNs) {
+      for (const [stem, nsType] of importedNamespaceTypes) {
+        merged.push({
+          name: stem,
+          varType: withImportedTypeAliases(stem, nsType, typeAliases),
+        });
+      }
     }
+    allDecls = merged;
   }
   const env = new TypeEnv(allDecls, undefined, typeAliases);
   const errors: ValidationError[] = [];
@@ -700,11 +716,12 @@ export function validateDisplayability(
   if (errors.length > 0) {
     const err = errors[0];
     if (err !== undefined) {
+      const loc = err.node !== undefined ? nodeLoc(err.node) : undefined;
       throw new TemplateSyntaxError(
         err.message,
-        err.loc?.line,
-        err.loc?.column,
-        err.loc?.snippet,
+        loc?.line,
+        loc?.column,
+        loc?.snippet,
       );
     }
   }

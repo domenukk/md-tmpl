@@ -179,11 +179,6 @@ export class BrowserTemplate {
     return this.inner.render(params, options);
   }
 
-  /** Render without strict parameter validation (synchronous, cache must be warm). */
-  renderUnchecked(params: Record<string, unknown> = {}): string {
-    return this.inner.renderUnchecked(params);
-  }
-
   /** Render from a `Map` or `Record` (synchronous, cache must be warm). */
   renderDict(
     params: Record<string, unknown> | Map<string, unknown>,

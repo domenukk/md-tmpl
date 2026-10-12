@@ -130,6 +130,80 @@ export class Scope {
     return this.ctx.get(key);
   }
 
+  /**
+   * Resolve a variable path without throwing `UndefinedVariableError` when
+   * the root variable or struct field does not exist (used by `{% case %}`
+   * parameter-reference matching so non-matching enum variant arms never
+   * allocate Error stack traces).
+   */
+  tryResolvePath(pathStr: string): Value | undefined {
+    let path = pathStr.trim();
+    if (path.startsWith(PREFIX_CONSTS_DOT))
+      path = path.slice(PREFIX_CONSTS_DOT.length).trim();
+    else if (path.startsWith(PREFIX_OPTS_DOT))
+      path = path.slice(PREFIX_OPTS_DOT.length).trim();
+    else if (path.startsWith(PREFIX_OPTIONS_DOT))
+      path = path.slice(PREFIX_OPTIONS_DOT.length).trim();
+    else if (path.startsWith(PREFIX_PARAMS_DOT))
+      path = path.slice(PREFIX_PARAMS_DOT.length).trim();
+    pathStr = path;
+
+    const firstDot = pathStr.indexOf(DOT);
+    if (firstDot === -1) {
+      return this.resolve(pathStr);
+    }
+
+    if (pathStr.startsWith("loop.")) {
+      const prop = pathStr.slice(5).trim();
+      const loopVal = this.resolve("loop");
+      return loopVal !== undefined ? getField(loopVal, prop) : undefined;
+    }
+
+    const exactConst = this.consts.get(pathStr);
+    if (exactConst !== undefined) return exactConst;
+
+    const secondDot = pathStr.indexOf(DOT, firstDot + 1);
+    if (secondDot !== -1) {
+      const stemKey = pathStr.slice(0, secondDot);
+      const stemVal = this.consts.get(stemKey);
+      if (stemVal !== undefined) {
+        let current = stemVal;
+        let start = secondDot + 1;
+        while (start < pathStr.length) {
+          const nextDot = pathStr.indexOf(DOT, start);
+          const end = nextDot === -1 ? pathStr.length : nextDot;
+          const part = pathStr.slice(start, end);
+          const field = getField(current, part);
+          if (field === undefined) return undefined;
+          current = field;
+          start = end + 1;
+        }
+        return current;
+      }
+    }
+
+    const rootKey = pathStr.slice(0, firstDot);
+    if (this.isOptionParam(rootKey)) {
+      return undefined;
+    }
+    const root = this.resolve(rootKey);
+    if (root === undefined) {
+      return undefined;
+    }
+    let current = root;
+    let start = firstDot + 1;
+    while (start < pathStr.length) {
+      const nextDot = pathStr.indexOf(DOT, start);
+      const end = nextDot === -1 ? pathStr.length : nextDot;
+      const part = pathStr.slice(start, end);
+      const field = getField(current, part);
+      if (field === undefined) return undefined;
+      current = field;
+      start = end + 1;
+    }
+    return current;
+  }
+
   resolvePath(pathStr: string): Value {
     let path = pathStr.trim();
     if (path.startsWith(PREFIX_CONSTS_DOT))

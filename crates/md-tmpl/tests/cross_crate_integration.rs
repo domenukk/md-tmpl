@@ -327,3 +327,343 @@ fn test_imported_enum_type_reuse() {
     let alias_value: role_consumer::ParamsRole = roles_lib::WorkRole::Orchestrator;
     assert_eq!(alias_value, roles_lib::WorkRole::Orchestrator);
 }
+
+// ── Test 13: struct parameter to_context() and render_reloaded() ────────
+
+md_tmpl_macros::template!(
+    r#"
+---
+types:
+  - LocalStatus = enum(Pending, Running, Done(exit_code = int, tags = list(str), note = option(str)))
+  - DataOnlyEvent = enum(Created(id = int), Deleted(reason = str))
+  - LocalUser = struct(name = str, age = int, tags = list(str), bio = option(str))
+  - LocalRowList = list(key = str, weight = int)
+
+imports:
+  - "[roles_lib](./prompts/roles_lib.tmpl.md)"
+
+params:
+  - status = LocalStatus
+  - opt_status = option(LocalStatus)
+  - status_list = list(LocalStatus)
+  - event = DataOnlyEvent
+  - user = LocalUser
+  - opt_user = option(LocalUser)
+  - user_list = list(LocalUser)
+  - rows = LocalRowList
+  - inline_dict = struct(host = str, port = int)
+  - ext_role = roles_lib.WorkRole
+  - opt_ext_role = option(roles_lib.WorkRole)
+  - ext_role_list = list(roles_lib.WorkRole)
+  - ext_worker = roles_lib.WorkerSpec
+  - opt_ext_worker = option(roles_lib.WorkerSpec)
+  - ext_worker_list = list(roles_lib.WorkerSpec)
+  - ext_rows = roles_lib.TaskRows
+---
+Status={{ kind(status) }} Event={{ kind(event) }} User={{ user.name }}:{{ user.age }}
+Host={{ inline_dict.host }}:{{ inline_dict.port }}
+ExtRole={{ kind(ext_role) }} ExtWorker={{ ext_worker.handle }}:{{ ext_worker.quota }}
+
+> {% match opt_status %}
+> {% case Some %}
+
+OptStatus={{ kind(opt_status) }}
+
+> {% case None %}
+
+OptStatus=none
+
+> {% /match %}
+
+> {% match opt_user %}
+> {% case Some %}
+
+OptUser={{ opt_user.name }}
+
+> {% case None %}
+
+OptUser=none
+
+> {% /match %}
+
+> {% match opt_ext_role %}
+> {% case Some %}
+
+OptExtRole={{ kind(opt_ext_role) }}
+
+> {% case None %}
+
+OptExtRole=none
+
+> {% /match %}
+
+> {% match opt_ext_worker %}
+> {% case Some %}
+
+OptExtWorker={{ opt_ext_worker.handle }}
+
+> {% case None %}
+
+OptExtWorker=none
+
+> {% /match %}
+
+> {% for s in status_list %}
+
+- S:{{ kind(s) }}
+
+> {% /for %}
+
+> {% for u in user_list %}
+
+- U:{{ u.name }}
+
+> {% /for %}
+
+> {% for r in rows %}
+
+- R:{{ r.key }}={{ r.weight }}
+
+> {% /for %}
+
+> {% for er in ext_role_list %}
+
+- ER:{{ kind(er) }}
+
+> {% /for %}
+
+> {% for ew in ext_worker_list %}
+
+- EW:{{ ew.handle }}={{ ew.quota }}
+
+> {% /for %}
+
+> {% for tr in ext_rows %}
+
+- TR:{{ tr.task_id }}={{ tr.points }}
+
+> {% /for %}
+"# => unified_types_and_eq_hash,
+    imports = { roles_lib = crate::roles_lib }
+);
+
+#[test]
+fn test_unified_nominal_type_reuse_and_enum_helpers_and_serde() {
+    use core::any::TypeId;
+
+    // 1. Compile-time & TypeId nominal identity checks for local `types:` and `imports:`
+    //    across bare `T`, `option(T)`, and `list(T)`!
+    assert_eq!(
+        TypeId::of::<unified_types_and_eq_hash::ParamsStatus>(),
+        TypeId::of::<unified_types_and_eq_hash::LocalStatus>()
+    );
+    assert_eq!(
+        TypeId::of::<unified_types_and_eq_hash::ParamsUser>(),
+        TypeId::of::<unified_types_and_eq_hash::LocalUser>()
+    );
+    assert_eq!(
+        TypeId::of::<unified_types_and_eq_hash::ParamsUserListItem>(),
+        TypeId::of::<unified_types_and_eq_hash::LocalUser>()
+    );
+    assert_eq!(
+        TypeId::of::<unified_types_and_eq_hash::ParamsRowsItem>(),
+        TypeId::of::<unified_types_and_eq_hash::LocalRowListItem>()
+    );
+    assert_eq!(
+        TypeId::of::<unified_types_and_eq_hash::ParamsExtRole>(),
+        TypeId::of::<roles_lib::WorkRole>()
+    );
+    assert_eq!(
+        TypeId::of::<unified_types_and_eq_hash::ParamsExtWorker>(),
+        TypeId::of::<roles_lib::WorkerSpec>()
+    );
+    assert_eq!(
+        TypeId::of::<unified_types_and_eq_hash::ParamsExtWorkerListItem>(),
+        TypeId::of::<roles_lib::WorkerSpec>()
+    );
+    assert_eq!(
+        TypeId::of::<unified_types_and_eq_hash::ParamsExtRowsItem>(),
+        TypeId::of::<roles_lib::TaskRowsItem>()
+    );
+
+    // 2. DataOnly and Mixed enum helper methods (Display, as_str, VARIANT_NAMES, FromStr)
+    let ev = unified_types_and_eq_hash::DataOnlyEvent::Created { id: 7 };
+    assert_eq!(ev.as_str(), "Created");
+    assert_eq!(ev.to_string(), "Created");
+    assert_eq!(
+        unified_types_and_eq_hash::DataOnlyEvent::VARIANT_NAMES,
+        ["Created", "Deleted"]
+    );
+
+    let done_status = unified_types_and_eq_hash::LocalStatus::Done {
+        exit_code: 0,
+        tags: vec!["fast".into(), "clean".into()],
+        note: Some("ok".into()),
+    };
+    assert_eq!(done_status.as_str(), "Done");
+    assert_eq!(done_status.to_string(), "Done");
+    assert_eq!(
+        unified_types_and_eq_hash::LocalStatus::from_str("pending").unwrap(),
+        unified_types_and_eq_hash::LocalStatus::Pending
+    );
+    // Data variant names and unknown strings must NOT match FromStr on mixed enums:
+    assert!(unified_types_and_eq_hash::LocalStatus::from_str("done").is_err());
+    assert!(unified_types_and_eq_hash::LocalStatus::from_str("nonexistent").is_err());
+
+    // 3. Mixed enum serde round-trip with complex fields (`list(str)`, `option(str)`),
+    //    including omitted optional field deserialization via `md_tmpl::to_value` / `from_value`.
+    let val_done = md_tmpl::to_value(&done_status).unwrap();
+    let roundtrip_done: unified_types_and_eq_hash::LocalStatus =
+        md_tmpl::from_value(&val_done).unwrap();
+    assert_eq!(roundtrip_done, done_status);
+
+    let val_omitted_opt = Value::new_struct([
+        ("__kind__", Value::from("Done")),
+        ("exit_code", Value::from(42_i64)),
+        ("tags", Value::list([Value::from("a")])),
+    ]);
+    let parsed_omitted: unified_types_and_eq_hash::LocalStatus =
+        md_tmpl::from_value(&val_omitted_opt).unwrap();
+    assert_eq!(
+        parsed_omitted,
+        unified_types_and_eq_hash::LocalStatus::Done {
+            exit_code: 42,
+            tags: vec!["a".into()],
+            note: None,
+        }
+    );
+}
+
+#[test]
+fn test_unified_eq_hash_and_struct_to_context_render_parity() {
+    use std::collections::HashSet;
+
+    let ev = unified_types_and_eq_hash::DataOnlyEvent::Created { id: 7 };
+    let done_status = unified_types_and_eq_hash::LocalStatus::Done {
+        exit_code: 0,
+        tags: vec!["fast".into(), "clean".into()],
+        note: Some("ok".into()),
+    };
+
+    // 4. Eq + Hash auto-derivation on LocalStatus (Mixed), DataOnlyEvent (DataOnly),
+    //    LocalUser (Struct), and Params!
+    let mut status_set = HashSet::new();
+    status_set.insert(done_status.clone());
+    status_set.insert(unified_types_and_eq_hash::LocalStatus::Pending);
+    assert!(status_set.contains(&done_status));
+
+    let mut event_set = HashSet::new();
+    event_set.insert(ev.clone());
+    assert!(event_set.contains(&ev));
+
+    let user = unified_types_and_eq_hash::LocalUser {
+        name: "alice".into(),
+        age: 30,
+        tags: vec!["staff".into()],
+        bio: None,
+    };
+    let mut user_set = HashSet::new();
+    user_set.insert(user.clone());
+    assert!(user_set.contains(&user));
+
+    let params = unified_types_and_eq_hash::Params {
+        status: done_status,
+        opt_status: Some(unified_types_and_eq_hash::LocalStatus::Running),
+        status_list: vec![unified_types_and_eq_hash::LocalStatus::Pending],
+        event: ev,
+        user: user.clone(),
+        opt_user: Some(user.clone()),
+        user_list: vec![user],
+        rows: vec![unified_types_and_eq_hash::LocalRowListItem {
+            key: "k1".into(),
+            weight: 10,
+        }],
+        inline_dict: unified_types_and_eq_hash::ParamsInlineDict {
+            host: "localhost".into(),
+            port: 8080,
+        },
+        ext_role: roles_lib::WorkRole::Researcher,
+        opt_ext_role: Some(roles_lib::WorkRole::Judge),
+        ext_role_list: vec![roles_lib::WorkRole::Orchestrator],
+        ext_worker: roles_lib::WorkerSpec {
+            handle: "w1".into(),
+            quota: 5,
+        },
+        opt_ext_worker: Some(roles_lib::WorkerSpec {
+            handle: "w2".into(),
+            quota: 9,
+        }),
+        ext_worker_list: vec![roles_lib::WorkerSpec {
+            handle: "w3".into(),
+            quota: 12,
+        }],
+        ext_rows: vec![roles_lib::TaskRowsItem {
+            task_id: "t1".into(),
+            points: 3,
+        }],
+    };
+
+    let mut params_set = HashSet::new();
+    params_set.insert(params.clone());
+    assert!(params_set.contains(&params));
+
+    // 5. Verify native `render()`, `to_context()` + `render_ctx()`, and `render_reloaded()`
+    //    all produce identical output (exercising the fixed `typed_dict_codegen` inner_ctx!).
+    let native_rendered = params.render().unwrap();
+    let ctx = params.to_context();
+    let ctx_rendered = unified_types_and_eq_hash::template()
+        .render_ctx(&ctx)
+        .unwrap();
+    let reloaded_rendered = params
+        .render_reloaded(unified_types_and_eq_hash::template())
+        .unwrap();
+    assert_eq!(native_rendered, ctx_rendered);
+    assert_eq!(native_rendered, reloaded_rendered);
+    assert!(native_rendered.contains("Status=Done Event=Created User=alice:30"));
+    assert!(native_rendered.contains("Host=localhost:8080"));
+    assert!(native_rendered.contains("ExtRole=Researcher ExtWorker=w1:5"));
+    assert!(native_rendered.contains("OptStatus=Running"));
+    assert!(native_rendered.contains("OptUser=alice"));
+    assert!(native_rendered.contains("OptExtRole=Judge"));
+    assert!(native_rendered.contains("OptExtWorker=w2"));
+    assert!(native_rendered.contains("- S:Pending"));
+    assert!(native_rendered.contains("- U:alice"));
+    assert!(native_rendered.contains("- R:k1=10"));
+    assert!(native_rendered.contains("- ER:Orchestrator"));
+    assert!(native_rendered.contains("- EW:w3=12"));
+    assert!(native_rendered.contains("- TR:t1=3"));
+}
+
+// ── Test 14: large template segment chunking under deny(large_stack_arrays) ──
+
+#[deny(clippy::large_stack_arrays)]
+mod large_segment_chunk_test {
+    md_tmpl_macros::template!(
+        r#"
+---
+params:
+  - x = int
+---
+{{ x }}-1 {{ x }}-2 {{ x }}-3 {{ x }}-4 {{ x }}-5 {{ x }}-6 {{ x }}-7 {{ x }}-8 {{ x }}-9 {{ x }}-10
+{{ x }}-11 {{ x }}-12 {{ x }}-13 {{ x }}-14 {{ x }}-15 {{ x }}-16 {{ x }}-17 {{ x }}-18 {{ x }}-19 {{ x }}-20
+{{ x }}-21 {{ x }}-22 {{ x }}-23 {{ x }}-24 {{ x }}-25 {{ x }}-26 {{ x }}-27 {{ x }}-28 {{ x }}-29 {{ x }}-30
+{{ x }}-31 {{ x }}-32 {{ x }}-33 {{ x }}-34 {{ x }}-35 {{ x }}-36 {{ x }}-37 {{ x }}-38 {{ x }}-39 {{ x }}-40
+{{ x }}-41 {{ x }}-42 {{ x }}-43 {{ x }}-44 {{ x }}-45 {{ x }}-46 {{ x }}-47 {{ x }}-48 {{ x }}-49 {{ x }}-50
+{{ x }}-51 {{ x }}-52 {{ x }}-53 {{ x }}-54 {{ x }}-55 {{ x }}-56 {{ x }}-57 {{ x }}-58 {{ x }}-59 {{ x }}-60
+{{ x }}-61 {{ x }}-62 {{ x }}-63 {{ x }}-64 {{ x }}-65 {{ x }}-66 {{ x }}-67 {{ x }}-68 {{ x }}-69 {{ x }}-70
+{{ x }}-71 {{ x }}-72 {{ x }}-73 {{ x }}-74 {{ x }}-75 {{ x }}-76 {{ x }}-77 {{ x }}-78 {{ x }}-79 {{ x }}-80
+"# => many_segments
+    );
+}
+
+#[test]
+fn test_large_segment_chunk_outlining_matches_runtime() {
+    let p = large_segment_chunk_test::many_segments::Params { x: 9 };
+    let direct = p.render().unwrap();
+    let via_ctx = large_segment_chunk_test::many_segments::template()
+        .render_ctx(&p.to_context())
+        .unwrap();
+    assert_eq!(direct, via_ctx);
+    assert!(direct.starts_with("9-1 9-2 9-3"));
+    assert!(direct.trim_end().ends_with("9-79 9-80"));
+}

@@ -10,12 +10,12 @@
 //!
 //! Each scenario benchmarks:
 //! - `md_tmpl_macro`: compile-time `include_template!` / `template!` macro (`Params::render()`)
-//! - `md_tmpl`: runtime template engine (`Template::render_ctx`) with full parameter & schema validation
+//! - `md_tmpl`: runtime template engine (`Template::render_ctx` on pre-built `Context`, and `Template::render` on `&Serialize` structs in `_e2e`)
 //! - `tera`: Tera template engine with pre-built context
 //! - `minijinja`: MiniJinja template engine with direct serialization
 //! - `handlebars`: Handlebars template engine with JSON context
 //!
-//! Plus `hero_e2e` and `mega_e2e` measuring end-to-end (context construction + render) pipelines.
+//! Plus `hero_e2e` and `mega_e2e` measuring end-to-end (struct serialization + validation + render) pipelines.
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
@@ -450,17 +450,13 @@ fn bench_hero_e2e(c: &mut Criterion) {
 
     let shared_data = hero_data();
     let strict_data = hero_strict_data();
-    let macro_data = build_hero_macro_data(&shared_data);
 
     let mut group = c.benchmark_group("hero_e2e");
     group.bench_function("md_tmpl_macro", |b| {
-        b.iter(|| black_box(&macro_data).render().unwrap());
+        b.iter(|| build_hero_macro_data(black_box(&shared_data)).render().unwrap());
     });
     group.bench_function("md_tmpl", |b| {
-        b.iter(|| {
-            let ctx = md_tmpl::Context::from_serialize(black_box(&strict_data)).unwrap();
-            pt.render_ctx(&ctx)
-        });
+        b.iter(|| pt.render(black_box(&strict_data)));
     });
     group.bench_function("tera", |b| {
         b.iter(|| {
@@ -488,17 +484,13 @@ fn bench_mega_e2e(c: &mut Criterion) {
 
     let shared_data = mega_data();
     let strict_data = mega_strict_data();
-    let macro_data = build_mega_macro_data(&shared_data);
 
     let mut group = c.benchmark_group("mega_e2e");
     group.bench_function("md_tmpl_macro", |b| {
-        b.iter(|| black_box(&macro_data).render().unwrap());
+        b.iter(|| build_mega_macro_data(black_box(&shared_data)).render().unwrap());
     });
     group.bench_function("md_tmpl", |b| {
-        b.iter(|| {
-            let ctx = md_tmpl::Context::from_serialize(black_box(&strict_data)).unwrap();
-            pt.render_ctx(&ctx)
-        });
+        b.iter(|| pt.render(black_box(&strict_data)));
     });
     group.bench_function("tera", |b| {
         b.iter(|| {

@@ -1,7 +1,5 @@
-//! Quick A/B micro-benchmark: `render_ctx_allowing_extra` (validates the
-//! context against frontmatter on every call) vs `render_ctx_unchecked`
-//! (skips validation entirely). Prints ns/op for each path and the relative
-//! validation overhead.
+//! Quick A/B micro-benchmark: `render_ctx` (allocates a new `String` per
+//! call) vs `render_ctx_into` (reuses an existing `String` buffer).
 //!
 //! Run with: `cargo run --release --example perf_test`
 use md_tmpl::{Template, ctx};
@@ -27,21 +25,24 @@ Hello {{ name }}, welcome to {{ place }}!",
 
     // Warm up before timing so the two measured loops start on equal footing.
     for _ in 0..WARMUP_ITERS {
-        black_box(tmpl.render_ctx_allowing_extra(black_box(&context)).unwrap());
+        black_box(tmpl.render_ctx(black_box(&context)).unwrap());
     }
 
-    let validated = time(MEASURED_ITERS, || {
-        black_box(tmpl.render_ctx_allowing_extra(black_box(&context)).unwrap());
+    let allocating = time(MEASURED_ITERS, || {
+        black_box(tmpl.render_ctx(black_box(&context)).unwrap());
     });
-    let unchecked = time(MEASURED_ITERS, || {
-        black_box(tmpl.render_ctx_unchecked(black_box(&context)).unwrap());
+    let mut buf = String::with_capacity(64);
+    let reused_buf = time(MEASURED_ITERS, || {
+        buf.clear();
+        tmpl.render_ctx_into(black_box(&context), &mut buf).unwrap();
+        black_box(&buf);
     });
 
-    report("render_ctx_allowing_extra", validated);
-    report("render_ctx_unchecked     ", unchecked);
+    report("render_ctx     ", allocating);
+    report("render_ctx_into", reused_buf);
     println!(
-        "Validation overhead: {:.2}×",
-        validated.as_secs_f64() / unchecked.as_secs_f64()
+        "Buffer-reuse speedup: {:.2}×",
+        allocating.as_secs_f64() / reused_buf.as_secs_f64()
     );
 }
 

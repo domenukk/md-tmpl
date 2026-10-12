@@ -17,7 +17,6 @@ import {
   ExtraParamsError,
   MissingParamsError,
   TemplateError,
-  TemplateSyntaxError,
 } from "../errors.js";
 import {
   type Frontmatter,
@@ -46,8 +45,22 @@ import {
   tmplVal,
   valueToJs,
 } from "../value.js";
-import { type DirectRenderOptions, renderDirect } from "../direct_renderer.js";
-import { ERR_UNDECLARED_PREFIX, TYPE_ENUM, TYPE_NONE } from "../consts.js";
+import {
+  type DirectRenderOptions,
+  DirectScope,
+  precompileDirectNodes,
+  renderDirect,
+  renderDirectWithScope,
+} from "../direct_renderer.js";
+import {
+  KW_MATCH,
+  TYPE_ALIAS,
+  TYPE_ENUM,
+  TYPE_NONE,
+  TYPE_OPTION,
+  TYPE_STRUCT,
+  TYPE_TMPL,
+} from "../consts.js";
 import {
   type CachedInclude,
   type CompileOptions,
@@ -57,7 +70,6 @@ import {
 import { getFs, getPath, hashString } from "./utils.js";
 import { jsToValue } from "./conversion.js";
 import { collectOptionPaths } from "./option_paths.js";
-import { closestName } from "../suggest.js";
 import { typeCheckValue } from "./type_check.js";
 import {
   injectEnumTypeConstants,
@@ -68,20 +80,34 @@ import { resolveIncludeEntry } from "./includes.js";
 import {
   type InlineTemplateEntry,
   collectInlineTemplateMap,
-  collectInlineTemplateNames,
 } from "./inline_templates.js";
 import {
-  walkNodesForBareEnumAccess,
-  walkNodesForConditionSyntax,
-  walkNodesForMatchTypeSafety,
-} from "./compile_checks.js";
+  type CompiledParamCheck,
+  buildParamChecks,
+  canUseDirectValidatedRender,
+  isValidFastParams,
+} from "./fast_validator.js";
 import {
-  collectForBindings,
-  collectReferencedParams,
-  collectUnquotedCaseLabels,
-  extractInterpolationRefs,
-} from "./references.js";
+  buildTemplateWideNames,
+  checkBareEnumAccess,
+  checkMatchTypeSafety,
+  checkUndeclaredVariablesWithRefs,
+  checkUnusedParamsWithRefs,
+  collectAllReferencedVariables,
+  walkNodesForConditionSyntax,
+} from "./compile_checks.js";
+import { collectRefsAndForBindings } from "./references.js";
 import { type TemplateCache } from "./cache.js";
+
+type CompiledDeclaration = readonly [string, string];
+const EMPTY_INLINE_TEMPLATES = new Map<string, InlineTemplateEntry>();
+const EMPTY_STRING_SET: ReadonlySet<string> = new Set<string>();
+const EMPTY_UNKNOWN_MAP: ReadonlyMap<string, unknown> = new Map<
+  string,
+  unknown
+>();
+const EMPTY_VALUE_MAP: ReadonlyMap<string, Value> = new Map<string, Value>();
+const EMPTY_PARAMS: Record<string, unknown> = {};
 
 // ---------------------------------------------------------------------------
 // Template class
@@ -109,7 +135,8 @@ export class Template implements ITemplate, TmplRef {
   private readonly fm: Frontmatter;
   private readonly bodyStr: string;
   private readonly nodes: Node[];
-  private readonly hash: number;
+  private readonly sourceStr: string;
+  private _hash: number | undefined;
   private readonly _basePath: string | undefined;
   /** Pre-computed set of declared parameter names. */
   private readonly declaredNames: ReadonlySet<string>;
@@ -121,15 +148,19 @@ export class Template implements ITemplate, TmplRef {
   private readonly constJsValues: ReadonlyMap<string, unknown>;
   /** Pre-computed set of option-typed parameter names/paths. */
   private readonly optionParams: ReadonlySet<string>;
-  private readonly nonEnumParams: ReadonlySet<string>;
-  private readonly nonOptionParams: ReadonlySet<string>;
+  private _nonEnumParams: ReadonlySet<string> | undefined;
+  private _nonOptionParams: ReadonlySet<string> | undefined;
   private readonly inlineTemplates: Map<string, InlineTemplateEntry>;
+  private readonly paramChecks: readonly CompiledParamCheck[];
+  private _compiledDeclarations: readonly CompiledDeclaration[] | undefined;
+  private readonly directScope: DirectScope;
+  private canDirectValidateRender: boolean;
   private _maxIncludeDepth = 16;
   /** Optional reference to the TemplateCache that loaded this template. */
   _cache?: TemplateCache;
   /** Compile-time env values, stored for propagation to included templates. */
   private readonly _compileEnv: Record<string, unknown>;
-  private readonly _includeCache = new Map<string, IncludeCacheEntry>();
+  private _includeCache?: Map<string, IncludeCacheEntry>;
 
   /** Get the base path for include resolution (if set). */
   get basePath(): string | undefined {
@@ -152,124 +183,181 @@ export class Template implements ITemplate, TmplRef {
     this.fm = fm;
     this.bodyStr = bodyStr;
     this.nodes = nodes;
-    this.hash = hashString(source);
+    this.sourceStr = source;
     this._basePath = basePath;
     this._compileEnv = compileEnv ?? {};
 
     // Pre-compute immutable render data
-    this.declaredNames = new Set(fm.params.map((d) => d.name));
-    const defaults = new Map<string, unknown>();
+    const declaredNames = new Set<string>();
+    let defaults: Map<string, unknown> | undefined;
+    let optParams: Set<string> | undefined;
     for (const decl of fm.params) {
+      declaredNames.add(decl.name);
       if (decl.defaultValue !== undefined) {
+        defaults ??= new Map<string, unknown>();
         defaults.set(decl.name, valueToJs(decl.defaultValue));
       }
-    }
-    this.defaultValues = defaults;
-    const consts = new Map<string, Value>();
-    for (const decl of fm.consts) {
-      if (decl.defaultValue !== undefined) {
-        consts.set(decl.name, decl.defaultValue);
+      if (
+        decl.varType.kind === TYPE_OPTION ||
+        decl.varType.kind === TYPE_STRUCT ||
+        decl.varType.kind === TYPE_ALIAS ||
+        (decl.varType.kind === TYPE_ENUM && decl.varType.isOption)
+      ) {
+        optParams ??= new Set<string>();
+        collectOptionPaths(decl.name, decl.varType, fm.typeAliases, optParams);
       }
     }
-    // Env declarations are resolved at compile time and behave like consts.
-    for (const decl of fm.env) {
-      if (decl.defaultValue !== undefined) {
-        consts.set(decl.name, decl.defaultValue);
-      }
-    }
-    for (const [key, jsVal] of Object.entries(fm.importedConsts)) {
-      consts.set(key, fromJs(jsVal));
-    }
-    this.constValues = consts;
-    const constsJs = new Map<string, unknown>();
-    for (const decl of fm.consts) {
-      if (decl.defaultValue !== undefined) {
-        constsJs.set(decl.name, valueToJs(decl.defaultValue));
-      }
-    }
-    // Env declarations are resolved at compile time and behave like consts.
-    for (const decl of fm.env) {
-      if (decl.defaultValue !== undefined) {
-        constsJs.set(decl.name, valueToJs(decl.defaultValue));
-      }
-    }
-    for (const [key, jsVal] of Object.entries(fm.importedConsts)) {
-      constsJs.set(key, jsVal);
-    }
-    this.constJsValues = constsJs;
+    this.declaredNames = declaredNames;
+    this.defaultValues = defaults ?? EMPTY_UNKNOWN_MAP;
+    this.optionParams =
+      optParams && optParams.size > 0 ? optParams : EMPTY_STRING_SET;
 
-    // Pre-compute option-typed parameter names for kind()/match awareness
-    const optParams = new Set<string>();
-    const nonEnum = new Set<string>();
-    const nonOpt = new Set<string>();
-    for (const decl of fm.params) {
-      collectOptionPaths(decl.name, decl.varType, fm.typeAliases, optParams);
-      let vt = decl.varType;
-      while (vt.kind === "alias") {
-        const resolved = fm.typeAliases.get(vt.name);
-        if (!resolved) break;
-        vt = resolved;
+    if (
+      fm.consts.length === 0 &&
+      fm.env.length === 0 &&
+      fm.imports.length === 0 &&
+      fm.typeAliases.size === 0
+    ) {
+      this.constValues = EMPTY_VALUE_MAP;
+      this.constJsValues = EMPTY_UNKNOWN_MAP;
+    } else {
+      const consts = new Map<string, Value>();
+      const constsJs = new Map<string, unknown>();
+      for (const decl of fm.consts) {
+        if (decl.defaultValue !== undefined) {
+          consts.set(decl.name, decl.defaultValue);
+          constsJs.set(decl.name, valueToJs(decl.defaultValue));
+        }
       }
-      const isOpt = vt.kind === "option" || optParams.has(decl.name);
-      if (vt.kind !== "enum" && !isOpt) {
-        nonEnum.add(decl.name);
+      // Env declarations are resolved at compile time and behave like consts.
+      for (const decl of fm.env) {
+        if (decl.defaultValue !== undefined) {
+          consts.set(decl.name, decl.defaultValue);
+          constsJs.set(decl.name, valueToJs(decl.defaultValue));
+        }
       }
-      if (!isOpt) {
-        nonOpt.add(decl.name);
+      if (fm.imports.length > 0) {
+        for (const [key, jsVal] of Object.entries(fm.importedConsts)) {
+          consts.set(key, fromJs(jsVal));
+          constsJs.set(key, jsVal);
+        }
       }
+      if (fm.typeAliases.size > 0) {
+        injectEnumTypeConstants(fm.typeAliases, consts, constsJs);
+      }
+      this.constValues = consts;
+      this.constJsValues = constsJs;
     }
-    this.optionParams = optParams;
-    this.nonEnumParams = nonEnum;
-    this.nonOptionParams = nonOpt;
-
-    // Inject enum type constants from type aliases.
-    // For each enum type (e.g., `Stage = enum(Design, Build)`), create a
-    // constant dict mapping variant names → values, enabling expressions
-    // like `{{ Stage.Design }}`.  User-defined constants are never overwritten.
-    injectEnumTypeConstants(fm.typeAliases, consts, constsJs);
-    this.inlineTemplates = collectInlineTemplateMap(
-      nodes,
-      fm.typeAliases,
-      fm.typeAliasSanitize,
-      fm.sanitizeNotice,
+    this.inlineTemplates = bodyStr.includes(TYPE_TMPL)
+      ? collectInlineTemplateMap(
+          nodes,
+          fm.typeAliases,
+          fm.typeAliasSanitize,
+          fm.sanitizeNotice,
+        )
+      : EMPTY_INLINE_TEMPLATES;
+    this.paramChecks = buildParamChecks(fm.params, fm.typeAliases);
+    this.directScope = new DirectScope(
+      EMPTY_PARAMS,
+      this.constJsValues,
+      this.defaultValues,
+      this.declaredNames,
     );
+    this.canDirectValidateRender = false;
+  }
+
+  private getNonEnumAndNonOptionSets(): [
+    ReadonlySet<string>,
+    ReadonlySet<string>,
+  ] {
+    if (
+      this._nonEnumParams === undefined ||
+      this._nonOptionParams === undefined
+    ) {
+      const nonEnum = new Set<string>();
+      const nonOpt = new Set<string>();
+      for (const decl of this.fm.params) {
+        let vt = decl.varType;
+        while (vt.kind === TYPE_ALIAS) {
+          const resolved = this.fm.typeAliases.get(vt.name);
+          if (!resolved) break;
+          vt = resolved;
+        }
+        const isOpt =
+          vt.kind === TYPE_OPTION || this.optionParams.has(decl.name);
+        if (vt.kind !== TYPE_ENUM && !isOpt) {
+          nonEnum.add(decl.name);
+        }
+        if (!isOpt) {
+          nonOpt.add(decl.name);
+        }
+      }
+      this._nonEnumParams = nonEnum;
+      this._nonOptionParams = nonOpt;
+    }
+    return [this._nonEnumParams, this._nonOptionParams];
   }
 
   private finalizeCompile(body: string, allowUnused = false): this {
-    this.checkUndeclaredVariables(body);
-    if (!this.fm.allowUnused && !allowUnused) {
-      this.checkUnusedParams(body);
+    const [referenced, forBindings] = collectRefsAndForBindings(this.nodes);
+    if (body.includes("{#")) {
+      for (const r of collectAllReferencedVariables(this.nodes, body)) {
+        referenced.add(r);
+      }
     }
-    this.checkBareEnumAccess();
-    this.checkMatchTypeSafety();
-    validateBodyCollisions(
-      this.fm,
-      collectInlineTemplateNames(this.nodes),
-      collectForBindings(this.nodes),
-    );
+    const wideNames =
+      this.fm.imports.length === 0 &&
+      this.fm.typeAliases.size === 0 &&
+      this.inlineTemplates.size === 0
+        ? EMPTY_STRING_SET
+        : buildTemplateWideNames(this.fm, this.inlineTemplates.keys());
+    checkUndeclaredVariablesWithRefs(this.fm, referenced, wideNames);
+    if (!this.fm.allowUnused && !allowUnused) {
+      checkUnusedParamsWithRefs(this.fm, this.nodes, referenced);
+    }
+    if (this.fm.typeAliases.size > 0) {
+      checkBareEnumAccess(this.fm, this.nodes);
+    }
+    if (body.includes(KW_MATCH)) {
+      checkMatchTypeSafety(this.fm, this.nodes);
+    }
+    const inlineNames =
+      this.inlineTemplates.size > 0
+        ? new Set(this.inlineTemplates.keys())
+        : EMPTY_STRING_SET;
+    validateBodyCollisions(this.fm, inlineNames, forBindings);
     validateDisplayability(
       this.nodes,
       this.fm.params,
       this.fm.consts,
       this.fm.typeAliases,
       this.fm.importedNamespaceTypes,
-      new Map(
-        [...this.inlineTemplates].map(([name, entry]) => [
-          name,
-          {
-            declarations: entry.declarations,
-            nodes: entry.nodes,
-            constNames: new Set(entry.consts.keys()),
-          },
-        ]),
-      ),
-      this.templateWideNames(),
+      this.inlineTemplates.size > 0
+        ? new Map(
+            [...this.inlineTemplates].map(([name, entry]) => [
+              name,
+              {
+                declarations: entry.declarations,
+                nodes: entry.nodes,
+                constNames: new Set(entry.consts.keys()),
+              },
+            ]),
+          )
+        : undefined,
+      wideNames,
     );
     applySanitizeAstPass(
       this.nodes,
       this.fm.paramSanitize,
       this.fm.sanitizeNotice,
     );
+    this.canDirectValidateRender = canUseDirectValidatedRender(
+      this.nodes,
+      this.optionParams,
+    );
+    if (this.canDirectValidateRender) {
+      precompileDirectNodes(this.nodes);
+    }
     return this;
   }
 
@@ -285,9 +373,20 @@ export class Template implements ITemplate, TmplRef {
    * @throws {TemplateSyntaxError} If the source contains syntax errors.
    */
   static fromSource(source: string): Template {
-    // `env:` declarations resolve to their defaults (or fail at compile time
-    // when a value is required), exactly like the Rust `from_source`.
-    return Template.fromSourceWithOptions(source, {});
+    const [fm, body] = parseFrontmatter(source);
+    const resolvedFm =
+      fm.env.length > 0 ? resolveEnvDeclarations(fm, EMPTY_PARAMS) : fm;
+    validateFrontmatter(resolvedFm);
+    const nodes = parseBody(body, false, resolvedFm.bodyStartLine ?? 1);
+    walkNodesForConditionSyntax(nodes);
+    return new Template(
+      resolvedFm,
+      body,
+      nodes,
+      source,
+      undefined,
+      EMPTY_PARAMS,
+    ).finalizeCompile(body, false);
   }
 
   /**
@@ -306,11 +405,12 @@ export class Template implements ITemplate, TmplRef {
     source: string,
     options: CompileOptions,
   ): Template {
+    const baseDir = options.baseDir;
+    const envValues = options.env ?? EMPTY_PARAMS;
+    const allowUnused = options.allowUnused ?? false;
     const [fm, body] = parseFrontmatter(source);
-    const envValues = options.env ?? {};
     let resolvedFm = resolveEnvDeclarations(fm, envValues);
     validateFrontmatter(resolvedFm);
-    const baseDir = options.baseDir;
     if (baseDir) {
       resolvedFm = resolveImportedConsts(resolvedFm, baseDir);
     }
@@ -323,7 +423,7 @@ export class Template implements ITemplate, TmplRef {
       source,
       baseDir,
       envValues,
-    ).finalizeCompile(body, options.allowUnused ?? false);
+    ).finalizeCompile(body, allowUnused);
   }
 
   /**
@@ -442,45 +542,28 @@ export class Template implements ITemplate, TmplRef {
    * ```
    */
   render(
-    params: Record<string, unknown> = {},
+    params: Record<string, unknown> = EMPTY_PARAMS,
     options?: { allowExtra?: boolean },
   ): string {
-    const ctx = this.buildContext(params, options?.allowExtra ?? false);
-    return this.renderWithContext(ctx);
-  }
-
-  /**
-   * Render without type validation — fastest path.
-   *
-   * Converts params to Values and renders directly, skipping all
-   * type-checking. Use after you've validated once with `render()`,
-   * or when rendering with `TypedTemplate<P>` and trusting
-   * TypeScript's compile-time checks.
-   *
-   * @example
-   * ```ts
-   * // Validate once, then render fast in a loop:
-   * tmpl.render(params);  // validates types
-   * for (const p of manyParams) {
-   *   tmpl.renderUnchecked(p);  // no validation overhead
-   * }
-   * ```
-   */
-  renderUnchecked(params: Record<string, unknown> = {}): string {
-    // Build a flat Map<string, unknown> with defaults + provided params
-    const flat = new Map<string, unknown>(this.defaultValues);
-    for (const [key, value] of Object.entries(params)) {
-      if (this.declaredNames.has(key)) {
-        flat.set(key, value);
-      }
+    const allowExtra = options?.allowExtra ?? false;
+    if (
+      this.canDirectValidateRender &&
+      isValidFastParams(
+        params,
+        this.paramChecks,
+        this.declaredNames,
+        allowExtra,
+      )
+    ) {
+      return renderDirectWithScope(
+        this.nodes,
+        this.directScope,
+        params,
+        this.getDirectOptionsFast(),
+      );
     }
-    // Use direct renderer — no Value conversion, no Map wrapping
-    return renderDirect(
-      this.nodes,
-      flat,
-      this.constJsValues,
-      this.getDirectOptions(),
-    );
+    const ctx = this.buildContext(params, allowExtra);
+    return this.renderWithContext(ctx);
   }
 
   /**
@@ -499,8 +582,7 @@ export class Template implements ITemplate, TmplRef {
    *
    * This is an advanced escape hatch for callers that construct a
    * {@link Context} directly (e.g. to reuse converted {@link Value}s across
-   * many renders). Like {@link renderUnchecked}, it does **not** re-run
-   * parameter type validation — the context's values are used as-is.
+   * many renders).
    *
    * @example
    * ```ts
@@ -552,7 +634,7 @@ params:
       this.nodes,
       this.defaultValues,
       this.constJsValues,
-      this.getDirectOptions(),
+      this.getDirectOptionsFast(),
     );
   }
 
@@ -562,7 +644,10 @@ params:
    * Return parameter declarations as `[name, typeString]` tuples.
    */
   declarations(): [string, string][] {
-    return this.fm.params.map((d) => [d.name, varTypeToString(d.varType)]);
+    this._compiledDeclarations ??= this.fm.params.map(
+      (d) => [d.name, varTypeToString(d.varType)] as const,
+    );
+    return this._compiledDeclarations as [string, string][];
   }
 
   /**
@@ -600,13 +685,14 @@ params:
     for (const p of this.optionParams) {
       combinedOpts.add(p);
     }
+    const [nonEnumParams, nonOptionParams] = this.getNonEnumAndNonOptionSets();
     const scope = new ScopeImpl(
       params,
       mergedConsts,
       combinedOpts,
       this.fm.typeAliases,
-      this.nonEnumParams,
-      this.nonOptionParams,
+      nonEnumParams,
+      nonOptionParams,
     );
     const opts: RenderOptions = {
       maxIncludeDepth: maxDepth,
@@ -638,7 +724,8 @@ params:
    * Two templates with the same source produce the same hash.
    */
   sourceHash(): number {
-    return this.hash;
+    this._hash ??= hashString(this.sourceStr);
+    return this._hash;
   }
 
   /**
@@ -773,7 +860,10 @@ params:
     // Check for missing required params (those without defaults)
     const missing: string[] = [];
     for (const decl of this.fm.params) {
-      if (decl.defaultValue === undefined && !(decl.name in params)) {
+      if (
+        decl.defaultValue === undefined &&
+        !Object.hasOwn(params, decl.name)
+      ) {
         missing.push(decl.name);
       }
     }
@@ -793,13 +883,27 @@ params:
   }
 
   private renderWithContext(ctx: Context): string {
+    let values = ctx.values;
+    if (this.defaultValues.size > 0) {
+      let merged: Map<string, Value> | undefined;
+      for (const decl of this.fm.params) {
+        if (decl.defaultValue !== undefined && !values.has(decl.name)) {
+          merged ??= new Map(values);
+          merged.set(decl.name, decl.defaultValue);
+        }
+      }
+      if (merged !== undefined) {
+        values = merged;
+      }
+    }
+    const [nonEnumParams, nonOptionParams] = this.getNonEnumAndNonOptionSets();
     const scope = new ScopeImpl(
-      ctx.values,
+      values,
       this.constValues,
       this.optionParams,
       this.fm.typeAliases,
-      this.nonEnumParams,
-      this.nonOptionParams,
+      nonEnumParams,
+      nonOptionParams,
     );
     const options: RenderOptions = {
       maxIncludeDepth: this._maxIncludeDepth,
@@ -832,92 +936,16 @@ params:
     };
   }
 
-  private checkUnusedParams(_body: string): void {
-    const referenced = collectReferencedParams(this.nodes);
-    // Also scan {# comment #} tags for {{ var }} references.
-    // The AST comment node doesn't store text, so we scan the raw body.
-    // This mirrors Rust's extract_comment_variable_refs: only {{ expr }}
-    // patterns inside comments count as references, not bare words.
-    const commentPattern = /\{#(.*?)#\}/gs;
-    let match;
-    while ((match = commentPattern.exec(_body)) !== null) {
-      const commentText = match[1] ?? "";
-      extractInterpolationRefs(commentText, referenced, new Set());
+  private getDirectOptionsFast(): DirectRenderOptions | undefined {
+    if (
+      this.inlineTemplates.size === 0 &&
+      !this._basePath &&
+      !this._cache &&
+      this._maxIncludeDepth === 16
+    ) {
+      return undefined;
     }
-    // Collect unquoted case labels: if a declared param name appears as an
-    // unquoted label in `{% case paramName %}`, the runtime reads that param's
-    // value for comparison — it IS used. The reference collector can't do
-    // this because it would confuse enum variant names with param names.
-    const caseLabels = collectUnquotedCaseLabels(this.nodes);
-    for (const decl of this.fm.params) {
-      if (!referenced.has(decl.name) && !caseLabels.has(decl.name)) {
-        throw new TemplateSyntaxError(
-          `unused parameter '${decl.name}' declared but not referenced in body`,
-          decl.loc?.line,
-          decl.loc?.column,
-          decl.loc?.snippet,
-        );
-      }
-    }
-  }
-
-  /**
-   * Reject references to variables that are not declared anywhere.
-   *
-   * Mirrors the Rust core's `check_undeclared_variables`: the referenced set
-   * (body + comment interpolations) is compared against the union of declared
-   * params, consts, env vars, import stems, enum type aliases, and inline
-   * template names. Unknown references produce a syntax error with optional
-   * Levenshtein "did you mean" suggestions, byte-for-byte identical to Rust.
-   */
-  /** Names valid in every scope: import stems, enum types, inline templates. */
-  private templateWideNames(): Set<string> {
-    const names = new Set<string>(this.fm.imports.map((imp) => imp.stem));
-    for (const [name, ty] of this.fm.typeAliases) {
-      if (ty.kind === TYPE_ENUM) names.add(name);
-    }
-    for (const name of collectInlineTemplateNames(this.nodes)) {
-      names.add(name);
-    }
-    return names;
-  }
-
-  private checkUndeclaredVariables(body: string): void {
-    const referenced = collectReferencedParams(this.nodes);
-    // Include {{ expr }} references inside {# comments #}: the Rust core stores
-    // these as `Segment::Comment` refs, so they count as references too.
-    const commentPattern = /\{#(.*?)#\}/gs;
-    let match: RegExpExecArray | null;
-    while ((match = commentPattern.exec(body)) !== null) {
-      extractInterpolationRefs(match[1] ?? "", referenced, new Set());
-    }
-
-    const declared = this.templateWideNames();
-    for (const decl of this.fm.params) declared.add(decl.name);
-    for (const decl of this.fm.consts) declared.add(decl.name);
-    for (const decl of this.fm.env) declared.add(decl.name);
-
-    const undeclared: string[] = [];
-    for (const name of referenced) {
-      if (!declared.has(name)) undeclared.push(name);
-    }
-    if (undeclared.length === 0) return;
-    undeclared.sort();
-
-    const suggestions: string[] = [];
-    for (const name of undeclared) {
-      const best = closestName(name, declared);
-      if (best !== undefined) {
-        suggestions.push(`'${name}' (did you mean '${best}'?)`);
-      }
-    }
-    const suffix =
-      suggestions.length === 0
-        ? ""
-        : `. Suggestions: ${suggestions.join(", ")}`;
-    throw new TemplateSyntaxError(
-      `${ERR_UNDECLARED_PREFIX}${undeclared.join(", ")}${suffix}`,
-    );
+    return this.getDirectOptions();
   }
 
   private getDirectOptions(): DirectRenderOptions {
@@ -946,45 +974,6 @@ params:
     };
   }
 
-  /**
-   * Reject bare enum literal expressions like `{{ Stage.Design }}`.
-   *
-   * Only `{{ kind(Stage.Design) }}` is allowed — using the enum
-   * literal as a bare expression output is a compile error.
-   */
-  private checkBareEnumAccess(): void {
-    const enumTypeNames = new Set<string>();
-    for (const [name, varType] of this.fm.typeAliases) {
-      if (varType.kind === "enum" && !varType.isOption) {
-        enumTypeNames.add(name);
-      }
-    }
-    if (enumTypeNames.size === 0) return;
-    walkNodesForBareEnumAccess(this.nodes, enumTypeNames);
-  }
-
-  /**
-   * Reject type-unsafe match/case combinations at compile time:
-   * - unquoted case labels on str params (use quoted labels instead)
-   * - quoted case labels on enum params (use unquoted variant names instead)
-   */
-  private checkMatchTypeSafety(): void {
-    // Build a map of param name → resolved type kind for quick lookup.
-    // Resolve type aliases so e.g. `status = Status` where `Status = enum(...)`
-    // correctly maps to "enum".
-    const paramTypes = new Map<string, string>();
-    for (const decl of this.fm.params) {
-      let vt = decl.varType;
-      while (vt.kind === "alias") {
-        const resolved = this.fm.typeAliases.get(vt.name);
-        if (!resolved) break;
-        vt = resolved;
-      }
-      paramTypes.set(decl.name, vt.kind);
-    }
-    walkNodesForMatchTypeSafety(this.nodes, paramTypes);
-  }
-
   private resolveInclude(
     includePath: string,
     basePath?: string,
@@ -997,6 +986,7 @@ params:
       );
     }
     const currentBase = basePath ?? this._basePath ?? "";
+    this._includeCache ??= new Map<string, IncludeCacheEntry>();
     return resolveIncludeEntry(
       this._includeCache,
       includePath,

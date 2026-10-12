@@ -3,7 +3,7 @@
  */
 
 import {
-  type LineMapEntry,
+  type LineMapSource,
   type Node,
   type IfBranch,
   type MatchArm,
@@ -67,7 +67,7 @@ export function handleStatement(
   input: string,
   afterTag: number,
   trimAfter: boolean,
-  lineMap?: LineMapEntry[],
+  lineMap?: LineMapSource,
   tagStart?: number,
 ): [Node[], number] {
   let bodyStart = afterTag;
@@ -143,7 +143,7 @@ function handleFor(
   tag: string,
   input: string,
   afterTag: number,
-  lineMap?: LineMapEntry[],
+  lineMap?: LineMapSource,
   tagStart?: number,
 ): [Node[], number] {
   const match = /^for\s+(\w+)\s+in\s+(.+)$/.exec(tag);
@@ -195,7 +195,8 @@ function handleFor(
         iterExpr: match[2].trim(),
         body,
         elseBody,
-        loc: getLoc(tagStart, lineMap),
+        pos: tagStart,
+        lineMap,
       },
     ],
     finalPos,
@@ -206,7 +207,7 @@ function handleIf(
   tag: string,
   input: string,
   afterTag: number,
-  lineMap?: LineMapEntry[],
+  lineMap?: LineMapSource,
   tagStart?: number,
 ): [Node[], number] {
   const condition = tag.slice(3).trim();
@@ -274,17 +275,14 @@ function handleIf(
     }
   }
 
-  return [
-    [{ kind: NODE_IF, branches, elseBody, loc: getLoc(tagStart, lineMap) }],
-    pos,
-  ];
+  return [[{ kind: NODE_IF, branches, elseBody, pos: tagStart, lineMap }], pos];
 }
 
 function handleMatch(
   tag: string,
   input: string,
   afterTag: number,
-  lineMap?: LineMapEntry[],
+  lineMap?: LineMapSource,
   tagStart?: number,
 ): [Node[], number] {
   const tagContent = tag.slice(6).trim();
@@ -382,7 +380,8 @@ function handleMatch(
               ? { variant: firstVariant, body }
               : undefined,
 
-          loc: getLoc(tagStart, lineMap),
+          pos: tagStart,
+          lineMap,
         },
       ],
       finalPos,
@@ -496,7 +495,7 @@ function handleMatch(
   }
 
   return [
-    [{ kind: NODE_MATCH, expr, arms, elseArm, loc: getLoc(tagStart, lineMap) }],
+    [{ kind: NODE_MATCH, expr, arms, elseArm, pos: tagStart, lineMap }],
     pos,
   ];
 }
@@ -505,7 +504,7 @@ function handleRaw(
   tag: string,
   input: string,
   afterTag: number,
-  lineMap?: LineMapEntry[],
+  lineMap?: LineMapSource,
   tagStart?: number,
 ): [Node[], number] {
   const closeKeyword = rawCloseKeyword(tag) ?? KW_END_RAW;
@@ -526,16 +525,13 @@ function handleRaw(
   const closeEnd = input.indexOf(STMT_END, endIdx);
   const finalEnd = closeEnd === -1 ? endIdx : closeEnd + STMT_END.length;
 
-  return [
-    [{ kind: NODE_RAW, text: rawText, loc: getLoc(tagStart, lineMap) }],
-    finalEnd,
-  ];
+  return [[{ kind: NODE_RAW, text: rawText }], finalEnd];
 }
 
 function handleInclude(
   tag: string,
   afterTag: number,
-  lineMap?: LineMapEntry[],
+  lineMap?: LineMapSource,
   tagStart?: number,
 ): [Node[], number] {
   const rest = tag.slice(8).trim();
@@ -604,7 +600,8 @@ function handleInclude(
         withMappings,
         forBinding,
         forExpr,
-        loc: getLoc(tagStart, lineMap),
+        pos: tagStart,
+        lineMap,
       },
     ],
     afterTag,
@@ -615,7 +612,7 @@ function handleTmpl(
   tag: string,
   input: string,
   afterTag: number,
-  lineMap?: LineMapEntry[],
+  lineMap?: LineMapSource,
   tagStart?: number,
 ): [Node[], number] {
   const name = tag === KW_TMPL ? "" : tag.slice(TAG_TMPL_PREFIX.length).trim();
@@ -648,17 +645,14 @@ function handleTmpl(
     afterTag,
     findBlockEnd(input, afterTag, KW_END_TMPL),
   );
-  return [
-    [{ kind: NODE_TMPL, name, source, loc: getLoc(tagStart, lineMap) }],
-    endPos,
-  ];
+  return [[{ kind: NODE_TMPL, name, source, pos: tagStart, lineMap }], endPos];
 }
 
 function handlePanic(
   tag: string,
   afterTag: number,
-  lineMap?: LineMapEntry[],
-  tagStart?: number,
+  _lineMap?: LineMapSource,
+  _tagStart?: number,
 ): [Node[], number] {
   let arg = tag.slice(5).trim();
   if (arg.startsWith(PAREN_OPEN)) {
@@ -680,8 +674,5 @@ function handlePanic(
     bodySrc = `{{ ${arg} }}`;
   }
   const body = parseBody(bodySrc);
-  return [
-    [{ kind: NODE_PANIC, body, loc: getLoc(tagStart, lineMap) }],
-    afterTag,
-  ];
+  return [[{ kind: NODE_PANIC, body }], afterTag];
 }

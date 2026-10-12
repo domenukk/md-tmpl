@@ -441,7 +441,6 @@ tmpl.RenderMap(params map[string]any, opts ...RenderOption) (string, error)
 tmpl.RenderStruct(v any, opts ...RenderOption) (string, error)
 tmpl.RenderJSON(jsonStr string, opts ...RenderOption) (string, error)
 tmpl.RenderEmpty() (string, error)              // all params must have defaults
-tmpl.RenderUnchecked(ctx *Context) (string, error) // skip param validation
 tmpl.RenderCached(ctx *Context, cache *Cache) (string, error) // reuse includes
 
 // Metadata
@@ -501,24 +500,24 @@ vs Go's `text/template`, median of 3 runs
 
 | Scenario   |          md-tmpl | Go `text/template` | speedup |
 | ---------- | ---------------: | -----------------: | ------: |
-| **small**  |    **514 ns** 🏆 |             547 ns |   1.06× |
-| **medium** |  **1,531 ns** 🏆 |           6,174 ns |    4.0× |
-| **large**  | **27,160 ns** 🏆 |         143,053 ns |    5.3× |
+| **small**  |           796 ns |             733 ns |   ~1.0× |
+| **medium** |  **1,664 ns** 🏆 |           8,124 ns |    4.9× |
+| **large**  | **28,032 ns** 🏆 |         174,712 ns |    6.2× |
 
 **Round-trip** (parse + render):
 
-| Scenario   |          md-tmpl | Go `text/template` | speedup |
-| ---------- | ---------------: | -----------------: | ------: |
-| **small**  |         6,774 ns |           5,540 ns |   ~1.0× |
-| **medium** |        22,309 ns |          20,103 ns |   ~1.0× |
-| **large**  | **66,692 ns** 🏆 |         167,501 ns |    2.5× |
+| Scenario   |           md-tmpl | Go `text/template` | speedup |
+| ---------- | ----------------: | -----------------: | ------: |
+| **small**  |          9,653 ns |           6,900 ns |   ~1.0× |
+| **medium** |         32,895 ns |          27,277 ns |   ~1.0× |
+| **large**  | **100,060 ns** 🏆 |         200,806 ns |    2.0× |
 
 **Filters:**
 
 | Filter     |       md-tmpl | Go `text/template` | Speedup |
 | ---------- | ------------: | -----------------: | ------: |
-| upper      | **489 ns** 🏆 |             907 ns |    1.9× |
-| trim+upper | **441 ns** 🏆 |           1,312 ns |    3.0× |
+| upper      | **808 ns** 🏆 |           1,282 ns |    1.6× |
+| trim+upper | **659 ns** 🏆 |           1,735 ns |    2.6× |
 
 Allocations: 2 per render (small/medium/large) vs 3–517 for `text/template`.
 

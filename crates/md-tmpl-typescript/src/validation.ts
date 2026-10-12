@@ -360,93 +360,97 @@ export function validateFrontmatter(fm: Frontmatter): void {
   }
 
   // ── R1: PascalCase param/const vs type alias collision ──────────────
-  const allDecls: readonly VarDecl[] = [...fm.params, ...fm.consts, ...fm.env];
-  for (const decl of allDecls) {
-    const declPascal = toPascalCase(decl.name);
-    for (const [aliasName, aliasType] of fm.typeAliases) {
-      if (!localAliasNames.has(aliasName)) continue;
-      if (declPascal === aliasName) {
-        // Exception: if the declaration's type exactly matches the alias type
-        // OR if the declaration uses this alias by name, allow it.
-        if (varTypeEquals(decl.varType, aliasType)) {
-          continue;
+  if (localAliasNames.size > 0 || fm.imports.length > 0) {
+    const allDecls: readonly VarDecl[] = [
+      ...fm.params,
+      ...fm.consts,
+      ...fm.env,
+    ];
+    if (localAliasNames.size > 0) {
+      for (const decl of allDecls) {
+        const declPascal = toPascalCase(decl.name);
+        for (const [aliasName, aliasType] of fm.typeAliases) {
+          if (!localAliasNames.has(aliasName)) continue;
+          if (declPascal === aliasName) {
+            // Exception: if the declaration's type exactly matches the alias type
+            // OR if the declaration uses this alias by name, allow it.
+            if (varTypeEquals(decl.varType, aliasType)) {
+              continue;
+            }
+            if (
+              decl.varType.kind === TYPE_ALIAS &&
+              decl.varType.name === aliasName
+            ) {
+              continue;
+            }
+            // Enum type aliases are auto-injected as constants, so a user-defined
+            // constant with the same name simply takes priority — not a conflict.
+            if (aliasType.kind === TYPE_ENUM) {
+              continue;
+            }
+            const label = fm.consts.some((c) => c.name === decl.name)
+              ? "constant"
+              : "param";
+            throwErr(
+              `type alias name conflicts with parameter name (PascalCase collision): ${label} '${decl.name}' (PascalCase: '${declPascal}') conflicts with type alias '${aliasName}'`,
+              decl.loc,
+            );
+          }
         }
-        if (
-          decl.varType.kind === TYPE_ALIAS &&
-          decl.varType.name === aliasName
-        ) {
-          continue;
-        }
-        // Enum type aliases are auto-injected as constants, so a user-defined
-        // constant with the same name simply takes priority — not a conflict.
-        if (aliasType.kind === TYPE_ENUM) {
-          continue;
-        }
-        const label = fm.consts.some((c) => c.name === decl.name)
-          ? "constant"
-          : "param";
-        throwErr(
-          `type alias name conflicts with parameter name (PascalCase collision): ${label} '${decl.name}' (PascalCase: '${declPascal}') conflicts with type alias '${aliasName}'`,
-          decl.loc,
-        );
       }
     }
-  }
 
-  // ── R2: Type alias shadows import stem ──────────────────────────────
-  for (const imp of fm.imports) {
-    for (const aliasName of localAliasNames) {
-      if (aliasName === imp.stem) {
-        throwErr(
-          `type alias shadows import alias: '${aliasName}' shadows '${imp.stem}'`,
-          imp.loc,
-        );
-      }
-    }
-  }
-
-  // ── R2b: Param/const PascalCase name shadows import stem ────────────
-  for (const imp of fm.imports) {
-    for (const decl of allDecls) {
-      const declPascal = toPascalCase(decl.name);
-      if (declPascal === imp.stem) {
-        const label = fm.consts.some((c) => c.name === decl.name)
-          ? "constant"
-          : "param";
-        throwErr(
-          `parameter name (PascalCase) shadows import alias: ${label} '${decl.name}' (PascalCase: '${declPascal}') shadows import '${imp.stem}'`,
-          decl.loc,
-        );
-      }
-    }
-  }
-
-  // ── R4: Unused type aliases ─────────────────────────────────────────
-  if (
-    !fm.allowUnused &&
-    localAliasNames.size > 0 &&
-    (fm.params.length > 0 || fm.consts.length > 0 || fm.env.length > 0)
-  ) {
-    for (const [aliasName, aliasType] of fm.typeAliases) {
-      if (!localAliasNames.has(aliasName)) continue;
-      // Enum types are always used — they're auto-injected as constants.
-      if (aliasType.kind === TYPE_ENUM) continue;
-      // Check if any param/const/env declaration references this alias.
-      const isUsedByDecl = allDecls.some((d) =>
-        varTypeReferencesAlias(d.varType, aliasType, aliasName),
-      );
-      if (isUsedByDecl) continue;
-      // Check if any other type alias references this alias (chained aliases).
-      let isUsedByAlias = false;
-      for (const [otherName, otherType] of fm.typeAliases) {
-        if (otherName === aliasName) continue;
-        if (varTypeReferencesAlias(otherType, aliasType, aliasName)) {
-          isUsedByAlias = true;
-          break;
+    // ── R2: Type alias shadows import stem ──────────────────────────────
+    for (const imp of fm.imports) {
+      for (const aliasName of localAliasNames) {
+        if (aliasName === imp.stem) {
+          throwErr(
+            `type alias shadows import alias: '${aliasName}' shadows '${imp.stem}'`,
+            imp.loc,
+          );
         }
       }
-      if (!isUsedByAlias) {
-        throw new TemplateSyntaxError(`unused type alias: '${aliasName}'`);
+    }
+
+    // ── R2b: Param/const PascalCase name shadows import stem ────────────
+    for (const imp of fm.imports) {
+      for (const decl of allDecls) {
+        const declPascal = toPascalCase(decl.name);
+        if (declPascal === imp.stem) {
+          const label = fm.consts.some((c) => c.name === decl.name)
+            ? "constant"
+            : "param";
+          throwErr(
+            `parameter name (PascalCase) shadows import alias: ${label} '${decl.name}' (PascalCase: '${declPascal}') shadows import '${imp.stem}'`,
+            decl.loc,
+          );
+        }
+      }
+    }
+
+    // ── R4: Unused type aliases ─────────────────────────────────────────
+    if (!fm.allowUnused && localAliasNames.size > 0 && allDecls.length > 0) {
+      for (const [aliasName, aliasType] of fm.typeAliases) {
+        if (!localAliasNames.has(aliasName)) continue;
+        // Enum types are always used — they're auto-injected as constants.
+        if (aliasType.kind === TYPE_ENUM) continue;
+        // Check if any param/const/env declaration references this alias.
+        const isUsedByDecl = allDecls.some((d) =>
+          varTypeReferencesAlias(d.varType, aliasType, aliasName),
+        );
+        if (isUsedByDecl) continue;
+        // Check if any other type alias references this alias (chained aliases).
+        let isUsedByAlias = false;
+        for (const [otherName, otherType] of fm.typeAliases) {
+          if (otherName === aliasName) continue;
+          if (varTypeReferencesAlias(otherType, aliasType, aliasName)) {
+            isUsedByAlias = true;
+            break;
+          }
+        }
+        if (!isUsedByAlias) {
+          throw new TemplateSyntaxError(`unused type alias: '${aliasName}'`);
+        }
       }
     }
   }
@@ -467,55 +471,58 @@ export function validateBodyCollisions(
   inlineTemplateNames: ReadonlySet<string>,
   forBindings: ReadonlySet<string>,
 ): void {
-  // ── Rule 9: Import stem ↔ inline template name collision ──────────
-  for (const imp of fm.imports) {
-    if (inlineTemplateNames.has(imp.stem)) {
-      throwErr(
-        `inline template name conflicts with import stem: '${imp.stem}'`,
-        imp.loc,
-      );
+  if (inlineTemplateNames.size > 0) {
+    // ── Rule 9: Import stem ↔ inline template name collision ──────────
+    for (const imp of fm.imports) {
+      if (inlineTemplateNames.has(imp.stem)) {
+        throwErr(
+          `inline template name conflicts with import stem: '${imp.stem}'`,
+          imp.loc,
+        );
+      }
     }
-  }
 
-  // ── Rule 10: Param/const ↔ inline template name collision ─────────
-  for (const decl of fm.params) {
-    if (inlineTemplateNames.has(decl.name)) {
-      throwErr(
-        `inline template name conflicts with parameter name: '${decl.name}'`,
-        decl.loc,
-      );
+    // ── Rule 10: Param/const ↔ inline template name collision ─────────
+    for (const decl of fm.params) {
+      if (inlineTemplateNames.has(decl.name)) {
+        throwErr(
+          `inline template name conflicts with parameter name: '${decl.name}'`,
+          decl.loc,
+        );
+      }
     }
-  }
-  for (const decl of fm.consts) {
-    if (inlineTemplateNames.has(decl.name)) {
-      throwErr(
-        `inline template name conflicts with constant name: '${decl.name}'`,
-        decl.loc,
-      );
+    for (const decl of fm.consts) {
+      if (inlineTemplateNames.has(decl.name)) {
+        throwErr(
+          `inline template name conflicts with constant name: '${decl.name}'`,
+          decl.loc,
+        );
+      }
     }
-  }
-  for (const decl of fm.env) {
-    if (inlineTemplateNames.has(decl.name)) {
-      throwErr(
-        `inline template name conflicts with env variable name: '${decl.name}'`,
-        decl.loc,
-      );
+    for (const decl of fm.env) {
+      if (inlineTemplateNames.has(decl.name)) {
+        throwErr(
+          `inline template name conflicts with env variable name: '${decl.name}'`,
+          decl.loc,
+        );
+      }
     }
   }
 
   // ── Rule 11: For-loop binding shadowing ───────────────────────────
-  const declaredNames = new Set<string>([
-    ...fm.params.map((d) => d.name),
-    ...fm.consts.map((d) => d.name),
-    ...fm.env.map((d) => d.name),
-    ...fm.imports.map((i) => i.stem),
-    ...inlineTemplateNames,
-  ]);
-  for (const binding of forBindings) {
-    if (declaredNames.has(binding)) {
-      throw new TemplateSyntaxError(
-        `for-loop binding '${binding}' ${ERR_FOR_BINDING_SHADOWS}`,
-      );
+  if (forBindings.size > 0) {
+    const declaredNames = new Set<string>();
+    for (const d of fm.params) declaredNames.add(d.name);
+    for (const d of fm.consts) declaredNames.add(d.name);
+    for (const d of fm.env) declaredNames.add(d.name);
+    for (const i of fm.imports) declaredNames.add(i.stem);
+    for (const n of inlineTemplateNames) declaredNames.add(n);
+    for (const binding of forBindings) {
+      if (declaredNames.has(binding)) {
+        throw new TemplateSyntaxError(
+          `for-loop binding '${binding}' ${ERR_FOR_BINDING_SHADOWS}`,
+        );
+      }
     }
   }
 }

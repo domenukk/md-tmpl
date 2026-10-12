@@ -276,28 +276,112 @@ pub(crate) fn parse_declarations_with_sanitize(
     Ok((decls, import_refs, param_sanitize))
 }
 
-/// If `type_str` is a bare dotted import reference (`stem.TypeName`) resolving
-/// to an **enum** in `resolved_imports`, return `(stem, type_name)`.
+/// Check whether a [`VarType`] can be represented in Rust without emitting
+/// nominal child sub-structs or sub-enums whose names depend on the parent prefix.
+fn is_flat_field_type(vt: &VarType) -> bool {
+    match vt {
+        VarType::Str | VarType::Int | VarType::Float | VarType::Bool | VarType::Tmpl(_) => true,
+        VarType::Option(inner) => is_flat_field_type(inner),
+        VarType::Enum(_) if vt.is_option() => {
+            vt.option_inner_type().is_some_and(is_flat_field_type)
+        }
+        VarType::List(fields) if fields.len() == 1 && fields[0].name.is_empty() => {
+            is_flat_field_type(&fields[0].var_type)
+        }
+        _ => false,
+    }
+}
+
+/// Strip surrounding quotes and any leading `untrusted` modifier from a type string.
+fn strip_untrusted_and_quotes(s: &str) -> &str {
+    let mut cur = crate::consts::strip_string_literal(s.trim())
+        .unwrap_or(s.trim())
+        .trim();
+    while let Some(rest) = cur.strip_prefix(crate::consts::TYPE_UNTRUSTED) {
+        if rest.starts_with(' ') || rest.starts_with('\t') {
+            cur = rest.trim_start();
+            cur = crate::consts::strip_string_literal(cur)
+                .unwrap_or(cur)
+                .trim();
+        } else {
+            break;
+        }
+    }
+    cur
+}
+
+/// If `type_str` (or the inner type of `option(T)` / `list(T)`) references a
+/// local `types:` alias or an imported `stem.TypeName` whose Rust representation
+/// is a reusable nominal enum or struct, return `(stem, rust_type_name)`.
 ///
-/// Only whole-annotation plain enum references qualify — not nested positions,
-/// options, lists, or structs. Mirrors the dotted-path resolution in
-/// [`parse_type_annotation`].
-fn imported_enum_type_ref(
+/// For local `types:` aliases, `stem` is `""` (empty string) and `rust_type_name`
+/// is the generated type identifier in the same module (e.g. `"Status"`, `"User"`,
+/// or `"RowsItem"` for a `types:` list alias). For imported types, `stem` is the
+/// import namespace stem and `rust_type_name` is the type identifier in the
+/// imported module.
+fn resolve_param_type_ref(
     type_str: &str,
+    type_aliases: &HashMap<String, VarType>,
     resolved_imports: &HashMap<String, ImportedNamespace>,
 ) -> Option<ImportedTypeRef> {
-    let s = crate::consts::strip_string_literal(type_str.trim())
-        .unwrap_or(type_str.trim())
-        .trim();
-    let dot = s.find(crate::consts::PATH_SEP)?;
-    let stem = &s[..dot];
-    let type_name = &s[dot + crate::consts::PATH_SEP.len_utf8()..];
-    let ns = resolved_imports.get(stem)?;
-    let var_type = ns
-        .type_aliases
-        .get(type_name)
-        .or_else(|| ns.param_types.get(type_name))?;
-    matches!(var_type, VarType::Enum(_)).then(|| (stem.to_string(), type_name.to_string()))
+    let s = strip_untrusted_and_quotes(type_str);
+    let (target_str, is_wrapped) = if starts_with_compound_type(s, crate::consts::TYPE_OPTION) {
+        let rest = s.strip_prefix(crate::consts::TYPE_OPTION)?.trim();
+        let inner = strip_type_brackets(rest)?;
+        (strip_untrusted_and_quotes(inner), true)
+    } else if starts_with_compound_type(s, crate::consts::TYPE_LIST) {
+        let rest = s.strip_prefix(crate::consts::TYPE_LIST)?.trim();
+        let inner = strip_type_brackets(rest)?;
+        (strip_untrusted_and_quotes(inner), true)
+    } else {
+        (s, false)
+    };
+
+    let (stem_str, base_rust_name, var_type) =
+        if let Some(dot) = target_str.find(crate::consts::PATH_SEP) {
+            let stem = &target_str[..dot];
+            let type_name = &target_str[dot + crate::consts::PATH_SEP.len_utf8()..];
+            let ns = resolved_imports.get(stem)?;
+            if let Some(vt) = ns.type_aliases.get(type_name) {
+                (stem.to_string(), type_name.to_string(), vt)
+            } else if let Some(vt) = ns.param_types.get(type_name) {
+                (
+                    stem.to_string(),
+                    format!("Params{}", crate::to_pascal_case(type_name)),
+                    vt,
+                )
+            } else {
+                return None;
+            }
+        } else {
+            let vt = type_aliases.get(target_str)?;
+            (String::new(), target_str.to_string(), vt)
+        };
+
+    match var_type {
+        VarType::Enum(variants)
+            if !var_type.is_option()
+                && variants
+                    .iter()
+                    .all(|v| v.fields.iter().all(|f| is_flat_field_type(&f.var_type))) =>
+        {
+            Some((stem_str, base_rust_name))
+        }
+        VarType::Struct(fields)
+            if !fields.is_empty() && fields.iter().all(|f| is_flat_field_type(&f.var_type)) =>
+        {
+            Some((stem_str, base_rust_name))
+        }
+        VarType::List(fields)
+            if !is_wrapped
+                && !fields.is_empty()
+                && (fields.len() > 1 || !fields[0].name.is_empty())
+                && fields.iter().all(|f| is_flat_field_type(&f.var_type)) =>
+        {
+            Some((stem_str, format!("{base_rust_name}Item")))
+        }
+        _ => None,
+    }
 }
 
 fn resolve_declaration_default(
@@ -435,7 +519,7 @@ fn parse_single_declaration(
     let import_ref = if is_constant {
         None
     } else {
-        imported_enum_type_ref(type_str, resolved_imports)
+        resolve_param_type_ref(type_str, type_aliases, resolved_imports)
     };
 
     Ok(Some((

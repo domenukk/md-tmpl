@@ -1,12 +1,12 @@
 //! Tier 5 White-box Adversarial Coverage Tests for Milestone M3 Phase 2.
 //!
-//! Evaluates unchecked rendering parity, flexbuffer decoding boundaries,
+//! Evaluates buffer-reusing rendering parity, flexbuffer decoding boundaries,
 //! and resource limits / filter boundary conditions.
 
 use md_tmpl::{Context, Template, ctx};
 
 #[test]
-fn test_adv_unchecked_rendering_with_inline_templates() {
+fn test_adv_rendering_into_buffer_with_inline_templates() {
     let src = "\
 ---
 params:
@@ -26,28 +26,19 @@ Hello {{ name }}!
     let tmpl = Template::from_source(src).expect("compile failed");
     let ctx = ctx! { name: "Alice" };
 
-    // Checked render
+    // Standard render
     let checked = tmpl.render_ctx(&ctx).expect("checked render failed");
     assert_eq!(checked, "Hello Alice!\n");
 
-    // Unchecked render must produce identical output to checked render
-    let unchecked = tmpl
-        .render_ctx_unchecked(&ctx)
-        .expect("unchecked render failed");
-    assert_eq!(
-        unchecked, "Hello Alice!\n",
-        "render_ctx_unchecked dropped inline template output"
-    );
-
-    // Unchecked render into buffer
+    // Render into reusable buffer
     let mut buf = String::new();
-    tmpl.render_ctx_into_unchecked(&ctx, &mut buf)
-        .expect("unchecked render into failed");
+    tmpl.render_ctx_into(&ctx, &mut buf)
+        .expect("render into failed");
     assert_eq!(buf, "Hello Alice!\n");
 }
 
 #[test]
-fn test_adv_unchecked_rendering_allows_extra_params_without_error() {
+fn test_adv_allowing_extra_rendering_ignores_undeclared_params() {
     let src = "\
 ---
 params:
@@ -57,11 +48,9 @@ Result: {{ x }}";
     let tmpl = Template::from_source(src).expect("compile failed");
     let ctx = ctx! { x: 42, extra_param: "should be ignored" };
 
-    // In checked render, extra_param would cause an error unless allowed.
-    // In unchecked render, extra_param is simply ignored.
     let output = tmpl
-        .render_ctx_unchecked(&ctx)
-        .expect("unchecked render failed");
+        .render_ctx_allowing_extra(&ctx)
+        .expect("allowing_extra render failed");
     assert_eq!(output, "Result: 42");
 }
 

@@ -2,12 +2,12 @@
  * Unit and adversarial tests for security filters in TypeScript backend:
  * escape_xml (xml), escape_json (json), sanitize_tokens, fence, quarantine.
  *
- * Verifies both `Template.render()` (AST/Value evaluator) and
- * `Template.renderUnchecked()` (direct JS fast-path renderer) for parity.
+ * Verifies both `Template.render()` and `Template.renderContext()` for parity.
  */
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { Context } from "../context.js";
 import { Template } from "../template/index.js";
 import { TemplateSyntaxError } from "../errors.js";
 import {
@@ -39,8 +39,8 @@ function renderBoth(
   params: Record<string, unknown> = {},
 ): string {
   const checked = tmpl.render(params);
-  const unchecked = tmpl.renderUnchecked(params);
-  assert.strictEqual(unchecked, checked);
+  const ctxRendered = tmpl.renderContext(Context.from(params));
+  assert.strictEqual(ctxRendered, checked);
   return checked;
 }
 
@@ -49,7 +49,10 @@ function assertThrowsBoth(
   params: Record<string, unknown>,
 ): void {
   assert.throws(() => tmpl.render(params), TemplateSyntaxError);
-  assert.throws(() => tmpl.renderUnchecked(params), TemplateSyntaxError);
+  assert.throws(
+    () => tmpl.renderContext(Context.from(params)),
+    TemplateSyntaxError,
+  );
 }
 
 describe("Security Filters - XML", () => {

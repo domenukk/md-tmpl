@@ -36,30 +36,6 @@ Hello {{- name -}} world`,
     assert.strictEqual(first, second);
   });
 
-  it("renderUnchecked() is idempotent with trimAfter whitespace control", () => {
-    const tmpl = Template.fromSource(
-      `---
-params: [name = str]
----
-Hello {{- name -}} world`,
-    );
-    const first = tmpl.renderUnchecked({ name: "Alice" });
-    const second = tmpl.renderUnchecked({ name: "Alice" });
-    assert.strictEqual(first, second);
-  });
-
-  it("render() and renderUnchecked() agree with trimAfter", () => {
-    const tmpl = Template.fromSource(
-      `---
-params: [x = str]
----
-A {{- x -}} B`,
-    );
-    const checked = tmpl.render({ x: "val" });
-    const unchecked = tmpl.renderUnchecked({ x: "val" });
-    assert.strictEqual(checked, unchecked);
-  });
-
   // ── 2. node:fs lazy loading (browser compat) ────────────────────────
   // `import * as fs from "node:fs"` was replaced with lazy getFs()/getPath()
   // getters. fromSource() and render() must work without filesystem access.
@@ -106,7 +82,7 @@ The variable is set`),
   it("direct renderer uses strict equality (empty string != 0)", () => {
     const tmpl = Template.fromSource(
       `---
-params: [count = int]
+params: [count = str]
 ---
 > {% if count == 0 %}
 
@@ -119,8 +95,7 @@ nonzero
 > {% /if %}`,
     );
     // With strict equality, "" !== 0, so this should NOT match the == 0 branch.
-    // renderUnchecked uses the direct renderer which was the buggy path.
-    const result = tmpl.renderUnchecked({ count: "" });
+    const result = tmpl.render({ count: "" });
     assert.ok(
       result.includes("nonzero"),
       `expected "nonzero" but got: ${JSON.stringify(result)}`,
@@ -636,7 +611,7 @@ params: [x = str]
     assert.strictEqual(tmpl.render({ x: "hi" }), "custom: hi");
   });
 
-  it("kind(Stage.Design) works with renderUnchecked", () => {
+  it("kind(Stage.Design) works with render", () => {
     const tmpl = Template.fromSource(
       `---
 types:
@@ -646,7 +621,7 @@ params: [name = str]
 ---
 {{ kind(Stage.Design) }}: {{ name }}`,
     );
-    assert.strictEqual(tmpl.renderUnchecked({ name: "fast" }), "Design: fast");
+    assert.strictEqual(tmpl.render({ name: "fast" }), "Design: fast");
   });
 
   it("bare enum with filter is also rejected", () => {

@@ -182,17 +182,6 @@ params: [name = str]
     );
     assert.strictEqual(tmpl.render({ name: "世界" }), "🎉 Hello 世界! 🎉");
   });
-
-  it("renderUnchecked handles unicode", () => {
-    const tmpl = Template.fromSource(
-      `---
-params: [msg = str]
----
-{{ msg }}`,
-    );
-    const unicode = "日本語テスト 🏆";
-    assert.strictEqual(tmpl.renderUnchecked({ msg: unicode }), unicode);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -500,6 +489,108 @@ params: []
     assert.ok(
       result.includes("{{ not_a_variable }}"),
       `expected raw content preserved, got: ${result}`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fast-validated direct render and fallback paths
+// ---------------------------------------------------------------------------
+
+describe("Fast-validated direct render and fallback paths", () => {
+  it("renders compound types, aliases, enums, and options via fast validation", () => {
+    const tmpl = Template.fromSource(
+      `---
+types:
+  - Priority = enum(Critical, High, Low)
+  - Outcome = enum(Confirmed(evidence = str), Rejected)
+  - Meta = struct(type = str, retries = int)
+
+params:
+  - title = str
+  - score = float
+  - active = bool
+  - priority = Priority
+  - outcome = Outcome
+  - meta = Meta
+  - tags = list(str)
+  - items = list(name = str, count = int)
+  - note = option(str) := None
+---
+{{ title }}|{{ score }}|{{ active }}|{{ kind(priority) }}|{{ meta.type }}:{{ meta.retries }}|{{ tags | join(",") }}
+
+> {% for item in items %}
+
+{{ item.name }}={{ item.count }}
+
+> {% /for %}
+> {% if has(note) %}
+
+Note:{{ note }}
+
+> {% /if %}
+> {% match outcome %}
+> {% case Confirmed %}
+
+Confirmed:{{ outcome.evidence }}
+
+> {% case Rejected %}
+
+Rejected
+
+> {% /match %}`,
+    );
+
+    const out1 = tmpl.render({
+      title: "audit",
+      score: 9.5,
+      active: true,
+      priority: "Critical",
+      outcome: { __kind__: "Confirmed", evidence: "poc.rs" },
+      meta: { type: "custom-kind", retries: 2 },
+      tags: ["a", "b"],
+      items: [{ name: "check", count: 3 }],
+      note: "urgent",
+    });
+    assert.ok(out1.includes("audit|9.5|true|Critical|custom-kind:2|a,b"));
+    assert.ok(out1.includes("check=3"));
+    assert.ok(out1.includes("Note:urgent"));
+    assert.ok(out1.includes("Confirmed:poc.rs"));
+
+    const out2 = tmpl.render(
+      {
+        title: "second",
+        score: 1,
+        active: false,
+        priority: { __kind__: "Low" },
+        outcome: "Rejected",
+        meta: { type: "fallback", retries: 0 },
+        tags: [],
+        items: [],
+      },
+      { allowExtra: true },
+    );
+    assert.ok(out2.includes("second|1|false|Low|fallback:0|"));
+    assert.ok(out2.includes("Rejected"));
+  });
+
+  it("falls back to buildContext for boxed Values, Map renderDict, and option kind()", () => {
+    const tmpl = Template.fromSource(
+      `---
+params:
+  - cfg = struct(host = str, port = int)
+  - opt = option(str) := None
+---
+{{ cfg.host }}:{{ cfg.port }} ({{ kind(opt) }})`,
+    );
+
+    const mapParams = new Map<string, unknown>([
+      ["cfg", fromJs({ host: "db.internal", port: 5432 })],
+      ["opt", "ready"],
+    ]);
+    assert.strictEqual(
+      tmpl.renderDict(mapParams).trim(),
+      "db.internal:5432 (Some)",
     );
   });
 });

@@ -60,10 +60,10 @@ describe("Statement whitespace trimming (standalone blockquote — redundant)", 
       "> {% /for %}",
     ].join("\n");
     const trimSrc = baseSrc.replace("items %}", "items -%}");
-    const baseResult = Template.fromSource(baseSrc).renderUnchecked({
+    const baseResult = Template.fromSource(baseSrc).render({
       items: [{ name: "hello" }],
     });
-    const trimResult = Template.fromSource(trimSrc).renderUnchecked({
+    const trimResult = Template.fromSource(trimSrc).render({
       items: [{ name: "hello" }],
     });
     assert.strictEqual(
@@ -638,18 +638,6 @@ params:
       assert.throws(() => Template.fromSource(src), /unused/);
       const tmpl = Template.fromSourceAllowingUnused(src);
       assert.strictEqual(tmpl.render({ used: "u", unused: "x" }), "u");
-    });
-
-    it("renderUnchecked does NOT re-run validation", () => {
-      const tmpl = Template.fromSource(
-        `---
-params:
-  - name = str
----
-{{ name }}`,
-      );
-      // Should succeed without re-validation
-      assert.strictEqual(tmpl.renderUnchecked({ name: "test" }), "test");
     });
   });
 

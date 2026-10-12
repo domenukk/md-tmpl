@@ -73,45 +73,66 @@ export function parseFrontmatter(
   const normalized = source.includes("\r")
     ? source.replace(/\r\n/g, "\n")
     : source;
-  const lines = normalized.split("\n");
 
-  // Find opening ---
+  // Fast scan for opening and closing `---` without splitting the body into lines
+  const len = normalized.length;
+  let pos = 0;
+  let lineIdx = 0;
   let startIdx = -1;
-  for (const [i, line] of lines.entries()) {
+  let startLineText = "";
+  let fmContentStart = 0;
+  let fmContentEnd = 0;
+  let endIdx = -1;
+  let bodyStartPos = len;
+
+  while (pos <= len) {
+    const nl = normalized.indexOf("\n", pos);
+    const lineEnd = nl === -1 ? len : nl;
+    const line = normalized.slice(pos, lineEnd);
     if (line.trim() === FM_DELIMITER) {
-      startIdx = i;
-      break;
+      if (startIdx === -1) {
+        startIdx = lineIdx;
+        startLineText = line;
+        fmContentStart = nl === -1 ? len : nl + 1;
+      } else {
+        endIdx = lineIdx;
+        fmContentEnd = pos > 0 ? pos - 1 : 0;
+        bodyStartPos = nl === -1 ? len : nl + 1;
+        break;
+      }
     }
+    if (nl === -1) break;
+    pos = nl + 1;
+    lineIdx++;
   }
+
   if (startIdx === -1) {
+    const firstNl = normalized.indexOf("\n");
+    const firstLine =
+      firstNl === -1 ? normalized : normalized.slice(0, firstNl);
     throw new TemplateSyntaxError(
       "missing mandatory YAML frontmatter block (starts with ---)",
       1,
       1,
-      lines[0] ?? "",
+      firstLine,
     );
   }
 
-  // Find closing ---
-  let endIdx = -1;
-  for (const [i, line] of lines.entries()) {
-    if (i <= startIdx) continue;
-    if (line.trim() === FM_DELIMITER) {
-      endIdx = i;
-      break;
-    }
-  }
   if (endIdx === -1) {
     throw new TemplateSyntaxError(
       "unclosed YAML frontmatter block",
       startIdx + 1,
       1,
-      lines[startIdx] ?? "",
+      startLineText,
     );
   }
 
-  const fmLines = lines.slice(startIdx + 1, endIdx);
-  const body = lines.slice(endIdx + 1).join("\n");
+  const fmText =
+    fmContentEnd >= fmContentStart
+      ? normalized.slice(fmContentStart, fmContentEnd)
+      : "";
+  const fmLines = fmText.length > 0 ? fmText.split("\n") : [];
+  const body = normalized.slice(bodyStartPos);
 
   // Parse the frontmatter YAML subset
   const fm = parseFrontmatterYaml(
@@ -119,8 +140,9 @@ export function parseFrontmatter(
     startIdx + 2,
     parentTypeAliases,
     parentTypeAliasSanitize,
+    endIdx + 2,
   );
-  return [{ ...fm, bodyStartLine: endIdx + 2 }, body];
+  return [fm, body];
 }
 
 /**
@@ -151,6 +173,20 @@ export function stripFrontmatter(source: string): string {
  * lines never begin with `- `; a `- ` prefix therefore unambiguously marks a
  * new block-list item rather than a value continuation.
  */
+function isTopLevelSectionLine(trimmed: string): boolean {
+  return (
+    trimmed.startsWith(FM_PARAMS_PREFIX) ||
+    trimmed.startsWith(FM_TYPES_PREFIX) ||
+    trimmed.startsWith(FM_CONSTS_PREFIX) ||
+    trimmed.startsWith(FM_ENV_PREFIX) ||
+    trimmed.startsWith(FM_IMPORTS_PREFIX) ||
+    trimmed.startsWith(FM_NAME_PREFIX) ||
+    trimmed.startsWith(FM_DESC_PREFIX) ||
+    trimmed.startsWith(FM_ALLOW_UNUSED_PREFIX) ||
+    trimmed.startsWith(FM_SANITIZE_NOTICE_PREFIX)
+  );
+}
+
 export function joinContinuationLines(lines: string[]): string[] {
   const out: string[] = [];
   // Index in `out` of the logical line that continuations attach to, or -1.
@@ -163,16 +199,7 @@ export function joinContinuationLines(lines: string[]): string[] {
       out.push(raw);
       continue;
     }
-    const isSection =
-      trimmed.startsWith(FM_NAME_PREFIX) ||
-      trimmed.startsWith(FM_DESC_PREFIX) ||
-      trimmed.startsWith(FM_TYPES_PREFIX) ||
-      trimmed.startsWith(FM_IMPORTS_PREFIX) ||
-      trimmed.startsWith(FM_PARAMS_PREFIX) ||
-      trimmed.startsWith(FM_CONSTS_PREFIX) ||
-      trimmed.startsWith(FM_ENV_PREFIX) ||
-      trimmed.startsWith(FM_ALLOW_UNUSED_PREFIX) ||
-      trimmed.startsWith(FM_SANITIZE_NOTICE_PREFIX);
+    const isSection = isTopLevelSectionLine(trimmed);
     const isNewItem = trimmed.startsWith("- ");
     if (!isSection && !isNewItem && currentIdx !== -1) {
       // Continuation of the current logical line.
@@ -181,6 +208,15 @@ export function joinContinuationLines(lines: string[]): string[] {
       continue;
     }
     if (isNewItem) {
+      if (
+        !trimmed.includes("#") &&
+        trimmed.charCodeAt(2) !== 34 /* '"' */ &&
+        trimmed.charCodeAt(2) !== 39 /* "'" */
+      ) {
+        out.push(raw);
+        currentIdx = out.length - 1;
+        continue;
+      }
       // Strip a YAML-consistent inline `#` comment from the block list-item
       // scalar before joining (mirrors the Rust core's
       // `strip_list_item_comment`). Leading indentation is preserved so
@@ -299,47 +335,10 @@ export function parseFrontmatterYaml(
     string,
     ReadonlyMap<string, SanitizeSpec>
   >,
+  bodyStartLine?: number,
 ): Frontmatter {
   // Fold multi-line declarations onto single logical lines before parsing.
   const lines = joinContinuationLines(rawLines);
-
-  // Validate Frontmatter List Termination Rule:
-  // A blank line is strictly required after a block list before starting a new top-level
-  // section keyword, so raw markdown renders correctly.
-  let inBlockList = false;
-  let hadBlankLine = true;
-  for (const [i, line] of lines.entries()) {
-    const trimmed = line.trim();
-    if (trimmed === "" || trimmed.startsWith("#")) {
-      hadBlankLine = true;
-      continue;
-    }
-    const startsWithSection =
-      trimmed.startsWith(FM_NAME_PREFIX) ||
-      trimmed.startsWith(FM_DESC_PREFIX) ||
-      trimmed.startsWith(FM_TYPES_PREFIX) ||
-      trimmed.startsWith(FM_IMPORTS_PREFIX) ||
-      trimmed.startsWith(FM_PARAMS_PREFIX) ||
-      trimmed.startsWith(FM_CONSTS_PREFIX) ||
-      trimmed.startsWith(FM_ENV_PREFIX) ||
-      trimmed.startsWith(FM_SANITIZE_NOTICE_PREFIX) ||
-      trimmed.startsWith(FM_ALLOW_UNUSED_PREFIX);
-
-    if (startsWithSection) {
-      if (inBlockList && !hadBlankLine) {
-        throw new TemplateSyntaxError(
-          `A blank line is required after a block list before '${trimmed}' so raw markdown renders correctly`,
-          startLineNo + i,
-          1,
-          line,
-        );
-      }
-      inBlockList = false;
-    } else if (trimmed.startsWith("-")) {
-      inBlockList = true;
-    }
-    hadBlankLine = false;
-  }
 
   let name: string | undefined;
   let description: string | undefined;
@@ -366,10 +365,32 @@ export function parseFrontmatterYaml(
 
   let currentBlock: "none" | "params" | "types" | "consts" | "env" | "imports" =
     "none";
+  let inBlockList = false;
+  let hadBlankLine = true;
 
-  for (const [i, line] of lines.entries()) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? "";
     const trimmed = line.trim();
-    if (trimmed === "" || trimmed.startsWith("#")) continue;
+    if (trimmed === "" || trimmed.startsWith("#")) {
+      hadBlankLine = true;
+      continue;
+    }
+    const startsWithSection = isTopLevelSectionLine(trimmed);
+    if (startsWithSection) {
+      if (inBlockList && !hadBlankLine) {
+        throw new TemplateSyntaxError(
+          `A blank line is required after a block list before '${trimmed}' so raw markdown renders correctly`,
+          startLineNo + i,
+          1,
+          line,
+        );
+      }
+      inBlockList = false;
+    } else if (trimmed.startsWith("-")) {
+      inBlockList = true;
+    }
+    hadBlankLine = false;
+
     const loc = { line: startLineNo + i, column: 1, snippet: line };
 
     try {
@@ -544,23 +565,24 @@ export function parseFrontmatterYaml(
     }
   }
 
-  const importStems: ReadonlySet<string> = new Set(
-    imports.map((imp) => imp.stem),
-  );
+  const importStems: ReadonlySet<string> =
+    imports.length > 0
+      ? new Set(imports.map((imp) => imp.stem))
+      : NO_IMPORT_STEMS;
 
   // Phase 1: Parse consts (they can reference earlier consts)
   const consts: VarDecl[] = [];
   const constValues = new Map<string, Value>();
   for (const item of rawConsts) {
     try {
-      const decl = parseConstDecl(item.raw, constValues);
+      const decl = parseConstDecl(item.raw, constValues, item.loc);
       assertKnownTypeRefs(
         declarationLabel(decl.name),
         decl.varType,
         typeAliases,
         importStems,
       );
-      consts.push({ ...decl, loc: item.loc });
+      consts.push(decl);
       if (decl.defaultValue !== undefined) {
         constValues.set(decl.name, decl.defaultValue);
       }
@@ -581,14 +603,14 @@ export function parseFrontmatterYaml(
   const env: VarDecl[] = [];
   for (const item of rawEnv) {
     try {
-      const decl = parseConstDecl(item.raw, constValues);
+      const decl = parseConstDecl(item.raw, constValues, item.loc);
       assertKnownTypeRefs(
         declarationLabel(decl.name),
         decl.varType,
         typeAliases,
         importStems,
       );
-      env.push({ ...decl, loc: item.loc });
+      env.push(decl);
     } catch (err) {
       if (err instanceof TemplateSyntaxError && err.line === undefined) {
         throw new TemplateSyntaxError(
@@ -602,7 +624,9 @@ export function parseFrontmatterYaml(
     }
   }
 
-  interpolateImports(imports, constValues);
+  if (imports.length > 0) {
+    interpolateImports(imports, constValues);
+  }
 
   // Phase 2: Parse params with const values available for defaults.
   // For imported consts (dotted names like stem.NAME), the default is
@@ -621,6 +645,7 @@ export function parseFrontmatterYaml(
         constValues,
         false,
         typeAliasSanitize,
+        item.loc,
       );
       assertKnownTypeRefs(
         declarationLabel(decl.name),
@@ -628,7 +653,7 @@ export function parseFrontmatterYaml(
         typeAliases,
         importStems,
       );
-      params.push({ ...decl, loc: item.loc });
+      params.push(decl);
       if (unresolved !== undefined) {
         unresolvedDefaults.set(decl.name, unresolved);
       }
@@ -662,5 +687,6 @@ export function parseFrontmatterYaml(
     typeAliasSanitize,
     sanitizeNotice,
     localTypeAliasNames,
+    bodyStartLine,
   };
 }

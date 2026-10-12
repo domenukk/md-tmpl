@@ -4,15 +4,15 @@
 
 import {
   type LineMapEntry,
+  type LineMapSource,
   type SourceLocation,
   type Node,
-  getLocation,
+  getLoc as getAstLoc,
 } from "./ast.js";
 import { TemplateSyntaxError, UnknownFilterError } from "./errors.js";
 import { parseFilter } from "./filters.js";
 import { splitPipes } from "./evaluator.js";
 import {
-  BLOCKQUOTE_PREFIX,
   BLOCKQUOTE_PREFIX_SPACED,
   COMMENT_END,
   COMMENT_START,
@@ -37,10 +37,14 @@ export function buildSimpleLineMap(
   body: string,
   startLineNo: number,
 ): LineMapEntry[] {
+  if (!body.includes("\n")) {
+    return [{ offset: 0, lineNo: startLineNo, snippet: body, colOffset: 0 }];
+  }
   const lines = body.split("\n");
   const lineMap: LineMapEntry[] = [];
   let offset = 0;
-  for (const [i, line] of lines.entries()) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? "";
     lineMap.push({
       offset,
       lineNo: startLineNo + i,
@@ -50,6 +54,18 @@ export function buildSimpleLineMap(
     offset += line.length + 1; // +1 for '\n'
   }
   return lineMap;
+}
+
+function sliceAfterBlockquotePrefix(trimmed: string): string {
+  let i = 1;
+  while (
+    i < trimmed.length &&
+    (trimmed.charCodeAt(i) === 32 /* ' ' */ ||
+      trimmed.charCodeAt(i) === 9) /* '\t' */
+  ) {
+    i++;
+  }
+  return trimmed.slice(i);
 }
 
 /**
@@ -63,8 +79,8 @@ export function buildSimpleLineMap(
 export function isValidTagNeighbor(line: string): boolean {
   const trimmed = line.trimStart();
   if (trimmed === "" || trimmed.startsWith(FM_DELIMITER)) return true;
-  if (trimmed.startsWith(BLOCKQUOTE_PREFIX)) {
-    const afterGt = trimmed.replace(/^>\s*/, "");
+  if (trimmed.charCodeAt(0) === 62 /* '>' */) {
+    const afterGt = sliceAfterBlockquotePrefix(trimmed);
     return afterGt.startsWith(STMT_START) || afterGt.startsWith(COMMENT_START);
   }
   return false;
@@ -113,18 +129,25 @@ function rawBodyLineFlags(
 export function preprocessBlockquotes(
   body: string,
   startLineNo = 1,
+  buildMap = true,
 ): [string, LineMapEntry[]] {
+  if (!body.includes(STMT_START) && !body.includes(COMMENT_START)) {
+    return [body, buildMap ? buildSimpleLineMap(body, startLineNo) : []];
+  }
   const lines = body.split("\n");
-  const rawLines = rawBodyLineFlags(body, lines, startLineNo);
+  const rawLines = body.includes(KW_RAW)
+    ? rawBodyLineFlags(body, lines, startLineNo)
+    : undefined;
   let result = "";
   const lineMap: LineMapEntry[] = [];
   let afterStandalone = false;
   let pendingBlanks = 0;
 
-  for (const [i, line] of lines.entries()) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i] ?? "";
     const trimmed = line.trimStart();
 
-    if (rawLines[i] === true) {
+    if (rawLines?.[i] === true) {
       // Inside raw: blank lines after a standalone tag still need
       // the pendingBlanks mechanism to match Rust's behaviour.
       if (afterStandalone && line.trim() === "") {
@@ -145,12 +168,14 @@ export function preprocessBlockquotes(
         result += "\n";
       }
       afterStandalone = false;
-      lineMap.push({
-        offset: result.length,
-        lineNo: startLineNo + i,
-        snippet: line,
-        colOffset: 0,
-      });
+      if (buildMap) {
+        lineMap.push({
+          offset: result.length,
+          lineNo: startLineNo + i,
+          snippet: line,
+          colOffset: 0,
+        });
+      }
       result += line;
       continue;
     }
@@ -171,8 +196,10 @@ export function preprocessBlockquotes(
       );
     }
 
-    if (trimmed.startsWith(BLOCKQUOTE_PREFIX)) {
-      const afterGt = trimmed.replace(/^>\s*/, "");
+    let afterGt = "";
+    let shouldStrip = false;
+    if (trimmed.charCodeAt(0) === 62 /* '>' */) {
+      afterGt = sliceAfterBlockquotePrefix(trimmed);
       if (afterGt.startsWith(COMMENT_START)) {
         const closeIdx = afterGt.indexOf(COMMENT_END);
         if (
@@ -190,14 +217,11 @@ export function preprocessBlockquotes(
             line,
           );
         }
+        shouldStrip = true;
+      } else if (afterGt.startsWith(STMT_START)) {
+        shouldStrip = true;
       }
     }
-
-    // Check for standalone blockquote statement line: `> {% ... %}` or `> {# ... #}`
-    const afterGt = trimmed.replace(/^>\s*/, "");
-    const shouldStrip =
-      trimmed.startsWith(">") &&
-      (afterGt.startsWith("{%") || afterGt.startsWith("{#"));
 
     let tagLine = line;
     if (shouldStrip) {
@@ -206,13 +230,13 @@ export function preprocessBlockquotes(
 
     let isStandaloneTag = false;
     if (shouldStrip) {
-      if (afterGt.startsWith("{%")) {
-        const closePos = afterGt.indexOf("%}", 2);
+      if (afterGt.startsWith(STMT_START)) {
+        const closePos = afterGt.indexOf(STMT_END, 2);
         if (closePos !== -1 && closePos + 2 === afterGt.length) {
           isStandaloneTag = true;
         }
-      } else if (afterGt.startsWith("{#")) {
-        const closePos = afterGt.indexOf("#}", 2);
+      } else {
+        const closePos = afterGt.indexOf(COMMENT_END, 2);
         if (closePos !== -1 && closePos + 2 === afterGt.length) {
           isStandaloneTag = true;
         }
@@ -253,7 +277,7 @@ export function preprocessBlockquotes(
         const prevLine = lines[i - 1];
         if (
           prevLine !== undefined &&
-          rawLines[i - 1] !== true &&
+          rawLines?.[i - 1] !== true &&
           !isValidTagNeighbor(prevLine)
         ) {
           throw new TemplateSyntaxError(
@@ -269,7 +293,7 @@ export function preprocessBlockquotes(
         const nextLine = lines[i + 1];
         if (
           nextLine !== undefined &&
-          rawLines[i + 1] !== true &&
+          rawLines?.[i + 1] !== true &&
           !isValidTagNeighbor(nextLine)
         ) {
           throw new TemplateSyntaxError(
@@ -290,22 +314,26 @@ export function preprocessBlockquotes(
       afterStandalone = true;
     }
 
-    lineMap.push({
-      offset: result.length,
-      lineNo: startLineNo + i,
-      snippet: line,
-      colOffset: line.length - tagLine.length,
-    });
+    if (buildMap) {
+      lineMap.push({
+        offset: result.length,
+        lineNo: startLineNo + i,
+        snippet: line,
+        colOffset: line.length - tagLine.length,
+      });
+    }
     // Strip trim markers from standalone blockquote tags — they are
     // redundant because blockquote preprocessing already manages all
     // surrounding whitespace.  This matches Rust's behaviour where
     // find_closing_block ignores trim markers.
     if (isStandaloneTag) {
       let cleaned = tagLine;
-      // {%- → {% and -%} → %}
-      cleaned = cleaned.replace(/^\{%-/, "{%").replace(/-%\}$/, "%}");
-      // {#- → {# and -#} → #}
-      cleaned = cleaned.replace(/^\{#-/, "{#").replace(/-#\}$/, "#}");
+      if (cleaned.charCodeAt(2) === 45 /* '-' */) {
+        cleaned = `${cleaned.slice(0, 2)}${cleaned.slice(3)}`;
+      }
+      if (cleaned.charCodeAt(cleaned.length - 3) === 45 /* '-' */) {
+        cleaned = `${cleaned.slice(0, -3)}${cleaned.slice(-2)}`;
+      }
       result += cleaned;
     } else {
       result += tagLine;
@@ -317,9 +345,9 @@ export function preprocessBlockquotes(
 
 export function getLoc(
   pos?: number,
-  lineMap?: LineMapEntry[],
+  lineMap?: LineMapSource,
 ): SourceLocation | undefined {
-  return pos !== undefined && lineMap ? getLocation(pos, lineMap) : undefined;
+  return getAstLoc(pos, lineMap);
 }
 
 import { parseSanitizeFilterArgs } from "./sanitize_pass.js";
@@ -440,23 +468,23 @@ export function tryMatchClosingTag(
 
 export function findNextTag(input: string, from: number): number {
   let pos = from;
-  while (pos < input.length - 1) {
-    if (input[pos] === "{") {
-      if (input[pos + 1] === "%") return pos;
-      if (input[pos + 1] === "{") {
-        // Skip past }}
-        const end = input.indexOf("}}", pos + 2);
-        pos = end === -1 ? pos + 2 : end + 2;
-        continue;
-      }
-      if (input[pos + 1] === "#") {
-        // Skip past #}
-        const end = input.indexOf("#}", pos + 2);
-        pos = end === -1 ? pos + 2 : end + 2;
-        continue;
-      }
+  const len = input.length - 1;
+  while (pos < len) {
+    const brace = input.indexOf("{", pos);
+    if (brace === -1 || brace >= len) return -1;
+    const nextCode = input.charCodeAt(brace + 1);
+    if (nextCode === 37 /* '%' */) return brace;
+    if (nextCode === 123 /* '{' */) {
+      const end = input.indexOf("}}", brace + 2);
+      pos = end === -1 ? brace + 2 : end + 2;
+      continue;
     }
-    pos++;
+    if (nextCode === 35 /* '#' */) {
+      const end = input.indexOf("#}", brace + 2);
+      pos = end === -1 ? brace + 2 : end + 2;
+      continue;
+    }
+    pos = brace + 1;
   }
   return -1;
 }
@@ -526,7 +554,7 @@ export function parseInlineContent(
   from: number,
   to: number,
   nodes: Node[],
-  lineMap?: LineMapEntry[],
+  lineMap?: LineMapSource,
 ): void {
   let pos = from;
   while (pos < to) {
@@ -542,7 +570,6 @@ export function parseInlineContent(
         nodes.push({
           kind: NODE_TEXT,
           text: input.slice(pos, to),
-          loc: getLoc(pos, lineMap),
         });
       }
       break;
@@ -552,7 +579,6 @@ export function parseInlineContent(
       nodes.push({
         kind: NODE_TEXT,
         text: input.slice(pos, earliest),
-        loc: getLoc(pos, lineMap),
       });
     }
 
@@ -561,7 +587,7 @@ export function parseInlineContent(
       if (endComment === -1 || endComment >= to) {
         throw new TemplateSyntaxError("unclosed comment {#");
       }
-      nodes.push({ kind: NODE_COMMENT, loc: getLoc(commentIdx, lineMap) });
+      nodes.push({ kind: NODE_COMMENT });
       pos = endComment + 2;
     } else {
       const [expr, endPos, trimBefore, trimAfter] = parseExpression(
@@ -573,7 +599,8 @@ export function parseInlineContent(
         expr,
         trimBefore,
         trimAfter,
-        loc: getLoc(exprIdx, lineMap),
+        pos: exprIdx,
+        lineMap,
       });
       pos = endPos;
     }

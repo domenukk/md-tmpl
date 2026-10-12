@@ -6,20 +6,13 @@
 
 import { TemplateSyntaxError } from "../errors.js";
 import {
-  ANGLE_CLOSE,
   ANGLE_OPEN,
-  BACKSLASH,
-  BRACE_CLOSE,
-  BRACE_OPEN,
   BRACKET_CLOSE,
   BRACKET_OPEN,
   COMMA,
   EQUALS,
   ERR_COMPOUND_BRACKETS_PROHIBITED,
-  PAREN_CLOSE,
   PAREN_OPEN,
-  QUOTE_DOUBLE,
-  QUOTE_SINGLE,
   TYPE_ALIAS,
   TYPE_BOOL,
   TYPE_ENUM,
@@ -51,13 +44,31 @@ export function startsWithCompoundType(s: string, keyword: string): boolean {
   return rest.startsWith(PAREN_OPEN);
 }
 
+/** Reserved type keywords that enum variant names cannot shadow. */
+const RESERVED_TYPE_KEYWORDS: ReadonlySet<string> = new Set([
+  TYPE_STR,
+  TYPE_INT,
+  TYPE_FLOAT,
+  TYPE_BOOL,
+  TYPE_LIST,
+  TYPE_STRUCT,
+  TYPE_ENUM,
+  TYPE_OPTION,
+  TYPE_TMPL,
+]);
+
+const VAR_TYPE_STR: VarType = { kind: TYPE_STR };
+const VAR_TYPE_BOOL: VarType = { kind: TYPE_BOOL };
+const VAR_TYPE_INT: VarType = { kind: TYPE_INT };
+const VAR_TYPE_FLOAT: VarType = { kind: TYPE_FLOAT };
+
 export function parseVarType(typeStr: string): VarType {
   const t = stripStringLiteral(typeStr);
 
-  if (t === TYPE_STR) return { kind: TYPE_STR };
-  if (t === TYPE_BOOL) return { kind: TYPE_BOOL };
-  if (t === TYPE_INT) return { kind: TYPE_INT };
-  if (t === TYPE_FLOAT) return { kind: TYPE_FLOAT };
+  if (t === TYPE_STR) return VAR_TYPE_STR;
+  if (t === TYPE_BOOL) return VAR_TYPE_BOOL;
+  if (t === TYPE_INT) return VAR_TYPE_INT;
+  if (t === TYPE_FLOAT) return VAR_TYPE_FLOAT;
 
   if (startsWithCompoundType(t, TYPE_LIST)) {
     const inner = stripTypeBrackets(t, TYPE_LIST);
@@ -69,14 +80,16 @@ export function parseVarType(typeStr: string): VarType {
     // Reject literal raw struct declarations inside list definitions (e.g. list(struct(name = str, count = int))).
     // Users should write named fields directly (e.g. list(name = str, count = int)) or reference a strong Type alias.
     const topItems = splitTopLevel(inner, COMMA);
-    const hasTopLevelEquals = topItems.some(
-      (item) =>
-        item.includes(EQUALS) &&
-        !startsWithCompoundType(item.trim(), TYPE_STRUCT) &&
-        !startsWithCompoundType(item.trim(), TYPE_ENUM) &&
-        !startsWithCompoundType(item.trim(), TYPE_LIST) &&
-        !startsWithCompoundType(item.trim(), TYPE_TMPL),
-    );
+    const hasTopLevelEquals = topItems.some((item) => {
+      if (!item.includes(EQUALS)) return false;
+      const itemTrimmed = item.trim();
+      return (
+        !startsWithCompoundType(itemTrimmed, TYPE_STRUCT) &&
+        !startsWithCompoundType(itemTrimmed, TYPE_ENUM) &&
+        !startsWithCompoundType(itemTrimmed, TYPE_LIST) &&
+        !startsWithCompoundType(itemTrimmed, TYPE_TMPL)
+      );
+    });
     if (!hasTopLevelEquals) {
       if (topItems.length > 1) {
         throw new TemplateSyntaxError(
@@ -99,7 +112,7 @@ export function parseVarType(typeStr: string): VarType {
       }
       return { kind: TYPE_SCALAR_LIST, elementType };
     }
-    const fields = parseFieldList(inner);
+    const fields = parseFieldListItems(topItems);
     return { kind: TYPE_LIST, fields };
   }
 
@@ -124,19 +137,8 @@ export function parseVarType(typeStr: string): VarType {
     const inner = stripTypeBrackets(t, TYPE_ENUM);
     const variants = parseVariantList(inner);
     // Reject variant names that shadow builtin type keywords.
-    const RESERVED_TYPE_KEYWORDS = [
-      TYPE_STR,
-      TYPE_INT,
-      TYPE_FLOAT,
-      TYPE_BOOL,
-      TYPE_LIST,
-      TYPE_STRUCT,
-      TYPE_ENUM,
-      TYPE_OPTION,
-      TYPE_TMPL,
-    ];
     for (const v of variants) {
-      if (RESERVED_TYPE_KEYWORDS.includes(v.name)) {
+      if (RESERVED_TYPE_KEYWORDS.has(v.name)) {
         throw new TemplateSyntaxError(
           `enum variant name '${v.name}' shadows a builtin type keyword`,
         );
@@ -161,28 +163,27 @@ export function stripTypeBrackets(s: string, keyword: string): string {
   if (keywordIdx === -1) return "";
   let openIdx = -1;
   for (let i = keywordIdx + keyword.length; i < s.length; i++) {
-    const ch = s.charAt(i);
-    if (ch === PAREN_OPEN) {
+    const code = s.charCodeAt(i);
+    if (code === 40 /* '(' */) {
       openIdx = i;
       break;
     }
-    if (ch !== " " && ch !== "\t") break;
+    if (code !== 32 /* ' ' */ && code !== 9 /* '\t' */) break;
   }
   if (openIdx === -1) return "";
 
   let depth = 1;
   let i = openIdx + 1;
   while (i < s.length && depth > 0) {
-    if (s[i] === PAREN_OPEN) depth++;
-    else if (s[i] === PAREN_CLOSE) depth--;
+    const code = s.charCodeAt(i);
+    if (code === 40 /* '(' */) depth++;
+    else if (code === 41 /* ')' */) depth--;
     i++;
   }
   return s.slice(openIdx + 1, i - 1).trim();
 }
 
-/** Parse a comma-separated field list: `name = str, score = int`. */
-export function parseFieldList(inner: string): VarDecl[] {
-  const items = splitTopLevel(inner, COMMA);
+function parseFieldListItems(items: readonly string[]): VarDecl[] {
   return items.map((item) => {
     const trimmed = stripStringLiteral(item);
     const eqIdx = trimmed.indexOf(EQUALS);
@@ -195,6 +196,11 @@ export function parseFieldList(inner: string): VarDecl[] {
     const typeStr = trimmed.slice(eqIdx + 1).trim();
     return { name, varType: parseVarType(typeStr) };
   });
+}
+
+/** Parse a comma-separated field list: `name = str, score = int`. */
+export function parseFieldList(inner: string): VarDecl[] {
+  return parseFieldListItems(splitTopLevel(inner, COMMA));
 }
 
 /** Parse a comma-separated variant list: `Confirmed(evidence = str), Rejected`. */
@@ -223,54 +229,50 @@ export function parseVariantList(inner: string): VariantDecl[] {
  * (e.g. `{msg = "a, b", n = 1}`) without the field separator being misdetected.
  */
 export function splitTopLevel(s: string, delimiter: string): string[] {
+  if (!s.includes(delimiter)) {
+    return s.trim().length > 0 ? [s] : [];
+  }
   const result: string[] = [];
+  const delimCode = delimiter.charCodeAt(0);
   let depth = 0;
-  let current = "";
-  // When inside a string literal, holds the opening quote char; delimiters are
-  // ignored until the matching closing quote is seen.
-  let inQuote: string | undefined;
-  // When inside a quote, tracks whether the previous char was an unescaped
-  // backslash (which escapes the current char, e.g. `\"` does not close).
+  let start = 0;
+  let inQuoteCode = 0;
   let escaped = false;
 
-  for (const ch of s) {
-    if (inQuote !== undefined) {
+  for (let i = 0; i < s.length; i++) {
+    const code = s.charCodeAt(i);
+    if (inQuoteCode !== 0) {
       if (escaped) {
         escaped = false;
-      } else if (ch === BACKSLASH) {
+      } else if (code === 92 /* '\\' */) {
         escaped = true;
-      } else if (ch === inQuote) {
-        inQuote = undefined;
+      } else if (code === inQuoteCode) {
+        inQuoteCode = 0;
       }
-      current += ch;
-    } else if (ch === QUOTE_DOUBLE || ch === QUOTE_SINGLE) {
-      inQuote = ch;
-      current += ch;
+    } else if (code === 34 /* '"' */ || code === 39 /* "'" */) {
+      inQuoteCode = code;
     } else if (
-      ch === ANGLE_OPEN ||
-      ch === PAREN_OPEN ||
-      ch === BRACE_OPEN ||
-      ch === BRACKET_OPEN
+      code === 60 /* '<' */ ||
+      code === 40 /* '(' */ ||
+      code === 123 /* '{' */ ||
+      code === 91 /* '[' */
     ) {
       depth++;
-      current += ch;
     } else if (
-      ch === ANGLE_CLOSE ||
-      ch === PAREN_CLOSE ||
-      ch === BRACE_CLOSE ||
-      ch === BRACKET_CLOSE
+      code === 62 /* '>' */ ||
+      code === 41 /* ')' */ ||
+      code === 125 /* '}' */ ||
+      code === 93 /* ']' */
     ) {
       depth--;
-      current += ch;
-    } else if (ch === delimiter && depth === 0) {
-      result.push(current);
-      current = "";
-    } else {
-      current += ch;
+    } else if (code === delimCode && depth === 0) {
+      result.push(s.slice(start, i));
+      start = i + 1;
     }
   }
-  if (current.trim().length > 0) {
-    result.push(current);
+  const tail = s.slice(start);
+  if (tail.trim().length > 0) {
+    result.push(tail);
   }
   return result;
 }

@@ -4,6 +4,7 @@
 
 import {
   type LineMapEntry,
+  type LineMapSource,
   type SourceLocation,
   getLocation,
   type Node,
@@ -59,14 +60,16 @@ export function parseBody(
   skipPreprocess = false,
   startLineNo = 1,
 ): Node[] {
-  let processed: string;
-  let lineMap: LineMapEntry[];
-  if (skipPreprocess) {
-    processed = body;
-    lineMap = buildSimpleLineMap(body, startLineNo);
-  } else {
-    [processed, lineMap] = preprocessBlockquotes(body, startLineNo);
-  }
+  const processed = skipPreprocess
+    ? body
+    : preprocessBlockquotes(body, startLineNo, false)[0];
+  let cachedLineMap: LineMapEntry[] | undefined;
+  const lineMap: LineMapSource = () => {
+    cachedLineMap ??= skipPreprocess
+      ? buildSimpleLineMap(body, startLineNo)
+      : preprocessBlockquotes(body, startLineNo, true)[1];
+    return cachedLineMap;
+  };
   return parseNodes(processed, [], lineMap);
 }
 
@@ -78,7 +81,7 @@ export function parseBody(
 export function parseNodes(
   input: string,
   closingTags: string[],
-  lineMap?: LineMapEntry[],
+  lineMap?: LineMapSource,
 ): Node[] {
   const nodes: Node[] = [];
   let pos = 0;
@@ -113,7 +116,6 @@ export function parseNodes(
           nodes.push({
             kind: NODE_TEXT,
             text: input.slice(pos),
-            loc: getLoc(pos, lineMap),
           });
         }
         break;
@@ -124,7 +126,6 @@ export function parseNodes(
         nodes.push({
           kind: NODE_TEXT,
           text: input.slice(pos, earliest),
-          loc: getLoc(pos, lineMap),
         });
       }
 
@@ -157,7 +158,7 @@ export function parseNodes(
             };
           }
         }
-        nodes.push({ kind: NODE_COMMENT, loc: getLoc(earliest, lineMap) });
+        nodes.push({ kind: NODE_COMMENT });
         pos = endIdx + 2;
         // Apply -#} trim: strip leading whitespace from following text
         if (trimAfter) {
@@ -176,7 +177,8 @@ export function parseNodes(
           expr,
           trimBefore,
           trimAfter,
-          loc: getLoc(earliest, lineMap),
+          pos: earliest,
+          lineMap,
         });
         pos = endPos;
       } else {
@@ -216,12 +218,12 @@ export function parseNodes(
         lineMap
       ) {
         const errPos = earliest !== Infinity ? earliest : pos;
-        const loc = getLocation(errPos, lineMap);
+        const loc = getLoc(errPos, lineMap);
         throw new TemplateSyntaxError(
           err.message,
-          loc.line,
-          loc.column,
-          loc.snippet,
+          loc?.line,
+          loc?.column,
+          loc?.snippet,
         );
       }
       throw err;
@@ -235,7 +237,7 @@ export function parseBlock(
   input: string,
   start: number,
   closingTags: string[],
-  lineMap?: LineMapEntry[],
+  lineMap?: LineMapSource,
   openTag?: { keyword: string; tagStart?: number },
 ): [Node[], number] {
   const [body, endPos] = parseBlockWithClosing(
@@ -256,7 +258,7 @@ export function parseBlockWithClosing(
   input: string,
   start: number,
   closingTags: string[],
-  lineMap?: LineMapEntry[],
+  lineMap?: LineMapSource,
   openTag?: { keyword: string; tagStart?: number },
 ): [Node[], number, string | undefined, string | undefined] {
   let pos = start;
@@ -288,7 +290,18 @@ export function parseBlockWithClosing(
 
       // Check if it's a closing tag or branch tag
       const [tagContent, tagEnd] = extractTagContent(input, stmtIdx);
-      const cleanTag = tagContent.replace(/^-/, "").replace(/-$/, "").trim();
+      const hasLeadingDash = tagContent.charCodeAt(0) === 45; /* '-' */
+      const hasTrailingDash =
+        tagContent.charCodeAt(tagContent.length - 1) === 45; /* '-' */
+      const cleanTag =
+        hasLeadingDash || hasTrailingDash
+          ? tagContent
+              .slice(
+                hasLeadingDash ? 1 : 0,
+                hasTrailingDash ? -1 : tagContent.length,
+              )
+              .trim()
+          : tagContent;
 
       for (const ct of closingTags) {
         if (cleanTag === ct || cleanTag.startsWith(`${ct} `)) {
@@ -298,8 +311,7 @@ export function parseBlockWithClosing(
             parseInlineContent(input, pos, textEnd, nodes, lineMap);
           }
           // Handle {%- on closing tag: trim trailing whitespace from last text node
-          const closingTrimBefore = tagContent.startsWith("-");
-          if (closingTrimBefore && nodes.length > 0) {
+          if (hasLeadingDash && nodes.length > 0) {
             const last = nodes[nodes.length - 1];
             if (last?.kind === "text") {
               nodes[nodes.length - 1] = {
@@ -313,9 +325,8 @@ export function parseBlockWithClosing(
             ? cleanTag.slice(ct.length + 1).trim()
             : undefined;
           // Handle -%} on closing tag: strip all whitespace after
-          const closingTrimAfter = tagContent.endsWith("-");
           let adjustedEnd = tagEnd;
-          if (closingTrimAfter) {
+          if (hasTrailingDash) {
             while (
               adjustedEnd < input.length &&
               /\s/.test(input.charAt(adjustedEnd))
@@ -337,76 +348,72 @@ export function parseBlockWithClosing(
         }
       }
 
-      // Not a closing tag — parse it as content
-      const exprIdx = input.indexOf("{{", pos);
-      const commentIdx = input.indexOf("{#", pos);
-
-      // Find earliest between current stmt, expr, comment
-      earliest = Math.min(
-        stmtIdx,
-        exprIdx >= 0 ? exprIdx : Infinity,
-        commentIdx >= 0 ? commentIdx : Infinity,
-      );
-
-      if (earliest > pos) {
-        nodes.push({
-          kind: NODE_TEXT,
-          text: input.slice(pos, earliest),
-          loc: getLoc(pos, lineMap),
-        });
-      }
-
-      if (earliest === commentIdx && commentIdx >= 0) {
-        const endComment = input.indexOf("#}", commentIdx + 2);
-        pos = endComment === -1 ? commentIdx + 2 : endComment + 2;
-        nodes.push({ kind: NODE_COMMENT, loc: getLoc(commentIdx, lineMap) });
-      } else if (earliest === exprIdx && exprIdx >= 0 && exprIdx < stmtIdx) {
-        const [expr, endPos, trimBefore, trimAfter] = parseExpression(
-          input,
-          exprIdx,
-        );
-        nodes.push({
-          kind: NODE_EXPR,
-          expr,
-          trimBefore,
-          trimAfter,
-          loc: getLoc(exprIdx, lineMap),
-        });
-        pos = endPos;
-      } else {
-        // It's a nested statement tag — handle recursively
-        const [, endPos, , trimAfter] = parseStatement(input, stmtIdx);
-        const innerTag = input
-          .slice(stmtIdx + 2, endPos - 2)
-          .trim()
-          .replace(/^-/, "")
-          .replace(/-$/, "")
-          .trim();
-        const [innerNodes, innerEnd] = handleStatement(
-          innerTag,
-          input,
-          endPos,
-          trimAfter,
-          lineMap,
+      // Not a closing tag — parse all inline content up to stmtIdx, then handle stmtIdx
+      while (pos < stmtIdx) {
+        const exprIdx = input.indexOf("{{", pos);
+        const commentIdx = input.indexOf("{#", pos);
+        earliest = Math.min(
           stmtIdx,
+          exprIdx >= 0 ? exprIdx : Infinity,
+          commentIdx >= 0 ? commentIdx : Infinity,
         );
-        for (const n of innerNodes) {
-          nodes.push(n);
+        if (earliest > pos) {
+          nodes.push({
+            kind: NODE_TEXT,
+            text: input.slice(pos, earliest),
+          });
         }
-        pos = innerEnd;
+        if (earliest === stmtIdx) {
+          pos = stmtIdx;
+          break;
+        }
+        if (earliest === commentIdx && commentIdx >= 0) {
+          const endComment = input.indexOf("#}", commentIdx + 2);
+          pos = endComment === -1 ? commentIdx + 2 : endComment + 2;
+          nodes.push({ kind: NODE_COMMENT });
+        } else {
+          const [expr, endPos, trimBefore, trimAfter] = parseExpression(
+            input,
+            exprIdx,
+          );
+          nodes.push({
+            kind: NODE_EXPR,
+            expr,
+            trimBefore,
+            trimAfter,
+            pos: exprIdx,
+            lineMap,
+          });
+          pos = endPos;
+        }
       }
+
+      earliest = stmtIdx;
+      const [, endPos, , trimAfter] = parseStatement(input, stmtIdx);
+      const [innerNodes, innerEnd] = handleStatement(
+        cleanTag,
+        input,
+        endPos,
+        trimAfter,
+        lineMap,
+        stmtIdx,
+      );
+      for (const n of innerNodes) {
+        nodes.push(n);
+      }
+      pos = innerEnd;
     } catch (err) {
       if (
         err instanceof TemplateSyntaxError &&
         err.line === undefined &&
         lineMap
       ) {
-        const loc = getLocation(earliest, lineMap);
+        const loc = getLoc(earliest, lineMap);
         throw new TemplateSyntaxError(
           err.message,
-          loc.line,
-          loc.column,
-          loc.snippet,
+          loc?.line,
+          loc?.column,
+          loc?.snippet,
         );
       }
       throw err;

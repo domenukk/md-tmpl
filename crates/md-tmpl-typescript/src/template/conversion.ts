@@ -19,6 +19,7 @@ import {
   OPTION_SOME,
   TYPE_ALIAS,
   TYPE_ENUM,
+  TYPE_LIST,
   TYPE_OPTION,
   TYPE_STRUCT,
 } from "../consts.js";
@@ -50,6 +51,21 @@ export function jsToValue(
     const resolved = typeAliases.get(varType.name);
     if (resolved) {
       return jsToValue(value, resolved, typeAliases, seen, depth);
+    }
+  }
+
+  // Pre-constructed Value objects (e.g. from V.structVal(), V.list(), fromJs())
+  if (typeof value === "object" && value !== null && "type" in value) {
+    const tagged = value as {
+      type?: unknown;
+      fields?: unknown;
+      items?: unknown;
+    };
+    if (
+      (tagged.type === TYPE_STRUCT && tagged.fields instanceof Map) ||
+      (tagged.type === TYPE_LIST && Array.isArray(tagged.items))
+    ) {
+      return value as Value;
     }
   }
 
@@ -156,7 +172,7 @@ export function jsToValue(
 
   // Lists with structured items: recursively handle nested option fields
   if (
-    varType.kind === "list" &&
+    varType.kind === TYPE_LIST &&
     Array.isArray(value) &&
     varType.fields.length > 0
   ) {

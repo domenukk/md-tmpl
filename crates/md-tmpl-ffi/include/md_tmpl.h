@@ -116,10 +116,6 @@ char *pt_template_render_flexbuffers(const PtTemplate *tmpl,
 /* Render a parameter-less template with an empty context. */
 char *pt_template_render_empty(const PtTemplate *tmpl, char **out_err);
 
-/* Render without context validation (caller guarantees a valid context). */
-char *pt_template_render_unchecked(const PtTemplate *tmpl, const PtContext *ctx,
-                                  char **out_err);
-
 /* Render, resolving {% include %} directives through the given cache. */
 char *pt_template_render_cached(const PtTemplate *tmpl, const PtContext *ctx,
                                const PtCache *cache, char **out_err);

@@ -122,13 +122,13 @@ pub struct Frontmatter {
     /// Used by the type checker to validate field accesses and for-loop
     /// iteration over imported consts.
     pub imported_namespace_types: HashMap<String, VarType>,
-    /// For params whose top-level type is a dotted import reference resolving
-    /// to an enum (`stem.TypeName`), maps the param name to
-    /// `(import_stem, imported_type_name)`.
+    /// For params whose type (or inner `list(T)` / `option(T)` type) references
+    /// a local `types:` alias (`("", "TypeName")`) or an imported type
+    /// (`("stem", "TypeName")`), maps the param name to `(stem, rust_type_name)`.
     ///
-    /// Lets codegen backends (currently the Rust proc-macro) reference the
-    /// imported, already-generated type directly instead of emitting a
-    /// duplicate per-template copy. Empty when no such params exist.
+    /// Lets codegen backends (such as the Rust proc-macro) alias the generated
+    /// param type directly to the existing local or imported nominal type instead
+    /// of emitting a duplicate struct or enum definition.
     pub imported_type_params: HashMap<String, (String, String)>,
     /// Optional template-wide override for the untrusted-data boundary notice
     /// inserted by `sanitize("tag")` blocks (from `sanitize_notice:` in frontmatter).

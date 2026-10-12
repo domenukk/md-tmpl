@@ -147,10 +147,7 @@ impl Template {
         self.render_core(ctx, output)
     }
 
-    /// Core rendering without any context validation.
-    ///
-    /// Used by both `render_into_inner` (after validation) and
-    /// `render_ctx_unchecked` (no validation at all).
+    /// Core rendering after context validation.
     fn render_core(&self, ctx: &Context, output: &mut String) -> Result<(), TemplateError> {
         let ctx = self.inject_defaults(ctx);
         let mut scope = Scope::new(&ctx)
@@ -173,42 +170,6 @@ impl Template {
         );
         #[cfg(not(feature = "std"))]
         return compiled::render_segments_into_no_std(&self.segments, &mut scope, output);
-    }
-
-    /// Render the template **without** context validation.
-    ///
-    /// Skips the parameter presence, type, and extra-key checks that
-    /// [`render_ctx`](Self::render_ctx) performs on every call. This is a safe
-    /// operation — rendering errors (e.g. undefined variable) are still
-    /// reported via `Err` — but the upfront validation overhead is removed.
-    ///
-    /// Use this when the context is known-good (e.g. constructed from a
-    /// strongly-typed params struct, or pre-validated once at startup).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TemplateError`] if a rendering error occurs (e.g.
-    /// undefined variable, filter error).
-    pub fn render_ctx_unchecked(&self, ctx: &Context) -> Result<String, TemplateError> {
-        let mut output = String::with_capacity(self.estimated_capacity);
-        self.render_core(ctx, &mut output)?;
-        Ok(output)
-    }
-
-    /// Render into a buffer **without** context validation.
-    ///
-    /// Like [`render_ctx_unchecked`](Self::render_ctx_unchecked), but appends to
-    /// an existing buffer.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TemplateError`] if a rendering error occurs.
-    pub fn render_ctx_into_unchecked(
-        &self,
-        ctx: &Context,
-        output: &mut String,
-    ) -> Result<(), TemplateError> {
-        self.render_core(ctx, output)
     }
 
     /// Render the template using a [`TemplateCache`](crate::TemplateCache) for include resolution.

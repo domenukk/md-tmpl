@@ -471,7 +471,7 @@ no
     );
   });
 
-  it("option renderUnchecked with null", () => {
+  it("option render with null", () => {
     const tmpl = Template.fromSource(`---
 params:
   - x = option(str)
@@ -485,10 +485,10 @@ params:
 none
 
 > {% /if %}`);
-    assert.strictEqual(tmpl.renderUnchecked({ x: null }).trim(), "none");
+    assert.strictEqual(tmpl.render({ x: null }).trim(), "none");
   });
 
-  it("option renderUnchecked with value", () => {
+  it("option render with value", () => {
     const tmpl = Template.fromSource(`---
 params:
   - x = option(str)
@@ -502,7 +502,7 @@ params:
 none
 
 > {% /if %}`);
-    assert.strictEqual(tmpl.renderUnchecked({ x: "hi" }).trim(), "hi");
+    assert.strictEqual(tmpl.render({ x: "hi" }).trim(), "hi");
   });
 });
 

@@ -9,7 +9,6 @@
 
 import { TemplateSyntaxError } from "./errors.js";
 import {
-  DOT,
   KW_CASE,
   KW_IN,
   KW_MATCH,
@@ -26,9 +25,6 @@ import {
   OP_OR,
   PAREN_CLOSE,
   PAREN_OPEN,
-  QUOTE_DOUBLE,
-  QUOTE_SINGLE,
-  BACKSLASH,
   VARIANT_SEP,
 } from "./consts.js";
 
@@ -72,90 +68,77 @@ export function tokenizeCondition(input: string): Token[] {
   const len = input.length;
 
   while (i < len) {
+    const code = input.charCodeAt(i);
     // Skip whitespace
-    if (input.charCodeAt(i) === 32 || input.charCodeAt(i) === 9) {
+    if (code === 32 /* ' ' */ || code === 9 /* '\t' */) {
       i++;
       continue;
     }
 
-    // Two-char operators
-    if (i + 1 < len) {
-      const two = input.slice(i, i + 2);
-      if (two === OP_AND) {
-        tokens.push({ kind: TokKind.And, value: two });
+    // Operators starting with &, |, =, !, <, >, (, )
+    if (code === 38 /* '&' */) {
+      if (input.charCodeAt(i + 1) === 38) {
+        tokens.push({ kind: TokKind.And, value: OP_AND });
         i += 2;
         continue;
       }
-      if (two === OP_OR) {
-        tokens.push({ kind: TokKind.Or, value: two });
+    } else if (code === 124 /* '|' */) {
+      if (input.charCodeAt(i + 1) === 124) {
+        tokens.push({ kind: TokKind.Or, value: OP_OR });
         i += 2;
         continue;
       }
-      if (two === OP_EQ) {
-        tokens.push({ kind: TokKind.Eq, value: two });
-        i += 2;
-        continue;
-      }
-      if (two === OP_NE) {
-        tokens.push({ kind: TokKind.Ne, value: two });
-        i += 2;
-        continue;
-      }
-      if (two === OP_LE) {
-        tokens.push({ kind: TokKind.Le, value: two });
-        i += 2;
-        continue;
-      }
-      if (two === OP_GE) {
-        tokens.push({ kind: TokKind.Ge, value: two });
-        i += 2;
-        continue;
-      }
-    }
-
-    const ch = input.charAt(i);
-
-    // Single-char operators
-    if (ch === OP_NOT) {
-      tokens.push({ kind: TokKind.Not, value: ch });
+      tokens.push({ kind: TokKind.Pipe, value: VARIANT_SEP });
       i++;
       continue;
-    }
-    if (ch === PAREN_OPEN) {
-      tokens.push({ kind: TokKind.LParen, value: ch });
+    } else if (code === 61 /* '=' */) {
+      if (input.charCodeAt(i + 1) === 61) {
+        tokens.push({ kind: TokKind.Eq, value: OP_EQ });
+        i += 2;
+        continue;
+      }
+    } else if (code === 33 /* '!' */) {
+      if (input.charCodeAt(i + 1) === 61 /* '=' */) {
+        tokens.push({ kind: TokKind.Ne, value: OP_NE });
+        i += 2;
+        continue;
+      }
+      tokens.push({ kind: TokKind.Not, value: OP_NOT });
       i++;
       continue;
-    }
-    if (ch === PAREN_CLOSE) {
-      tokens.push({ kind: TokKind.RParen, value: ch });
+    } else if (code === 60 /* '<' */) {
+      if (input.charCodeAt(i + 1) === 61 /* '=' */) {
+        tokens.push({ kind: TokKind.Le, value: OP_LE });
+        i += 2;
+        continue;
+      }
+      tokens.push({ kind: TokKind.Lt, value: OP_LT });
       i++;
       continue;
-    }
-    if (ch === OP_LT) {
-      tokens.push({ kind: TokKind.Lt, value: ch });
+    } else if (code === 62 /* '>' */) {
+      if (input.charCodeAt(i + 1) === 61 /* '=' */) {
+        tokens.push({ kind: TokKind.Ge, value: OP_GE });
+        i += 2;
+        continue;
+      }
+      tokens.push({ kind: TokKind.Gt, value: OP_GT });
       i++;
       continue;
-    }
-    if (ch === OP_GT) {
-      tokens.push({ kind: TokKind.Gt, value: ch });
+    } else if (code === 40 /* '(' */) {
+      tokens.push({ kind: TokKind.LParen, value: PAREN_OPEN });
       i++;
       continue;
-    }
-    // Pipe operator — only used inside match-case for multi-variant
-    if (ch === VARIANT_SEP) {
-      tokens.push({ kind: TokKind.Pipe, value: ch });
+    } else if (code === 41 /* ')' */) {
+      tokens.push({ kind: TokKind.RParen, value: PAREN_CLOSE });
       i++;
       continue;
     }
 
     // String literals
-    if (ch === QUOTE_DOUBLE || ch === QUOTE_SINGLE) {
-      const quote = ch;
+    if (code === 34 /* '"' */ || code === 39 /* "'" */) {
       let j = i + 1;
-      while (j < len && input[j] !== quote) {
-        // A backslash escapes the next char, so an escaped quote does not
-        // close the literal (mirrors the Rust tokenizer / split_at_depth_zero).
-        if (input[j] === BACKSLASH && j + 1 < len) j += 2;
+      while (j < len && input.charCodeAt(j) !== code) {
+        if (input.charCodeAt(j) === 92 /* '\\' */ && j + 1 < len) j += 2;
         else j++;
       }
       if (j >= len) {
@@ -171,29 +154,29 @@ export function tokenizeCondition(input: string): Token[] {
     // Number literals (including negative: only if preceded by an operator or start)
     const prevTok = tokens[tokens.length - 1];
     if (
-      (ch >= "0" && ch <= "9") ||
-      (ch === "-" &&
+      (code >= 48 && code <= 57) ||
+      (code === 45 /* '-' */ &&
         i + 1 < len &&
-        input.charAt(i + 1) >= "0" &&
-        input.charAt(i + 1) <= "9" &&
+        input.charCodeAt(i + 1) >= 48 &&
+        input.charCodeAt(i + 1) <= 57 &&
         (prevTok === undefined || isOperatorToken(prevTok)))
     ) {
       let j = i;
-      if (ch === "-") j++;
-      while (
-        j < len &&
-        ((input.charAt(j) >= "0" && input.charAt(j) <= "9") || input[j] === DOT)
-      )
-        j++;
+      if (code === 45) j++;
+      while (j < len) {
+        const c = input.charCodeAt(j);
+        if ((c >= 48 && c <= 57) || c === 46 /* '.' */) j++;
+        else break;
+      }
       tokens.push({ kind: TokKind.NumLit, value: input.slice(i, j) });
       i = j;
       continue;
     }
 
     // Identifiers, keywords, function calls, dotted paths
-    if (isIdentStart(ch)) {
-      let j = i;
-      while (j < len && isIdentChar(input.charAt(j))) j++;
+    if (isIdentStartCode(code)) {
+      let j = i + 1;
+      while (j < len && isIdentCharCode(input.charCodeAt(j))) j++;
 
       const word = input.slice(i, j);
 
@@ -220,17 +203,18 @@ export function tokenizeCondition(input: string): Token[] {
       }
 
       // Check for dotted path or function call
-      while (j < len && input[j] === DOT) {
+      while (j < len && input.charCodeAt(j) === 46 /* '.' */) {
         j++;
-        while (j < len && isIdentChar(input.charAt(j))) j++;
+        while (j < len && isIdentCharCode(input.charCodeAt(j))) j++;
       }
       // Function call: consume (args)
-      if (j < len && input[j] === PAREN_OPEN) {
+      if (j < len && input.charCodeAt(j) === 40 /* '(' */) {
         let depth = 1;
         j++;
         while (j < len && depth > 0) {
-          if (input[j] === PAREN_OPEN) depth++;
-          else if (input[j] === PAREN_CLOSE) depth--;
+          const c = input.charCodeAt(j);
+          if (c === 40 /* '(' */) depth++;
+          else if (c === 41 /* ')' */) depth--;
           j++;
         }
       }
@@ -239,18 +223,30 @@ export function tokenizeCondition(input: string): Token[] {
       continue;
     }
 
-    throw new TemplateSyntaxError(`unexpected character '${ch}' in condition`);
+    throw new TemplateSyntaxError(
+      `unexpected character '${input.charAt(i)}' in condition`,
+    );
   }
 
   return tokens;
 }
 
+function isIdentStartCode(code: number): boolean {
+  return (
+    (code >= 97 && code <= 122) || (code >= 65 && code <= 90) || code === 95
+  );
+}
+
+function isIdentCharCode(code: number): boolean {
+  return isIdentStartCode(code) || (code >= 48 && code <= 57);
+}
+
 export function isIdentStart(ch: string): boolean {
-  return (ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z") || ch === "_";
+  return ch.length > 0 && isIdentStartCode(ch.charCodeAt(0));
 }
 
 export function isIdentChar(ch: string): boolean {
-  return isIdentStart(ch) || (ch >= "0" && ch <= "9");
+  return ch.length > 0 && isIdentCharCode(ch.charCodeAt(0));
 }
 
 export function isOperatorToken(t: Token): boolean {

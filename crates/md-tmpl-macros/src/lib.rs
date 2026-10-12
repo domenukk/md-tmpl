@@ -10,7 +10,7 @@ mod type_gen;
 
 use std::cell::RefCell;
 
-use codegen::{codegen_compiled_inline_template, codegen_segment, codegen_value, codegen_var_decl};
+use codegen::{codegen_compiled_inline_template, codegen_value, codegen_var_decl};
 use compile::{CompiledTemplateAst, load_and_compile, stem_from_path};
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
@@ -282,22 +282,22 @@ fn parse_imports_block(input: ParseStream) -> syn::Result<Vec<(String, syn::Path
     Ok(entries)
 }
 
-/// Resolve each imported-enum param to the full Rust path of its imported type.
+/// Resolve each nominal-type param to the full Rust path of its target type.
 ///
-/// Intersects the frontmatter's [`imported_type_params`] (param → `(stem,
-/// type_name)`) with the caller-provided `imports = { stem = path }` mapping,
-/// yielding `param_name → tokens(path::TypeName)`. Params whose import stem was
-/// not mapped are omitted, so codegen falls back to emitting a fresh type.
-///
-/// [`imported_type_params`]: md_tmpl_core::Frontmatter::imported_type_params
+/// Handles both local `types:` aliases (`stem.is_empty()` → `#ty`) and imported
+/// types (`stem` mapped in `imports = { stem = path }` → `#base::#ty`).
+/// Imported params whose stem was not mapped in `imports = { ... }` are omitted
+/// so codegen falls back to emitting a fresh per-template type.
 fn build_imported_type_paths(
     fm: &md_tmpl_core::Frontmatter,
     import_paths: &[(String, syn::Path)],
 ) -> std::collections::HashMap<String, proc_macro2::TokenStream> {
     let mut out = std::collections::HashMap::new();
     for (param, (stem, type_name)) in &fm.imported_type_params {
-        if let Some((_, base)) = import_paths.iter().find(|(s, _)| s == stem) {
-            let ty = format_ident!("{}", type_name);
+        let ty = format_ident!("{}", type_name);
+        if stem.is_empty() {
+            out.insert(param.clone(), quote! { #ty });
+        } else if let Some((_, base)) = import_paths.iter().find(|(s, _)| s == stem) {
             out.insert(param.clone(), quote! { #base::#ty });
         }
     }
@@ -467,7 +467,7 @@ fn emit_template_module(
         for inline_tmpl in inline_templates.values() {
             codegen::collect_keys_from_segments(&inline_tmpl.segments, &mut referenced_keys);
         }
-        let segments_tokens = segments.iter().map(codegen_segment);
+        let segments_vec_tokens = codegen::codegen_segment_vec(&segments);
         let decls_tokens = fm.declarations.iter().map(codegen_var_decl);
         let inline_templates_tokens = inline_templates.iter().map(|(k, v)| {
             let v_tokens = codegen_compiled_inline_template(v);
@@ -518,8 +518,9 @@ fn emit_template_module(
                 #[cold]
                 #[inline(never)]
                 fn __init_template() -> #crate_path::Template {
+                    let __segments = #segments_vec_tokens;
                     #crate_path::Template::from_precompiled(&#crate_path::PrecompiledTemplateData {
-                        segments: &[#(#segments_tokens),*],
+                        segments: &__segments,
                         declared_variables: &[#(#decls_tokens),*],
                         inline_templates: &[#(#inline_templates_tokens),*],
                         source_hash: #source_hash,

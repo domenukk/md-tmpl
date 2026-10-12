@@ -75,13 +75,10 @@ Template.fromSourceWithOptions(source: string, options: object): Template
 ```ts
 tmpl.render(params: object): string              // type-validated
 tmpl.renderEmpty(): string                        // render with defaults only (no params)
-tmpl.renderUnchecked(params: object): string      // skip ALL validation
 tmpl.renderAllowingExtra(params: object): string  // allow undeclared extra params
 tmpl.renderJson(jsonStr: string): string          // avoids per-field WASM crossings
-tmpl.renderUncheckedJson(jsonStr: string): string
 tmpl.renderAllowingExtraJson(jsonStr: string): string
 tmpl.renderFlexbuffers(buffer: Uint8Array): string        // zero-copy binary
-tmpl.renderUncheckedFlexbuffers(buffer: Uint8Array): string
 tmpl.renderAllowingExtraFlexbuffers(buffer: Uint8Array): string
 ```
 
@@ -129,18 +126,21 @@ renderGreeting(TsTemplate.fromSource(src), "Alice");
 
 ([source](benchmarks/bench.ts))
 
-| Scenario                                |     WASM (Rust) |      TypeScript | speedup |
-| --------------------------------------- | --------------: | --------------: | ------: |
-| parse simple                            | **10.88 µs** 🏆 |        12.52 µs |    1.2× |
-| render simple (1 param)                 |         4.17 µs |  **1.77 µs** 🏆 | 2.4× TS |
-| render list/for (20 items)              |        44.14 µs | **29.11 µs** 🏆 | 1.5× TS |
-| render complex (nested+list+filter)     |        12.80 µs |  **8.76 µs** 🏆 | 1.5× TS |
-| declarations()                          |    **27 ns** 🏆 |          560 ns |   20.4× |
-| renderJson complex (nested+list+filter) |  **6.07 µs** 🏆 |         8.70 µs |    1.4× |
+| Scenario                                | WASM (Rust) |      TypeScript |  speedup |
+| --------------------------------------- | ----------: | --------------: | -------: |
+| parse simple                            |     8.62 µs |  **3.32 µs** 🏆 |  2.6× TS |
+| render simple (1 param)                 |     2.37 µs |    **69 ns** 🏆 | 34.5× TS |
+| render list/for (20 items)              |    43.99 µs |  **2.60 µs** 🏆 | 16.9× TS |
+| render complex (nested+list+filter)     |    11.95 µs |  **1.25 µs** 🏆 |  9.6× TS |
+| render hero (nested + fixed)            |    33.97 µs |  **3.10 µs** 🏆 | 10.9× TS |
+| render mega (3 teams, 15 members)       |   107.17 µs | **12.04 µs** 🏆 |  8.9× TS |
+| declarations()                          |       26 ns |     **8 ns** 🏆 |  3.2× TS |
+| renderJson complex (nested+list+filter) |     6.07 µs |  **1.23 µs** 🏆 |  4.9× TS |
+| renderJson mega (3 teams, 15 members)   |    57.48 µs | **11.98 µs** 🏆 |  4.8× TS |
 
-Pure-TS is faster for rendering due to JS↔WASM serialization overhead.
-WASM wins on metadata access. Use WASM when you need exact Rust-engine
-parity.
+Pure-TS is faster across rendering and metadata access due to JS↔WASM
+boundary overhead (even when WASM uses pre-serialized `renderJson`). Use WASM
+when you need exact Rust-engine binary codecs (e.g. `renderFlexbuffers`).
 
 ## Full Reference
 

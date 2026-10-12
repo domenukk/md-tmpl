@@ -1,5 +1,5 @@
 /**
- * Tests for the md-tmpl TypeScript bindings: constants scoping, loops, inline templates, includes and renderUnchecked parity.
+ * Tests for the md-tmpl TypeScript bindings: constants scoping, loops, inline templates, includes and renderContext parity.
  *
  * Uses Node.js built-in test runner (`node:test`).
  */
@@ -10,7 +10,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 
-import { Template } from "../index.js";
+import { Context, Template } from "../index.js";
 
 // ---------------------------------------------------------------------------
 // SPEC.md coverage — constants in scope
@@ -338,10 +338,10 @@ params:
 });
 
 // ---------------------------------------------------------------------------
-// Direct renderer parity — renderUnchecked must produce same output as render
+// Direct renderer parity — render must produce same output as renderContext
 // ---------------------------------------------------------------------------
 
-describe("renderUnchecked parity", () => {
+describe("renderContext parity", () => {
   const parityCheck = (
     label: string,
     src: string,
@@ -350,11 +350,11 @@ describe("renderUnchecked parity", () => {
     it(label, () => {
       const tmpl = Template.fromSource(src);
       const checked = tmpl.render(params);
-      const unchecked = tmpl.renderUnchecked(params);
+      const ctxRendered = tmpl.renderContext(Context.from(params));
       assert.strictEqual(
-        unchecked,
+        ctxRendered,
         checked,
-        `render vs renderUnchecked mismatch for: ${label}`,
+        `render vs renderContext mismatch for: ${label}`,
       );
     });
   };

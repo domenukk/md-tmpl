@@ -29,6 +29,15 @@ impl MdTmplEngine {
             .render_ctx(ctx)
             .expect("md-tmpl: render_ctx failed")
     }
+
+    /// Render directly from a `Serialize + 'static` struct (`Template::render`),
+    /// validating against frontmatter declarations and caching `TypeId::of::<T>()`.
+    #[inline]
+    pub fn render<T: serde::Serialize + 'static>(&self, data: &T) -> String {
+        self.template
+            .render(data)
+            .expect("md-tmpl: render failed")
+    }
 }
 
 pub struct TeraEngine {

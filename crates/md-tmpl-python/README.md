@@ -412,7 +412,7 @@ Extra parameters are rejected by default — pass `allow_extra=True` to opt out.
 
 ## Performance
 
-**4–8× faster than Jinja2** for rendering, backed by a native-speed engine.
+**3–7× faster than Jinja2** for rendering (and 30–60× faster on cold parse), backed by a native-speed engine.
 
 ### Render Time (pre-parsed template + data)
 
@@ -421,28 +421,30 @@ Extra parameters are rejected by default — pass `allow_extra=True` to opt out.
 
 | Scenario        |        md-tmpl |   Jinja2 |    Mako |  Chevron |    Django | string.Template |
 | --------------- | -------------: | -------: | ------: | -------: | --------: | --------------: |
-| **simple**      | **0.97 µs** 🏆 |  6.31 µs | 6.40 µs |  7.17 µs |   7.88 µs |         1.70 µs |
-| **loop**        | **1.98 µs** 🏆 |  9.45 µs | 6.67 µs | 20.94 µs |  49.30 µs |             N/A |
-| **conditional** | **1.07 µs** 🏆 |  6.38 µs | 6.30 µs |      N/A |  15.87 µs |             N/A |
-| **hero**        | **7.35 µs** 🏆 | 24.09 µs | 9.53 µs |      N/A | 234.05 µs |             N/A |
+| **simple**      | **0.89 µs** 🏆 |  6.47 µs | 6.61 µs |  7.21 µs |   8.15 µs |         1.61 µs |
+| **loop**        | **1.90 µs** 🏆 |  9.85 µs | 6.87 µs | 22.00 µs |  48.85 µs |             N/A |
+| **conditional** | **0.95 µs** 🏆 |  6.55 µs | 6.44 µs |      N/A |  16.39 µs |             N/A |
+| **hero**        | **7.14 µs** 🏆 | 24.01 µs | 9.40 µs |      N/A | 241.84 µs |             N/A |
 
 ### Parse Time (source → template object)
 
+Note: Chevron has no pre-compilation API (`compile()` only wraps the source string in a closure and re-tokenizes on every `render()` call), and `string.Template` only supports flat `$var` interpolation.
+
 | Scenario        |         md-tmpl |    Jinja2 |      Mako |        Chevron |    Django | string.Template |
 | --------------- | --------------: | --------: | --------: | -------------: | --------: | --------------: |
-| **simple**      |         5.26 µs | 306.88 µs | 405.50 µs | **0.13 µs** 🏆 |  19.16 µs |         0.22 µs |
-| **loop**        |         7.60 µs | 538.99 µs | 512.02 µs | **0.12 µs** 🏆 |  43.63 µs |             N/A |
-| **conditional** |  **9.87 µs** 🏆 | 662.22 µs | 573.08 µs |            N/A |  75.28 µs |             N/A |
-| **hero**        | **47.64 µs** 🏆 |   2.17 ms |   1.37 ms |            N/A | 226.58 µs |             N/A |
+| **simple**      |         6.51 µs | 309.70 µs | 402.10 µs | **0.13 µs** 🏆 |  19.22 µs |         0.22 µs |
+| **loop**        |        10.93 µs | 547.34 µs | 515.37 µs | **0.13 µs** 🏆 |  42.80 µs |             N/A |
+| **conditional** | **10.98 µs** 🏆 | 662.34 µs | 572.74 µs |            N/A |  76.48 µs |             N/A |
+| **hero**        | **43.93 µs** 🏆 |   2.23 ms |   1.42 ms |            N/A | 233.71 µs |             N/A |
 
 ### End-to-End (parse + render)
 
 | Scenario        |         md-tmpl |    Jinja2 |      Mako |  Chevron |    Django |   str.Template |
 | --------------- | --------------: | --------: | --------: | -------: | --------: | -------------: |
-| **simple**      |         7.04 µs | 326.72 µs | 432.76 µs |  7.30 µs |  41.23 µs | **1.96 µs** 🏆 |
-| **loop**        | **10.83 µs** 🏆 | 572.33 µs | 540.80 µs | 20.69 µs | 105.87 µs |            N/A |
-| **conditional** | **11.90 µs** 🏆 | 674.13 µs | 593.45 µs |      N/A | 106.20 µs |            N/A |
-| **hero**        | **40.73 µs** 🏆 |   2.22 ms |   1.41 ms |      N/A | 485.47 µs |            N/A |
+| **simple**      |         7.81 µs | 344.91 µs | 468.01 µs |  7.23 µs |  41.16 µs | **1.89 µs** 🏆 |
+| **loop**        | **13.80 µs** 🏆 | 580.56 µs | 561.72 µs | 21.71 µs | 105.54 µs |            N/A |
+| **conditional** | **12.79 µs** 🏆 | 695.79 µs | 604.91 µs |      N/A | 103.81 µs |            N/A |
+| **hero**        | **56.11 µs** 🏆 |   2.29 ms |   1.46 ms |      N/A | 501.31 µs |            N/A |
 
 ```bash
 just bench-python          # run comparison benchmarks

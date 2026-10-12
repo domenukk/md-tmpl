@@ -43,6 +43,13 @@ fmt-go:
 fmt-ts:
     cd crates/md-tmpl-typescript && npx -y prettier@latest --write '**/*.ts'
 
+# Check formatting across all languages without modifying files
+fmt-check: lint-rust-fmt lint-toml lint-markdown lint-just
+    {{ pyvenv }}black --check crates/md-tmpl-python/python/
+    @cd go/md_tmpl && if [ -n "$(gofmt -l .)" ]; then echo "Go code is not formatted. Run 'just fmt'"; exit 1; fi
+    @cd go/cmd/pt-gen-go && if [ -n "$(gofmt -l .)" ]; then echo "Go code is not formatted. Run 'just fmt'"; exit 1; fi
+    cd crates/md-tmpl-typescript && npx -y prettier@latest --check '**/*.ts'
+
 # ── Lint ──────────────────────────────────────────────────────────────
 
 # Lint all code (Rust clippy, TOML, Markdown, Justfile, Go, Python, TypeScript, codegen, hygiene)
@@ -198,7 +205,7 @@ bench-wasm: build-wasm
 bench-python:
     {{ pyvenv }}python benchmarks/python/bench_templates.py
 
-# Micro-benchmark: validation overhead (render_ctx_allowing_extra vs render_ctx_unchecked)
+# Micro-benchmark: render_ctx vs render_ctx_into buffer reuse
 bench-perf:
     cd benchmarks && cargo run --release --example perf_test
 
@@ -249,12 +256,13 @@ check: lint-rust-fmt lint test doc
 
 # Bump version across all workspace crates, Python pyproject.toml, and npm package.json files
 bump new_version:
-    sed -i 's/^version = "{{ version }}"/version = "{{ new_version }}"/' crates/*/Cargo.toml crates/md-tmpl-python/pyproject.toml
+    sed -i 's/^version = "{{ version }}"/version = "{{ new_version }}"/' crates/*/Cargo.toml crates/md-tmpl-python/pyproject.toml benchmarks/Cargo.toml
     sed -i 's/md-tmpl-core = { version = "{{ version }}"/md-tmpl-core = { version = "{{ new_version }}"/' crates/*/Cargo.toml
     sed -i 's/md-tmpl-macros = { version = "{{ version }}"/md-tmpl-macros = { version = "{{ new_version }}"/' crates/*/Cargo.toml
     sed -i 's/md-tmpl = { version = "{{ version }}"/md-tmpl = { version = "{{ new_version }}"/' crates/*/Cargo.toml
-    sed -i 's/"version": "{{ version }}"/"version": "{{ new_version }}"/' crates/md-tmpl-typescript/package.json crates/md-tmpl-wasm/package.json
+    sed -i 's/"version": "{{ version }}"/"version": "{{ new_version }}"/' crates/md-tmpl-typescript/package.json crates/md-tmpl-typescript/package-lock.json crates/md-tmpl-wasm/package.json crates/md-tmpl-wasm/package-lock.json
     cargo update -w
+    cd benchmarks && cargo update -w
 
 # Publish everything (lint + test first, then all packages)
 publish: lint test publish-rust publish-python publish-ts
@@ -290,7 +298,7 @@ publish-go:
 # Set up Python development environment
 setup-python:
     python3 -m venv crates/md-tmpl-python/.venv
-    crates/md-tmpl-python/.venv/bin/pip install maturin pytest black mypy tomli
+    crates/md-tmpl-python/.venv/bin/pip install maturin pytest black mypy tomli -r benchmarks/python/requirements.txt
 
 # Set up TypeScript development environment
 setup-ts:

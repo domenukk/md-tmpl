@@ -23,11 +23,23 @@ export function getLocation(
   pos: number,
   lineMap: LineMapEntry[],
 ): SourceLocation {
-  if (lineMap.length === 0) {
+  const len = lineMap.length;
+  if (len === 0) {
     return { line: 1, column: 1, snippet: "" };
   }
+  if (len === 1) {
+    const first = lineMap[0];
+    if (first === undefined) {
+      return { line: 1, column: 1, snippet: "" };
+    }
+    return {
+      line: first.lineNo,
+      column: Math.max(1, pos - first.offset + 1 + first.colOffset),
+      snippet: first.snippet,
+    };
+  }
   let low = 0;
-  let high = lineMap.length - 1;
+  let high = len - 1;
   let best = 0;
   while (low <= high) {
     const mid = (low + high) >> 1;
@@ -51,11 +63,23 @@ export function getLocation(
   };
 }
 
+export type LineMapSource = LineMapEntry[] | (() => LineMapEntry[]);
+
 export function getLoc(
   pos?: number,
-  lineMap?: LineMapEntry[],
+  lineMap?: LineMapSource,
 ): SourceLocation | undefined {
-  return pos !== undefined && lineMap ? getLocation(pos, lineMap) : undefined;
+  if (pos === undefined || lineMap === undefined) return undefined;
+  const entries = typeof lineMap === "function" ? lineMap() : lineMap;
+  return getLocation(pos, entries);
+}
+
+export function nodeLoc(node: {
+  loc?: SourceLocation;
+  pos?: number;
+  lineMap?: LineMapSource;
+}): SourceLocation | undefined {
+  return node.loc ?? getLoc(node.pos, node.lineMap);
 }
 
 import {
@@ -70,6 +94,8 @@ import {
   NODE_TMPL,
   NODE_PANIC,
 } from "./consts.js";
+import type { CompiledDirectCondition } from "./direct_renderer/condition.js";
+import type { CompiledDirectExpr } from "./direct_renderer/expr.js";
 
 // ---------------------------------------------------------------------------
 // AST node types
@@ -84,6 +110,9 @@ export type Node =
       trimBefore: boolean;
       trimAfter: boolean;
       loc?: SourceLocation;
+      pos?: number;
+      lineMap?: LineMapSource;
+      _compiled?: CompiledDirectExpr;
     }
   | { kind: typeof NODE_COMMENT; loc?: SourceLocation }
   | {
@@ -93,12 +122,17 @@ export type Node =
       body: Node[];
       elseBody?: Node[];
       loc?: SourceLocation;
+      pos?: number;
+      lineMap?: LineMapSource;
+      _compiled?: CompiledDirectExpr;
     }
   | {
       kind: typeof NODE_IF;
       branches: IfBranch[];
       elseBody: Node[] | undefined;
       loc?: SourceLocation;
+      pos?: number;
+      lineMap?: LineMapSource;
     }
   | {
       kind: typeof NODE_MATCH;
@@ -107,6 +141,9 @@ export type Node =
       elseArm: Node[] | undefined;
       inlineGuard?: { variant: string; body: Node[] };
       loc?: SourceLocation;
+      pos?: number;
+      lineMap?: LineMapSource;
+      _compiled?: CompiledDirectExpr;
     }
   | { kind: typeof NODE_RAW; text: string; loc?: SourceLocation }
   | {
@@ -118,12 +155,16 @@ export type Node =
       forExpr?: string;
       inlineNodes?: Node[];
       loc?: SourceLocation;
+      pos?: number;
+      lineMap?: LineMapSource;
     }
   | {
       kind: typeof NODE_TMPL;
       name: string;
       source: string;
       loc?: SourceLocation;
+      pos?: number;
+      lineMap?: LineMapSource;
     }
   | {
       kind: typeof NODE_PANIC;
@@ -134,12 +175,14 @@ export type Node =
 export interface IfBranch {
   condition: string;
   body: Node[];
+  _compiled?: CompiledDirectCondition;
 }
 
 export interface MatchArm {
   variants: string[];
   body: Node[];
   guard?: string;
+  _compiled?: CompiledDirectCondition;
 }
 
 export interface LoopMeta {

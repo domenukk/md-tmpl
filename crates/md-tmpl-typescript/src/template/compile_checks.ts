@@ -6,9 +6,17 @@
  */
 
 import { TemplateSyntaxError } from "../errors.js";
+import { type Frontmatter } from "../frontmatter.js";
+import { nodeLoc } from "../ast.js";
 import { type Node } from "../parser.js";
-import { EXPR_START } from "../consts.js";
+import { ERR_UNDECLARED_PREFIX, EXPR_START, TYPE_ENUM } from "../consts.js";
 import { validateConditionSyntax } from "../evaluator.js";
+import { closestName } from "../suggest.js";
+import {
+  collectReferencedParams,
+  collectUnquotedCaseLabels,
+  extractInterpolationRefs,
+} from "./references.js";
 
 /**
  * Walk AST nodes and validate the SYNTAX of every `{% if %}`/`{% elif %}`
@@ -79,12 +87,13 @@ export function walkNodesForBareEnumAccess(
           if (dotIdx > 0) {
             const root = barePath.slice(0, dotIdx);
             if (enumTypeNames.has(root)) {
+              const loc = nodeLoc(node);
               throw new TemplateSyntaxError(
                 `bare enum literal '${barePath}' is not allowed` +
                   ` — use kind(${barePath}) to get the variant name as a string`,
-                node.loc?.line,
-                node.loc?.column,
-                node.loc?.snippet,
+                loc?.line,
+                loc?.column,
+                loc?.snippet,
               );
             }
           }
@@ -142,13 +151,14 @@ export function walkNodesForMatchTypeSafety(
         // Detect kind() in match expression.
         if (node.expr.startsWith("kind(") && node.expr.endsWith(")")) {
           const inner = node.expr.slice(5, -1);
+          const loc = nodeLoc(node);
           throw new TemplateSyntaxError(
             `match on '${node.expr}': matching on kind() converts the enum to a string` +
               ` — use {% match ${inner} %} with unquoted variant names instead` +
               ` for exhaustiveness checking and type safety`,
-            node.loc?.line,
-            node.loc?.column,
-            node.loc?.snippet,
+            loc?.line,
+            loc?.column,
+            loc?.snippet,
           );
         }
 
@@ -162,12 +172,13 @@ export function walkNodesForMatchTypeSafety(
           // Quoted labels on enum types are an error.
           const quotedLabel = allLabels.find(isQuoted);
           if (quotedLabel) {
+            const loc = nodeLoc(node);
             throw new TemplateSyntaxError(
               `match on '${node.expr}': quoted string '${quotedLabel}' cannot match enum variants` +
                 ` — remove the quotes to match variant name directly`,
-              node.loc?.line,
-              node.loc?.column,
-              node.loc?.snippet,
+              loc?.line,
+              loc?.column,
+              loc?.snippet,
             );
           }
         } else if (typeKind === "option" && !narrowedOptions.has(node.expr)) {
@@ -182,11 +193,12 @@ export function walkNodesForMatchTypeSafety(
               const missing: string[] = [];
               if (!hasSome) missing.push("Some");
               if (!hasNone) missing.push("None");
+              const loc = nodeLoc(node);
               throw new TemplateSyntaxError(
                 `match on '${node.expr}': non-exhaustive — missing variant(s): ${missing.join(", ")}`,
-                node.loc?.line,
-                node.loc?.column,
-                node.loc?.snippet,
+                loc?.line,
+                loc?.column,
+                loc?.snippet,
               );
             }
           }
@@ -194,7 +206,7 @@ export function walkNodesForMatchTypeSafety(
           // Validate label types against scalar match type.
           for (const label of allLabels) {
             if (label === "_") continue;
-            validateScalarCaseLabel(node.expr, typeKind, label, node.loc);
+            validateScalarCaseLabel(node.expr, typeKind, label, node);
           }
         }
 
@@ -290,11 +302,12 @@ function validateScalarCaseLabel(
   expr: string,
   typeName: string,
   label: string,
-  loc?: { line?: number; column?: number; snippet?: string },
+  node: Parameters<typeof nodeLoc>[0],
 ): void {
   const kind = classifyLabel(label);
 
   const err = (msg: string) => {
+    const loc = nodeLoc(node);
     throw new TemplateSyntaxError(msg, loc?.line, loc?.column, loc?.snippet);
   };
 
@@ -398,4 +411,123 @@ function extractBareDottedPath(expr: string): string | undefined {
   }
 
   return trimmed.slice(0, end).trim();
+}
+
+/** Collect all referenced root variable names from `nodes` and `{# ... #}` comments. */
+export function collectAllReferencedVariables(
+  nodes: readonly Node[],
+  body: string,
+): Set<string> {
+  const referenced = collectReferencedParams(nodes);
+  if (body.includes("{#")) {
+    const commentPattern = /\{#(.*?)#\}/gs;
+    let match: RegExpExecArray | null;
+    const emptySet = new Set<string>();
+    while ((match = commentPattern.exec(body)) !== null) {
+      extractInterpolationRefs(match[1] ?? "", referenced, emptySet);
+    }
+  }
+  return referenced;
+}
+
+/** Names valid in every scope: import stems, enum types, inline templates. */
+export function buildTemplateWideNames(
+  fm: Frontmatter,
+  inlineTemplateNames: Iterable<string>,
+): Set<string> {
+  const names = new Set<string>(fm.imports.map((imp) => imp.stem));
+  for (const [name, ty] of fm.typeAliases) {
+    if (ty.kind === TYPE_ENUM) names.add(name);
+  }
+  for (const name of inlineTemplateNames) {
+    names.add(name);
+  }
+  return names;
+}
+
+/** Reject declared parameters that are never referenced in the body or match labels. */
+export function checkUnusedParamsWithRefs(
+  fm: Frontmatter,
+  nodes: readonly Node[],
+  referenced: ReadonlySet<string>,
+): void {
+  let caseLabels: Set<string> | undefined;
+  for (const decl of fm.params) {
+    if (!referenced.has(decl.name)) {
+      caseLabels ??= collectUnquotedCaseLabels(nodes);
+      if (!caseLabels.has(decl.name)) {
+        throw new TemplateSyntaxError(
+          `unused parameter '${decl.name}' declared but not referenced in body`,
+          decl.loc?.line,
+          decl.loc?.column,
+          decl.loc?.snippet,
+        );
+      }
+    }
+  }
+}
+
+/** Reject references to variables that are not declared anywhere. */
+export function checkUndeclaredVariablesWithRefs(
+  fm: Frontmatter,
+  referenced: ReadonlySet<string>,
+  wideNames: ReadonlySet<string>,
+): void {
+  const declared = new Set<string>(wideNames);
+  for (const decl of fm.params) declared.add(decl.name);
+  for (const decl of fm.consts) declared.add(decl.name);
+  for (const decl of fm.env) declared.add(decl.name);
+
+  const undeclared: string[] = [];
+  for (const name of referenced) {
+    if (!declared.has(name)) undeclared.push(name);
+  }
+  if (undeclared.length === 0) return;
+  undeclared.sort();
+
+  const suggestions: string[] = [];
+  for (const name of undeclared) {
+    const best = closestName(name, declared);
+    if (best !== undefined) {
+      suggestions.push(`'${name}' (did you mean '${best}'?)`);
+    }
+  }
+  const suffix =
+    suggestions.length === 0 ? "" : `. Suggestions: ${suggestions.join(", ")}`;
+  throw new TemplateSyntaxError(
+    `${ERR_UNDECLARED_PREFIX}${undeclared.join(", ")}${suffix}`,
+  );
+}
+
+/** Reject bare enum literal expressions like `{{ Stage.Design }}`. */
+export function checkBareEnumAccess(
+  fm: Frontmatter,
+  nodes: readonly Node[],
+): void {
+  const enumTypeNames = new Set<string>();
+  for (const [name, varType] of fm.typeAliases) {
+    if (varType.kind === "enum" && !varType.isOption) {
+      enumTypeNames.add(name);
+    }
+  }
+  if (enumTypeNames.size === 0) return;
+  walkNodesForBareEnumAccess(nodes, enumTypeNames);
+}
+
+/** Reject type-unsafe match/case combinations at compile time. */
+export function checkMatchTypeSafety(
+  fm: Frontmatter,
+  nodes: readonly Node[],
+): void {
+  const paramTypes = new Map<string, string>();
+  for (const decl of fm.params) {
+    let vt = decl.varType;
+    while (vt.kind === "alias") {
+      const resolved = fm.typeAliases.get(vt.name);
+      if (!resolved) break;
+      vt = resolved;
+    }
+    paramTypes.set(decl.name, vt.kind);
+  }
+  walkNodesForMatchTypeSafety(nodes, paramTypes);
 }

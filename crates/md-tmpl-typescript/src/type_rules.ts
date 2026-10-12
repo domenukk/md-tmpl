@@ -44,11 +44,8 @@ enum Builtin {
   Kinds = "kinds",
 }
 
-/** Equality operators that are rejected on enum operands. */
-const EQUALITY_OPERATORS = ["==", "!="] as const;
-
 /** Comparison operators recognised in condition leaves (longest first). */
-const COMPARISON_OPERATORS = ["==", "!=", "<=", ">=", "<", ">"] as const;
+type ComparisonOperator = "==" | "!=" | "<=" | ">=" | "<" | ">";
 
 // ---------------------------------------------------------------------------
 // Type formatting (mirrors Rust `impl Display for VarType`)
@@ -189,10 +186,14 @@ function resolveField(ty: VarType, field: string): FieldResult {
     case TYPE_ENUM:
       return resolveEnumField(ty.variants, field);
     case TYPE_STRUCT: {
-      if (ty.fields.length === 0) return { kind: "terminal" };
-      const decl = ty.fields.find((f) => f.name === field);
-      if (decl !== undefined) return { kind: "ok", type: decl.varType };
-      const declared = ty.fields.map((f) => f.name).sort();
+      const fields = ty.fields;
+      if (fields.length === 0) return { kind: "terminal" };
+      for (const f of fields) {
+        if (f.name === field) {
+          return { kind: "ok", type: f.varType };
+        }
+      }
+      const declared = fields.map((f) => f.name).sort();
       return {
         kind: "error",
         reason: `field '${field}' does not exist on dict.${suggestion(field, declared)} (declared fields: ${declared.join(", ")})`,
@@ -230,7 +231,28 @@ function resolveField(ty: VarType, field: string): FieldResult {
 
 /** The dotted path at the start of an expression, without filters. */
 function basePath(expr: string): string {
+  if (!expr.includes("|")) return expr.trim();
   return (splitPipes(expr)[0] ?? "").trim();
+}
+
+function isAsciiIdentSlice(
+  s: string,
+  start: number,
+  end: number,
+  allowLeadingDigit: boolean,
+): boolean {
+  if (end <= start) return false;
+  for (let i = start; i < end; i++) {
+    const c = s.charCodeAt(i);
+    const isAlpha = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95;
+    const isDigit = c >= 48 && c <= 57;
+    if (i === start) {
+      if (!isAlpha && !(allowLeadingDigit && isDigit)) return false;
+    } else if (!isAlpha && !isDigit) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -242,7 +264,38 @@ export function pathAccessError(
   expr: string,
   env: TypeEnv,
 ): string | undefined {
+  if (!expr.includes(DOT)) return undefined;
   const path = basePath(expr);
+  const dotIdx = path.indexOf(DOT);
+  if (dotIdx <= 0) return undefined;
+  if (
+    !path.includes(DOT, dotIdx + 1) &&
+    isAsciiIdentSlice(path, 0, dotIdx, false) &&
+    isAsciiIdentSlice(path, dotIdx + 1, path.length, true)
+  ) {
+    const root = path.slice(0, dotIdx);
+    const current = env.lookupRoot(root);
+    if (current === undefined) return undefined;
+    if (env.narrowingOf(path) !== undefined) return undefined;
+    const field = path.slice(dotIdx + 1);
+    if (current.kind === TYPE_STRUCT && current.fields.length > 0) {
+      for (const f of current.fields) {
+        if (f.name === field) return undefined;
+      }
+    }
+    if (isOptionType(current)) {
+      return `'${path}': cannot access field '${field}' on ${formatVarType(current)} — option values must be checked before access. Try guard: {% if has(${root}) %}{{${path}}}{% /if %} or match: {% match ${root} %}{% case Some %}{{${path}}}{% /match %}`;
+    }
+    if (
+      current.kind === TYPE_ENUM &&
+      current.variants.some((v) => v.name === field)
+    ) {
+      return undefined;
+    }
+    const result = resolveField(current, field);
+    if (result.kind === "error") return `'${path}': ${result.reason}`;
+    return undefined;
+  }
   if (!DOTTED_PATH_RE.test(path)) return undefined;
   const [root = "", ...fields] = path.split(DOT);
   let current = env.lookupRoot(root);
@@ -320,11 +373,76 @@ const BUILTINS_BY_NAME: ReadonlyMap<string, Builtin> = new Map(
 );
 
 /**
+ * Combined single-pass check + type resolution for `{{ expr }}`, `{% for %}`,
+ * `{% match %}`, and bare truthiness conditions.
+ *
+ * Returns:
+ * - `string`: the compile-time type/field error message, if invalid
+ * - `VarType`: the resolved expression type, if valid and statically typed
+ * - `undefined`: valid scalar/literal/untyped expression
+ */
+export function resolveExprWithCheck(
+  expr: string,
+  env: TypeEnv,
+): VarType | string | undefined {
+  if (!expr.includes("|")) {
+    const trimmed =
+      expr.charCodeAt(0) === 32 || expr.charCodeAt(expr.length - 1) === 32
+        ? expr.trim()
+        : expr;
+    const firstCode = trimmed.charCodeAt(0);
+    if (
+      firstCode === 34 /* '"' */ ||
+      firstCode === 39 /* "'" */ ||
+      (firstCode >= 48 && firstCode <= 57) ||
+      firstCode === 45 /* '-' */
+    ) {
+      return undefined;
+    }
+    if (!trimmed.includes("(")) {
+      const dotIdx = trimmed.indexOf(DOT);
+      if (dotIdx === -1) {
+        return env.lookupRoot(trimmed);
+      }
+      if (
+        dotIdx > 0 &&
+        !trimmed.includes(DOT, dotIdx + 1) &&
+        isAsciiIdentSlice(trimmed, 0, dotIdx, false) &&
+        isAsciiIdentSlice(trimmed, dotIdx + 1, trimmed.length, true)
+      ) {
+        const root = trimmed.slice(0, dotIdx);
+        const current = env.lookupRoot(root);
+        if (current === undefined) return undefined;
+        const narrowed = env.narrowingOf(trimmed);
+        if (narrowed !== undefined) return narrowed;
+        const field = trimmed.slice(dotIdx + 1);
+        if (current.kind === TYPE_STRUCT && current.fields.length > 0) {
+          for (const f of current.fields) {
+            if (f.name === field) {
+              return env.resolveAlias(f.varType);
+            }
+          }
+        }
+        const err = pathAccessError(trimmed, env);
+        if (err !== undefined) return err;
+        return env.resolveExprType(trimmed);
+      }
+    }
+  }
+  const err = operandError(expr, env);
+  if (err !== undefined) return err;
+  return env.resolveExprType(expr);
+}
+
+/**
  * Type error for an operand: a field-access error on a dotted path, or an
  * argument-type error for `len()` / `kind()` / `has()` / `kinds()`.
  */
 export function operandError(expr: string, env: TypeEnv): string | undefined {
   const operand = basePath(expr);
+  if (!operand.includes("(")) {
+    return pathAccessError(operand, env);
+  }
   const call = BUILTIN_CALL_RE.exec(operand);
   if (call === null) return pathAccessError(operand, env);
   const builtin = BUILTINS_BY_NAME.get(call[1] ?? "");
@@ -345,30 +463,41 @@ export function operandError(expr: string, env: TypeEnv): string | undefined {
 /** A binary comparison split at its top-level operator. */
 export interface Comparison {
   readonly left: string;
-  readonly operator: (typeof COMPARISON_OPERATORS)[number];
+  readonly operator: ComparisonOperator;
   readonly right: string;
 }
 
 /** Split `leaf` at its first top-level comparison operator (outside quotes and parentheses). */
 export function splitComparison(leaf: string): Comparison | undefined {
   let depth = 0;
-  let quote: string | undefined;
+  let quoteCode = 0;
   for (let i = 0; i < leaf.length; i++) {
-    const ch = leaf.charAt(i);
-    if (quote !== undefined) {
-      if (ch === quote && leaf.charAt(i - 1) !== "\\") quote = undefined;
+    const code = leaf.charCodeAt(i);
+    if (quoteCode !== 0) {
+      if (code === quoteCode && leaf.charCodeAt(i - 1) !== 92 /* '\\' */) {
+        quoteCode = 0;
+      }
       continue;
     }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-    } else if (ch === "(") {
+    if (code === 34 /* '"' */ || code === 39 /* "'" */) {
+      quoteCode = code;
+    } else if (code === 40 /* '(' */) {
       depth++;
-    } else if (ch === ")") {
+    } else if (code === 41 /* ')' */) {
       depth--;
-    } else if (depth === 0) {
-      const operator = COMPARISON_OPERATORS.find((op) =>
-        leaf.startsWith(op, i),
-      );
+    } else if (
+      depth === 0 &&
+      (code === 61 /* '=' */ ||
+        code === 33 /* '!' */ ||
+        code === 60 /* '<' */ ||
+        code === 62) /* '>' */
+    ) {
+      const next = leaf.charCodeAt(i + 1);
+      let operator: ComparisonOperator | undefined;
+      if (code === 61 && next === 61) operator = "==";
+      else if (code === 33 && next === 61) operator = "!=";
+      else if (code === 60) operator = next === 61 ? "<=" : "<";
+      else if (code === 62) operator = next === 61 ? ">=" : ">";
       if (operator !== undefined) {
         return {
           left: leaf.slice(0, i).trim(),
@@ -386,17 +515,26 @@ export function comparisonError(
   comparison: Comparison,
   env: TypeEnv,
 ): string | undefined {
-  const isEnumOperand = (operand: string): boolean => {
-    if (!DOTTED_PATH_RE.test(operand)) return false;
-    const ty = resolvedType(operand, env);
-    return ty !== undefined && isPlainEnum(ty);
-  };
-  if (EQUALITY_OPERATORS.some((op) => op === comparison.operator)) {
-    const enumSide = [comparison.left, comparison.right].find(isEnumOperand);
-    if (enumSide !== undefined) {
-      return `cannot compare enum '${enumSide}' with '==' — use {% match %} instead`;
+  const leftRes = resolveExprWithCheck(comparison.left, env);
+  const rightRes = resolveExprWithCheck(comparison.right, env);
+  if (comparison.operator === "==" || comparison.operator === "!=") {
+    if (
+      typeof leftRes === "object" &&
+      isPlainEnum(leftRes) &&
+      DOTTED_PATH_RE.test(comparison.left)
+    ) {
+      return `cannot compare enum '${comparison.left}' with '==' — use {% match %} instead`;
+    }
+    if (
+      typeof rightRes === "object" &&
+      isPlainEnum(rightRes) &&
+      DOTTED_PATH_RE.test(comparison.right)
+    ) {
+      return `cannot compare enum '${comparison.right}' with '==' — use {% match %} instead`;
     }
   }
+  if (typeof leftRes === "string") return leftRes;
+  if (typeof rightRes === "string") return rightRes;
   return (
     operandError(comparison.left, env) ?? operandError(comparison.right, env)
   );

@@ -570,6 +570,8 @@ export function collectInheritedAliasSanitizeFromVarType(
 /**
  * Extract `| sanitize(...)` annotations from a declaration's `typeStr` and optional `defaultLiteral`.
  */
+const EMPTY_SANITIZE_MAP = new Map<string, SanitizeSpec>();
+
 export function extractDeclarationSanitize(
   name: string,
   typeStr: string,
@@ -577,6 +579,15 @@ export function extractDeclarationSanitize(
   isConstant: boolean,
   typeAliasSanitize?: ReadonlyMap<string, ReadonlyMap<string, SanitizeSpec>>,
 ): [string, string | undefined, Map<string, SanitizeSpec>] {
+  if (
+    !typeStr.includes(PIPE) &&
+    !typeStr.includes(TYPE_UNTRUSTED) &&
+    !defaultLiteral?.includes(PIPE) &&
+    (!typeAliasSanitize || typeAliasSanitize.size === 0)
+  ) {
+    return [typeStr.trim(), defaultLiteral, EMPTY_SANITIZE_MAP];
+  }
+
   let cleanedType: string;
   let relSpecs: Map<string, SanitizeSpec>;
   try {
@@ -624,6 +635,7 @@ export function registerDeclSanitizeSpecs(
   typeAliases?: ReadonlyMap<string, VarType>,
   formatVarType?: (vt: VarType) => string,
 ): void {
+  if (relSpecs.size === 0) return;
   validateSanitizeSpecsOnType(
     decl.name,
     decl.varType,

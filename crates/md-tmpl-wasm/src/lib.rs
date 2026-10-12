@@ -162,33 +162,10 @@ impl Template {
         self.inner.render_empty().map_err(|e| js_error(&e))
     }
 
-    /// Render **without any validation**.
-    ///
-    /// Skips *all* validation — missing parameters, type mismatches, and extra
-    /// undeclared keys are ignored — matching the pure-TS `renderUnchecked()`
-    /// API. A wrong-typed or missing parameter does not throw here; only a
-    /// genuine rendering error (e.g. an undefined variable referenced by the
-    /// body) is reported.
-    ///
-    /// Throws only if rendering itself fails.
-    ///
-    /// # Errors
-    ///
-    /// Returns a JS `Error` if parameter conversion fails or rendering itself
-    /// fails.
-    #[wasm_bindgen(js_name = "renderUnchecked")]
-    pub fn render_unchecked(&self, params: &JsParams) -> Result<String, JsValue> {
-        let ctx = json_to_context(params.as_ref())?;
-        self.inner
-            .render_ctx_unchecked(&ctx)
-            .map_err(|e| js_error(&e))
-    }
-
     /// Render allowing extra (undeclared) parameters.
     ///
-    /// Undeclared keys are silently ignored, but missing required parameters
-    /// and type mismatches are still validated. This preserves the allow-extra
-    /// capability previously exposed (misnamed) by `renderUnchecked`.
+    /// Undeclared keys are silently ignored, while missing required parameters
+    /// and type mismatches are still validated.
     ///
     /// Throws if required parameters are missing, types mismatch, or rendering
     /// fails.
@@ -222,25 +199,6 @@ impl Template {
     pub fn render_json(&self, json_str: &str) -> Result<String, JsValue> {
         let ctx = json_str_to_context(json_str)?;
         self.inner.render_ctx(&ctx).map_err(|e| js_error(&e))
-    }
-
-    /// Render from a pre-serialized JSON string **without any validation**.
-    ///
-    /// Like `renderJson`, but skips all validation (missing, type, extra),
-    /// matching `renderUnchecked`.
-    ///
-    /// Throws if the JSON is invalid or rendering fails.
-    ///
-    /// # Errors
-    ///
-    /// Returns a JS `Error` if the JSON string is malformed or rendering
-    /// fails.
-    #[wasm_bindgen(js_name = "renderUncheckedJson")]
-    pub fn render_unchecked_json(&self, json_str: &str) -> Result<String, JsValue> {
-        let ctx = json_str_to_context(json_str)?;
-        self.inner
-            .render_ctx_unchecked(&ctx)
-            .map_err(|e| js_error(&e))
     }
 
     /// Render from a pre-serialized JSON string, allowing extra (undeclared)
@@ -277,22 +235,6 @@ impl Template {
     pub fn render_flexbuffers(&self, buffer: &[u8]) -> Result<String, JsValue> {
         let ctx = md_tmpl::Context::from_flexbuffers(buffer).map_err(|e| js_error(&e))?;
         self.inner.render_ctx(&ctx).map_err(|e| js_error(&e))
-    }
-
-    /// Render from a `FlexBuffers` binary buffer **without any validation**.
-    ///
-    /// Skips all validation (missing, type, extra), matching `renderUnchecked`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a JS `Error` if the buffer is not valid `FlexBuffers` or
-    /// rendering fails.
-    #[wasm_bindgen(js_name = "renderUncheckedFlexbuffers")]
-    pub fn render_unchecked_flexbuffers(&self, buffer: &[u8]) -> Result<String, JsValue> {
-        let ctx = md_tmpl::Context::from_flexbuffers(buffer).map_err(|e| js_error(&e))?;
-        self.inner
-            .render_ctx_unchecked(&ctx)
-            .map_err(|e| js_error(&e))
     }
 
     /// Render from a `FlexBuffers` binary buffer, allowing extra (undeclared)

@@ -8,22 +8,16 @@ import pytest
 import md_tmpl
 
 
-def test_adv_unchecked_render_api() -> None:
-    """Verify that Python bindings support unchecked rendering methods."""
+def test_adv_allow_extra_render_api() -> None:
+    """Verify that Python bindings support allow_extra rendering methods."""
     src = """---
 params:
   - x = int
 ---
 {{ x }}"""
     tmpl = md_tmpl.Template.from_source(src)
-    assert hasattr(
-        tmpl, "render_unchecked"
-    ), "Python bindings should have render_unchecked"
-    assert hasattr(
-        tmpl, "render_dict_unchecked"
-    ), "Python bindings should have render_dict_unchecked"
-    assert tmpl.render_unchecked(x=42) == "42"
-    assert tmpl.render_dict_unchecked({"x": 42}) == "42"
+    assert tmpl.render(x=42, extra="ignored", allow_extra=True) == "42"
+    assert tmpl.render_dict({"x": 42, "extra": "ignored"}, allow_extra=True) == "42"
 
 
 def test_adv_deeply_nested_structs_and_lists() -> None:

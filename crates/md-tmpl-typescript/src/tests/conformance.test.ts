@@ -104,9 +104,6 @@ function checkRender(c: Case): void {
   const tmpl = compile(c);
   const out = tmpl.render(c.params ?? {});
   assert.strictEqual(out, c.expect.output);
-  if (!c.source.includes("enum(") && !c.source.includes("include ")) {
-    assert.strictEqual(tmpl.renderUnchecked(c.params ?? {}), c.expect.output);
-  }
 }
 
 function checkDefault(c: Case): void {

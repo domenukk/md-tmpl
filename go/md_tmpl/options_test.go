@@ -305,67 +305,6 @@ x`)
 }
 
 // ---------------------------------------------------------------------------
-// RenderUnchecked
-// ---------------------------------------------------------------------------
-
-func TestRenderUncheckedBasic(t *testing.T) {
-	tmpl, err := FromSource(`---
-params: [name = str]
----
-Hello {{ name }}!`)
-	if err != nil {
-		t.Fatalf("FromSource: %v", err)
-	}
-	defer tmpl.Close()
-
-	ctx := NewContext()
-	defer ctx.Close()
-	if err := ctx.SetStr("name", "World"); err != nil {
-		t.Fatalf("SetStr: %v", err)
-	}
-
-	result, err := tmpl.RenderUnchecked(ctx)
-	if err != nil {
-		t.Fatalf("RenderUnchecked: %v", err)
-	}
-	if result != "Hello World!" {
-		t.Errorf("got %q, want %q", result, "Hello World!")
-	}
-}
-
-func TestRenderUncheckedClosedTemplate(t *testing.T) {
-	tmpl, err := FromSource(`---
-params: [name = str]
----
-{{ name }}`)
-	if err != nil {
-		t.Fatalf("FromSource: %v", err)
-	}
-	tmpl.Close()
-
-	ctx := NewContext()
-	defer ctx.Close()
-	if _, err := tmpl.RenderUnchecked(ctx); !errors.Is(err, ErrClosed) {
-		t.Fatalf("expected ErrClosed, got %v", err)
-	}
-}
-
-func TestRenderUncheckedNilContext(t *testing.T) {
-	tmpl, err := FromSource(`---
-params: [name = str]
----
-{{ name }}`)
-	if err != nil {
-		t.Fatalf("FromSource: %v", err)
-	}
-	defer tmpl.Close()
-
-	if _, err := tmpl.RenderUnchecked(nil); !errors.Is(err, ErrNilContext) {
-		t.Fatalf("expected ErrNilContext, got %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // RenderCached
 // ---------------------------------------------------------------------------
 

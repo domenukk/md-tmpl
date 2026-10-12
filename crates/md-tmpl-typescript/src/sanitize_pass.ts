@@ -689,6 +689,67 @@ function applySanitizeNodesInner(
   return pendingTag;
 }
 
+function nodesContainSanitizeFilter(nodes: readonly Node[]): boolean {
+  for (const node of nodes) {
+    switch (node.kind) {
+      case NODE_EXPR:
+        if (node.expr.includes(FILTER_SANITIZE)) return true;
+        break;
+      case NODE_FOR:
+        if (
+          nodesContainSanitizeFilter(node.body) ||
+          (node.elseBody !== undefined &&
+            nodesContainSanitizeFilter(node.elseBody))
+        ) {
+          return true;
+        }
+        break;
+      case NODE_IF:
+        for (const branch of node.branches) {
+          if (nodesContainSanitizeFilter(branch.body)) return true;
+        }
+        if (
+          node.elseBody !== undefined &&
+          nodesContainSanitizeFilter(node.elseBody)
+        ) {
+          return true;
+        }
+        break;
+      case NODE_MATCH:
+        for (const arm of node.arms) {
+          if (nodesContainSanitizeFilter(arm.body)) return true;
+        }
+        if (
+          node.elseArm !== undefined &&
+          nodesContainSanitizeFilter(node.elseArm)
+        ) {
+          return true;
+        }
+        if (
+          node.inlineGuard !== undefined &&
+          nodesContainSanitizeFilter(node.inlineGuard.body)
+        ) {
+          return true;
+        }
+        break;
+      case NODE_PANIC:
+        if (nodesContainSanitizeFilter(node.body)) return true;
+        break;
+      case NODE_INCLUDE:
+        if (
+          node.inlineNodes !== undefined &&
+          nodesContainSanitizeFilter(node.inlineNodes)
+        ) {
+          return true;
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  return false;
+}
+
 /**
  * Run the compile-time sanitization AST pass on `nodes`:
  * 1. Propagates declarative `params:` sanitization (`paramSanitize`) onto matching `{{ path }}` expressions.
@@ -700,6 +761,12 @@ export function applySanitizeAstPass(
   paramSanitize?: ReadonlyMap<string, SanitizeSpec>,
   sanitizeNotice?: string,
 ): void {
+  if (
+    (paramSanitize === undefined || paramSanitize.size === 0) &&
+    !nodesContainSanitizeFilter(nodes)
+  ) {
+    return;
+  }
   const closingTags = new Set<string>();
   collectClosingXmlTags(nodes, closingTags);
   const loopAliases = new Map<string, string>();

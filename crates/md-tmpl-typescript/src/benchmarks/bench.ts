@@ -1,7 +1,10 @@
 /**
  * Benchmarks for md-tmpl TypeScript bindings.
  *
- * Measures parse + render throughput for common template patterns.
+ * Measures cold parse + type-validated render throughput across micro and
+ * realistic multi-section templates. Every `Template.fromSource()` call
+ * parses and validates from scratch (no cross-template cache), and every
+ * `tmpl.render()` call performs full runtime parameter validation.
  *
  * Usage:
  *   npm run build && node dist/benchmarks/bench.js
@@ -41,18 +44,6 @@ function bench(name: string, fn: () => void, iterations: number): BenchResult {
 
   const nsPerOp = (bestElapsed * 1_000_000) / iterations;
   return { name, ops: iterations, nsPerOp, msTotal: bestElapsed };
-}
-
-/**
- * Return the element at `index`, throwing if it is missing. Used instead of
- * non-null assertions so that out-of-range access surfaces a clear error.
- */
-function nth<T>(arr: readonly T[], index: number): T {
-  const value = arr[index];
-  if (value === undefined) {
-    throw new Error(`missing benchmark result at index ${String(index)}`);
-  }
-  return value;
 }
 
 function printResult(r: BenchResult): void {
@@ -140,6 +131,218 @@ Expert: {{ name }}
 
 > {% /if %}`;
 
+const HERO_SRC = `---
+params:
+  - title = str
+  - sections = list(heading = str, entries = list(name = str, active = bool, score = float, tags = list(label = str)))
+---
+# {{ title }}
+
+> {% for section in sections %}
+
+## {{ section.heading }}
+
+> {% for entry in section.entries %}
+
+### {{ entry.name }}
+
+> {% if entry.active %}
+
+- Status: active
+- Score: {{ entry.score | fixed(1) }}
+
+> {% elif entry.score > 0 %}
+
+- Status: inactive (score {{ entry.score | fixed(1) }})
+
+> {% else %}
+
+- Status: inactive
+
+> {% /if %}
+> {% for tag in entry.tags %}
+
+  - tag: {{ tag.label }}
+
+> {% /for %}
+> {% /for %}
+> {% /for %}`;
+
+const MEGA_SRC = `---
+params:
+  - org = str
+  - teams = list(name = str, lead = str, active = bool, idx = int, members = list(name = str, role = str, score = float, skills = list(name = str)))
+---
+# {{ org }} Organization Report
+
+> {% for team in teams %}
+
+## {{ team.idx }}. {{ team.name }}
+
+Lead: {{ team.lead }}
+
+> {% if team.active %}
+
+Status: ACTIVE
+
+> {% else %}
+
+Status: INACTIVE
+
+> {% /if %}
+
+> {% for member in team.members %}
+
+### {{ member.name }} ({{ member.role }})
+
+Score: {{ member.score | fixed(1) }}
+
+> {% if member.score > 90 %}
+
+Rating: Outstanding
+
+> {% elif member.score > 70 %}
+
+Rating: Good
+
+> {% elif member.score > 50 %}
+
+Rating: Average
+
+> {% else %}
+
+Rating: Needs Improvement
+
+> {% /if %}
+
+Skills:
+
+> {% for skill in member.skills %}
+
+  - {{ skill.name }}
+
+> {% /for %}
+> {% /for %}
+
+---
+> {% /for %}`;
+
+const heroData = {
+  title: "System Report",
+  sections: [
+    {
+      heading: "Overview",
+      entries: [
+        {
+          name: "Service-A",
+          active: true,
+          score: 98.7,
+          tags: [{ label: "prod" }, { label: "critical" }],
+        },
+        {
+          name: "Service-B",
+          active: false,
+          score: 45.2,
+          tags: [{ label: "staging" }],
+        },
+        {
+          name: "Service-C",
+          active: false,
+          score: 0.0,
+          tags: [{ label: "deprecated" }],
+        },
+      ],
+    },
+    {
+      heading: "Metrics",
+      entries: [
+        {
+          name: "Latency",
+          active: true,
+          score: 12.3,
+          tags: [{ label: "p99" }],
+        },
+        {
+          name: "Throughput",
+          active: false,
+          score: 0.0,
+          tags: [{ label: "batch" }],
+        },
+      ],
+    },
+  ],
+};
+
+interface MegaMember {
+  readonly name: string;
+  readonly role: string;
+  readonly score: number;
+  readonly skills: readonly { readonly name: string }[];
+}
+
+function makeMegaMember(
+  name: string,
+  role: string,
+  score: number,
+  skills: readonly string[],
+): MegaMember {
+  return {
+    name,
+    role,
+    score,
+    skills: skills.map((s) => ({ name: s })),
+  };
+}
+
+const megaData = {
+  org: "Acme Corp",
+  teams: [
+    {
+      name: "Backend",
+      lead: "Alice",
+      active: true,
+      idx: 1,
+      members: [
+        makeMegaMember("Bob", "Senior", 95.5, ["Rust", "Go", "SQL"]),
+        makeMegaMember("Carol", "Mid", 78.3, ["Python", "Docker"]),
+        makeMegaMember("Dave", "Junior", 62.1, ["JavaScript", "HTML"]),
+        makeMegaMember("Eve", "Senior", 91.0, ["Java", "Kotlin", "gRPC"]),
+        makeMegaMember("Frank", "Intern", 45.0, ["Python"]),
+      ],
+    },
+    {
+      name: "Frontend",
+      lead: "Grace",
+      active: true,
+      idx: 2,
+      members: [
+        makeMegaMember("Heidi", "Senior", 88.7, ["React", "TypeScript", "CSS"]),
+        makeMegaMember("Ivan", "Mid", 71.2, ["Vue", "JavaScript"]),
+        makeMegaMember("Judy", "Junior", 55.0, ["HTML", "CSS"]),
+        makeMegaMember("Karl", "Senior", 92.4, ["Angular", "RxJS", "SCSS"]),
+        makeMegaMember("Liam", "Mid", 68.9, ["Svelte"]),
+      ],
+    },
+    {
+      name: "SRE",
+      lead: "Mallory",
+      active: false,
+      idx: 3,
+      members: [
+        makeMegaMember("Nancy", "Senior", 97.1, [
+          "Kubernetes",
+          "Terraform",
+          "Go",
+        ]),
+        makeMegaMember("Oscar", "Mid", 73.5, ["Ansible", "Bash"]),
+        makeMegaMember("Peggy", "Junior", 51.2, ["Linux"]),
+        makeMegaMember("Quentin", "Senior", 89.3, ["Prometheus", "Grafana"]),
+        makeMegaMember("Ruth", "Intern", 38.0, ["Python"]),
+      ],
+    },
+  ],
+};
+
 // ---------------------------------------------------------------------------
 // Run benchmarks
 // ---------------------------------------------------------------------------
@@ -214,9 +417,29 @@ parseResults.push(
   ),
 );
 
+parseResults.push(
+  bench(
+    "parse: hero (nested + fixed)",
+    () => {
+      Template.fromSource(HERO_SRC);
+    },
+    PARSE_ITERATIONS,
+  ),
+);
+
+parseResults.push(
+  bench(
+    "parse: mega (3 teams, 15 members)",
+    () => {
+      Template.fromSource(MEGA_SRC);
+    },
+    PARSE_ITERATIONS,
+  ),
+);
+
 for (const r of parseResults) printResult(r);
 
-// Render benchmarks (pre-parsed templates)
+// Render benchmarks (pre-parsed templates, full runtime validation)
 console.log("\n🚀 Render benchmarks:");
 const renderResults: BenchResult[] = [];
 
@@ -321,84 +544,39 @@ renderResults.push(
   ),
 );
 
+const heroTmpl = Template.fromSource(HERO_SRC);
+renderResults.push(
+  bench(
+    "render: hero (nested + fixed)",
+    () => {
+      heroTmpl.render(heroData);
+    },
+    ITERATIONS / 2,
+  ),
+);
+
+const megaTmpl = Template.fromSource(MEGA_SRC);
+renderResults.push(
+  bench(
+    "render: mega (3 teams, 15 members)",
+    () => {
+      megaTmpl.render(megaData);
+    },
+    ITERATIONS / 5,
+  ),
+);
+
 for (const r of renderResults) printResult(r);
-
-// Unchecked render benchmarks (no type validation)
-console.log("\n⚡ Render unchecked (no type validation):");
-const uncheckedResults: BenchResult[] = [];
-
-uncheckedResults.push(
-  bench(
-    "renderUnchecked: simple (1 str)",
-    () => {
-      simpleTmpl.renderUnchecked({ name: "world" });
-    },
-    ITERATIONS,
-  ),
-);
-
-uncheckedResults.push(
-  bench(
-    "renderUnchecked: multi-param (4 types)",
-    () => {
-      multiTmpl.renderUnchecked({
-        name: "Alice",
-        count: 42,
-        score: 9.5,
-        enabled: true,
-      });
-    },
-    ITERATIONS,
-  ),
-);
-
-uncheckedResults.push(
-  bench(
-    "renderUnchecked: list (2 items)",
-    () => {
-      listTmpl.renderUnchecked({ tasks: smallList });
-    },
-    ITERATIONS,
-  ),
-);
-
-uncheckedResults.push(
-  bench(
-    "renderUnchecked: if/elif/else",
-    () => {
-      condTmpl.renderUnchecked({ level: 2, name: "Alice" });
-    },
-    ITERATIONS,
-  ),
-);
-
-for (const r of uncheckedResults) printResult(r);
-
-// Speedup comparison
-console.log("\n📊 Speedup (render vs renderUnchecked):");
-const pairs = [
-  ["simple", nth(renderResults, 0), nth(uncheckedResults, 0)],
-  ["multi-param", nth(renderResults, 1), nth(uncheckedResults, 1)],
-  ["list (2 items)", nth(renderResults, 2), nth(uncheckedResults, 2)],
-  ["conditional", nth(renderResults, 7), nth(uncheckedResults, 3)],
-] as const;
-for (const [label, checked, unchecked] of pairs) {
-  const speedup = checked.nsPerOp / unchecked.nsPerOp;
-  console.log(
-    `  ${label.padEnd(20)} ${Math.round(checked.nsPerOp).toString().padStart(6)} → ${Math.round(unchecked.nsPerOp).toString().padStart(6)} ns  (${speedup.toFixed(1)}× faster)`,
-  );
-}
 
 // Summary
 console.log("\n" + "=".repeat(70));
+const avgParseNs =
+  parseResults.reduce((sum, r) => sum + r.nsPerOp, 0) / parseResults.length;
 const avgRenderNs =
   renderResults.reduce((sum, r) => sum + r.nsPerOp, 0) / renderResults.length;
-const avgUncheckedNs =
-  uncheckedResults.reduce((sum, r) => sum + r.nsPerOp, 0) /
-  uncheckedResults.length;
 console.log(
-  `Average render:           ${String(Math.round(avgRenderNs))} ns/op (${Math.round(1_000_000_000 / avgRenderNs).toLocaleString()} ops/s)`,
+  `Average parse:            ${String(Math.round(avgParseNs))} ns/op (${Math.round(1_000_000_000 / avgParseNs).toLocaleString()} ops/s)`,
 );
 console.log(
-  `Average renderUnchecked:  ${String(Math.round(avgUncheckedNs))} ns/op (${Math.round(1_000_000_000 / avgUncheckedNs).toLocaleString()} ops/s)`,
+  `Average render:           ${String(Math.round(avgRenderNs))} ns/op (${Math.round(1_000_000_000 / avgRenderNs).toLocaleString()} ops/s)`,
 );

@@ -64,7 +64,6 @@ extern char *pt_context_merge_flexbuffers(void *ctx, const uint8_t *data, size_t
 extern char *pt_template_render(const void *tmpl, const void *ctx, char **out_err);
 extern char *pt_template_render_allowing_extra(const void *tmpl, const void *ctx, char **out_err);
 extern char *pt_template_render_empty(const void *tmpl, char **out_err);
-extern char *pt_template_render_unchecked(const void *tmpl, const void *ctx, char **out_err);
 extern char *pt_template_render_cached(const void *tmpl, const void *ctx, const void *cache, char **out_err);
 extern char *pt_template_render_json(const void *tmpl, const char *json, _Bool allow_extra, char **out_err);
 extern char *pt_template_render_flexbuffers(const void *tmpl, const uint8_t *data, size_t len, _Bool allow_extra, char **out_err);
@@ -678,35 +677,6 @@ func (t *Template) RenderEmpty() (string, error) {
 
 	var errPtr *C.char
 	result := C.pt_template_render_empty(t.ptr, &errPtr)
-	if errPtr != nil {
-		return "", freeError(errPtr)
-	}
-	if result == nil {
-		return "", errors.New("md_tmpl: render returned nil without error")
-	}
-
-	output := C.GoString(result)
-	C.pt_free_string(result)
-	return output, nil
-}
-
-// RenderUnchecked renders the template without validating the context against
-// the frontmatter declarations.
-//
-// This skips the type- and presence-checks performed by [Render], trading
-// safety for speed. Only use it when the context is known to be valid (for
-// example, when it was produced by a previous validated render). Undefined
-// variables referenced by the body still error during rendering.
-func (t *Template) RenderUnchecked(ctx *Context) (string, error) {
-	if t.ptr == nil {
-		return "", ErrClosed
-	}
-	if ctx == nil || ctx.ptr == nil {
-		return "", ErrNilContext
-	}
-
-	var errPtr *C.char
-	result := C.pt_template_render_unchecked(t.ptr, ctx.ptr, &errPtr)
 	if errPtr != nil {
 		return "", freeError(errPtr)
 	}

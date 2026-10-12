@@ -11,13 +11,14 @@ include_template!("prompts/task_report.tmpl.md");
 
 // Generated types:
 //   task_report::Params                  — typed struct
-//   task_report::ParamsPriority          — enum(Critical, High, Medium, Low)
+//   task_report::Priority                — enum(Critical, High, Medium, Low)
+//   task_report::ParamsPriority          — pub type alias for task_report::Priority
 //   task_report::ParamsTasksItem         — struct { name, urgency }
 //   task_report::ParamsTasksItemUrgency  — enum(Critical, High, Medium, Low)
 
 let params = task_report::Params::builder()
     .title("Deploy v2.0")
-    .priority(task_report::ParamsPriority::Critical)
+    .priority(task_report::Priority::Critical)
     .tasks([
         task_report::ParamsTasksItem::builder()
             .name("run migrations")
@@ -411,21 +412,21 @@ Criterion benchmarks comparing pre-parsed render time as well as full end-to-end
 
 | Scenario        | md-tmpl (macro) | md-tmpl |     Tera | `MiniJinja` | Handlebars |
 | --------------- | --------------: | ------: | -------: | ----------: | ---------: |
-| **simple**      |    **22 ns** 🏆 |  162 ns |   207 ns |      561 ns |     701 ns |
-| **loop**        |    **38 ns** 🏆 |  426 ns |   598 ns |     1.94 µs |    3.45 µs |
-| **conditional** |    **20 ns** 🏆 |  212 ns |   327 ns |      623 ns |    1.13 µs |
-| **hero**        |   **156 ns** 🏆 | 1.81 µs |  2.09 µs |     7.45 µs |   21.03 µs |
-| **mega**        |   **634 ns** 🏆 | 7.32 µs | 10.35 µs |    30.26 µs |   90.98 µs |
+| **simple**      |    **21 ns** 🏆 |  178 ns |   244 ns |      621 ns |     717 ns |
+| **loop**        |    **35 ns** 🏆 |  476 ns |   640 ns |     1.80 µs |    3.12 µs |
+| **conditional** |    **21 ns** 🏆 |  223 ns |   377 ns |      673 ns |    1.23 µs |
+| **hero**        |   **178 ns** 🏆 | 1.83 µs |  2.69 µs |     7.82 µs |   23.63 µs |
+| **mega**        |   **769 ns** 🏆 | 7.45 µs | 10.96 µs |    29.91 µs |   87.36 µs |
 
 #### End-to-End (`_e2e`: Struct → Context → Render → String)
 
 | Scenario (E2E) | md-tmpl (macro) |  md-tmpl |     Tera | `MiniJinja` | Handlebars |
 | -------------- | --------------: | -------: | -------: | ----------: | ---------: |
-| **hero (e2e)** |   **152 ns** 🏆 |  5.83 µs |  5.45 µs |     7.64 µs |   30.43 µs |
-| **mega (e2e)** |   **625 ns** 🏆 | 27.94 µs | 24.85 µs |    30.80 µs |  143.86 µs |
+| **hero (e2e)** |   **559 ns** 🏆 |  5.48 µs |  6.14 µs |     7.77 µs |   29.46 µs |
+| **mega (e2e)** |  **4.48 µs** 🏆 | 25.06 µs | 26.83 µs |    35.12 µs |  129.75 µs |
 
-- **md-tmpl (macro)** (`include_template!` / `template!`) compiles the template body directly into native Rust statements on the generated `Params` struct — zero `Context` construction, zero `HashMap` lookups, and zero runtime AST interpretation.
-- **md-tmpl** (`render_ctx`) performs runtime frontmatter schema validation and rejects unknown parameters.
+- **md-tmpl (macro)** (`include_template!` / `template!`) compiles the template body directly into native Rust statements on the generated `Params` struct — zero `Context` construction, zero `HashMap` lookups, and zero runtime AST interpretation. In the `_e2e` table, `md-tmpl (macro)` also includes constructing `Params` (`String` and `Vec` allocations) from the domain model inside the hot loop.
+- **md-tmpl** uses `Template::render_ctx` (with full runtime frontmatter schema validation on every call) in the pre-built `Context` table and `Template::render(&struct)` (which validates the `Serialize` struct against the frontmatter schema on first use and caches `TypeId::of::<T>()`) in the `_e2e` table.
 
 ```bash
 just bench-rust          # run Criterion benchmarks

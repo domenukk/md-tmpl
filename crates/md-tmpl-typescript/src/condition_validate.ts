@@ -12,12 +12,6 @@
 
 import { TemplateSyntaxError } from "./errors.js";
 import {
-  OP_EQ,
-  OP_NE,
-  OP_LT,
-  OP_GT,
-  OP_LE,
-  OP_GE,
   OP_AND,
   OP_OR,
   OP_NOT,
@@ -26,23 +20,9 @@ import {
   QUOTE_DOUBLE,
   QUOTE_SINGLE,
   BACKSLASH,
-  KW_IN,
   KW_CASE_SPACED,
   TAG_MATCH_PREFIX,
 } from "./consts.js";
-
-/** Comparison operators recognised in conditions, in Rust's precedence order
- * (longer operators first so `<=`/`>=` win over `<`/`>`). Mirrors the Rust
- * core's `COMPARISON_OPS`. */
-const CONDITION_COMPARISON_OPS: readonly string[] = [
-  OP_EQ,
-  OP_NE,
-  OP_LE,
-  OP_GE,
-  OP_LT,
-  OP_GT,
-  ` ${KW_IN} `,
-];
 
 /**
  * Validate the SYNTAX of a `{% if %}` / guard condition without evaluating it.
@@ -72,6 +52,10 @@ export function validateConditionSyntax(condition: string): void {
 
 /** or_expr := and_expr ( "||" and_expr )* */
 function validateOrExpr(s: string): void {
+  if (!s.includes(OP_OR)) {
+    validateAndExpr(s);
+    return;
+  }
   for (const part of condSplitTopLevel(s, OP_OR)) {
     validateAndExpr(part);
   }
@@ -79,6 +63,10 @@ function validateOrExpr(s: string): void {
 
 /** and_expr := unary_expr ( "&&" unary_expr )* */
 function validateAndExpr(s: string): void {
+  if (!s.includes(OP_AND)) {
+    validateUnaryExpr(s);
+    return;
+  }
   for (const part of condSplitTopLevel(s, OP_AND)) {
     validateUnaryExpr(part);
   }
@@ -111,13 +99,11 @@ function validatePrimary(s: string): void {
     validateMatchAsCondition(t.slice(TAG_MATCH_PREFIX.length).trim());
     return;
   }
-  for (const op of CONDITION_COMPARISON_OPS) {
-    const idx = condFindTopLevelOp(t, op);
-    if (idx >= 0) {
-      validateOperand(t.slice(0, idx).trim());
-      validateOperand(t.slice(idx + op.length).trim());
-      return;
-    }
+  const cmp = condFindFirstTopLevelComparison(t);
+  if (cmp !== undefined) {
+    validateOperand(t.slice(0, cmp.idx).trim());
+    validateOperand(t.slice(cmp.idx + cmp.len).trim());
+    return;
   }
   validateOperand(t);
 }
@@ -237,28 +223,54 @@ function condStripBalancedParens(s: string): string | undefined {
  * string literals). Returns the byte index or -1. Mirrors the Rust core's
  * `find_top_level_op`.
  */
-function condFindTopLevelOp(s: string, op: string): number {
+/**
+ * Find the first top-level comparison operator in `s` (respecting Rust's
+ * precedence order where `==`, `!=`, `<=`, `>=` win over `<`, `>`, ` in `).
+ */
+function condFindFirstTopLevelComparison(
+  s: string,
+): { idx: number; len: number } | undefined {
   let depth = 0;
-  for (let i = 0; i < s.length; i++) {
-    const ch = s[i];
-    if (ch === PAREN_OPEN) {
+  let ltGtIdx = -1;
+  let inOpIdx = -1;
+  const len = s.length;
+  for (let i = 0; i < len; i++) {
+    const code = s.charCodeAt(i);
+    if (code === 40 /* '(' */) {
       depth++;
-    } else if (ch === PAREN_CLOSE) {
+    } else if (code === 41 /* ')' */) {
       depth--;
-    } else if (ch === QUOTE_SINGLE || ch === QUOTE_DOUBLE) {
-      const quote = ch;
+    } else if (code === 34 /* '"' */ || code === 39 /* "'" */) {
       i++;
-      while (i < s.length && s[i] !== quote) {
-        if (s[i] === BACKSLASH && i + 1 < s.length) i += 2;
+      while (i < len && s.charCodeAt(i) !== code) {
+        if (s.charCodeAt(i) === 92 /* '\\' */ && i + 1 < len) i += 2;
         else i++;
       }
-    } else if (
-      depth === 0 &&
-      i + op.length <= s.length &&
-      s.slice(i, i + op.length) === op
-    ) {
-      return i;
+    } else if (depth === 0) {
+      const next = s.charCodeAt(i + 1);
+      if (
+        (code === 61 /* '=' */ ||
+          code === 33 /* '!' */ ||
+          code === 60 /* '<' */ ||
+          code === 62) /* '>' */ &&
+        next === 61 /* '=' */
+      ) {
+        return { idx: i, len: 2 };
+      }
+      if ((code === 60 /* '<' */ || code === 62) /* '>' */ && ltGtIdx === -1) {
+        ltGtIdx = i;
+      } else if (
+        code === 32 /* ' ' */ &&
+        inOpIdx === -1 &&
+        next === 105 /* 'i' */ &&
+        s.charCodeAt(i + 2) === 110 /* 'n' */ &&
+        s.charCodeAt(i + 3) === 32 /* ' ' */
+      ) {
+        inOpIdx = i;
+      }
     }
   }
-  return -1;
+  if (ltGtIdx !== -1) return { idx: ltGtIdx, len: 1 };
+  if (inOpIdx !== -1) return { idx: inOpIdx, len: 4 };
+  return undefined;
 }

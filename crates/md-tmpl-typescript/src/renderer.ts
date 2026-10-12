@@ -149,15 +149,8 @@ function armLabelMatches(
     return true;
   }
   // Param-ref: resolve label as a variable and compare its string value.
-  try {
-    const resolved = scope.resolvePath(label);
-    if (resolved.type === TYPE_STR) {
-      return resolved.value === variant;
-    }
-  } catch {
-    // Label is not a resolvable variable — no match.
-  }
-  return false;
+  const resolved = scope.tryResolvePath(label);
+  return resolved?.type === TYPE_STR && resolved.value === variant;
 }
 
 export interface RenderOptions {

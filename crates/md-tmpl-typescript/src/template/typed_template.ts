@@ -49,7 +49,6 @@ import { Template } from "./template_class.js";
  */
 export class TypedTemplate<P extends object> {
   private readonly inner: ITemplate;
-  private validated = false;
 
   private constructor(inner: ITemplate) {
     this.inner = inner;
@@ -84,52 +83,9 @@ export class TypedTemplate<P extends object> {
     return new TypedTemplate<P>(template);
   }
 
-  /** Render with compile-time checked parameters. Always validates at runtime. */
+  /** Render with compile-time and runtime checked parameters. */
   render(params: P): string {
     return this.inner.render(params as Record<string, unknown>);
-  }
-
-  /**
-   * Render without runtime type validation — fastest path.
-   *
-   * Trusts TypeScript's compile-time checking. Use when you know
-   * the parameter types are correct (e.g., from generated types).
-   *
-   * @example
-   * ```ts
-   * const tmpl = TypedTemplate.fromSource<Params>(src);
-   * const output = tmpl.renderUnchecked({ name: "world", count: 42 });
-   * ```
-   */
-  renderUnchecked(params: P): string {
-    return this.inner.renderUnchecked(params as Record<string, unknown>);
-  }
-
-  /**
-   * Render with validation on the first call only.
-   *
-   * The first invocation validates types fully (like `render()`).
-   * Subsequent calls skip validation (like `renderUnchecked()`).
-   *
-   * Ideal for loops where the same parameter shape is rendered
-   * many times with different values.
-   *
-   * @example
-   * ```ts
-   * const tmpl = TypedTemplate.fromSource<Params>(src);
-   * for (const item of items) {
-   *   // First iteration validates, subsequent iterations are fast
-   *   const output = tmpl.renderTrusted({ name: item.name, count: item.n });
-   * }
-   * ```
-   */
-  renderTrusted(params: P): string {
-    if (!this.validated) {
-      const result = this.inner.render(params as Record<string, unknown>);
-      this.validated = true;
-      return result;
-    }
-    return this.inner.renderUnchecked(params as Record<string, unknown>);
   }
 
   /** Access the underlying template (may be pure-TS or WASM). */

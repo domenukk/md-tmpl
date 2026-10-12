@@ -466,14 +466,17 @@ function isPipeTokenForbiddenCode(code: number): boolean {
 }
 
 function matchGenericPipeToken(s: string, i: number): number | undefined {
+  const ASCII_PIPE_CODE = 124;
+  const FULLWIDTH_PIPE_CODE = 0xff5c;
+  const ASCII_GT_CODE = 62;
   let openLen: number;
   let closePipeCode: number;
   if (s.startsWith("<|", i)) {
     openLen = 2;
-    closePipeCode = 124; /* '|' */
+    closePipeCode = ASCII_PIPE_CODE;
   } else if (s.startsWith(FULLWIDTH_PIPE_OPEN, i)) {
     openLen = FULLWIDTH_PIPE_OPEN.length;
-    closePipeCode = 0xff5c; /* '｜' */
+    closePipeCode = FULLWIDTH_PIPE_CODE;
   } else {
     return undefined;
   }
@@ -482,7 +485,7 @@ function matchGenericPipeToken(s: string, i: number): number | undefined {
   let utf8Bytes = 0;
   for (let pos = start; pos <= maxEnd; pos++) {
     const code = s.charCodeAt(pos);
-    if (code === closePipeCode && s.charCodeAt(pos + 1) === 62 /* '>' */) {
+    if (code === closePipeCode && s.charCodeAt(pos + 1) === ASCII_GT_CODE) {
       return utf8Bytes > 0 ? pos + 2 : undefined;
     }
     if (isPipeTokenForbiddenCode(code)) {

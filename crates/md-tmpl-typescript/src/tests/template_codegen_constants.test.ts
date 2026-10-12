@@ -432,19 +432,6 @@ params: [name = str]
     assert.strictEqual(c.VER, 3);
     assert.strictEqual(tmpl.render({ name: "test" }), "test v3");
   });
-
-  it("constants work with renderUnchecked", () => {
-    const tmpl = Template.fromSource(
-      `---
-consts:
-  - TAG = str := "v1"
-
-params: [name = str]
----
-{{ name }}@{{ TAG }}`,
-    );
-    assert.strictEqual(tmpl.renderUnchecked({ name: "app" }), "app@v1");
-  });
 });
 
 // ---------------------------------------------------------------------------

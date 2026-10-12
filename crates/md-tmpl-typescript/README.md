@@ -355,7 +355,6 @@ Template.fromFileWithEnv(path, options?: CompileOptions): Template
 // Rendering
 tmpl.render(params, options?)        // type-validated
 tmpl.renderEmpty()                   // render with defaults only (no params)
-tmpl.renderUnchecked(params)         // skip ALL validation (fastest)
 tmpl.renderDict(params, options?)    // from Map or Record
 // options: { allowExtra?: boolean, allowUnused?: boolean }
 
@@ -377,8 +376,6 @@ TypedTemplate.fromSource<P>(source): TypedTemplate<P>
 TypedTemplate.fromFile<P>(path): TypedTemplate<P>
 
 tmpl.render(params: P)              // TS type-checked + runtime validated
-tmpl.renderUnchecked(params: P)     // skip runtime validation, trust TS types
-tmpl.renderTrusted(params: P)       // validate first call, skip rest
 ```
 
 ### TemplateCache
@@ -407,54 +404,67 @@ function renderGreeting(tmpl: ITemplate, name: string): string {
 
 ### Internal Benchmarks
 
-Node.js 22, single-template timings (lower is better):
+Node.js 22, single-template timings with full runtime schema validation and cold
+parsing (`Template.fromSource` with zero cross-template caching, lower is
+better):
 
-| Scenario                 |    render | renderUnchecked |
-| ------------------------ | --------: | --------------: |
-| simple (1 str)           |    625 ns |      **570 ns** |
-| multi-param (4 types)    |  1,764 ns |    **1,388 ns** |
-| list (2 items)           |  4,085 ns |    **1,896 ns** |
-| list (20 items)          | 28,817 ns |             N/A |
-| enum unit variant        | 16,499 ns |             N/A |
-| enum struct variant      |  1,856 ns |             N/A |
-| filters (idx+add, upper) |  7,033 ns |             N/A |
-| if/elif/else             |  2,563 ns |    **2,128 ns** |
-
-`renderUnchecked()` skips runtime type validation — use it when TypeScript's
-static checks are sufficient.
+| Scenario                   |    render | cold parse |
+| -------------------------- | --------: | ---------: |
+| simple (1 str)             |     66 ns |   3,455 ns |
+| multi-param (4 types)      |    229 ns |   7,624 ns |
+| list (2 items)             |    378 ns |   9,441 ns |
+| list (20 items)            |  2,759 ns |   9,441 ns |
+| enum unit variant          |    255 ns |  16,530 ns |
+| enum struct variant        |    299 ns |  16,530 ns |
+| filters (idx+add, upper)   |    875 ns |  11,495 ns |
+| if/elif/else               |    163 ns |  14,235 ns |
+| hero (nested + fixed)      |  3,115 ns |  44,372 ns |
+| mega (3 teams, 15 members) | 12,848 ns |  58,065 ns |
 
 ### Comparison Benchmarks
 
-Node.js 22, 50,000 iterations, best of 5 runs
-([source](src/benchmarks/comparison.ts)).
+Node.js 22, best of 5 runs ([source](src/benchmarks/comparison.ts)). Every
+`md-tmpl` `render()` call performs full runtime schema validation (recursive
+type checking and missing/extra parameter rejection) plus runtime `| fixed(1)`
+float formatting and numeric comparisons; Handlebars and Mustache perform no
+schema validation and receive pre-formatted strings and boolean helper flags for
+features they lack (`elif`, numeric comparisons, `fixed(1)`).
 
 **Render only** (pre-parsed template + data → output):
 
 <!-- BENCHMARK:TS_COMPARISON_RENDER -->
 
-| Scenario           | render() | renderUnchecked() |      Handlebars |        Mustache |
-| ------------------ | -------: | ----------------: | --------------: | --------------: |
-| **simple**         | 1,092 ns |     **853 ns** 🏆 |        2,086 ns |        1,540 ns |
-| **loop (5 items)** | 8,117 ns |          2,713 ns | **2,170 ns** 🏆 |        2,362 ns |
-| **conditional**    | 2,976 ns |          2,554 ns |        3,032 ns | **1,259 ns** 🏆 |
+| Scenario           |          md-tmpl | Handlebars |  Mustache |
+| ------------------ | ---------------: | ---------: | --------: |
+| **simple**         |    **121 ns** 🏆 |     968 ns |    472 ns |
+| **loop (3 items)** |    **625 ns** 🏆 |   1,590 ns |  1,086 ns |
+| **conditional**    |    **177 ns** 🏆 |   1,336 ns |    888 ns |
+| **hero**           |  **3,030 ns** 🏆 |   7,673 ns |  4,670 ns |
+| **mega**           | **11,664 ns** 🏆 |  25,029 ns | 17,684 ns |
 
 <!-- /BENCHMARK:TS_COMPARISON_RENDER -->
 
-**Round-trip** (parse + render):
+**Round-trip** (parse + render — `md-tmpl` performs full YAML frontmatter
+parsing, static type/displayability/collision analysis, AST compilation, and
+runtime schema validation on every call; Mustache only tokenizes tags with zero
+type checking):
 
 <!-- BENCHMARK:TS_COMPARISON_ROUNDTRIP -->
 
-| Scenario           |   md-tmpl | Handlebars |        Mustache |
-| ------------------ | --------: | ---------: | --------------: |
-| **simple**         | 10,303 ns |  79,358 ns |   **851 ns** 🏆 |
-| **loop (5 items)** | 23,216 ns | 112,394 ns | **1,849 ns** 🏆 |
+| Scenario           |          md-tmpl | Handlebars |         Mustache |
+| ------------------ | ---------------: | ---------: | ---------------: |
+| **simple**         |  **5,589 ns** 🏆 |  83,198 ns |         6,319 ns |
+| **loop (3 items)** |        10,516 ns | 122,275 ns |  **7,307 ns** 🏆 |
+| **conditional**    | **13,649 ns** 🏆 | 185,236 ns |        13,783 ns |
+| **hero**           |        45,370 ns | 506,590 ns | **27,943 ns** 🏆 |
+| **mega**           |        65,636 ns | 740,898 ns | **50,189 ns** 🏆 |
 
 <!-- /BENCHMARK:TS_COMPARISON_ROUNDTRIP -->
 
 A [WASM build](../md-tmpl-wasm/README.md) (~200 KB `.wasm`) is also
-available for exact feature parity. Pure TypeScript is 2–6× faster for small
-templates due to JS↔WASM serialization overhead; WASM closes the gap on complex
-templates.
+available for exact Rust-engine feature parity (such as `renderFlexbuffers`).
+Pure TypeScript is 5–35× faster across rendering scenarios (and 2.6× faster on
+cold parse) because it avoids JS↔WASM boundary serialization overhead.
 
 ```bash
 just bench-ts           # internal benchmarks
@@ -464,7 +474,7 @@ just bench-ts-compare   # vs Handlebars & Mustache
 ## Testing
 
 ```bash
-just test-ts    # 1,723 tests
+just test-ts    # 1,935 tests
 just lint-ts    # strict type-check with tsc
 just fmt-ts     # format with prettier
 ```

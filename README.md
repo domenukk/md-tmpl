@@ -141,11 +141,11 @@ Built for speed — the Rust core renders into a single pre-sized output buffer 
 
 | Scenario        | md-tmpl (macro) | md-tmpl |     Tera | `MiniJinja` | Handlebars |
 | --------------- | --------------: | ------: | -------: | ----------: | ---------: |
-| **simple**      |    **22 ns** 🏆 |  162 ns |   207 ns |      561 ns |     701 ns |
-| **loop**        |    **38 ns** 🏆 |  426 ns |   598 ns |     1.94 µs |    3.45 µs |
-| **conditional** |    **20 ns** 🏆 |  212 ns |   327 ns |      623 ns |    1.13 µs |
-| **hero**        |   **156 ns** 🏆 | 1.81 µs |  2.09 µs |     7.45 µs |   21.03 µs |
-| **mega**        |   **634 ns** 🏆 | 7.32 µs | 10.35 µs |    30.26 µs |   90.98 µs |
+| **simple**      |    **21 ns** 🏆 |  178 ns |   244 ns |      621 ns |     717 ns |
+| **loop**        |    **35 ns** 🏆 |  476 ns |   640 ns |     1.80 µs |    3.12 µs |
+| **conditional** |    **21 ns** 🏆 |  223 ns |   377 ns |      673 ns |    1.23 µs |
+| **hero**        |   **178 ns** 🏆 | 1.83 µs |  2.69 µs |     7.82 µs |   23.63 µs |
+| **mega**        |   **769 ns** 🏆 | 7.45 µs | 10.96 µs |    29.91 µs |   87.36 µs |
 
 See the language-specific READMEs or the [benchmarks suite](benchmarks/README.md) for full details and methodology.
 
@@ -154,9 +154,9 @@ See the language-specific READMEs or the [benchmarks suite](benchmarks/README.md
 First-class native packages across all major ecosystems — with tailored ergonomics and high-performance engines:
 
 - **[Rust](crates/md-tmpl/README.md)** — Reusable-buffer rendering (`render_into` writes into your own `String`), build-time validation via proc macros (`include_template!`), ergonomic `TypedBuilder` & `serde` integration, `ctx!` macro, caching, and hot-reload.
-- **[Python](crates/md-tmpl-python/README.md)** — 4–8× faster than Jinja2. Auto-generated dataclasses, mypy/pyright static typing stubs, native Python 3.10+ structural pattern matching (`match`/`case`), and direct import hooks (`from prompts.review import CodeReview`).
-- **[Go](go/md_tmpl/README.md)** — 3–6× faster than standard `text/template`. Native Rust FFI engine, idiomatic struct tag mapping (`json:"field"`), map rendering, and static enum typing via `TaggedVariant`.
-- **[TypeScript](crates/md-tmpl-typescript/README.md)** — Build-time TypeScript type generation (`generateTypesFromFile`), generic `TypedTemplate<P>` contracts, type-safe enum constructors (`defineVariants`), and exhaustive pattern matching (`match`).
+- **[Python](crates/md-tmpl-python/README.md)** — 3–7× faster than Jinja2 for rendering (30–60× faster on cold parse). Auto-generated dataclasses, mypy/pyright static typing stubs, native Python 3.10+ structural pattern matching (`match`/`case`), and direct import hooks (`from prompts.review import CodeReview`).
+- **[Go](go/md_tmpl/README.md)** — Up to 5–6× faster than standard `text/template` on medium and large templates. Native Rust FFI engine, idiomatic struct tag mapping (`json:"field"`), map rendering, and static enum typing via `TaggedVariant`.
+- **[TypeScript](crates/md-tmpl-typescript/README.md)** — 2–8× faster than Handlebars and 1.3–6× faster than Mustache on pre-parsed rendering (with full runtime schema validation). Build-time TypeScript type generation (`generateTypesFromFile`), generic `TypedTemplate<P>` contracts, type-safe enum constructors (`defineVariants`), and exhaustive pattern matching (`match`).
 - **[WASM](crates/md-tmpl-wasm/README.md)** — Exact Rust-engine feature parity in Node.js and browsers (~200 KB `.wasm`). Supports zero-copy binary throughput (`renderFlexbuffers`) and implements the exact same `ITemplate` interface as pure TypeScript.
 
 ## Full Reference

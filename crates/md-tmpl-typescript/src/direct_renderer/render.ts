@@ -1,6 +1,6 @@
 /**
- * Direct renderer — the main entry point that walks AST nodes and
- * renders them directly from plain JS values.
+ * Direct renderer — the main entry point that walks pre-compiled AST nodes and
+ * renders them directly from plain JS values without boxing or per-iteration Map allocations.
  *
  * @module
  */
@@ -32,13 +32,141 @@ import {
 import { type DirectRenderOptions } from "./options.js";
 import { DirectScope } from "./scope.js";
 import { directDisplay } from "./display.js";
-import { evaluateDirectExpr } from "./expr.js";
+import { formatFixedFloat, formatFixedInt } from "../numeric_format.js";
 import {
-  evaluateDirectCondition,
+  type CompiledDirectExpr,
+  compileDirectExpr,
+  evalCompiledDirectExpr,
+  evaluateDirectExpr,
+} from "./expr.js";
+import {
+  type CompiledDirectCondition,
+  compileDirectCondition,
+  evalCompiledDirectCondition,
   getDirectVariantName,
   interpolateDirectString,
   isOptionMatch,
 } from "./condition.js";
+
+/**
+ * Compile-time AST pass that:
+ * 1. Applies `trimBefore` and `trimAfter` against adjacent static `NODE_TEXT` nodes.
+ * 2. Pre-compiles `_compiled` expression, filter, and condition plans onto each AST node.
+ */
+export function precompileDirectNodes(nodes: Node[]): void {
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
+    if (node === undefined) continue;
+    switch (node.kind) {
+      case NODE_EXPR: {
+        if (node.trimBefore && i > 0) {
+          const prev = nodes[i - 1];
+          if (prev?.kind === NODE_TEXT) {
+            const trimmed = prev.text.replace(/\s+$/, "");
+            prev.text = trimmed;
+            if (trimmed.length > 0) {
+              node.trimBefore = false;
+            }
+          }
+        }
+        if (node.trimAfter) {
+          const next = nodes[i + 1];
+          if (next?.kind === NODE_TEXT) {
+            next.text = next.text.replace(/^[ \t]*(?:\r?\n)?/, "");
+          }
+          node.trimAfter = false;
+        }
+        node._compiled = compileDirectExpr(node.expr);
+        break;
+      }
+      case NODE_FOR:
+        node._compiled = compileDirectExpr(node.iterExpr);
+        precompileDirectNodes(node.body);
+        if (node.elseBody) {
+          precompileDirectNodes(node.elseBody);
+        }
+        break;
+      case NODE_IF:
+        for (const branch of node.branches) {
+          branch._compiled = compileDirectCondition(branch.condition);
+          precompileDirectNodes(branch.body);
+        }
+        if (node.elseBody) {
+          precompileDirectNodes(node.elseBody);
+        }
+        break;
+      case NODE_MATCH:
+        node._compiled = compileDirectExpr(node.expr);
+        for (const arm of node.arms) {
+          if (arm.guard) {
+            arm._compiled = compileDirectCondition(arm.guard);
+          }
+          precompileDirectNodes(arm.body);
+        }
+        if (node.elseArm) {
+          precompileDirectNodes(node.elseArm);
+        }
+        if (node.inlineGuard) {
+          precompileDirectNodes(node.inlineGuard.body);
+        }
+        break;
+      case NODE_PANIC:
+        precompileDirectNodes(node.body);
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+function evalNodeExpr(
+  node: { expr: string; _compiled?: CompiledDirectExpr },
+  scope: DirectScope,
+): unknown {
+  let compiled = node._compiled;
+  if (compiled === undefined) {
+    compiled = compileDirectExpr(node.expr);
+    node._compiled = compiled;
+  }
+  return evalCompiledDirectExpr(compiled, scope);
+}
+
+function evalNodeIterExpr(
+  node: { iterExpr: string; _compiled?: CompiledDirectExpr },
+  scope: DirectScope,
+): unknown {
+  let compiled = node._compiled;
+  if (compiled === undefined) {
+    compiled = compileDirectExpr(node.iterExpr);
+    node._compiled = compiled;
+  }
+  return evalCompiledDirectExpr(compiled, scope);
+}
+
+function evalBranchCond(
+  branch: { condition: string; _compiled?: CompiledDirectCondition },
+  scope: DirectScope,
+): boolean {
+  let compiled = branch._compiled;
+  if (compiled === undefined) {
+    compiled = compileDirectCondition(branch.condition);
+    branch._compiled = compiled;
+  }
+  return evalCompiledDirectCondition(compiled, scope);
+}
+
+function evalArmGuard(
+  arm: { guard?: string; _compiled?: CompiledDirectCondition },
+  scope: DirectScope,
+): boolean {
+  if (!arm.guard) return true;
+  let compiled = arm._compiled;
+  if (compiled === undefined) {
+    compiled = compileDirectCondition(arm.guard);
+    arm._compiled = compiled;
+  }
+  return evalCompiledDirectCondition(compiled, scope);
+}
 
 /**
  * Check if a case arm label matches the active variant (direct renderer).
@@ -67,29 +195,42 @@ export function directLabelMatches(
     return inner === variantName;
   }
   // Param-ref: resolve label as a variable and compare.
-  const resolved = scope.resolve(label);
+  const resolved = scope.tryResolve(label);
   return typeof resolved === "string" && resolved === variantName;
 }
+
 /**
  * Render AST nodes directly from JS values — no Value conversion.
  *
- * **Limitation:** `{% include %}` and `{% tmpl %}` nodes are silently
- * skipped in the direct renderer because resolving them would require
- * a template-loader / inline-template map.  This is acceptable because
- * `renderDirect` is only used by `renderUnchecked()`, where the caller
- * has explicitly opted out of full validation.
- *
  * @param nodes - Parsed AST nodes.
- * @param params - Plain JS params object.
+ * @param params - Plain JS params object or Map.
  * @param constJsValues - Pre-converted constant values (as JS).
+ * @param options - Optional include/depth configuration.
+ * @param defaults - Optional pre-computed default values.
+ * @param declaredNames - Optional set of declared parameter names.
  */
 export function renderDirect(
   nodes: readonly Node[],
-  params: ReadonlyMap<string, unknown>,
+  params: ReadonlyMap<string, unknown> | Record<string, unknown>,
   constJsValues: ReadonlyMap<string, unknown>,
   options?: DirectRenderOptions,
+  defaults?: ReadonlyMap<string, unknown>,
+  declaredNames?: ReadonlySet<string>,
 ): string {
-  const scope = new DirectScope(params, constJsValues);
+  const scope = new DirectScope(params, constJsValues, defaults, declaredNames);
+  return renderDirectNodes(nodes, scope, options);
+}
+
+/**
+ * Render AST nodes using a reusable {@link DirectScope} instance.
+ */
+export function renderDirectWithScope(
+  nodes: readonly Node[],
+  scope: DirectScope,
+  params: Record<string, unknown>,
+  options?: DirectRenderOptions,
+): string {
+  scope.reset(params);
   return renderDirectNodes(nodes, scope, options);
 }
 
@@ -99,32 +240,90 @@ export function renderDirectNodes(
   scope: DirectScope,
   options?: DirectRenderOptions,
 ): string {
-  const parts: string[] = [];
+  let out = "";
 
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i];
     if (node === undefined) continue;
     switch (node.kind) {
       case NODE_TEXT:
-        parts.push(node.text);
+        out += node.text;
         break;
 
       case NODE_EXPR: {
-        if (node.trimBefore && parts.length > 0) {
-          const last = parts[parts.length - 1];
-          if (last !== undefined) {
-            parts[parts.length - 1] = last.replace(/\s+$/, "");
+        if (!node.trimBefore && !node.trimAfter) {
+          let compiled = node._compiled;
+          if (compiled === undefined) {
+            compiled = compileDirectExpr(node.expr);
+            node._compiled = compiled;
           }
+          if (compiled.kind === "prop1") {
+            const propVal = scope.resolveProp1(
+              compiled.root,
+              compiled.prop,
+              compiled.fullPath,
+            );
+            if (typeof propVal === "string") {
+              out += propVal;
+              break;
+            }
+            if (typeof propVal === "number" && Number.isSafeInteger(propVal)) {
+              out += String(propVal);
+              break;
+            }
+            out += directDisplay(propVal);
+            break;
+          }
+          if (compiled.kind === "var") {
+            const topVal =
+              scope.topFrame === undefined &&
+              !scope.hasConsts &&
+              scope.defaults === undefined &&
+              scope.topObj !== undefined
+                ? scope.topObj[compiled.name]
+                : scope.resolve(compiled.name);
+            if (typeof topVal === "string") {
+              out += topVal;
+              break;
+            }
+            if (typeof topVal === "number" && Number.isSafeInteger(topVal)) {
+              out += String(topVal);
+              break;
+            }
+            out += directDisplay(topVal);
+            break;
+          }
+          if (
+            compiled.kind === "filter1" &&
+            compiled.step.kind === "fixed" &&
+            compiled.base.kind === "prop1"
+          ) {
+            const propVal = scope.resolveProp1(
+              compiled.base.root,
+              compiled.base.prop,
+              compiled.base.fullPath,
+            );
+            if (typeof propVal === "number") {
+              out += Number.isInteger(propVal)
+                ? formatFixedInt(propVal, compiled.step.precision)
+                : formatFixedFloat(propVal, compiled.step.precision);
+              break;
+            }
+          }
+          const val = evalCompiledDirectExpr(compiled, scope);
+          out += typeof val === "string" ? val : directDisplay(val);
+          break;
         }
-        const val = evaluateDirectExpr(node.expr, scope);
-        parts.push(directDisplay(val));
+        if (node.trimBefore && out.length > 0) {
+          out = out.replace(/\s+$/, "");
+        }
+        const val = evalNodeExpr(node, scope);
+        out += typeof val === "string" ? val : directDisplay(val);
         if (node.trimAfter) {
-          // Trim leading whitespace from the next text node without
-          // mutating the AST (which would corrupt subsequent renders).
           const nextNode = nodes[i + 1];
           if (nextNode?.kind === NODE_TEXT) {
-            parts.push(nextNode.text.replace(/^[ \t]*(?:\r?\n)?/, ""));
-            i++; // skip the next node — we already handled it
+            out += nextNode.text.replace(/^[ \t]*(?:\r?\n)?/, "");
+            i++;
           }
         }
         break;
@@ -134,31 +333,27 @@ export function renderDirectNodes(
         break;
 
       case NODE_FOR: {
-        const listVal = evaluateDirectExpr(node.iterExpr, scope);
+        const listVal = evalNodeIterExpr(node, scope);
         if (!Array.isArray(listVal)) {
           throw new TemplateSyntaxError(
             `for loop requires a list, got ${typeof listVal}`,
           );
         }
-        if (listVal.length === 0 && node.elseBody) {
-          parts.push(renderDirectNodes(node.elseBody, scope, options));
+        const len = listVal.length;
+        if (len === 0) {
+          if (node.elseBody) {
+            out += renderDirectNodes(node.elseBody, scope, options);
+          }
         } else {
-          for (let idx = 0; idx < listVal.length; idx++) {
-            const item: unknown = listVal[idx];
-            const layer = scope.pushLayer();
-            layer.set(node.binding, item);
-            layer.set("loop", {
-              first: idx === 0,
-              last: idx === listVal.length - 1,
-              index0: idx,
-              index: idx + 1,
-              length: listVal.length,
-              len: listVal.length,
-            });
-            scope.setLoopIndex(node.binding, idx, listVal.length);
-            parts.push(renderDirectNodes(node.body, scope, options));
-            scope.popLoopMeta();
-            scope.popLayer();
+          const frame = scope.pushLoop(node.binding, len);
+          try {
+            for (let idx = 0; idx < len; idx++) {
+              frame.value = listVal[idx];
+              frame.index = idx;
+              out += renderDirectNodes(node.body, scope, options);
+            }
+          } finally {
+            scope.popLoop();
           }
         }
         break;
@@ -167,14 +362,14 @@ export function renderDirectNodes(
       case NODE_IF: {
         let matched = false;
         for (const branch of node.branches) {
-          if (evaluateDirectCondition(branch.condition, scope)) {
-            parts.push(renderDirectNodes(branch.body, scope, options));
+          if (evalBranchCond(branch, scope)) {
+            out += renderDirectNodes(branch.body, scope, options);
             matched = true;
             break;
           }
         }
         if (!matched && node.elseBody) {
-          parts.push(renderDirectNodes(node.elseBody, scope, options));
+          out += renderDirectNodes(node.elseBody, scope, options);
         }
         break;
       }
@@ -182,42 +377,45 @@ export function renderDirectNodes(
       case NODE_MATCH: {
         const optMatch = isOptionMatch(node);
         if (node.inlineGuard) {
-          const val = evaluateDirectExpr(node.expr, scope);
+          const val = evalNodeExpr(node, scope);
           const variantName = getDirectVariantName(val, optMatch);
           const label = node.inlineGuard.variant;
           if (directLabelMatches(label, variantName, scope)) {
-            parts.push(
-              renderDirectNodes(node.inlineGuard.body, scope, options),
-            );
+            out += renderDirectNodes(node.inlineGuard.body, scope, options);
+          } else if (node.elseArm) {
+            out += renderDirectNodes(node.elseArm, scope, options);
           }
         } else {
-          const val = evaluateDirectExpr(node.expr, scope);
+          const val = evalNodeExpr(node, scope);
           const variantName = getDirectVariantName(val, optMatch);
 
           let matched = false;
           for (const arm of node.arms) {
-            const armMatches = arm.variants.some((v) =>
-              directLabelMatches(v, variantName, scope),
-            );
+            let armMatches = false;
+            for (const variantLabel of arm.variants) {
+              if (directLabelMatches(variantLabel, variantName, scope)) {
+                armMatches = true;
+                break;
+              }
+            }
             if (armMatches) {
-              // If the arm has a guard, evaluate it
-              if (arm.guard && !evaluateDirectCondition(arm.guard, scope)) {
+              if (!evalArmGuard(arm, scope)) {
                 continue;
               }
-              parts.push(renderDirectNodes(arm.body, scope, options));
+              out += renderDirectNodes(arm.body, scope, options);
               matched = true;
               break;
             }
           }
           if (!matched && node.elseArm) {
-            parts.push(renderDirectNodes(node.elseArm, scope, options));
+            out += renderDirectNodes(node.elseArm, scope, options);
           }
         }
         break;
       }
 
       case KW_RAW:
-        parts.push(node.text);
+        out += node.text;
         break;
 
       case NODE_PANIC: {
@@ -290,7 +488,6 @@ export function renderDirectNodes(
               `include ... for ... in requires list, got ${typeof listVal}`,
             );
           }
-          const results: string[] = [];
           for (const item of listVal) {
             const iterMap = new Map<string, unknown>();
             iterMap.set(node.forBinding, item);
@@ -302,11 +499,13 @@ export function renderDirectNodes(
                 iterMap.set(decl.name, valueToJs(decl.defaultValue));
               }
             }
-            results.push(
-              renderDirect(includedNodes, iterMap, loadedConsts, childOpts),
+            out += renderDirect(
+              includedNodes,
+              iterMap,
+              loadedConsts,
+              childOpts,
             );
           }
-          parts.push(results.join(""));
           break;
         }
 
@@ -319,9 +518,7 @@ export function renderDirectNodes(
             childMap.set(decl.name, valueToJs(decl.defaultValue));
           }
         }
-        parts.push(
-          renderDirect(includedNodes, childMap, loadedConsts, childOpts),
-        );
+        out += renderDirect(includedNodes, childMap, loadedConsts, childOpts);
         break;
       }
 
@@ -330,5 +527,5 @@ export function renderDirectNodes(
     }
   }
 
-  return parts.join("");
+  return out;
 }

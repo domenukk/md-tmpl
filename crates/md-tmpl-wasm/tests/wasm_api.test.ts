@@ -186,50 +186,6 @@ params:
 });
 
 // =========================================================================
-// 4. Template.renderUnchecked
-// =========================================================================
-
-describe("Template.renderUnchecked", () => {
-  it("allows extra params", () => {
-    const t = WasmTemplate.fromSource(
-      `---
-params:
-  - name = str
----
-Hello {{ name }}!`,
-    );
-    // Should NOT throw with extra params
-    const result = t.renderUnchecked({ name: "world", extra: "ok" });
-    assert.equal(result, "Hello world!");
-  });
-
-  it("allows extra undeclared params without throwing", () => {
-    const t = WasmTemplate.fromSource(
-      `---
-params:
-  - name = str
----
-Hello {{ name }}!`,
-    );
-    // renderUnchecked allows extra params that aren't declared
-    const result = t.renderUnchecked({ name: "world", bonus: "extra" });
-    assert.equal(result, "Hello world!");
-  });
-
-  it("still renders correctly", () => {
-    const t = WasmTemplate.fromSource(
-      `---
-params:
-  - a = str
-  - b = int
----
-{{ a }}-{{ b }}`,
-    );
-    assert.equal(t.renderUnchecked({ a: "foo", b: 5 }), "foo-5");
-  });
-});
-
-// =========================================================================
 // 5. Template.body()
 // =========================================================================
 
