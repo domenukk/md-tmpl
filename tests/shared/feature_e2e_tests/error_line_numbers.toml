@@ -1,0 +1,181 @@
+# Shared feature_e2e_tests: compile errors report FILE-ABSOLUTE line numbers.
+#
+# Line numbers count from the first line of the `.tmpl.md` file (frontmatter
+# included), regardless of nesting inside blocks or inline `{% tmpl %}`
+# definitions, so editors, CI annotations, and humans can jump to the error.
+# Every backend includes `line N` in the error message.
+
+[[tests]]
+name = "error_line_unknown_filter"
+description = "An unknown filter reports the file line of the expression (frontmatter lines included)"
+template = '''
+---
+allow_unused: true
+params:
+  - p = str
+  - items = list(str)
+---
+intro
+{{ p | bogus }}'''
+expected_error = "line 8"
+
+[tests.params]
+p = "x"
+items = ["a"]
+
+[[tests]]
+name = "error_line_filter_order"
+description = "The sanitizing-filter ordering error reports the file line of the expression"
+template = '''
+---
+allow_unused: true
+params:
+  - p = str
+  - items = list(str)
+---
+intro
+
+{{ p | quarantine | lower }}'''
+expected_error = "line 9"
+
+[tests.params]
+p = "x"
+items = ["a"]
+
+[[tests]]
+name = "error_line_bare_statement_tag"
+description = "A bare line-start statement tag reports its file line"
+template = '''
+---
+allow_unused: true
+params:
+  - p = str
+  - items = list(str)
+---
+intro
+{% if p %}x{% /if %}'''
+expected_error = "line 8"
+
+[tests.params]
+p = "x"
+items = ["a"]
+
+[[tests]]
+name = "error_line_standalone_tag_neighbor"
+description = "A standalone tag without a blank neighbor line reports its file line"
+template = '''
+---
+allow_unused: true
+params:
+  - p = str
+  - items = list(str)
+---
+intro
+> {% if p %}
+text
+> {% /if %}'''
+expected_error = "line 8"
+
+[tests.params]
+p = "x"
+items = ["a"]
+
+[[tests]]
+name = "error_line_unclosed_expression"
+description = "An unclosed `{{` reports its file line"
+template = '''
+---
+allow_unused: true
+params:
+  - p = str
+  - items = list(str)
+---
+intro
+
+hello {{ p '''
+expected_error = "line 9"
+
+[tests.params]
+p = "x"
+items = ["a"]
+
+[[tests]]
+name = "error_line_inside_for_body"
+description = "An error inside a for-loop body reports the file line, not a block-relative line"
+template = '''
+---
+allow_unused: true
+params:
+  - p = str
+  - items = list(str)
+---
+intro
+
+> {% for it in items %}
+
+- {{ it | bogus }}
+
+> {% /for %}'''
+expected_error = "line 11"
+
+[tests.params]
+p = "x"
+items = ["a"]
+
+[[tests]]
+name = "error_line_after_inline_template"
+description = "An error after an inline {% tmpl %} block reports the file line (the inline block is not subtracted)"
+template = '''
+---
+allow_unused: true
+params:
+  - p = str
+  - items = list(str)
+---
+> {% tmpl row %}
+
+---
+params:
+  - t = str
+---
+
+[{{ t }}]
+
+> {% /tmpl %}
+
+> {% include row with t = p %}
+
+{{ p | bogus }}'''
+expected_error = "line 20"
+
+[tests.params]
+p = "x"
+items = ["a"]
+
+[[tests]]
+name = "error_line_inside_inline_template"
+description = "An error inside an inline {% tmpl %} body reports the file line"
+template = '''
+---
+allow_unused: true
+params:
+  - p = str
+  - items = list(str)
+---
+> {% tmpl row %}
+
+---
+params:
+  - t = str
+---
+
+[{{ t | bogus }}]
+
+> {% /tmpl %}
+
+> {% include row with t = p %}'''
+expected_error = "line 14"
+
+[tests.params]
+p = "x"
+items = ["a"]

@@ -12,6 +12,7 @@ import {
   TemplateSyntaxError,
   MissingParamsError,
   TypeMismatchError,
+  UnknownFilterError,
 } from "../index.js";
 
 describe("M1.2: Accurate error location diagnostics (line, column, snippet)", () => {
@@ -382,9 +383,11 @@ Hello {{ name | nonexistent_filter }}`;
         err instanceof TemplateError,
         `expected TemplateError, got ${String(err)}`,
       );
-      // Unknown filter surfaces as an UnknownFilterError at compile time.
-      assert.strictEqual(err.kind, "unknown_filter");
+      // Unknown filter surfaces at compile time as a located syntax error
+      // (kind "syntax", like every other backend), typed as UnknownFilterError.
+      assert.strictEqual(err.kind, "syntax");
       assert.strictEqual(err.name, "UnknownFilterError");
+      assert.ok(err instanceof TemplateSyntaxError);
     }
   });
 
@@ -454,5 +457,41 @@ params:
     const err = new TemplateError("generic");
     assert.strictEqual(err.kind, "");
     assert.strictEqual(err.name, "TemplateError");
+  });
+});
+
+describe("Typed compile-time errors (cross-backend parity)", () => {
+  it("unknown filter: located syntax error with filter name and file-absolute line", () => {
+    const src = `---
+params:
+  - name = str
+---
+intro
+
+> {% for c in [1] %}
+
+- {{ name | bogus }}
+
+> {% /for %}`;
+    assert.throws(
+      () => Template.fromSource(src),
+      (err: unknown) => {
+        assert.ok(err instanceof UnknownFilterError);
+        assert.ok(err instanceof TemplateSyntaxError);
+        assert.strictEqual(err.kind, "syntax");
+        assert.strictEqual(err.filter, "bogus");
+        assert.strictEqual(err.line, 9);
+        assert.strictEqual(err.snippet, "- {{ name | bogus }}");
+        assert.strictEqual(err.baseMessage, "unknown filter 'bogus'");
+        return true;
+      },
+    );
+  });
+
+  it("render-time unknown filter keeps kind 'unknown_filter' without a location", () => {
+    const err = new UnknownFilterError("bogus");
+    assert.strictEqual(err.kind, "unknown_filter");
+    assert.strictEqual(err.line, undefined);
+    assert.strictEqual(err.message, "unknown filter: bogus");
   });
 });

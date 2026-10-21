@@ -14,6 +14,7 @@ import {
   TYPE_OPTION,
   TYPE_ALIAS,
   FILTER_SANITIZE,
+  FILTER_SANITIZE_TOKENS,
   PIPE,
   DOT,
 } from "./consts.js";
@@ -75,6 +76,8 @@ export class TypeEnv {
           return (
             trimmed === FILTER_SANITIZE ||
             trimmed.startsWith("sanitize(") ||
+            trimmed === FILTER_SANITIZE_TOKENS ||
+            trimmed.startsWith("sanitize_tokens(") ||
             trimmed === "quarantine" ||
             trimmed.startsWith("quarantine(") ||
             trimmed.startsWith("limit(") ||

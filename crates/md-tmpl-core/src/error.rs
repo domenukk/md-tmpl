@@ -164,6 +164,72 @@ impl ErrorKind {
     }
 }
 
+/// Structured, payload-only view of a [`TemplateError`] for language bindings.
+///
+/// Every binding (Python, Go, WASM, TypeScript) exposes the same field names on its
+/// typed error objects, so callers never have to parse the human-readable message.
+/// Fields that do not apply to the error's [`ErrorKind`] are `None` / empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct ErrorDetails<'a> {
+    /// [`ErrorKind::Syntax`]: 1-based, file-absolute line of the offending source.
+    pub line: Option<usize>,
+    /// [`ErrorKind::Syntax`]: the offending source line.
+    pub snippet: Option<&'a str>,
+    /// [`ErrorKind::UndefinedVariable`]: the variable that was not found.
+    pub variable: Option<&'a str>,
+    /// [`ErrorKind::MissingParams`]: required parameters that were not provided.
+    pub missing: &'a [String],
+    /// [`ErrorKind::ExtraParams`]: undeclared parameters that were provided.
+    pub extra: &'a [String],
+    /// [`ErrorKind::TypeMismatch`]: dotted path of the offending value.
+    pub path: Option<&'a str>,
+    /// [`ErrorKind::TypeMismatch`]: the declared type.
+    pub expected: Option<&'a str>,
+    /// [`ErrorKind::TypeMismatch`]: the provided type.
+    pub actual: Option<&'a str>,
+    /// [`ErrorKind::UnknownFilter`]: the unknown filter name.
+    pub filter: Option<&'a str>,
+    /// [`ErrorKind::IncludeNotFound`]: the include path that could not be resolved.
+    pub include: Option<&'a str>,
+    /// [`ErrorKind::DeclarationsMutated`]: description of what changed.
+    pub details: Option<&'a str>,
+}
+
+impl TemplateError {
+    /// Return the structured payload of this error (see [`ErrorDetails`]).
+    #[must_use]
+    pub fn details(&self) -> ErrorDetails<'_> {
+        let mut d = ErrorDetails::default();
+        match self {
+            #[cfg(feature = "std")]
+            Self::Io(_) => {}
+            Self::Panic(_) => {}
+            Self::Syntax(syn) => {
+                d.line = syn.line;
+                d.snippet = syn.snippet.as_deref();
+            }
+            Self::UndefinedVariable(name) => d.variable = Some(name),
+            Self::MissingParams(names) => d.missing = names,
+            Self::ExtraParams(names) => d.extra = names,
+            Self::TypeMismatch {
+                name,
+                expected,
+                actual,
+                ..
+            } => {
+                d.path = Some(name);
+                d.expected = Some(expected);
+                d.actual = Some(actual);
+            }
+            Self::UnknownFilter(name) => d.filter = Some(name),
+            Self::IncludeNotFound(path) => d.include = Some(path),
+            Self::DeclarationsMutated { details } => d.details = Some(details),
+        }
+        d
+    }
+}
+
 impl fmt::Display for ErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
@@ -564,6 +630,49 @@ mod tests {
         assert_eq!(
             levenshtein_distance("foo", "bar"),
             levenshtein_distance("bar", "foo")
+        );
+    }
+
+    #[test]
+    fn details_expose_typed_payload_per_kind() {
+        let syn = TemplateError::Syntax(SyntaxError::new("bad").at_line(7, "{{ x | y }}"));
+        let d = syn.details();
+        assert_eq!(d.line, Some(7));
+        assert_eq!(d.snippet, Some("{{ x | y }}"));
+
+        let missing = TemplateError::MissingParams(alloc::vec!["a".into(), "b".into()]);
+        assert_eq!(
+            missing.details().missing,
+            ["a".to_string(), "b".to_string()]
+        );
+
+        let mismatch = TemplateError::TypeMismatch {
+            name: "user.age".into(),
+            expected: "int".into(),
+            actual: "str".into(),
+            actual_value: "\"x\"".into(),
+        };
+        let d = mismatch.details();
+        assert_eq!(
+            (d.path, d.expected, d.actual),
+            (Some("user.age"), Some("int"), Some("str"))
+        );
+
+        assert_eq!(
+            TemplateError::UnknownFilter("bogus".into())
+                .details()
+                .filter,
+            Some("bogus")
+        );
+        assert_eq!(
+            TemplateError::IncludeNotFound("./x.tmpl.md".into())
+                .details()
+                .include,
+            Some("./x.tmpl.md")
+        );
+        assert_eq!(
+            TemplateError::Panic("boom".into()).details(),
+            ErrorDetails::default()
         );
     }
 }

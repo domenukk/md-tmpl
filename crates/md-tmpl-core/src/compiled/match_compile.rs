@@ -6,7 +6,7 @@ use super::{
     CompiledPath, MatchArm, MatchArms, Segment,
     analysis::parse_condition,
     block_scan::{find_top_level_tag, split_for_else},
-    compile_body, enrich_error,
+    compile_body,
 };
 use crate::{
     consts::{CLOSE_MATCH, KW_ELSE, TAG_CASE_PREFIX, TAG_MATCH_PREFIX},
@@ -63,7 +63,7 @@ pub(super) fn compile_match<'a>(
     if let Some(variant) = inline_variant {
         // Inline form: check for {% else %} to create a default arm.
         let (case_text, else_text) = split_for_else(body_text)?;
-        let case_body = compile_body(case_text).map_err(|e| enrich_error(e, case_text))?;
+        let case_body = compile_body(case_text)?;
 
         // Parse guard: `Variant && guard_condition`.
         let (variant_part, guard_str) = if let Some(pos) = variant.find(" && ") {
@@ -96,8 +96,7 @@ pub(super) fn compile_match<'a>(
             body: case_body,
         }];
         if let Some(else_body_text) = else_text {
-            let else_body =
-                compile_body(else_body_text).map_err(|e| enrich_error(e, else_body_text))?;
+            let else_body = compile_body(else_body_text)?;
             arms.push(MatchArm {
                 variants: vec![Cow::Borrowed(crate::consts::MATCH_DEFAULT)],
                 guard: None,
@@ -156,7 +155,7 @@ fn parse_case_arm<'a>(variant: &str, after: &'a str) -> Result<(MatchArm, &'a st
     }
 
     let arm_body = scan_to_next_case_or_end(after)?;
-    let arm_segments = compile_body(arm_body).map_err(|e| enrich_error(e, arm_body))?;
+    let arm_segments = compile_body(arm_body)?;
     let variants = variant_part
         .split(crate::consts::PIPE)
         .map(|v| Cow::Owned(v.trim().to_string()))
@@ -176,7 +175,7 @@ fn parse_case_arm<'a>(variant: &str, after: &'a str) -> Result<(MatchArm, &'a st
 
 fn parse_else_arm(after: &str) -> Result<(MatchArm, &str), TemplateError> {
     let arm_body = scan_to_next_case_or_end(after)?;
-    let arm_segments = compile_body(arm_body).map_err(|e| enrich_error(e, arm_body))?;
+    let arm_segments = compile_body(arm_body)?;
     let arm = MatchArm {
         variants: vec![Cow::Borrowed(crate::consts::MATCH_DEFAULT)],
         guard: None,

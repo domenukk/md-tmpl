@@ -299,6 +299,8 @@ fn self_recursive_include_no_infinite_loop() {
                 consts: std::sync::Arc::new(crate::compat::HashMap::new()),
                 imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
             }),
+            sanitize_ctx: None,
+            memo: crate::compiled::IncludeContextMemo::default(),
         })],
     );
     let segments = vec![Segment::Include(inc)];
@@ -323,6 +325,8 @@ fn flip_flop_includes_no_infinite_loop() {
             consts: std::sync::Arc::new(crate::compat::HashMap::new()),
             imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
+        sanitize_ctx: None,
+        memo: crate::compiled::IncludeContextMemo::default(),
     };
     let inc_a = make_include(
         "b.tmpl.md",
@@ -360,6 +364,8 @@ fn self_recursive_include_with_type_mismatch_error() {
                 consts: std::sync::Arc::new(crate::compat::HashMap::new()),
                 imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
             }),
+            sanitize_ctx: None,
+            memo: crate::compiled::IncludeContextMemo::default(),
         })],
     );
     let parent_decls = vec![str_decl("name")]; // parent has str
@@ -389,6 +395,8 @@ fn self_recursive_include_contract_missing_params_error() {
                 consts: std::sync::Arc::new(crate::compat::HashMap::new()),
                 imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
             }),
+            sanitize_ctx: None,
+            memo: crate::compiled::IncludeContextMemo::default(),
         })],
     );
     let segments = vec![Segment::Include(inc)];

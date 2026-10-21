@@ -33,12 +33,14 @@ pub(super) fn validate_include(
     errors: &mut Vec<String>,
     visited: &mut HashSet<String>,
 ) {
-    // 1. Check that `with` expressions are valid in parent scope.
+    // 1. Check that `with` expressions are valid in parent scope. Only the base
+    //    operand is a path; a trailing `| filter` chain is not part of it, and
+    //    scalar literals (`true`, `5`, `"x"`) need no lookup.
     for (_, val_expr) in &inc.with_vars {
-        validate_path(val_expr, env, errors);
+        validate_with_operand(val_expr, env, errors);
     }
     if let Some((_, list_expr)) = &inc.for_each {
-        validate_path(list_expr, env, errors);
+        validate_with_operand(list_expr, env, errors);
     }
 
     // 2. Cross-boundary checks when the included template is available.
@@ -87,6 +89,16 @@ pub(super) fn validate_include(
     }
     // Cycle: boundary checks (2a, 2b) were done — body already validated on
     // first encounter, so we skip recursing to avoid infinite loops.
+}
+
+/// Validate the base operand of a `with` / `for` expression (`base | filters`).
+fn validate_with_operand(expr: &str, env: &TypeEnv<'_>, errors: &mut Vec<String>) {
+    let (base, _) = crate::parser::split_pipe_aware(expr.trim());
+    let base = base.trim();
+    if crate::parser::parse_scalar_literal(base).is_some() {
+        return;
+    }
+    validate_path(base, env, errors);
 }
 
 /// Find which declared parameters are NOT provided by the include directive.
@@ -159,11 +171,13 @@ fn validate_include_type_match(
             continue; // Extra vars are OK (not declared in included template).
         };
 
-        // Skip literals — they don't have a type in the parent env.
+        // Skip literals (checked at render time against the declaration) and
+        // filtered expressions (the filter may change the type).
         let val = val_expr.trim();
-        if crate::consts::strip_string_literal(val).is_some()
+        let (base, filters) = crate::parser::split_pipe_aware(val);
+        if !filters.trim().is_empty()
+            || crate::parser::parse_scalar_literal(base.trim()).is_some()
             || val.starts_with(crate::consts::ANGLE_OPEN)
-            || val.bytes().next().is_some_and(|b| b.is_ascii_digit())
         {
             continue;
         }

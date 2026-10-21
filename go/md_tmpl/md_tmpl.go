@@ -153,11 +153,57 @@ const (
 // TemplateError is a structured error returned by the template engine.
 //
 // It carries a machine-readable [ErrorKind] alongside the human-readable
-// message. Match specific kinds with [errors.Is] against the package
-// sentinels (e.g. [ErrMissingParams]) or inspect Kind directly.
+// message and the typed payload of that kind, so callers never need to parse
+// Message. Fields that do not apply to Kind are zero. Match specific kinds with
+// [errors.Is] against the package sentinels (e.g. [ErrMissingParams]) or
+// inspect Kind directly. The payload fields mirror the Python exception
+// attributes and the TypeScript error properties.
 type TemplateError struct {
 	Kind    ErrorKind
 	Message string
+
+	// Line is the 1-based, file-absolute line of a [KindSyntax] error
+	// (0 when unknown).
+	Line int
+	// Snippet is the offending source line of a [KindSyntax] error.
+	Snippet string
+	// Variable is the name that was not found ([KindUndefinedVariable]).
+	Variable string
+	// Missing lists required parameters that were not provided
+	// ([KindMissingParams]).
+	Missing []string
+	// Extra lists undeclared parameters that were provided ([KindExtraParams]).
+	Extra []string
+	// Path is the dotted path of the offending value ([KindTypeMismatch]).
+	Path string
+	// Expected is the declared type ([KindTypeMismatch]).
+	Expected string
+	// Actual is the provided type ([KindTypeMismatch]).
+	Actual string
+	// Filter is the unknown filter name ([KindUnknownFilter]).
+	Filter string
+	// Include is the include path that could not be resolved
+	// ([KindIncludeNotFound]).
+	Include string
+	// Details describes how the parameter contract changed
+	// ([KindDeclarationsMutated]).
+	Details string
+}
+
+// errorPayload is the JSON payload appended to transported errors by the FFI
+// (see pt error strings: "<kind>\x1f<message>[\x1f<json>]").
+type errorPayload struct {
+	Line     int      `json:"line"`
+	Snippet  string   `json:"snippet"`
+	Variable string   `json:"variable"`
+	Missing  []string `json:"missing"`
+	Extra    []string `json:"extra"`
+	Path     string   `json:"path"`
+	Expected string   `json:"expected"`
+	Actual   string   `json:"actual"`
+	Filter   string   `json:"filter"`
+	Include  string   `json:"include"`
+	Details  string   `json:"details"`
 }
 
 // Error implements the error interface.
@@ -362,8 +408,22 @@ func parseError(raw string) error {
 	if raw == "" {
 		return nil
 	}
-	if kind, message, found := strings.Cut(raw, errKindSep); found {
-		return &TemplateError{Kind: ErrorKind(kind), Message: message}
+	if kind, rest, found := strings.Cut(raw, errKindSep); found {
+		message, payload, hasPayload := strings.Cut(rest, errKindSep)
+		te := &TemplateError{Kind: ErrorKind(kind), Message: message}
+		if hasPayload {
+			var p errorPayload
+			if err := json.Unmarshal([]byte(payload), &p); err == nil {
+				te.Line, te.Snippet, te.Variable = p.Line, p.Snippet, p.Variable
+				te.Missing, te.Extra = p.Missing, p.Extra
+				te.Path, te.Expected, te.Actual = p.Path, p.Expected, p.Actual
+				te.Filter, te.Include, te.Details = p.Filter, p.Include, p.Details
+			} else {
+				// Keep the typed kind and message even if the payload is malformed.
+				te.Message = rest
+			}
+		}
+		return te
 	}
 	// No kind prefix (e.g. an error from the FFI shim itself).
 	return errors.New(raw)

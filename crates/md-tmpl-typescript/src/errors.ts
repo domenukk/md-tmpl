@@ -46,22 +46,29 @@ export class TemplateError extends Error {
 
 /** Raised when template source contains syntax errors. */
 export class TemplateSyntaxError extends TemplateError {
+  /** 1-based, file-absolute line of the offending source (when known). */
   readonly line?: number;
+  /** 1-based column of the offending source (when known). */
   readonly column?: number;
+  /** The offending source line (when known). */
   readonly snippet?: string;
+  /** The message without the `(line N, --> snippet)` location suffix. */
+  readonly baseMessage: string;
 
   constructor(
     message: string,
     line?: number,
     column?: number,
     snippet?: string,
+    kind: ErrorKind = "syntax",
   ) {
     const formattedMessage =
       line !== undefined
         ? `${message} (line ${String(line)}${snippet ? `, --> ${snippet}` : ""})`
         : message;
-    super(formattedMessage, "syntax");
+    super(formattedMessage, kind);
     this.name = "TemplateSyntaxError";
+    this.baseMessage = message;
     this.line = line;
     this.column = column;
     this.snippet = snippet;
@@ -122,12 +129,35 @@ export class UndefinedVariableError extends TemplateError {
   }
 }
 
-/** Raised when an unknown filter is used. */
-export class UnknownFilterError extends TemplateError {
+/**
+ * Raised when an unknown filter is used.
+ *
+ * Found while compiling a template, it is a located syntax error: `kind` is
+ * `"syntax"`, the message is `unknown filter '<name>'`, and `line` / `snippet`
+ * point at the expression — exactly like the Rust, Python, Go, and WASM
+ * backends. Only a filter first encountered while rendering (no source
+ * location) reports `kind` `"unknown_filter"`, matching Rust's
+ * `TemplateError::UnknownFilter`. Either way it is an instance of
+ * `TemplateSyntaxError` and carries the filter name in `filter`.
+ */
+export class UnknownFilterError extends TemplateSyntaxError {
+  /** The unknown filter name. */
   readonly filter: string;
 
-  constructor(filter: string) {
-    super(`unknown filter: ${filter}`, "unknown_filter");
+  constructor(
+    filter: string,
+    line?: number,
+    column?: number,
+    snippet?: string,
+  ) {
+    const located = line !== undefined;
+    super(
+      located ? `unknown filter '${filter}'` : `unknown filter: ${filter}`,
+      line,
+      column,
+      snippet,
+      located ? "syntax" : "unknown_filter",
+    );
     this.name = "UnknownFilterError";
     this.filter = filter;
   }

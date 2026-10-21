@@ -175,7 +175,7 @@ pub mod __private {
 #[cfg(feature = "std")]
 pub use cache::TemplateCache;
 pub use context::Context;
-pub use error::{ErrorKind, SyntaxError, TemplateError};
+pub use error::{ErrorDetails, ErrorKind, SyntaxError, TemplateError};
 pub use filter::{
     DEFAULT_LIST_TRUNCATE_MARKER, DEFAULT_QUARANTINE_TAG, DEFAULT_SANITIZE_NOTICE,
     DEFAULT_SANITIZE_TAG, DEFAULT_TRUNCATE_MARKER, DEFAULT_TRUNCATE_MARKER_COMPACT,

@@ -58,6 +58,7 @@ const INCLUDE_FIXTURES: &[SharedFixture] = &[
     shared_fixture!("include_tests/included_file_imports.toml"),
     shared_fixture!("include_tests/inline_tmpl_scoping.toml"),
     shared_fixture!("include_tests/param_paths.toml"),
+    shared_fixture!("include_tests/untrusted_propagation.toml"),
     shared_fixture!("include_tests/whitespace.toml"),
     shared_fixture!("include_tests/with_args.toml"),
 ];
@@ -79,10 +80,12 @@ const FEATURE_E2E_FIXTURES: &[SharedFixture] = &[
     shared_fixture!("feature_e2e_tests/compile_time_type_errors.toml"),
     shared_fixture!("feature_e2e_tests/diagnostic_parity.toml"),
     shared_fixture!("feature_e2e_tests/enums.toml"),
+    shared_fixture!("feature_e2e_tests/error_line_numbers.toml"),
     shared_fixture!("feature_e2e_tests/filter_sanitize_parity.toml"),
     shared_fixture!("feature_e2e_tests/filters_whitespace.toml"),
     shared_fixture!("feature_e2e_tests/frontmatter_and_validation.toml"),
     shared_fixture!("feature_e2e_tests/frontmatter_regressions.toml"),
+    shared_fixture!("feature_e2e_tests/include_with_values.toml"),
     shared_fixture!("feature_e2e_tests/list_defaults_membership_diagnostics_panic.toml"),
     shared_fixture!("feature_e2e_tests/literals_truthiness.toml"),
     shared_fixture!("feature_e2e_tests/nested_type_patterns_blockquotes.toml"),
@@ -91,6 +94,7 @@ const FEATURE_E2E_FIXTURES: &[SharedFixture] = &[
     shared_fixture!("feature_e2e_tests/single_letter_type_aliases.toml"),
     shared_fixture!("feature_e2e_tests/strict_builtin_typing.toml"),
     shared_fixture!("feature_e2e_tests/string_interpolation_field_access.toml"),
+    shared_fixture!("feature_e2e_tests/untrusted_include_and_filter_order.toml"),
     shared_fixture!("feature_e2e_tests/unused_params.toml"),
 ];
 

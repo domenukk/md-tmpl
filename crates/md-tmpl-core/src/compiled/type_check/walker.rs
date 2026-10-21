@@ -59,6 +59,7 @@ fn walk_segment(
                         matches!(
                             f.kind,
                             crate::compiled::FilterKind::Sanitize
+                                | crate::compiled::FilterKind::SanitizeTokens
                                 | crate::compiled::FilterKind::Quarantine
                                 | crate::compiled::FilterKind::Limit
                                 | crate::compiled::FilterKind::Truncate

@@ -1379,24 +1379,24 @@ All filters — including escaping and sanitization filters — are **strictly o
 {{ items | join(", ") }}
 ```
 
-| Filter                                     | Input      | Output     | Description                                                                                      |
-| ------------------------------------------ | ---------- | ---------- | ------------------------------------------------------------------------------------------------ |
-| `upper`                                    | str        | str        | UPPERCASE                                                                                        |
-| `lower`                                    | str        | str        | lowercase                                                                                        |
-| `trim`                                     | str        | str        | Strip leading/trailing whitespace                                                                |
-| `fixed(N)`                                 | number     | str        | Format with exactly N decimal places (see [Numeric filter arguments](#numeric-filter-arguments)) |
-| `join("sep")`                              | list       | str        | Join list items with separator                                                                   |
-| `limit(N)`                                 | list       | list       | Take first N elements (N = non-negative integer)                                                 |
-| `truncate(limit, [marker])`                | str / list | str / list | Middle-out truncation with `{skipped}` byte/item replacement placeholder                         |
-| `add(N)`                                   | number     | number     | Add N to the value (`int + int` saturates at the `i64` bounds)                                   |
-| `sub(N)`                                   | number     | number     | Subtract N from the value (`int - int` saturates at the `i64` bounds)                            |
-| `escape_xml`                               | str        | str        | Escape XML entities (`&`, `<`, `>`, `"`, `'`) and strip control chars                            |
-| `escape_json`                              | str        | str        | Escape JSON string body (`"`, `\`, `/`, control chars, `U+2028`/`U+2029`)                        |
-| `json` / `json(N)`                         | any        | str        | Serialize value to JSON string (optional indentation space count `N`, e.g. `json(2)`)            |
-| `sanitize` / `sanitize("tag", ["notice"])` | str        | str        | Unified untrusted data sanitizer (in-place or `<tag>` block with passive data boundary notice)   |
-| `sanitize_tokens` / `sanitize_tokens("t")` | str        | str        | Neutralize LLM control tokens in place; escapes only the explicitly listed XML tags              |
-| `quarantine` / `quarantine("t")`           | str        | str        | Wrap in `<t>` boundary tags (default `untrusted_content`), escaping embedded `<t>` / `</t>`      |
-| `fence` / `fence("lang")`                  | str        | str        | Wrap in Markdown code fences with adaptive backtick count (`max(3, max_backticks + 1)`)          |
+| Filter                                     | Input      | Output     | Description                                                                                           |
+| ------------------------------------------ | ---------- | ---------- | ----------------------------------------------------------------------------------------------------- |
+| `upper`                                    | str        | str        | UPPERCASE                                                                                             |
+| `lower`                                    | str        | str        | lowercase                                                                                             |
+| `trim`                                     | str        | str        | Strip leading/trailing whitespace                                                                     |
+| `fixed(N)`                                 | number     | str        | Format with exactly N decimal places (see [Numeric filter arguments](#numeric-filter-arguments))      |
+| `join("sep")`                              | list       | str        | Join list items with separator                                                                        |
+| `limit(N)`                                 | list       | list       | Take first N elements (N = non-negative integer)                                                      |
+| `truncate(limit, [marker])`                | str / list | str / list | Middle-out truncation with `{skipped}` byte/item replacement placeholder                              |
+| `add(N)`                                   | number     | number     | Add N to the value (`int + int` saturates at the `i64` bounds)                                        |
+| `sub(N)`                                   | number     | number     | Subtract N from the value (`int - int` saturates at the `i64` bounds)                                 |
+| `escape_xml`                               | str        | str        | Escape XML entities (`&`, `<`, `>`, `"`, `'`) and strip control chars                                 |
+| `escape_json`                              | str        | str        | Escape JSON string body (`"`, `\`, `/`, control chars, `U+2028`/`U+2029`)                             |
+| `json` / `json(N)`                         | any        | str        | Serialize value to JSON string (optional indentation space count `N`, e.g. `json(2)`)                 |
+| `sanitize` / `sanitize("tag", ["notice"])` | str        | str        | Unified untrusted data sanitizer (in-place or `<tag>` block with passive data boundary notice)        |
+| `sanitize_tokens` / `sanitize_tokens("t")` | str        | str        | Neutralize LLM control tokens in place; escapes only the explicitly listed XML tags                   |
+| `quarantine` / `quarantine("t")`           | str        | str        | Wrap in `<t>` boundary tags (default `untrusted_content`), escaping `<t>` / `</t>` and enclosing tags |
+| `fence` / `fence("lang")`                  | str        | str        | Wrap in Markdown code fences with adaptive backtick count (`max(3, max_backticks + 1)`)               |
 
 #### Numeric filter arguments
 
@@ -1418,6 +1418,23 @@ Numeric arguments are parsed identically in every backend:
 **Filter aliases:** `xml` = `escape_xml`; `tojson` and `to_json` = `json`;
 `truncate_middle` = `truncate`. Aliases behave identically to the canonical
 name; error messages use the canonical name.
+
+#### Sanitizing filter ordering
+
+`upper`, `lower`, and `truncate` (`truncate_middle`) must not follow a
+sanitizing filter (`sanitize`, `sanitize_tokens`, `quarantine`) in the same
+chain. Case mapping can re-create a control token that is only recognized in
+one case (`<TOOL_CALL>` → `| lower` → `<tool_call>`), and truncation can cut
+the closing boundary tag of a sanitized block. Such chains are compile errors
+in every backend:
+
+```text
+filter 'lower' cannot follow 'quarantine': case mapping or truncation after sanitization can re-create control tokens or cut boundary tags; apply 'lower' before 'quarantine'
+```
+
+Apply the transform first (`{{ x | lower | quarantine }}`). Output encoders
+and `trim` (`escape_xml`, `escape_json`, `json`, `fence`, `trim`) may follow a
+sanitizing filter.
 
 > **Note:** `join()` is designed for **scalar lists** (`list(str)`, `list(int)`,
 > etc.). Applying `join()` to a struct-typed list (e.g., `list(name = str,
@@ -1535,9 +1552,10 @@ In YAML frontmatter `params:` or `types:` (including chained `types:` aliases, c
 Declaring a parameter or field as `untrusted str` automatically applies in-place `sanitize` to every interpolation of that value:
 
 - LLM control tokens and chat-turn delimiters are neutralized automatically.
-- If the interpolation is surrounded by static XML tags in the template (e.g. `<search>{{ query }}</search>`, including across inline `{% include %}` sites), closing tag breakouts (such as `</search>`) are automatically neutralized to `&lt;/search&gt;` without double-wrapping.
+- If the interpolation is surrounded by static XML tags in the template (e.g. `<search>{{ query }}</search>`, including across `{% include %}` sites — see [Untrusted values across includes](#untrusted-values-across-includes)), closing tag breakouts (such as `</search>`) are automatically neutralized to `&lt;/search&gt;` without double-wrapping.
+- If the interpolation already ends in `| quarantine(...)`, control tokens are neutralized immediately before the quarantine envelope (fused into a single pass) instead of appending a second `sanitize`.
 - If the interpolation appears on a Markdown ATX heading line (`# ...` through `###### ...`), each line-break character (`\n`, `\r`, U+000B, U+000C, U+0085, U+2028, U+2029) is replaced by one space (so `\r\n` becomes two spaces) so untrusted input cannot break out of the heading line to inject new Markdown sections or directives.
-- When full XML block encapsulation with a boundary notice is desired at a specific site in the template body, apply `{{ document | sanitize("user_document") }}` directly at that interpolation site (or declare `document = str | sanitize("user_document")` in frontmatter). Explicit `sanitize_tokens` filters escape only the tags they list; enclosing-tag and heading detection is applied only by 0-arg `sanitize` and `untrusted` types. Two different `| sanitize("tag", …)` specs on the same declaration or field are a compile error (`declaration 'x': conflicting sanitization specifications on '<type>'`); identical repeats are allowed:
+- When full XML block encapsulation with a boundary notice is desired at a specific site in the template body, apply `{{ document | sanitize("user_document") }}` directly at that interpolation site (or declare `document = str | sanitize("user_document")` in frontmatter). Explicit `sanitize_tokens` filters escape only the tags they list; enclosing-tag detection is applied by `sanitize` (all arities), `quarantine` (whose envelope then also escapes every enclosing tag), and `untrusted` types, and heading detection by 0-arg `sanitize` and `untrusted` types. Two different `| sanitize("tag", …)` specs on the same declaration or field are a compile error (`declaration 'x': conflicting sanitization specifications on '<type>'`); identical repeats are allowed:
 
 ```markdown
 ---
@@ -1553,6 +1571,41 @@ Tags: {{ user_tags | join(", ") }}
 {{ document | sanitize("user_document") }}
 {{ raw_notes | sanitize("notes", "READ-ONLY NOTES:") }}
 ```
+
+#### Untrusted values across includes
+
+Untrustedness follows the value, not the declaration, across every include
+kind (inline `{% tmpl %}`, file includes, and `tmpl(...)` parameters):
+
+- **Taint propagation:** `with key = <expr>` taints child parameter `key` when
+  `<expr>` is (a filtered) untrusted path, a struct whose fields are untrusted
+  (`with u = user` maps `user.name` → `u.name`), a field of one
+  (`with t = user.name`), or a string literal interpolating an untrusted value
+  (`with t = "Re: {{ subject }}"`). `include ... for item in items` taints
+  `item` when `items` is `list(untrusted str)`. The child applies the same
+  in-place sanitization as if it had declared `untrusted str` itself, even when
+  it declares plain `str`; a block spec (`str | sanitize("tag")`) carries over
+  with the including template's `sanitize_notice`. Values that are already
+  sanitized in the child (explicit `sanitize` / `sanitize_tokens`) are not
+  sanitized twice.
+- **Enclosing context:** static XML tags open around the `{% include %}` call
+  site and the ATX-heading state at the call site apply inside the child, so
+  `<context>{% include [row](./row.tmpl.md) with t = doc %}</context>` escapes
+  `</context>` inside `row.tmpl.md` exactly as an inline interpolation would.
+  Nested includes accumulate tags from every level.
+- **Untrusted include paths are rejected:** an include path that interpolates
+  an untrusted value (`{% include [x](./{{ name }}.tmpl.md) %}` with
+  `name = untrusted str`, or a child parameter that received one) is an error —
+  `include path '<path>' interpolates untrusted value '<expr>': untrusted input
+must not select which template is included` — at compile time when the path
+  is in the template itself, otherwise when the include is rendered.
+
+Performance: inline includes are specialized at compile time. Includes resolved
+at render time record a small context only when the call site is inside tags,
+on a heading line, or passes untrusted values; the child body is then
+specialized once per call site and memoized (keyed by the child's identity, so
+a hot-reloaded child or a different `tmpl(...)` value is re-specialized).
+Call sites without such context have zero overhead.
 
 ### `fence`
 
@@ -2369,10 +2422,16 @@ The `{% panic(...) %}` statement tag halts rendering with a fatal error.
   Expressions are evaluated against the active scope **prior** to file
   system lookup or template caching. The same error and path validation
   rules as [import path interpolation](#dynamic-import-path-interpolation)
-  apply.
+  apply. Interpolating an `untrusted` value is rejected (see
+  [Untrusted values across includes](#untrusted-values-across-includes)).
 - **Explicit parameter passing** via `with` is required; no implicit scope
-  leaking. String literal values support `{{ }}` interpolation
-  (see [String Interpolation](#string-interpolation)).
+  leaking. A `with` value is a general expression: a scalar literal
+  (`"text"` / `'text'`, `true`, `false`, `5`, `-5`, `1.5`), a variable path
+  (`user.name`), or a built-in function call (`len(items)`), optionally
+  followed by a filter chain (`name | upper`, `count | sub(1)`). List and
+  struct literals are not accepted. String literal values support `{{ }}`
+  interpolation (see [String Interpolation](#string-interpolation)).
+  Untrusted values stay untrusted inside the included template.
 - **Iterated includes** via `for binding in list` unroll the list: for
   each element, the included template is rendered with `binding` set to the
   current item. The binding name satisfies the included template's
@@ -2437,6 +2496,7 @@ import chains work.
 | ------------------------------------- | ------------------------------------------- |
 | ✅ `env:`, `consts:`, imported consts | ✅ `env:`, `consts:`, prior imported consts |
 | ✅ `params`, loop variables           | ❌ `params`, loop variables                 |
+| ❌ `untrusted` values                 | ❌ `untrusted` values                       |
 
 Param-based include paths work but skip compile-time type checking
 (path unknown until render time).
@@ -2742,8 +2802,11 @@ Resolution order for type names in an inline template:
   in its inner frontmatter.
 - **Call-site context propagation**: each `{% include name %}` call site
   receives its own sanitization context so enclosing XML tags (e.g., wrapping
-  `<context>{% include row %}</context>`) and ATX heading line contexts at the
-  include site are propagated into the inline template's rendered expressions.
+  `<context>{% include row %}</context>`), ATX heading line contexts, and
+  untrusted `with` / `for` values at the include site are propagated into the
+  inline template's rendered expressions (the same applies to file includes and
+  `tmpl(...)` parameters; see
+  [Untrusted values across includes](#untrusted-values-across-includes)).
 
 **Constants** (both local `consts:` and imported constants from the
 parent) are inherited by inline templates automatically.
@@ -2866,12 +2929,40 @@ assert_eq!(output, "helloworldbye");
 All errors include structured context for debugging:
 
 - **Syntax errors** — line number, column, source snippet, and descriptive
-  message (e.g. unknown filter, unclosed tag, undeclared variable).
+  message (e.g. unknown filter, unclosed tag, undeclared variable). Line
+  numbers are **file-absolute and 1-based**: they count from the first line of
+  the `.tmpl.md` source, frontmatter included, regardless of nesting inside
+  blocks or inline `{% tmpl %}` definitions — so editors and CI annotations can
+  jump straight to the offending line. Every backend includes `line N` in the
+  error message.
 - **Type mismatches** — the full dotted field path to the failing value
   (e.g. `items[1].score`), expected type, and actual type.
 - **Missing/extra parameters** — lists of param names that were required
   but absent, or provided but undeclared.
 - **Panic** — the rendered panic message from `{% panic("...") %}`.
+
+Every backend exposes the same stable error `kind` and the same typed payload
+fields, so callers never parse messages (Rust `TemplateError::details()` /
+`ErrorDetails`, Python exception attributes, Go `*TemplateError` fields,
+TypeScript error-class properties, WASM `MdTmplError` properties):
+
+| `kind`                 | Payload                           |
+| ---------------------- | --------------------------------- |
+| `syntax`               | `line` (file-absolute), `snippet` |
+| `undefined_variable`   | `variable`                        |
+| `missing_params`       | `missing` (list)                  |
+| `extra_params`         | `extra` (list)                    |
+| `type_mismatch`        | `path`, `expected`, `actual`      |
+| `unknown_filter`       | `filter`                          |
+| `include_not_found`    | `include`                         |
+| `declarations_mutated` | `details`                         |
+| `panic`, `io`          | — (message only)                  |
+
+An unknown filter found while compiling a template is a located `syntax`
+error (message `unknown filter '<name>'`); `unknown_filter` is reserved for a
+filter first encountered while rendering (e.g. in an `include ... with`
+value). TypeScript raises both as `UnknownFilterError` (a
+`TemplateSyntaxError` subclass with a `filter` property).
 
 For language-specific error APIs and host-language integration
 (value coercion, caching, code generation, typed builders), see the

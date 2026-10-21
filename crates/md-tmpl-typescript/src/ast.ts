@@ -96,6 +96,27 @@ import {
 } from "./consts.js";
 import type { CompiledDirectCondition } from "./direct_renderer/condition.js";
 import type { CompiledDirectExpr } from "./direct_renderer/expr.js";
+import type { SanitizeSpec } from "./sanitize_runtime.js";
+
+/**
+ * Sanitization context captured at an `{% include %}` call site that is resolved at
+ * render time (file include, `tmpl(...)` parameter, or recursive inline template).
+ * Mirrors the Rust `IncludeSanitizeContext`.
+ */
+export interface IncludeSanitizeContext {
+  /** Static XML tags open at the call site (outermost first). */
+  readonly enclosingTags: readonly string[];
+  /** Whether the call site sits on a Markdown ATX heading line. */
+  readonly inAtxHeading: boolean;
+  /** Whether the call site is at the start of a line. */
+  readonly atLineStart: boolean;
+  /** Partially scanned opening tag pending at the call site (`<tag` without `>`). */
+  readonly pendingOpenTag?: string;
+  /** Child parameter paths receiving untrusted values, sorted by path. */
+  readonly untrusted: readonly (readonly [string, SanitizeSpec])[];
+  /** Untrusted expression interpolated into the include path, if any. */
+  readonly untrustedPathRef?: string;
+}
 
 // ---------------------------------------------------------------------------
 // AST node types
@@ -154,6 +175,7 @@ export type Node =
       forBinding?: string;
       forExpr?: string;
       inlineNodes?: Node[];
+      sanitizeCtx?: IncludeSanitizeContext;
       loc?: SourceLocation;
       pos?: number;
       lineMap?: LineMapSource;
@@ -162,6 +184,8 @@ export type Node =
       kind: typeof NODE_TMPL;
       name: string;
       source: string;
+      /** Position (in the parsed input) where `source` begins, for error locations. */
+      sourcePos?: number;
       loc?: SourceLocation;
       pos?: number;
       lineMap?: LineMapSource;
@@ -190,4 +214,68 @@ export interface LoopMeta {
   len: number;
   first?: boolean;
   last?: boolean;
+}
+
+/**
+ * Deep-clone AST nodes so site-specific sanitization can rewrite expressions
+ * independently. Cached direct-render compilations (`_compiled`) are dropped so a
+ * rewritten clone can never reuse a compilation of the original expression.
+ */
+export function cloneNodes(nodes: readonly Node[]): Node[] {
+  return nodes.map((node): Node => {
+    switch (node.kind) {
+      case NODE_EXPR:
+        return { ...node, _compiled: undefined };
+      case NODE_FOR:
+        return {
+          ...node,
+          _compiled: undefined,
+          body: cloneNodes(node.body),
+          elseBody: node.elseBody ? cloneNodes(node.elseBody) : undefined,
+        };
+      case NODE_IF:
+        return {
+          ...node,
+          branches: node.branches.map((b) => ({
+            ...b,
+            _compiled: undefined,
+            body: cloneNodes(b.body),
+          })),
+          elseBody: node.elseBody ? cloneNodes(node.elseBody) : undefined,
+        };
+      case NODE_MATCH:
+        return {
+          ...node,
+          _compiled: undefined,
+          arms: node.arms.map((a) => ({
+            ...a,
+            _compiled: undefined,
+            variants: [...a.variants],
+            body: cloneNodes(a.body),
+          })),
+          elseArm: node.elseArm ? cloneNodes(node.elseArm) : undefined,
+          inlineGuard: node.inlineGuard
+            ? {
+                ...node.inlineGuard,
+                body: cloneNodes(node.inlineGuard.body),
+              }
+            : undefined,
+        };
+      case NODE_PANIC:
+        return {
+          ...node,
+          body: cloneNodes(node.body),
+        };
+      case NODE_INCLUDE:
+        return {
+          ...node,
+          withMappings: new Map(node.withMappings),
+          inlineNodes: node.inlineNodes
+            ? cloneNodes(node.inlineNodes)
+            : undefined,
+        };
+      default:
+        return { ...node };
+    }
+  });
 }

@@ -71,6 +71,8 @@ pub(super) fn make_include(
             consts: std::sync::Arc::new(crate::compat::HashMap::new()),
             imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
+        sanitize_ctx: None,
+        memo: crate::compiled::IncludeContextMemo::default(),
     }
 }
 

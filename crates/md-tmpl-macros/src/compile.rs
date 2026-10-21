@@ -75,7 +75,8 @@ pub(crate) fn compile_template_to_ast(
     let mut dependency_paths: Vec<PathBuf> = Vec::new();
     collect_import_deps(&fm, base_dir, &mut dependency_paths);
 
-    let (mut segments, inline_templates) = md_tmpl_core::compiled::compile_with_parent_scope(
+    let (mut segments, inline_templates) = md_tmpl_core::compiled::compile_source_body(
+        source,
         body,
         &fm.type_aliases,
         &fm.type_alias_sanitize,
@@ -293,9 +294,21 @@ pub(crate) fn resolve_includes_recursive(
                     continue;
                 }
 
-                // Check inline templates (scoped to THIS file).
+                // Check inline templates (scoped to THIS file). Keep a body that
+                // core already bound to this call site: it carries the per-site
+                // sanitization (untrusted taint, enclosing tags). Otherwise bind
+                // the template now and apply the recorded call-site context.
                 if let Some(compiled) = inline_templates.get(inc.path.as_ref()) {
-                    inc.inline_compiled = Some(compiled.clone());
+                    if inc.inline_compiled.is_none() {
+                        let mut compiled = compiled.clone();
+                        if let Some(ctx) = inc.sanitize_ctx.as_deref() {
+                            md_tmpl_core::compiled::apply_include_context(
+                                std::sync::Arc::make_mut(&mut compiled.segments),
+                                ctx,
+                            );
+                        }
+                        inc.inline_compiled = Some(compiled);
+                    }
                     continue;
                 }
 
@@ -397,7 +410,8 @@ pub(crate) fn load_include_declarations(
         md_tmpl_core::parse_frontmatter_with_base_dir(&included_source, included_base_dir, &[])
             .map_err(|e| format!("syntax error in include {}: {e}", include_path.display()))?;
     collect_import_deps(&included_fm, included_base_dir, deps);
-    let (mut included_segments, _) = md_tmpl_core::compiled::compile_with_parent_scope(
+    let (mut included_segments, _) = md_tmpl_core::compiled::compile_source_body(
+        &included_source,
         included_body,
         &included_fm.type_aliases,
         &included_fm.type_alias_sanitize,
@@ -456,7 +470,8 @@ pub(crate) fn resolve_single_include(
     // Each file has its own {% tmpl %} namespace — parent templates do NOT
     // leak into includes, and included file templates don't leak to parents.
     let (mut included_segments, included_inline_templates) =
-        md_tmpl_core::compiled::compile_with_parent_scope(
+        md_tmpl_core::compiled::compile_source_body(
+            &included_source,
             included_body,
             &included_fm.type_aliases,
             &included_fm.type_alias_sanitize,
@@ -494,6 +509,14 @@ pub(crate) fn resolve_single_include(
             depth,
         )?;
     }
+    // Bind the call-site sanitization context (untrusted taint from `with` / `for`,
+    // enclosing XML tags, heading state) into the body now that it is precompiled:
+    // the runtime renders `inline_compiled` bodies as-is.
+    if let Some(ctx) = inc.sanitize_ctx.as_deref() {
+        md_tmpl_core::compiled::apply_include_context(&mut included_segments, ctx);
+    }
+    md_tmpl_core::compiled::check_untrusted_include_paths(&included_segments)
+        .map_err(|e| format!("in include {}: {e}", include_path.display()))?;
 
     // Build const values map from included file's own consts.
     let mut included_consts = hashbrown::HashMap::new();

@@ -155,6 +155,13 @@ fn codegen_segment_include(
             quote! { ::core::option::Option::Some(#ic_tokens) }
         },
     );
+    let sanitize_ctx = inc.sanitize_ctx.as_deref().map_or_else(
+        || quote! { ::core::option::Option::None },
+        |ctx| {
+            let ctx_tokens = codegen_include_sanitize_ctx(ctx);
+            quote! { ::core::option::Option::Some(#cp::__private::Arc::new(#ctx_tokens)) }
+        },
+    );
     quote! {
         #cp::compiled::Segment::Include(
             #cp::compiled::CompiledInclude {
@@ -162,8 +169,58 @@ fn codegen_segment_include(
                 with_vars: #cp::__private::vec![#(#with_vars),*],
                 for_each: #for_each,
                 inline_compiled: #inline_compiled,
+                sanitize_ctx: #sanitize_ctx,
+                memo: ::core::default::Default::default(),
             }
         )
+    }
+}
+
+/// Emit tokens reconstructing an include call-site [`IncludeSanitizeContext`].
+///
+/// [`IncludeSanitizeContext`]: md_tmpl_core::compiled::IncludeSanitizeContext
+fn codegen_include_sanitize_ctx(
+    ctx: &md_tmpl_core::compiled::IncludeSanitizeContext,
+) -> proc_macro2::TokenStream {
+    let cp = crate_path();
+    let opt_string = |v: Option<&str>| {
+        v.map_or_else(
+            || quote! { ::core::option::Option::None },
+            |s| quote! { ::core::option::Option::Some(#cp::__private::String::from(#s)) },
+        )
+    };
+    let tags = ctx
+        .enclosing_tags
+        .iter()
+        .map(|t| quote! { #cp::__private::String::from(#t) });
+    let untrusted = ctx.untrusted.iter().map(|(path, spec)| {
+        let spec_tokens = match spec {
+            md_tmpl_core::SanitizeSpec::Inline => quote! { #cp::SanitizeSpec::Inline },
+            md_tmpl_core::SanitizeSpec::Block { tag, notice } => {
+                let notice_tokens = opt_string(notice.as_deref());
+                quote! {
+                    #cp::SanitizeSpec::Block {
+                        tag: #cp::__private::String::from(#tag),
+                        notice: #notice_tokens,
+                    }
+                }
+            }
+        };
+        quote! { (#cp::__private::String::from(#path), #spec_tokens) }
+    });
+    let in_atx_heading = ctx.in_atx_heading;
+    let at_line_start = ctx.at_line_start;
+    let pending = opt_string(ctx.pending_open_tag.as_deref());
+    let path_ref = opt_string(ctx.untrusted_path_ref.as_deref());
+    quote! {
+        #cp::compiled::IncludeSanitizeContext {
+            enclosing_tags: #cp::__private::vec![#(#tags),*],
+            in_atx_heading: #in_atx_heading,
+            at_line_start: #at_line_start,
+            pending_open_tag: #pending,
+            untrusted: #cp::__private::vec![#(#untrusted),*],
+            untrusted_path_ref: #path_ref,
+        }
     }
 }
 

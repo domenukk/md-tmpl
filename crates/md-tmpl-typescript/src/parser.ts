@@ -26,6 +26,7 @@ import {
   tryMatchClosingTag,
   VALID_FILTERS,
   validateFilters,
+  withParseLocation,
 } from "./parser_utils.js";
 import { handleStatement } from "./statement_handlers.js";
 import {
@@ -212,21 +213,8 @@ export function parseNodes(
         pos = newPos;
       }
     } catch (err) {
-      if (
-        err instanceof TemplateSyntaxError &&
-        err.line === undefined &&
-        lineMap
-      ) {
-        const errPos = earliest !== Infinity ? earliest : pos;
-        const loc = getLoc(errPos, lineMap);
-        throw new TemplateSyntaxError(
-          err.message,
-          loc?.line,
-          loc?.column,
-          loc?.snippet,
-        );
-      }
-      throw err;
+      const errPos = earliest !== Infinity ? earliest : pos;
+      throw withParseLocation(err, errPos, lineMap);
     }
   }
 
@@ -403,20 +391,7 @@ export function parseBlockWithClosing(
       }
       pos = innerEnd;
     } catch (err) {
-      if (
-        err instanceof TemplateSyntaxError &&
-        err.line === undefined &&
-        lineMap
-      ) {
-        const loc = getLoc(earliest, lineMap);
-        throw new TemplateSyntaxError(
-          err.message,
-          loc?.line,
-          loc?.column,
-          loc?.snippet,
-        );
-      }
-      throw err;
+      throw withParseLocation(err, earliest, lineMap);
     }
   }
 

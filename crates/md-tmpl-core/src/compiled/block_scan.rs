@@ -262,6 +262,8 @@ pub(super) fn raw_body_ranges(input: &str) -> Result<Vec<Range<usize>>, Template
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::*;
 
     #[test]

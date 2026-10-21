@@ -115,15 +115,81 @@ fn err_to_cstring(msg: &str) -> *mut c_char {
 /// rendered output, so bindings can split on it unambiguously.
 const ERR_KIND_SEP: char = '\u{1f}';
 
-/// Allocate a C error string for a [`TemplateError`], prefixed with its stable
-/// kind id and [`ERR_KIND_SEP`], e.g. `"missing_params\u{1f}missing required
-/// parameter: name"`.
+/// Allocate a C error string for a [`TemplateError`]:
+/// `"<kind>\u{1f}<message>"`, followed by `"\u{1f}<details-json>"` when the error
+/// carries a structured payload, e.g.
+/// `"missing_params\u{1f}missing required parameters: name\u{1f}{\"missing\":[\"name\"]}"`.
 ///
-/// Bindings split on the separator to recover a machine-readable error kind
-/// alongside the human-readable message. Reuses [`err_to_cstring`] for the
-/// NUL-safe allocation.
+/// Bindings split on the separator to recover the machine-readable kind, the
+/// human-readable message, and the typed payload (see [`md_tmpl::ErrorDetails`]).
+/// The payload is JSON, so any separator byte inside it is escaped. Reuses
+/// [`err_to_cstring`] for the NUL-safe allocation.
 fn terr_to_cstring(e: &TemplateError) -> *mut c_char {
-    err_to_cstring(&format!("{}{}{}", e.kind().as_str(), ERR_KIND_SEP, e))
+    let mut out = format!("{}{}{}", e.kind().as_str(), ERR_KIND_SEP, e);
+    if let Some(details) = error_details_json(&e.details()) {
+        out.push(ERR_KIND_SEP);
+        out.push_str(&details);
+    }
+    err_to_cstring(&out)
+}
+
+/// Serialize an [`md_tmpl::ErrorDetails`] payload as a compact JSON object, or `None`
+/// when the error carries no payload. Keys match every binding's typed error fields.
+fn error_details_json(d: &md_tmpl::ErrorDetails<'_>) -> Option<String> {
+    use std::fmt::Write as _;
+
+    fn push_key(out: &mut String, key: &str) {
+        out.push(if out.is_empty() { '{' } else { ',' });
+        out.push('"');
+        out.push_str(key);
+        out.push_str("\":");
+    }
+    fn push_str(out: &mut String, key: &str, value: Option<&str>) {
+        if let Some(value) = value {
+            push_key(out, key);
+            out.push('"');
+            out.push_str(&md_tmpl::escape_json_str(value));
+            out.push('"');
+        }
+    }
+    fn push_list(out: &mut String, key: &str, values: &[String]) {
+        if values.is_empty() {
+            return;
+        }
+        push_key(out, key);
+        out.push('[');
+        for (i, value) in values.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push('"');
+            out.push_str(&md_tmpl::escape_json_str(value));
+            out.push('"');
+        }
+        out.push(']');
+    }
+
+    let mut out = String::new();
+    if let Some(line) = d.line {
+        push_key(&mut out, "line");
+        write!(out, "{line}").expect("write to String");
+    }
+    push_str(&mut out, "snippet", d.snippet);
+    push_str(&mut out, "variable", d.variable);
+    push_list(&mut out, "missing", d.missing);
+    push_list(&mut out, "extra", d.extra);
+    push_str(&mut out, "path", d.path);
+    push_str(&mut out, "expected", d.expected);
+    push_str(&mut out, "actual", d.actual);
+    push_str(&mut out, "filter", d.filter);
+    push_str(&mut out, "include", d.include);
+    push_str(&mut out, "details", d.details);
+    if out.is_empty() {
+        None
+    } else {
+        out.push('}');
+        Some(out)
+    }
 }
 
 // ---------------------------------------------------------------------------

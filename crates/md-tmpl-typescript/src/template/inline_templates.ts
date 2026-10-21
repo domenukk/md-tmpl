@@ -14,13 +14,13 @@ import {
   NODE_PANIC,
   NODE_TMPL,
 } from "../consts.js";
-import { TemplateSyntaxError } from "../errors.js";
+import { TemplateSyntaxError, UnknownFilterError } from "../errors.js";
 import {
   type VarDecl,
   type VarType,
   parseFrontmatter,
 } from "../frontmatter.js";
-import { nodeLoc } from "../ast.js";
+import { cloneNodes, getLoc, nodeLoc } from "../ast.js";
 import { type Node, parseBody } from "../parser.js";
 import { applySanitizeAstPass, type SanitizeSpec } from "../sanitize_pass.js";
 import { validateFrontmatter } from "../validation.js";
@@ -34,60 +34,6 @@ export interface InlineTemplateEntry {
   readonly nodes: readonly Node[];
   readonly consts: Map<string, Value>;
   readonly constsJs: Map<string, unknown>;
-}
-
-/** Deep-clone AST nodes so site-specific sanitization can mutate expressions independently. */
-function cloneNodes(nodes: readonly Node[]): Node[] {
-  return nodes.map((node): Node => {
-    switch (node.kind) {
-      case NODE_FOR:
-        return {
-          ...node,
-          body: cloneNodes(node.body),
-          elseBody: node.elseBody ? cloneNodes(node.elseBody) : undefined,
-        };
-      case NODE_IF:
-        return {
-          ...node,
-          branches: node.branches.map((b) => ({
-            ...b,
-            body: cloneNodes(b.body),
-          })),
-          elseBody: node.elseBody ? cloneNodes(node.elseBody) : undefined,
-        };
-      case NODE_MATCH:
-        return {
-          ...node,
-          arms: node.arms.map((a) => ({
-            ...a,
-            variants: [...a.variants],
-            body: cloneNodes(a.body),
-          })),
-          elseArm: node.elseArm ? cloneNodes(node.elseArm) : undefined,
-          inlineGuard: node.inlineGuard
-            ? {
-                ...node.inlineGuard,
-                body: cloneNodes(node.inlineGuard.body),
-              }
-            : undefined,
-        };
-      case NODE_PANIC:
-        return {
-          ...node,
-          body: cloneNodes(node.body),
-        };
-      case NODE_INCLUDE:
-        return {
-          ...node,
-          withMappings: new Map(node.withMappings),
-          inlineNodes: node.inlineNodes
-            ? cloneNodes(node.inlineNodes)
-            : undefined,
-        };
-      default:
-        return { ...node };
-    }
-  });
 }
 
 function bindInlineIncludes(
@@ -157,6 +103,49 @@ export function collectInlineTemplateNames(
 }
 
 /**
+ * Parse an inline template body, reporting syntax errors with **file-absolute**
+ * line numbers. The body is parsed with body-relative lines (no line map is built
+ * unless an error occurs); on error the line is shifted by the inline block's
+ * position in the file and the body's offset within the block (`bodyLine`, 1-based).
+ */
+function parseInlineBody(
+  n: Extract<Node, { kind: typeof NODE_TMPL }>,
+  body: string,
+  bodyLine: number,
+): Node[] {
+  try {
+    return parseBody(body, true);
+  } catch (err) {
+    if (
+      (err instanceof TemplateSyntaxError ||
+        err instanceof UnknownFilterError) &&
+      err.line !== undefined &&
+      n.sourcePos !== undefined
+    ) {
+      const sourceLine = getLoc(n.sourcePos, n.lineMap)?.line;
+      if (sourceLine !== undefined) {
+        const line = sourceLine + bodyLine - 1 + err.line - 1;
+        if (err instanceof UnknownFilterError) {
+          throw new UnknownFilterError(
+            err.filter,
+            line,
+            err.column,
+            err.snippet,
+          );
+        }
+        throw new TemplateSyntaxError(
+          err.baseMessage,
+          line,
+          err.column,
+          err.snippet,
+        );
+      }
+    }
+    throw err;
+  }
+}
+
+/**
  * Parse inline `{% tmpl name %}` blocks once, bind site-specific AST clones onto
  * matching `{% include name %}` nodes, and return the compiled inline map.
  */
@@ -208,7 +197,11 @@ export function collectInlineTemplateMap(
           inlineConstsJs.set(decl.name, valueToJs(decl.defaultValue));
         }
       }
-      const inlineNodes = parseBody(inlineBody, true);
+      const inlineNodes = parseInlineBody(
+        n,
+        inlineBody,
+        inlineFm.bodyStartLine ?? 1,
+      );
       applySanitizeAstPass(
         inlineNodes,
         inlineFm.paramSanitize,
@@ -227,7 +220,7 @@ export function collectInlineTemplateMap(
         sanitizeNotice: inlineFm.sanitizeNotice ?? parentSanitizeNotice,
       });
     } else {
-      const inlineNodes = parseBody(n.source, true);
+      const inlineNodes = parseInlineBody(n, n.source, 1);
       applySanitizeAstPass(inlineNodes, undefined, parentSanitizeNotice);
       rawEntries.set(n.name, {
         declarations: [],

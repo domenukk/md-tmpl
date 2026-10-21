@@ -699,10 +699,31 @@ interface ParsedTagSpec {
   readonly tagsLower: readonly string[];
 }
 
+/**
+ * Bounded memo for parsed tag specs. Specs come from compiled templates (a small,
+ * fixed set per process), so caching avoids re-splitting and lower-casing the same
+ * spec on every render; the cap keeps adversarial host input from growing it.
+ */
+const TAG_SPEC_CACHE = new Map<string, ParsedTagSpec>();
+const TAG_SPEC_CACHE_MAX = 256;
+
 function parseTagSpec(tagSpec: string | undefined): ParsedTagSpec | undefined {
   if (tagSpec === undefined) {
     return undefined;
   }
+  const cached = TAG_SPEC_CACHE.get(tagSpec);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const parsed = parseTagSpecUncached(tagSpec);
+  if (TAG_SPEC_CACHE.size >= TAG_SPEC_CACHE_MAX) {
+    TAG_SPEC_CACHE.clear();
+  }
+  TAG_SPEC_CACHE.set(tagSpec, parsed);
+  return parsed;
+}
+
+function parseTagSpecUncached(tagSpec: string): ParsedTagSpec {
   let firstCharMask = 0;
   const tagsLower: string[] = [];
   if (!tagSpec.includes(",")) {
@@ -923,14 +944,41 @@ export function sanitizeTokensWithArgs(s: string, tagArg?: string): string {
  * Rust `SanitizeFilterMode::Inline { enclosing_tags }`).
  */
 export function sanitizeEnclosedString(s: string, tagArg?: string): string {
-  const tags = tagArg === undefined ? "" : stripQuotes(tagArg);
-  if (tags.length === 0) {
+  if (tagArg === undefined) {
     return sanitizeTokensString(s);
   }
-  const sanitized = sanitizeUntrustedString(s, tags);
-  return tags.split(",").some((t) => t.trim() === INLINE_HEADING_SENTINEL)
-    ? collapseHeadingLineBreaks(sanitized)
-    : sanitized;
+  const spec = enclosedSpec(tagArg);
+  if (spec.tags.length === 0) {
+    return sanitizeTokensString(s);
+  }
+  const sanitized = sanitizeUntrustedString(s, spec.tags);
+  return spec.heading ? collapseHeadingLineBreaks(sanitized) : sanitized;
+}
+
+/** Decoded `sanitize#enclosed` argument: unquoted tag list + heading flag. */
+interface EnclosedSpec {
+  readonly tags: string;
+  readonly heading: boolean;
+}
+
+/** Bounded memo for decoded `sanitize#enclosed` arguments (see `TAG_SPEC_CACHE`). */
+const ENCLOSED_SPEC_CACHE = new Map<string, EnclosedSpec>();
+
+function enclosedSpec(tagArg: string): EnclosedSpec {
+  const cached = ENCLOSED_SPEC_CACHE.get(tagArg);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const tags = stripQuotes(tagArg);
+  const spec: EnclosedSpec = {
+    tags,
+    heading: tags.split(",").some((t) => t.trim() === INLINE_HEADING_SENTINEL),
+  };
+  if (ENCLOSED_SPEC_CACHE.size >= TAG_SPEC_CACHE_MAX) {
+    ENCLOSED_SPEC_CACHE.clear();
+  }
+  ENCLOSED_SPEC_CACHE.set(tagArg, spec);
+  return spec;
 }
 
 function applySanitizeTokens(value: Value, args: string | undefined): Value {

@@ -29,7 +29,12 @@ import {
   validateDisplayability,
   validateFrontmatter,
 } from "../validation.js";
-import { applySanitizeAstPass } from "../sanitize_pass.js";
+import {
+  applySanitizeAstPass,
+  checkUntrustedIncludePaths,
+  contextualizeIncludeNodes,
+} from "../sanitize_pass.js";
+import type { IncludeSanitizeContext } from "../ast.js";
 import {
   type Node,
   type RenderOptions,
@@ -351,6 +356,7 @@ export class Template implements ITemplate, TmplRef {
       this.fm.paramSanitize,
       this.fm.sanitizeNotice,
     );
+    checkUntrustedIncludePaths(this.nodes);
     this.canDirectValidateRender = canUseDirectValidatedRender(
       this.nodes,
       this.optionParams,
@@ -675,6 +681,7 @@ params:
     maxDepth: number,
     templateLoader?: unknown,
     basePath?: string,
+    sanitizeCtx?: IncludeSanitizeContext,
   ): string {
     // Merge parent consts with our own
     const mergedConsts = new Map<string, Value>(parentConsts);
@@ -710,7 +717,13 @@ params:
       opts.templateLoader = templateLoader as RenderOptions["templateLoader"];
       opts.currentBasePath = basePath;
     }
-    return renderNodes(this.nodes, scope, opts);
+    // Apply the include call-site sanitization context (untrusted taint, enclosing
+    // XML tags) to this template's body; memoized per (context, nodes).
+    return renderNodes(
+      contextualizeIncludeNodes(this.nodes, sanitizeCtx),
+      scope,
+      opts,
+    );
   }
 
   /** Convert this Template to a TmplValue for passing as a parameter. */

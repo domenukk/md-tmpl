@@ -7,6 +7,7 @@
 pub(crate) mod analysis;
 mod block_scan;
 mod blockquote;
+pub(crate) mod include_sanitize;
 mod inline;
 mod match_compile;
 pub mod render;
@@ -24,6 +25,10 @@ use alloc::{
 
 // Re-export submodule items used by the rest of the crate.
 pub use analysis::{collect_referenced_params, collect_unquoted_case_labels};
+pub use include_sanitize::{
+    IncludeContextMemo, IncludeSanitizeContext, apply_include_context,
+    check_untrusted_include_paths,
+};
 use match_compile::compile_match;
 #[cfg(feature = "std")]
 pub(crate) use render::register_loop_meta;
@@ -282,6 +287,11 @@ pub struct CompiledInclude {
     pub for_each: Option<WithVarPair>,
     /// Pre-compiled inline template body (for `{% tmpl %}` blocks).
     pub inline_compiled: Option<CompiledInlineTemplate>,
+    /// Sanitization context captured at this call site for includes resolved at render
+    /// time (untrusted `with` / `for` taint, enclosing XML tags, heading state).
+    pub sanitize_ctx: Option<Arc<IncludeSanitizeContext>>,
+    /// Per-call-site memo of contextualized child segments (see [`IncludeContextMemo`]).
+    pub memo: IncludeContextMemo,
 }
 
 // ---------------------------------------------------------------------------
@@ -328,7 +338,7 @@ pub fn compile_with_parent_scope(
         parent_type_aliases,
         parent_type_alias_sanitize,
     )?;
-    let mut segments = compile_body(&cleaned).map_err(|e| enrich_error(e, &cleaned))?;
+    let mut segments = compile_body(&cleaned)?;
     inline::bind_inline_includes(
         &mut segments,
         &inline_templates,
@@ -336,6 +346,48 @@ pub fn compile_with_parent_scope(
     );
     apply_enclosing_xml_tags(&mut segments);
     Ok((segments, inline_templates))
+}
+
+/// Attach a **file-absolute** line number to an error raised while compiling `body`,
+/// the template body that follows the frontmatter in `source`.
+///
+/// Errors that already carry a body-relative line (e.g. blockquote validation) are
+/// shifted by the number of lines preceding the body; other syntax errors are located
+/// by searching the body for the offending text. Runs only on the error path, so it
+/// has no cost for successful compiles.
+#[must_use]
+pub fn locate_error_in_source(err: TemplateError, source: &str, body: &str) -> TemplateError {
+    let offset = if source.ends_with(body) {
+        source.len() - body.len()
+    } else {
+        source.find(body).unwrap_or(0)
+    };
+    let base = source[..offset].bytes().filter(|&b| b == b'\n').count();
+    match enrich_error(err, &source[offset..]) {
+        TemplateError::Syntax(mut syn) => {
+            if let Some(line) = syn.line.as_mut() {
+                *line += base;
+            }
+            TemplateError::Syntax(syn)
+        }
+        other => other,
+    }
+}
+
+/// [`compile_with_parent_scope`] for a template `body` sliced from `source`, reporting
+/// compile errors with file-absolute line numbers (see [`locate_error_in_source`]).
+///
+/// # Errors
+///
+/// Returns [`TemplateError::Syntax`] on malformed tags or blocks.
+pub fn compile_source_body(
+    source: &str,
+    body: &str,
+    parent_type_aliases: &HashMap<String, crate::types::VarType>,
+    parent_type_alias_sanitize: &HashMap<String, HashMap<String, crate::types::SanitizeSpec>>,
+) -> Result<(Vec<Segment>, HashMap<String, CompiledInlineTemplate>), TemplateError> {
+    compile_with_parent_scope(body, parent_type_aliases, parent_type_alias_sanitize)
+        .map_err(|e| locate_error_in_source(e, source, body))
 }
 
 /// Compute 1-based line number for a byte offset into `source`.
@@ -403,6 +455,19 @@ pub(super) fn enrich_error(err: TemplateError, source: &str) -> TemplateError {
 /// Try to extract a searchable substring from an error message to locate
 /// the problematic text in the original source.
 fn extract_error_hint(msg: &str) -> Option<&str> {
+    // "... instead of '{% if x %}'" -> search for `{% if x %}`
+    if let Some(start) = msg.find(" instead of '")
+        && let Some(hint) = msg[start + " instead of '".len()..].strip_suffix('\'')
+        && !hint.is_empty()
+    {
+        return Some(hint);
+    }
+    // "filter 'lower' cannot follow 'quarantine': ..." -> search for `lower`
+    if let Some(inner) = msg.strip_prefix("filter '")
+        && let Some(end) = inner.find("' cannot follow '")
+    {
+        return Some(&inner[..end]);
+    }
     // "unclosed `{{`" -> search for `{{`
     if let Some(start) = msg.find('`') {
         let rest = &msg[start + 1..];
@@ -585,9 +650,15 @@ fn extract_comment_variable_refs(content: &str) -> Vec<Cow<'static, str>> {
 }
 
 /// Parse a pipe-separated filter chain string into [`ParsedFilter`]s.
+///
+/// # Errors
+/// Returns [`TemplateError::UnknownFilter`] for unknown filter names, and
+/// [`TemplateError::Syntax`] when a case-mapping or truncating filter follows a
+/// sanitizing filter (see [`check_post_sanitize_filter`]).
 fn parse_filter_chain(filter_chain: &str) -> Result<Vec<ParsedFilter>, TemplateError> {
     let mut filters = Vec::new();
     if !filter_chain.is_empty() {
+        let mut sanitizer: Option<&str> = None;
         for filter_str in crate::parser::split_filters_aware(filter_chain) {
             let filter_str = filter_str.trim();
             if filter_str.is_empty() {
@@ -595,10 +666,44 @@ fn parse_filter_chain(filter_chain: &str) -> Result<Vec<ParsedFilter>, TemplateE
             }
             let (name, args) = crate::filter::parse_filter(filter_str);
             let kind = parse_filter_kind(name)?;
+            check_post_sanitize_filter(sanitizer, kind, name)?;
+            if matches!(
+                kind,
+                FilterKind::Sanitize | FilterKind::SanitizeTokens | FilterKind::Quarantine
+            ) {
+                sanitizer = Some(name);
+            }
             filters.push(ParsedFilter::parse(kind, args)?);
         }
     }
     Ok(filters)
+}
+
+/// Reject `upper` / `lower` / `truncate` after a sanitizing filter
+/// (`sanitize`, `sanitize_tokens`, `quarantine`).
+///
+/// Case mapping can re-create control tokens that only exist in one case
+/// (e.g. `<TOOL_CALL>` → `<tool_call>`), and truncation can cut the closing
+/// boundary tag of a sanitized block, so these must run *before* sanitization.
+///
+/// # Errors
+/// Returns [`TemplateError::Syntax`] describing the required reordering.
+pub(crate) fn check_post_sanitize_filter(
+    sanitizer: Option<&str>,
+    kind: FilterKind,
+    name: &str,
+) -> Result<(), TemplateError> {
+    if let Some(sanitizer) = sanitizer
+        && matches!(
+            kind,
+            FilterKind::Upper | FilterKind::Lower | FilterKind::Truncate
+        )
+    {
+        return Err(TemplateError::syntax(format!(
+            "filter '{name}' cannot follow '{sanitizer}': case mapping or truncation after sanitization can re-create control tokens or cut boundary tags; apply '{name}' before '{sanitizer}'"
+        )));
+    }
+    Ok(())
 }
 
 /// Compile an expression tag into a `Segment::Expr`.
@@ -711,9 +816,9 @@ fn compile_for_loop<'a>(
 
     // Split body at {% else %} if present (respecting nesting).
     let (for_text, else_text) = block_scan::split_for_else(body_text)?;
-    let body = compile_body(for_text).map_err(|e| enrich_error(e, for_text))?;
+    let body = compile_body(for_text)?;
     let else_body = match else_text {
-        Some(text) => compile_body(text).map_err(|e| enrich_error(e, text))?,
+        Some(text) => compile_body(text)?,
         None => Vec::new(),
     };
 
@@ -745,14 +850,11 @@ fn compile_conditional<'a>(
         } else {
             analysis::parse_condition(cond_str)?
         };
-        branches.push((
-            cond,
-            compile_body(branch_body).map_err(|e| enrich_error(e, branch_body))?,
-        ));
+        branches.push((cond, compile_body(branch_body)?));
     }
 
     let else_body = match chain.else_body {
-        Some(text) => compile_body(text).map_err(|e| enrich_error(e, text))?,
+        Some(text) => compile_body(text)?,
         None => Vec::new(),
     };
 
@@ -799,6 +901,8 @@ fn compile_include<'a>(
             with_vars,
             for_each,
             inline_compiled: None,
+            sanitize_ctx: None,
+            memo: IncludeContextMemo::default(),
         }),
         after_tag,
     ))

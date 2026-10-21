@@ -15,6 +15,10 @@ import {
 } from "../errors.js";
 import { valueToJs } from "../value.js";
 import {
+  checkUntrustedIncludePath,
+  contextualizeIncludeNodes,
+} from "../sanitize_pass.js";
+import {
   EXPR_START,
   KW_RAW,
   MATCH_DEFAULT,
@@ -430,6 +434,7 @@ export function renderDirectNodes(
             `maximum include depth exceeded when including '${node.path ?? node.name}'`,
           );
         }
+        checkUntrustedIncludePath(node);
         let includedNodes: readonly Node[];
         const loadedConsts = new Map<string, unknown>(scope.allConsts());
         let decls: readonly VarDecl[];
@@ -449,7 +454,7 @@ export function renderDirectNodes(
             throw new IncludeNotFoundError(node.path);
           }
           const [lNodes, lConsts, lDecls, lBase, lInline] = loaded;
-          includedNodes = lNodes;
+          includedNodes = contextualizeIncludeNodes(lNodes, node.sanitizeCtx);
           decls = lDecls;
           for (const [k, v] of lConsts) {
             loadedConsts.set(k, v);
@@ -467,7 +472,9 @@ export function renderDirectNodes(
               `undefined inline template '${node.name}' (available: ${Array.from(options?.inlineTemplates?.keys() ?? []).join(", ")})`,
             );
           }
-          includedNodes = node.inlineNodes ?? inline.nodes;
+          includedNodes =
+            node.inlineNodes ??
+            contextualizeIncludeNodes(inline.nodes, node.sanitizeCtx);
           decls = inline.declarations;
           const inlineConsts = inline.constsJs ?? inline.consts;
           if (inlineConsts) {

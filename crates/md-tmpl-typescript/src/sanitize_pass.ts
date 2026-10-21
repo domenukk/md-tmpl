@@ -5,11 +5,11 @@
  * @module
  */
 
-import type { Node } from "./ast.js";
+import { type IncludeSanitizeContext, type Node, cloneNodes } from "./ast.js";
 import {
   BACKSLASH,
   COMMA,
-  DOT,
+  DEFAULT_QUARANTINE_TAG,
   FILTER_QUARANTINE,
   FILTER_SANITIZE,
   FILTER_SANITIZE_ENCLOSED,
@@ -23,11 +23,16 @@ import {
   NODE_RAW,
   NODE_TEXT,
   PIPE_SPACED,
-  PREFIX_PARAMS_DOT,
   QUOTE_DOUBLE,
   SANITIZE_KIND_INLINE,
 } from "./consts.js";
 import { splitPipes } from "./evaluator.js";
+import {
+  checkUntrustedIncludePaths,
+  computeIncludeTaint,
+  resolveCanonicalPath,
+  updateIncludeContext,
+} from "./include_sanitize.js";
 import {
   INLINE_HEADING_SENTINEL,
   parseFilter,
@@ -43,6 +48,10 @@ import {
 
 export * from "./sanitize_runtime.js";
 export * from "./sanitize_decl.js";
+export {
+  checkUntrustedIncludePath,
+  checkUntrustedIncludePaths,
+} from "./include_sanitize.js";
 
 const CHAR_TAB = 9;
 const CHAR_SPACE = 32;
@@ -86,23 +95,6 @@ function formatSanitizeSpecFilter(
     return `${FILTER_SANITIZE}(${quoteFilterArg(spec.tag)}, ${quoteFilterArg(effectiveNotice)})`;
   }
   return `${FILTER_SANITIZE}(${quoteFilterArg(spec.tag)})`;
-}
-
-function resolveCanonicalPath(
-  rawPath: string,
-  loopAliases: ReadonlyMap<string, string>,
-): string {
-  const trimmed = rawPath.trim();
-  const withoutParams = trimmed.startsWith(PREFIX_PARAMS_DOT)
-    ? trimmed.slice(PREFIX_PARAMS_DOT.length).trim()
-    : trimmed;
-  const dotIdx = withoutParams.indexOf(DOT);
-  const root = dotIdx === -1 ? withoutParams : withoutParams.slice(0, dotIdx);
-  const resolvedRoot = loopAliases.get(root) ?? root;
-  if (dotIdx === -1) {
-    return resolvedRoot;
-  }
-  return `${resolvedRoot}${withoutParams.slice(dotIdx)}`;
 }
 
 function mergeEnclosingTagsIntoSpec(
@@ -161,16 +153,22 @@ function rewriteExprForSanitize(
     const canonical = resolveCanonicalPath(baseExpr, loopAliases);
     const spec = paramSanitize.get(canonical);
     if (spec !== undefined) {
-      const alreadySanitized = filterStrings.some((f) => {
+      const hasTokenSanitize = filterStrings.some((f) => {
         const [fName] = parseFilter(f);
         return (
           fName === FILTER_SANITIZE ||
           fName === FILTER_SANITIZE_ENCLOSED ||
-          fName === FILTER_QUARANTINE ||
           fName === FILTER_SANITIZE_TOKENS
         );
       });
-      if (!alreadySanitized) {
+      const qIdx = filterStrings.findIndex(
+        (f) => parseFilter(f)[0] === FILTER_QUARANTINE,
+      );
+      if (qIdx !== -1) {
+        if (!hasTokenSanitize) {
+          filterStrings.splice(qIdx, 0, FILTER_SANITIZE_TOKENS);
+        }
+      } else if (!hasTokenSanitize) {
         filterStrings.push(formatSanitizeSpecFilter(spec, sanitizeNotice));
       }
     }
@@ -180,10 +178,22 @@ function rewriteExprForSanitize(
     return expr;
   }
 
-  // 2. Rewrite any `sanitize` filter for template-level `sanitizeNotice` and `openTags`
+  // 2. Rewrite any `sanitize` or `quarantine` filter for template-level `sanitizeNotice` and `openTags`
   let modified = filterStrings.length !== parts.length - 1;
   const updatedFilters = filterStrings.map((fStr) => {
     const [fName, fArgs] = parseFilter(fStr);
+    if (fName === FILTER_QUARANTINE) {
+      if (openTags.length > 0) {
+        const raw =
+          fArgs === undefined ? DEFAULT_QUARANTINE_TAG : stripQuotes(fArgs);
+        const merged = mergeEnclosingTagsIntoSpec(raw, openTags, false);
+        if (merged !== undefined && (fArgs === undefined || merged !== raw)) {
+          modified = true;
+          return `${FILTER_QUARANTINE}(${quoteFilterArg(merged)})`;
+        }
+      }
+      return fStr;
+    }
     if (fName === FILTER_SANITIZE_ENCLOSED) {
       // Re-run after include resolution: merge newly visible enclosing tags.
       const existingTags = fArgs === undefined ? undefined : stripQuotes(fArgs);
@@ -530,7 +540,7 @@ function applySanitizeNodesInner(
           headingState.inAtxHeading,
         );
         if (newExpr !== node.expr) {
-          nodes[i] = { ...node, expr: newExpr };
+          nodes[i] = { ...node, expr: newExpr, _compiled: undefined };
         }
         headingState.atLineStart = false;
         break;
@@ -666,11 +676,22 @@ function applySanitizeNodesInner(
         break;
       }
       case NODE_INCLUDE: {
+        const taint =
+          paramSanitize !== undefined && paramSanitize.size > 0
+            ? computeIncludeTaint(
+                node,
+                paramSanitize,
+                sanitizeNotice,
+                loopAliases,
+              )
+            : undefined;
         if (node.inlineNodes) {
           const includeTags = [...openTags];
           applySanitizeNodesInner(
             node.inlineNodes,
-            undefined,
+            taint !== undefined && taint.entries.length > 0
+              ? new Map(taint.entries)
+              : undefined,
             undefined,
             closingTags,
             new Map(),
@@ -678,6 +699,17 @@ function applySanitizeNodesInner(
             { ...headingState },
             pendingTag,
           );
+        } else {
+          const ctx = updateIncludeContext(
+            node.sanitizeCtx,
+            taint,
+            openTags,
+            headingState,
+            pendingTag,
+          );
+          if (ctx !== node.sanitizeCtx) {
+            nodes[i] = { ...node, sanitizeCtx: ctx };
+          }
         }
         headingState.atLineStart = false;
         break;
@@ -689,56 +721,63 @@ function applySanitizeNodesInner(
   return pendingTag;
 }
 
-function nodesContainSanitizeFilter(nodes: readonly Node[]): boolean {
+/**
+ * Returns `true` if `nodes` contain a `sanitize` / `quarantine` filter or an include
+ * resolved at render time (whose call-site enclosing state must be recorded).
+ */
+function nodesNeedEnclosingPass(nodes: readonly Node[]): boolean {
   for (const node of nodes) {
     switch (node.kind) {
       case NODE_EXPR:
-        if (node.expr.includes(FILTER_SANITIZE)) return true;
+        if (
+          node.expr.includes(FILTER_SANITIZE) ||
+          node.expr.includes(FILTER_QUARANTINE)
+        )
+          return true;
         break;
       case NODE_FOR:
         if (
-          nodesContainSanitizeFilter(node.body) ||
-          (node.elseBody !== undefined &&
-            nodesContainSanitizeFilter(node.elseBody))
+          nodesNeedEnclosingPass(node.body) ||
+          (node.elseBody !== undefined && nodesNeedEnclosingPass(node.elseBody))
         ) {
           return true;
         }
         break;
       case NODE_IF:
         for (const branch of node.branches) {
-          if (nodesContainSanitizeFilter(branch.body)) return true;
+          if (nodesNeedEnclosingPass(branch.body)) return true;
         }
         if (
           node.elseBody !== undefined &&
-          nodesContainSanitizeFilter(node.elseBody)
+          nodesNeedEnclosingPass(node.elseBody)
         ) {
           return true;
         }
         break;
       case NODE_MATCH:
         for (const arm of node.arms) {
-          if (nodesContainSanitizeFilter(arm.body)) return true;
+          if (nodesNeedEnclosingPass(arm.body)) return true;
         }
         if (
           node.elseArm !== undefined &&
-          nodesContainSanitizeFilter(node.elseArm)
+          nodesNeedEnclosingPass(node.elseArm)
         ) {
           return true;
         }
         if (
           node.inlineGuard !== undefined &&
-          nodesContainSanitizeFilter(node.inlineGuard.body)
+          nodesNeedEnclosingPass(node.inlineGuard.body)
         ) {
           return true;
         }
         break;
       case NODE_PANIC:
-        if (nodesContainSanitizeFilter(node.body)) return true;
+        if (nodesNeedEnclosingPass(node.body)) return true;
         break;
       case NODE_INCLUDE:
         if (
-          node.inlineNodes !== undefined &&
-          nodesContainSanitizeFilter(node.inlineNodes)
+          node.inlineNodes === undefined ||
+          nodesNeedEnclosingPass(node.inlineNodes)
         ) {
           return true;
         }
@@ -763,7 +802,7 @@ export function applySanitizeAstPass(
 ): void {
   if (
     (paramSanitize === undefined || paramSanitize.size === 0) &&
-    !nodesContainSanitizeFilter(nodes)
+    !nodesNeedEnclosingPass(nodes)
   ) {
     return;
   }
@@ -780,4 +819,78 @@ export function applySanitizeAstPass(
     openTags,
     { inAtxHeading: false, atLineStart: true },
   );
+}
+
+/**
+ * Apply a call-site sanitization context to freshly parsed child `nodes` in place.
+ */
+export function applyIncludeContext(
+  nodes: Node[],
+  ctx: IncludeSanitizeContext,
+): void {
+  const untrusted =
+    ctx.untrusted.length > 0
+      ? new Map<string, SanitizeSpec>(ctx.untrusted)
+      : undefined;
+  if (untrusted === undefined && !nodesNeedEnclosingPass(nodes)) {
+    return;
+  }
+  const closingTags = new Set<string>();
+  collectClosingXmlTags(nodes, closingTags);
+  applySanitizeNodesInner(
+    nodes,
+    untrusted,
+    undefined,
+    closingTags,
+    new Map(),
+    [...ctx.enclosingTags],
+    { inAtxHeading: ctx.inAtxHeading, atLineStart: ctx.atLineStart },
+    ctx.pendingOpenTag,
+  );
+}
+
+/** Per-context memo: call-site context → (child nodes → contextualized clone). */
+const contextualizedMemo = new WeakMap<
+  IncludeSanitizeContext,
+  WeakMap<readonly Node[], readonly Node[]>
+>();
+
+/**
+ * Return the child nodes to render for an include call site carrying `ctx`.
+ *
+ * The child is cloned and re-run through the sanitize pass with the call-site context
+ * (untrusted taint, enclosing XML tags, heading state). Results are memoized per
+ * `(ctx, nodes)` pair via weak maps, so repeated renders reuse the same clone and
+ * nothing is retained once the template or child is dropped.
+ *
+ * @throws {TemplateSyntaxError} if a nested include path interpolates an untrusted value.
+ */
+export function contextualizeIncludeNodes(
+  nodes: readonly Node[],
+  ctx: IncludeSanitizeContext | undefined,
+): readonly Node[] {
+  if (ctx === undefined) {
+    return nodes;
+  }
+  let perCtx = contextualizedMemo.get(ctx);
+  if (perCtx === undefined) {
+    perCtx = new WeakMap();
+    contextualizedMemo.set(ctx, perCtx);
+  }
+  const hit = perCtx.get(nodes);
+  if (hit !== undefined) {
+    return hit;
+  }
+  let derived: readonly Node[];
+  if (ctx.untrusted.length === 0 && !nodesNeedEnclosingPass(nodes)) {
+    // Nothing to rewrite: memoize the child itself so the tree walk runs once.
+    derived = nodes;
+  } else {
+    const cloned = cloneNodes(nodes);
+    applyIncludeContext(cloned, ctx);
+    checkUntrustedIncludePaths(cloned);
+    derived = cloned;
+  }
+  perCtx.set(nodes, derived);
+  return derived;
 }

@@ -375,9 +375,46 @@ export const VALID_FILTERS = new Set([
   "truncate_middle",
 ]);
 
+/** Filters that sanitize their input (control tokens / boundary tags). */
+const SANITIZING_FILTERS: ReadonlySet<string> = new Set([
+  "sanitize",
+  "sanitize_tokens",
+  "quarantine",
+]);
+
+/**
+ * Filters that must not follow a sanitizing filter: case mapping can re-create
+ * control tokens that only exist in one case (e.g. `<TOOL_CALL>` → `<tool_call>`),
+ * and truncation can cut the closing boundary tag of a sanitized block.
+ */
+const POST_SANITIZE_FORBIDDEN: ReadonlySet<string> = new Set([
+  "upper",
+  "lower",
+  "truncate",
+  "truncate_middle",
+]);
+
+/**
+ * Reject `upper` / `lower` / `truncate` after a sanitizing filter (mirrors the Rust
+ * `check_post_sanitize_filter`).
+ *
+ * @throws {TemplateSyntaxError} describing the required reordering.
+ */
+export function checkPostSanitizeFilter(
+  sanitizer: string | undefined,
+  filterName: string,
+): void {
+  if (sanitizer !== undefined && POST_SANITIZE_FORBIDDEN.has(filterName)) {
+    throw new TemplateSyntaxError(
+      `filter '${filterName}' cannot follow '${sanitizer}': case mapping or truncation after sanitization can re-create control tokens or cut boundary tags; apply '${filterName}' before '${sanitizer}'`,
+    );
+  }
+}
+
 export function validateFilters(expr: string): void {
   if (expr.includes(PIPE)) {
     const parts = splitPipes(expr);
+    let sanitizer: string | undefined;
     for (let i = 1; i < parts.length; i++) {
       const part = parts[i];
       if (part === undefined) continue;
@@ -386,6 +423,10 @@ export function validateFilters(expr: string): void {
       const [filterName, rawArg] = parseFilter(filterStr);
       if (!VALID_FILTERS.has(filterName)) {
         throw new UnknownFilterError(filterName);
+      }
+      checkPostSanitizeFilter(sanitizer, filterName);
+      if (SANITIZING_FILTERS.has(filterName)) {
+        sanitizer = filterName;
       }
       if (filterName === "sanitize") {
         parseSanitizeFilterArgs(rawArg);
@@ -549,6 +590,40 @@ export function findBlockEnd(
   return input.length;
 }
 
+/**
+ * Attach the file-absolute location of the tag starting at `errPos` to a
+ * location-less syntax or unknown-filter error raised while parsing it.
+ */
+export function withParseLocation(
+  err: unknown,
+  errPos: number,
+  lineMap: LineMapSource | undefined,
+): unknown {
+  if (
+    lineMap === undefined ||
+    !(err instanceof TemplateSyntaxError) ||
+    err.line !== undefined
+  ) {
+    return err;
+  }
+  const loc = getLoc(errPos, lineMap);
+  // `UnknownFilterError` subclasses `TemplateSyntaxError`: keep its type.
+  if (err instanceof UnknownFilterError) {
+    return new UnknownFilterError(
+      err.filter,
+      loc?.line,
+      loc?.column,
+      loc?.snippet,
+    );
+  }
+  return new TemplateSyntaxError(
+    err.baseMessage,
+    loc?.line,
+    loc?.column,
+    loc?.snippet,
+  );
+}
+
 export function parseInlineContent(
   input: string,
   from: number,
@@ -585,15 +660,22 @@ export function parseInlineContent(
     if (earliest === commentIdx) {
       const endComment = input.indexOf("#}", commentIdx + 2);
       if (endComment === -1 || endComment >= to) {
-        throw new TemplateSyntaxError("unclosed comment {#");
+        throw withParseLocation(
+          new TemplateSyntaxError("unclosed comment {#"),
+          commentIdx,
+          lineMap,
+        );
       }
       nodes.push({ kind: NODE_COMMENT });
       pos = endComment + 2;
     } else {
-      const [expr, endPos, trimBefore, trimAfter] = parseExpression(
-        input,
-        exprIdx,
-      );
+      let parsed: [string, number, boolean, boolean];
+      try {
+        parsed = parseExpression(input, exprIdx);
+      } catch (err) {
+        throw withParseLocation(err, exprIdx, lineMap);
+      }
+      const [expr, endPos, trimBefore, trimAfter] = parsed;
       nodes.push({
         kind: NODE_EXPR,
         expr,

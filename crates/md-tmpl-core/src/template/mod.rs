@@ -398,13 +398,18 @@ impl Template {
             frontmatter::parse_frontmatter_with_env(source, env_values)?
         };
         let body = body.to_string();
-        let (mut segments, inline_templates) =
-            compiled::compile_with_parent_scope(&body, &fm.type_aliases, &fm.type_alias_sanitize)?;
+        let (mut segments, inline_templates) = compiled::compile_source_body(
+            source,
+            &body,
+            &fm.type_aliases,
+            &fm.type_alias_sanitize,
+        )?;
         compiled::apply_frontmatter_sanitization(
             &mut segments,
             &fm.param_sanitize,
             fm.sanitize_notice.as_deref(),
         );
+        compiled::check_untrusted_include_paths(&segments)?;
 
         // --- Static analysis ---
         run_static_analysis(&segments, &fm, &inline_templates, force_allow_unused)?;
@@ -470,13 +475,18 @@ impl Template {
         let source_hash = hash_source_no_std(source);
         let (fm, body) = frontmatter::parse_frontmatter_with_env(source, env_values)?;
         let body = body.to_string();
-        let (mut segments, inline_templates) =
-            compiled::compile_with_parent_scope(&body, &fm.type_aliases, &fm.type_alias_sanitize)?;
+        let (mut segments, inline_templates) = compiled::compile_source_body(
+            source,
+            &body,
+            &fm.type_aliases,
+            &fm.type_alias_sanitize,
+        )?;
         compiled::apply_frontmatter_sanitization(
             &mut segments,
             &fm.param_sanitize,
             fm.sanitize_notice.as_deref(),
         );
+        compiled::check_untrusted_include_paths(&segments)?;
 
         run_static_analysis(&segments, &fm, &inline_templates, force_allow_unused)?;
 
@@ -790,7 +800,9 @@ impl Template {
         &self.declared_variables
     }
 
-    pub(crate) fn segments(&self) -> &[crate::compiled::Segment] {
+    /// Shared handle to the compiled segments (used to memoize per-include-site
+    /// contextualized copies by identity).
+    pub(crate) fn segments_arc(&self) -> &Arc<[crate::compiled::Segment]> {
         &self.segments
     }
 
@@ -1046,6 +1058,8 @@ mod escape_and_newline_tests;
 mod higher_order_tests;
 #[cfg(all(test, feature = "std"))]
 mod hot_reload_tests;
+#[cfg(all(test, feature = "std"))]
+mod include_sanitize_tests;
 #[cfg(all(test, feature = "std"))]
 mod inline_edge_tests;
 #[cfg(all(test, feature = "std"))]

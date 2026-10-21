@@ -149,6 +149,8 @@ fn same_name_different_content_both_type_checked() {
             consts: std::sync::Arc::new(crate::compat::HashMap::new()),
             imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
+        sanitize_ctx: None,
+        memo: crate::compiled::IncludeContextMemo::default(),
     };
     let inc2 = CompiledInclude {
         path: std::borrow::Cow::Borrowed("helper"),
@@ -173,6 +175,8 @@ fn same_name_different_content_both_type_checked() {
             consts: std::sync::Arc::new(crate::compat::HashMap::new()),
             imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
+        sanitize_ctx: None,
+        memo: crate::compiled::IncludeContextMemo::default(),
     };
 
     let parent_decls = vec![str_decl("a"), str_decl("b")];
@@ -212,6 +216,8 @@ fn same_arc_deduplicates_body_walk() {
             consts: std::sync::Arc::new(crate::compat::HashMap::new()),
             imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
+        sanitize_ctx: None,
+        memo: crate::compiled::IncludeContextMemo::default(),
     };
     let inc2 = CompiledInclude {
         path: std::borrow::Cow::Borrowed("shared.tmpl.md"),
@@ -226,6 +232,8 @@ fn same_arc_deduplicates_body_walk() {
             consts: std::sync::Arc::new(crate::compat::HashMap::new()),
             imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
+        sanitize_ctx: None,
+        memo: crate::compiled::IncludeContextMemo::default(),
     };
 
     let parent_decls = vec![str_decl("a"), str_decl("b")];
@@ -248,6 +256,8 @@ fn include_no_inline_compiled_validates_parent_paths() {
         )],
         for_each: None,
         inline_compiled: None, // Not resolved
+        sanitize_ctx: None,
+        memo: crate::compiled::IncludeContextMemo::default(),
     };
     let parent_decls = vec![str_decl("a")]; // 'ghost' is NOT declared
     let segments = vec![Segment::Include(inc)];
@@ -272,6 +282,8 @@ fn include_no_inline_compiled_skips_contract() {
         with_vars: vec![],
         for_each: None,
         inline_compiled: None,
+        sanitize_ctx: None,
+        memo: crate::compiled::IncludeContextMemo::default(),
     };
     let parent_decls = vec![str_decl("a")];
     let segments = vec![Segment::Include(inc)];
@@ -396,6 +408,8 @@ fn same_template_different_sites() {
             consts: std::sync::Arc::new(crate::compat::HashMap::new()),
             imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
+        sanitize_ctx: None,
+        memo: crate::compiled::IncludeContextMemo::default(),
     };
     // Site 2: msg=my_int (int→str, ERROR)
     let inc2 = CompiledInclude {
@@ -411,6 +425,8 @@ fn same_template_different_sites() {
             consts: std::sync::Arc::new(crate::compat::HashMap::new()),
             imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
+        sanitize_ctx: None,
+        memo: crate::compiled::IncludeContextMemo::default(),
     };
 
     let parent_decls = vec![str_decl("my_str"), int_decl("my_int")];
@@ -554,6 +570,8 @@ fn nested_include_grandchild_type_error() {
             consts: std::sync::Arc::new(crate::compat::HashMap::new()),
             imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
+        sanitize_ctx: None,
+        memo: crate::compiled::IncludeContextMemo::default(),
     };
 
     let child_segments: Arc<[Segment]> = Arc::from(vec![
@@ -578,6 +596,8 @@ fn nested_include_grandchild_type_error() {
             consts: std::sync::Arc::new(crate::compat::HashMap::new()),
             imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
+        sanitize_ctx: None,
+        memo: crate::compiled::IncludeContextMemo::default(),
     };
 
     let parent_decls = vec![str_decl("parent_msg")];

@@ -34,13 +34,7 @@ pub(super) fn render_include(
     };
 
     // Depth tracking is handled inside resolve_include.
-    crate::include::resolve_include_into(
-        &directive,
-        scope,
-        base_dir,
-        inc.inline_compiled.as_ref(),
-        output,
-    )
+    crate::include::resolve_include_into(&directive, scope, base_dir, Some(inc), output)
 }
 
 /// Render a compiled include directive under `no_std`.
@@ -59,6 +53,7 @@ pub(super) fn render_include_no_std(
     scope: &mut Scope<'_>,
     output: &mut String,
 ) -> Result<(), TemplateError> {
+    crate::compiled::include_sanitize::check_untrusted_include_path(inc)?;
     scope.enter_include()?;
 
     let result = render_include_no_std_inner(inc, scope, output);
@@ -116,9 +111,11 @@ fn render_include_no_std_inner(
 
     // 1. Inline templates from the current scope.
     if let Some(compiled) = scope.get_inline_template(directive.path).cloned() {
+        let segments =
+            crate::compiled::include_sanitize::contextualized_segments(inc, &compiled.segments)?;
         scope.push_consts_arc(&compiled.consts, &compiled.imported_consts);
         let result = validate_and_render_no_std(
-            &compiled.segments,
+            &segments,
             &compiled.declarations,
             &directive,
             scope,
@@ -136,16 +133,13 @@ fn render_include_no_std_inner(
         )));
     };
     let tmpl = tmpl.clone();
+    let segments =
+        crate::compiled::include_sanitize::contextualized_segments(inc, tmpl.segments_arc())?;
     scope.push_inline_templates(tmpl.inline_templates().clone());
     scope.push_consts_arc(&tmpl.consts(), &tmpl.imported_consts());
 
-    let result = validate_and_render_no_std(
-        tmpl.segments(),
-        tmpl.declarations(),
-        &directive,
-        scope,
-        output,
-    );
+    let result =
+        validate_and_render_no_std(&segments, tmpl.declarations(), &directive, scope, output);
 
     scope.pop_consts();
     scope.pop_inline_templates();

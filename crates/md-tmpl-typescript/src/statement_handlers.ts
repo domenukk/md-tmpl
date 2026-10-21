@@ -645,7 +645,19 @@ function handleTmpl(
     afterTag,
     findBlockEnd(input, afterTag, KW_END_TMPL),
   );
-  return [[{ kind: NODE_TMPL, name, source, pos: tagStart, lineMap }], endPos];
+  return [
+    [
+      {
+        kind: NODE_TMPL,
+        name,
+        source,
+        sourcePos: afterTag,
+        pos: tagStart,
+        lineMap,
+      },
+    ],
+    endPos,
+  ];
 }
 
 function handlePanic(

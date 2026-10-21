@@ -489,6 +489,18 @@ var pt.ErrDeclarationsMutated, pt.ErrPanic, pt.ErrIO
 // Example:
 _, err := tmpl.RenderMap(map[string]any{"extra": 1})
 if errors.Is(err, pt.ErrExtraParams) { /* handle undeclared params */ }
+
+// *TemplateError also carries the typed payload of its kind — no message
+// parsing needed (same fields as the Python/TypeScript/WASM errors):
+var te *pt.TemplateError
+if errors.As(err, &te) {
+    switch te.Kind {
+    case pt.KindSyntax:       fmt.Println(te.Line, te.Snippet) // file-absolute line
+    case pt.KindMissingParams: fmt.Println(te.Missing)
+    case pt.KindExtraParams:   fmt.Println(te.Extra)
+    case pt.KindTypeMismatch:  fmt.Println(te.Path, te.Expected, te.Actual)
+    }
+}
 ```
 
 ## Performance

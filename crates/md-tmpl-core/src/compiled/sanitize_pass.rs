@@ -116,12 +116,29 @@ impl EnclosingScanState {
 /// Scan `segments` for enclosing XML tags and ATX Markdown heading contexts around
 /// `FilterKind::Sanitize` expressions and merge them into each filter's [`SanitizeFilterMode`].
 pub fn apply_enclosing_xml_tags(segments: &mut [Segment]) {
-    if !has_any_sanitize_filter(segments) {
+    apply_enclosing_xml_tags_from(segments, &[], false, true, None);
+}
+
+/// Like [`apply_enclosing_xml_tags`], but starts the scan from an include call site's
+/// enclosing state (tags already open in the including template, heading/line state).
+pub(super) fn apply_enclosing_xml_tags_from(
+    segments: &mut [Segment],
+    open_tags: &[String],
+    in_atx_heading: bool,
+    at_line_start: bool,
+    pending_open_tag: Option<&str>,
+) {
+    if !needs_enclosing_pass(segments) {
         return;
     }
     let mut closing_tags = HashSet::new();
     collect_closing_xml_tags(segments, &mut closing_tags);
-    let mut state = EnclosingScanState::default();
+    let mut state = EnclosingScanState {
+        open_tags: open_tags.to_vec(),
+        pending_open_tag: pending_open_tag.map(ToString::to_string),
+        in_atx_heading,
+        at_line_start,
+    };
     propagate_enclosing_xml_tags(segments, &closing_tags, &mut state);
 }
 
@@ -144,18 +161,23 @@ pub fn apply_frontmatter_sanitization(
     apply_enclosing_xml_tags(segments);
 }
 
-fn has_any_sanitize_filter(segments: &[Segment]) -> bool {
+/// Returns `true` if `segments` contain a `sanitize` / `quarantine` filter or an include
+/// resolved at render time (whose call-site enclosing state must be recorded).
+pub(super) fn needs_enclosing_pass(segments: &[Segment]) -> bool {
     for seg in segments {
         match seg {
             Segment::Expr { filters, .. } => {
-                if filters.iter().any(|f| f.kind == FilterKind::Sanitize) {
+                if filters
+                    .iter()
+                    .any(|f| matches!(f.kind, FilterKind::Sanitize | FilterKind::Quarantine))
+                {
                     return true;
                 }
             }
             Segment::ForLoop {
                 body, else_body, ..
             } => {
-                if has_any_sanitize_filter(body) || has_any_sanitize_filter(else_body) {
+                if needs_enclosing_pass(body) || needs_enclosing_pass(else_body) {
                     return true;
                 }
             }
@@ -163,29 +185,30 @@ fn has_any_sanitize_filter(segments: &[Segment]) -> bool {
                 branches,
                 else_body,
             } => {
-                if branches.iter().any(|(_, b)| has_any_sanitize_filter(b))
-                    || has_any_sanitize_filter(else_body)
+                if branches.iter().any(|(_, b)| needs_enclosing_pass(b))
+                    || needs_enclosing_pass(else_body)
                 {
                     return true;
                 }
             }
             Segment::Match { arms, .. } => {
-                if arms.iter().any(|arm| has_any_sanitize_filter(&arm.body)) {
+                if arms.iter().any(|arm| needs_enclosing_pass(&arm.body)) {
                     return true;
                 }
             }
             Segment::Panic(inner) => {
-                if has_any_sanitize_filter(inner) {
+                if needs_enclosing_pass(inner) {
                     return true;
                 }
             }
-            Segment::Include(inc) => {
-                if let Some(ic) = &inc.inline_compiled
-                    && has_any_sanitize_filter(&ic.segments)
-                {
-                    return true;
+            Segment::Include(inc) => match &inc.inline_compiled {
+                Some(ic) => {
+                    if needs_enclosing_pass(&ic.segments) {
+                        return true;
+                    }
                 }
-            }
+                None => return true,
+            },
             Segment::Static(_) | Segment::Raw(_) | Segment::Comment(_) => {}
         }
     }
@@ -450,6 +473,20 @@ fn attach_open_tags_to_filters(
         return;
     }
     for f in filters {
+        if f.kind == FilterKind::Quarantine {
+            if !open_tags.is_empty() {
+                let raw = f
+                    .args
+                    .as_deref()
+                    .map_or(crate::filter::DEFAULT_QUARANTINE_TAG, |a| {
+                        a.trim().trim_matches(['"', '\''])
+                    });
+                if let Some(merged) = merge_enclosing_tags_into_spec(Some(raw), open_tags, false) {
+                    f.args = Some(Cow::Owned(merged));
+                }
+            }
+            continue;
+        }
         if f.kind != FilterKind::Sanitize {
             continue;
         }
@@ -529,6 +566,14 @@ fn propagate_enclosing_xml_tags(
                         alloc::sync::Arc::make_mut(&mut ic.segments),
                         closing_tags,
                     );
+                } else {
+                    super::include_sanitize::record_enclosing(
+                        inc,
+                        &state.open_tags,
+                        state.in_atx_heading,
+                        state.at_line_start,
+                        state.pending_open_tag.as_deref(),
+                    );
                 }
             }
             Segment::Raw(text) => {
@@ -541,6 +586,29 @@ fn propagate_enclosing_xml_tags(
             Segment::Comment(_) => {}
         }
     }
+}
+
+/// Propagate a declarative `param_sanitize` policy onto `segments` (no loop aliases in scope).
+pub(super) fn propagate_param_sanitization(
+    segments: &mut [Segment],
+    param_sanitize: &HashMap<String, SanitizeSpec>,
+    sanitize_notice: Option<&str>,
+) {
+    let mut loop_aliases = HashMap::new();
+    propagate_frontmatter_sanitization_inner(
+        segments,
+        param_sanitize,
+        sanitize_notice,
+        &mut loop_aliases,
+    );
+}
+
+/// Canonical (loop-alias resolved, `params.`-stripped) dot path for `path`.
+pub(super) fn canonical_path(
+    path: &CompiledPath,
+    loop_aliases: &HashMap<String, String>,
+) -> String {
+    resolve_canonical_path(path, loop_aliases)
 }
 
 fn resolve_canonical_path(path: &CompiledPath, loop_aliases: &HashMap<String, String>) -> String {
@@ -577,13 +645,25 @@ fn apply_sanitize_to_path_filters(
 ) {
     let canonical = resolve_canonical_path(path, loop_aliases);
     if let Some(spec) = param_sanitize.get(&canonical) {
-        let already_sanitized = filters.iter().any(|f| {
-            matches!(
-                f.kind,
-                FilterKind::Sanitize | FilterKind::Quarantine | FilterKind::SanitizeTokens
-            )
-        });
-        if !already_sanitized {
+        let has_token_sanitize = filters
+            .iter()
+            .any(|f| matches!(f.kind, FilterKind::Sanitize | FilterKind::SanitizeTokens));
+        if let Some(q_idx) = filters
+            .iter()
+            .position(|f| f.kind == FilterKind::Quarantine)
+        {
+            if !has_token_sanitize {
+                filters.insert(
+                    q_idx,
+                    ParsedFilter {
+                        kind: FilterKind::SanitizeTokens,
+                        args: None,
+                        parsed_num: None,
+                        sanitize_mode: None,
+                    },
+                );
+            }
+        } else if !has_token_sanitize {
             filters.push(ParsedFilter::from_sanitize_spec(spec, sanitize_notice));
         }
     }
@@ -669,6 +749,37 @@ fn propagate_operand_sanitization(
     }
 }
 
+/// Propagate declarative sanitization into a for-loop body (with `binding` aliased to the
+/// canonical list path) and its `else` body.
+fn propagate_for_loop_sanitization(
+    binding: &str,
+    list_expr: &CompiledExpr,
+    body: &mut [Segment],
+    else_body: &mut [Segment],
+    param_sanitize: &HashMap<String, SanitizeSpec>,
+    sanitize_notice: Option<&str>,
+    loop_aliases: &mut HashMap<String, String>,
+) {
+    let prev = if let CompiledExpr::Path(list_path) = list_expr {
+        let canonical_list = resolve_canonical_path(list_path, loop_aliases);
+        loop_aliases.insert(binding.to_string(), canonical_list)
+    } else {
+        None
+    };
+    propagate_frontmatter_sanitization_inner(body, param_sanitize, sanitize_notice, loop_aliases);
+    if let Some(old) = prev {
+        loop_aliases.insert(binding.to_string(), old);
+    } else {
+        loop_aliases.remove(binding);
+    }
+    propagate_frontmatter_sanitization_inner(
+        else_body,
+        param_sanitize,
+        sanitize_notice,
+        loop_aliases,
+    );
+}
+
 fn propagate_frontmatter_sanitization_inner(
     segments: &mut [Segment],
     param_sanitize: &HashMap<String, SanitizeSpec>,
@@ -696,31 +807,15 @@ fn propagate_frontmatter_sanitization_inner(
                 body,
                 else_body,
                 ..
-            } => {
-                let prev = if let CompiledExpr::Path(list_path) = list_expr {
-                    let canonical_list = resolve_canonical_path(list_path, loop_aliases);
-                    loop_aliases.insert(binding.to_string(), canonical_list)
-                } else {
-                    None
-                };
-                propagate_frontmatter_sanitization_inner(
-                    body,
-                    param_sanitize,
-                    sanitize_notice,
-                    loop_aliases,
-                );
-                if let Some(old) = prev {
-                    loop_aliases.insert(binding.to_string(), old);
-                } else {
-                    loop_aliases.remove(binding.as_ref());
-                }
-                propagate_frontmatter_sanitization_inner(
-                    else_body,
-                    param_sanitize,
-                    sanitize_notice,
-                    loop_aliases,
-                );
-            }
+            } => propagate_for_loop_sanitization(
+                binding,
+                list_expr,
+                body,
+                else_body,
+                param_sanitize,
+                sanitize_notice,
+                loop_aliases,
+            ),
             Segment::If {
                 branches,
                 else_body,
@@ -772,7 +867,15 @@ fn propagate_frontmatter_sanitization_inner(
                     loop_aliases,
                 );
             }
-            Segment::Static(_) | Segment::Raw(_) | Segment::Include(_) | Segment::Comment(_) => {}
+            Segment::Include(inc) => {
+                super::include_sanitize::propagate_include_taint(
+                    inc,
+                    param_sanitize,
+                    sanitize_notice,
+                    loop_aliases,
+                );
+            }
+            Segment::Static(_) | Segment::Raw(_) | Segment::Comment(_) => {}
         }
     }
 }

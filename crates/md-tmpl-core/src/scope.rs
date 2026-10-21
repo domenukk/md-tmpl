@@ -11,8 +11,8 @@ use alloc::{
     vec::Vec,
 };
 
-pub(crate) use expr::parse_function_call;
 pub use expr::{CompiledExpr, CompiledPath, ConditionOperand};
+pub(crate) use expr::{parse_function_call, parse_number_literal};
 
 use crate::{
     compat::HashMap, compiled::CompiledInlineTemplate, context::Context, error::TemplateError,

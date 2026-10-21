@@ -1,0 +1,285 @@
+# Shared feature_e2e_tests: `{% include ... with key = <value> %}` value grammar.
+#
+# A `with` value is any general expression: a scalar literal (string, bool,
+# int, float), a variable path, or a built-in function call, optionally
+# followed by a filter chain. Rust and TypeScript must accept and render the
+# same set.
+
+[[tests]]
+name = "include_with_bool_literal_true"
+description = "A bare `true` literal is a valid `with` value for a bool param"
+template = '''
+---
+allow_unused: true
+params:
+  - n = int
+  - s = str
+  - items = list(str)
+---
+> {% tmpl row %}
+
+---
+params:
+  - v = bool
+---
+
+R: {% if v %}yes{% else %}no{% /if %}
+
+> {% /tmpl %}
+
+> {% include row with v = true %}
+'''
+expected_output = "\nR: yes"
+
+[tests.params]
+n = 3
+s = "ab"
+items = ["a", "b"]
+
+[[tests]]
+name = "include_with_bool_literal_false"
+description = "A bare `false` literal is a valid `with` value (falsy in the child)"
+template = '''
+---
+allow_unused: true
+params:
+  - n = int
+  - s = str
+  - items = list(str)
+---
+> {% tmpl row %}
+
+---
+params:
+  - v = bool
+---
+
+R: {% if v %}yes{% else %}no{% /if %}
+
+> {% /tmpl %}
+
+> {% include row with v = false %}
+'''
+expected_output = "\nR: no"
+
+[tests.params]
+n = 3
+s = "ab"
+items = ["a", "b"]
+
+[[tests]]
+name = "include_with_int_literal"
+description = "A bare integer literal is a valid `with` value"
+template = '''
+---
+allow_unused: true
+params:
+  - n = int
+  - s = str
+  - items = list(str)
+---
+> {% tmpl row %}
+
+---
+params:
+  - v = int
+---
+
+R: {{ v }}
+
+> {% /tmpl %}
+
+> {% include row with v = 5 %}
+'''
+expected_output = "\nR: 5\n"
+
+[tests.params]
+n = 3
+s = "ab"
+items = ["a", "b"]
+
+[[tests]]
+name = "include_with_negative_int_literal"
+description = "A negative integer literal is a valid `with` value"
+template = '''
+---
+allow_unused: true
+params:
+  - n = int
+  - s = str
+  - items = list(str)
+---
+> {% tmpl row %}
+
+---
+params:
+  - v = int
+---
+
+R: {{ v }}
+
+> {% /tmpl %}
+
+> {% include row with v = -5 %}
+'''
+expected_output = "\nR: -5\n"
+
+[tests.params]
+n = 3
+s = "ab"
+items = ["a", "b"]
+
+[[tests]]
+name = "include_with_float_literal"
+description = "A float literal is a valid `with` value"
+template = '''
+---
+allow_unused: true
+params:
+  - n = int
+  - s = str
+  - items = list(str)
+---
+> {% tmpl row %}
+
+---
+params:
+  - v = float
+---
+
+R: {{ v }}
+
+> {% /tmpl %}
+
+> {% include row with v = 1.5 %}
+'''
+expected_output = "\nR: 1.5\n"
+
+[tests.params]
+n = 3
+s = "ab"
+items = ["a", "b"]
+
+[[tests]]
+name = "include_with_filter_with_args"
+description = "A `with` value may apply a filter with arguments (`n | sub(1)`)"
+template = '''
+---
+allow_unused: true
+params:
+  - n = int
+  - s = str
+  - items = list(str)
+---
+> {% tmpl row %}
+
+---
+params:
+  - v = int
+---
+
+R: {{ v }}
+
+> {% /tmpl %}
+
+> {% include row with v = n | sub(1) %}
+'''
+expected_output = "\nR: 2\n"
+
+[tests.params]
+n = 3
+s = "ab"
+items = ["a", "b"]
+
+[[tests]]
+name = "include_with_filter_without_args"
+description = "A `with` value may apply an argument-less filter (`s | upper`); only the base operand is checked as a variable"
+template = '''
+---
+allow_unused: true
+params:
+  - n = int
+  - s = str
+  - items = list(str)
+---
+> {% tmpl row %}
+
+---
+params:
+  - v = str
+---
+
+R: {{ v }}
+
+> {% /tmpl %}
+
+> {% include row with v = s | upper %}
+'''
+expected_output = "\nR: AB\n"
+
+[tests.params]
+n = 3
+s = "ab"
+items = ["a", "b"]
+
+[[tests]]
+name = "include_with_builtin_function"
+description = "A `with` value may call a built-in function (`len(items)`)"
+template = '''
+---
+allow_unused: true
+params:
+  - n = int
+  - s = str
+  - items = list(str)
+---
+> {% tmpl row %}
+
+---
+params:
+  - v = int
+---
+
+R: {{ v }}
+
+> {% /tmpl %}
+
+> {% include row with v = len(items) %}
+'''
+expected_output = "\nR: 2\n"
+
+[tests.params]
+n = 3
+s = "ab"
+items = ["a", "b"]
+
+[[tests]]
+name = "include_with_single_quoted_string_literal"
+description = "A single-quoted string literal is a valid `with` value"
+template = '''
+---
+allow_unused: true
+params:
+  - n = int
+  - s = str
+  - items = list(str)
+---
+> {% tmpl row %}
+
+---
+params:
+  - v = str
+---
+
+R: {{ v }}
+
+> {% /tmpl %}
+
+> {% include row with v = 'y' %}
+'''
+expected_output = "\nR: y\n"
+
+[tests.params]
+n = 3
+s = "ab"
+items = ["a", "b"]

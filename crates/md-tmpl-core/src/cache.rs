@@ -425,7 +425,8 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
             frontmatter::parse_frontmatter(&source)?
         };
         let body_str = body.to_string();
-        let (mut segments, inline_templates) = compiled::compile_with_parent_scope(
+        let (mut segments, inline_templates) = compiled::compile_source_body(
+            &source,
             &body_str,
             &fm.type_aliases,
             &fm.type_alias_sanitize,
@@ -435,6 +436,7 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
             &fm.param_sanitize,
             fm.sanitize_notice.as_deref(),
         );
+        compiled::check_untrusted_include_paths(&segments)?;
 
         let mut consts: HashMap<String, crate::value::Value> = fm
             .consts
@@ -554,13 +556,18 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
             env.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
         let (fm, body) =
             frontmatter::parse_frontmatter_with_base_dir(&source, &base_dir, &env_pairs)?;
-        let (mut segments, _inline_templates) =
-            compiled::compile_with_parent_scope(body, &fm.type_aliases, &fm.type_alias_sanitize)?;
+        let (mut segments, _inline_templates) = compiled::compile_source_body(
+            &source,
+            body,
+            &fm.type_aliases,
+            &fm.type_alias_sanitize,
+        )?;
         compiled::apply_frontmatter_sanitization(
             &mut segments,
             &fm.param_sanitize,
             fm.sanitize_notice.as_deref(),
         );
+        compiled::check_untrusted_include_paths(&segments)?;
 
         let mut include_consts = HashMap::new();
         for d in &fm.consts {

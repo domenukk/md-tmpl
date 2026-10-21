@@ -7,6 +7,7 @@
  * @module
  */
 
+import type { IncludeSanitizeContext } from "./ast.js";
 import {
   TYPE_STR,
   TYPE_BOOL,
@@ -106,6 +107,7 @@ export interface TmplRef {
     maxDepth: number,
     templateLoader?: unknown,
     basePath?: string,
+    sanitizeCtx?: IncludeSanitizeContext,
   ): string;
 }
 

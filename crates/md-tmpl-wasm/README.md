@@ -93,6 +93,35 @@ tmpl.declarations(): [string, string][]
 tmpl.sourceHash(): number
 ```
 
+### Errors
+
+Every thrown value is an `Error` typed as `MdTmplError` (exported type) with a
+stable `kind` (also used as `name`) and the typed payload of that kind — the
+same property names as the pure-TypeScript engine's error classes:
+
+```ts
+import { Template, isMdTmplError } from "./pkg/md_tmpl_wasm";
+
+try {
+  Template.fromSource(src);
+} catch (err) {
+  if (isMdTmplError(err) && err.kind === "syntax") {
+    console.error(`line ${err.line}: ${err.snippet}`); // file-absolute line
+  }
+}
+```
+
+| `kind`                 | Payload properties           |
+| ---------------------- | ---------------------------- |
+| `syntax`               | `line`, `snippet`            |
+| `undefined_variable`   | `variable`                   |
+| `missing_params`       | `missing`                    |
+| `extra_params`         | `extra`                      |
+| `type_mismatch`        | `path`, `expected`, `actual` |
+| `unknown_filter`       | `filter`                     |
+| `include_not_found`    | `include`                    |
+| `declarations_mutated` | `details`                    |
+
 ## Serialization Tiers
 
 | Method                | Input        | Overhead                         |

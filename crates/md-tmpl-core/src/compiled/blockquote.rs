@@ -118,9 +118,11 @@ fn validate_blockquote_prefix(lines: &[BodyLine<'_>]) -> Result<(), TemplateErro
         };
         if let Some(error) = bare_error {
             let snippet = display_snippet(trimmed);
-            return Err(TemplateError::syntax(format!(
-                "{error}: write '> {snippet}' instead of '{snippet}'"
-            )));
+            return Err(line_error(
+                format!("{error}: write '> {snippet}' instead of '{snippet}'"),
+                i,
+                text,
+            ));
         }
 
         let stripped = strip_blockquote_line(text);
@@ -154,18 +156,32 @@ fn validate_tag_neighbors(lines: &[BodyLine<'_>], i: usize) -> Result<(), Templa
     if let Some(prev) = i.checked_sub(1).and_then(|p| lines.get(p))
         && !is_valid_neighbor_line(prev)
     {
-        return Err(TemplateError::syntax(format!(
-            "Standalone statement tag '{tag_line}' must be preceded by a blank line or another blockquote tag line (> {{%...%}})"
-        )));
+        return Err(line_error(
+            format!(
+                "Standalone statement tag '{tag_line}' must be preceded by a blank line or another blockquote tag line (> {{%...%}})"
+            ),
+            i,
+            tag_line,
+        ));
     }
     if let Some(next) = lines.get(i + 1)
         && !is_valid_neighbor_line(next)
     {
-        return Err(TemplateError::syntax(format!(
-            "Standalone statement tag '{tag_line}' must be followed by a blank line or another blockquote tag line (> {{%...%}})"
-        )));
+        return Err(line_error(
+            format!(
+                "Standalone statement tag '{tag_line}' must be followed by a blank line or another blockquote tag line (> {{%...%}})"
+            ),
+            i,
+            tag_line,
+        ));
     }
     Ok(())
+}
+
+/// A syntax error at body line index `idx` (0-based) with `text` as the snippet.
+/// The line is body-relative; [`super::locate_error_in_source`] makes it file-absolute.
+fn line_error(message: String, idx: usize, text: &str) -> TemplateError {
+    TemplateError::Syntax(crate::error::SyntaxError::new(message).at_line(idx + 1, text.trim()))
 }
 
 /// Strip markdown blockquote `>` prefix from lines containing `{%` tags.
@@ -287,6 +303,8 @@ fn strip_blockquote_line(line: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
+    use alloc::string::ToString;
+
     use super::*;
 
     fn validate_blockquote_prefix(input: &str) -> Result<(), TemplateError> {

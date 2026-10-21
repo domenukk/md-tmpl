@@ -75,26 +75,25 @@ export function evaluateExpression(expr: string, scope: Scope): Value {
   }
 
   const trimmed = expr.trim();
-  // Split by pipe, respecting parentheses
-  const parts = splitPipes(trimmed);
-  const pathPart = (parts[0] ?? "").trim();
+  const parsed = parsedPipeline(trimmed);
 
-  let value = resolveExpr(pathPart, scope);
+  let value = resolveExpr(parsed.base, scope);
 
   // Apply filter chain (fusing adjacent sanitize_tokens | quarantine into 1 pass)
-  for (let i = 1; i < parts.length; i++) {
-    const part = parts[i];
-    if (part === undefined) continue;
-    const [filterName, filterArgs] = parseFilter(part.trim());
+  const filters = parsed.filters;
+  for (let i = 0; i < filters.length; i++) {
+    const filter = filters[i];
+    if (filter === undefined) continue;
+    const [filterName, filterArgs] = filter;
     if (
       filterName === "sanitize_tokens" &&
       filterArgs === undefined &&
       value.type === TYPE_STR &&
-      i + 1 < parts.length
+      i + 1 < filters.length
     ) {
-      const nextPart = parts[i + 1];
-      if (nextPart !== undefined) {
-        const [nextName, nextArgs] = parseFilter(nextPart.trim());
+      const next = filters[i + 1];
+      if (next !== undefined) {
+        const [nextName, nextArgs] = next;
         if (nextName === "quarantine") {
           value = str(quarantineUntrustedString(value.value, nextArgs));
           i++;
@@ -106,6 +105,42 @@ export function evaluateExpression(expr: string, scope: Scope): Value {
   }
 
   return value;
+}
+
+/** A `base | filter(args) | ...` expression split into its operand and filters. */
+interface ParsedPipeline {
+  readonly base: string;
+  readonly filters: readonly (readonly [string, string | undefined])[];
+}
+
+/**
+ * Bounded memo of parsed filter pipelines. Expression strings come from compiled
+ * templates (a fixed set per process), so splitting and parsing them once instead
+ * of on every render removes the dominant per-expression cost of the AST
+ * evaluator; the cap bounds memory if hosts compile many distinct templates.
+ */
+const PIPELINE_CACHE = new Map<string, ParsedPipeline>();
+const PIPELINE_CACHE_MAX = 4096;
+
+function parsedPipeline(expr: string): ParsedPipeline {
+  const cached = PIPELINE_CACHE.get(expr);
+  if (cached !== undefined) {
+    return cached;
+  }
+  // Split by pipe, respecting parentheses and quotes.
+  const parts = splitPipes(expr);
+  const filters: (readonly [string, string | undefined])[] = [];
+  for (let i = 1; i < parts.length; i++) {
+    const part = parts[i];
+    if (part === undefined) continue;
+    filters.push(parseFilter(part.trim()));
+  }
+  const parsed: ParsedPipeline = { base: (parts[0] ?? "").trim(), filters };
+  if (PIPELINE_CACHE.size >= PIPELINE_CACHE_MAX) {
+    PIPELINE_CACHE.clear();
+  }
+  PIPELINE_CACHE.set(expr, parsed);
+  return parsed;
 }
 
 /** Pre-compiled regex for function calls. */

@@ -405,8 +405,12 @@ pub(crate) fn eval_expr(expr: &str, scope: &Scope<'_>) -> Result<Value, Template
     let (path_part, filter_chain) = split_pipe_aware(expr);
     let path = path_part.trim();
 
-    // Try function calls first: idx(item), len(items)
-    let mut value = if let Some(result) = scope.try_call_function(path) {
+    // Literals first (same grammar as `CompiledExpr::compile`, so `with v = true`,
+    // `with n = -5`, and `with x = 1.5` behave like any other expression position),
+    // then function calls (`idx(item)`, `len(items)`), then variable paths.
+    let mut value = if let Some(literal) = parse_scalar_literal(path) {
+        literal
+    } else if let Some(result) = scope.try_call_function(path) {
         result?
     } else {
         scope.resolve_path_str(path)?.clone()
@@ -416,6 +420,19 @@ pub(crate) fn eval_expr(expr: &str, scope: &Scope<'_>) -> Result<Value, Template
         value = apply_filter_chain(value, filter_chain)?;
     }
     Ok(value)
+}
+
+/// Parse a scalar literal token (`"str"` / `'str'`, `true`, `false`, or a strict
+/// numeric literal such as `5`, `-5`, `1.5`), or return `None` for non-literals.
+pub(crate) fn parse_scalar_literal(raw: &str) -> Option<Value> {
+    if let Some(inner) = crate::consts::strip_string_literal(raw) {
+        return Some(Value::Str(crate::consts::unescape_string_literal(inner)));
+    }
+    match raw {
+        crate::consts::LIT_TRUE => Some(Value::Bool(true)),
+        crate::consts::LIT_FALSE => Some(Value::Bool(false)),
+        _ => crate::scope::parse_number_literal(raw),
+    }
 }
 
 /// Apply a chain of pipe-separated filters using typed dispatch.

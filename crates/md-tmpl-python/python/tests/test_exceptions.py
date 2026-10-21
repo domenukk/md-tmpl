@@ -223,3 +223,44 @@ class TestExceptionHierarchyExtended:
 params: [name = str]
 ---
 {{ name | nonexistent_filter }}""")
+
+
+class TestTypedErrorPayloads:
+    """Typed exception attributes match the Go, WASM, and TypeScript payloads."""
+
+    def test_syntax_error_has_file_absolute_line_and_snippet(self) -> None:
+        """Lines count from the top of the file, frontmatter included."""
+        from md_tmpl import TemplateSyntaxError
+
+        src = textwrap.dedent("""\
+            ---
+            params:
+              - name = str
+            ---
+            intro
+            {{ name | bogus }}""")
+        with pytest.raises(TemplateSyntaxError) as exc_info:
+            Template.from_source(src)
+        assert exc_info.value.kind == "syntax"
+        assert exc_info.value.line == 6
+        assert exc_info.value.snippet == "{{ name | bogus }}"
+
+    def test_type_mismatch_has_path_expected_actual(self) -> None:
+        """TypeMismatchError exposes the offending path and both types."""
+        from md_tmpl import TypeMismatchError
+
+        tmpl = Template.from_source(textwrap.dedent("""\
+            ---
+            params:
+              - n = int
+            ---
+            {{ n }}"""))
+        with pytest.raises(TypeMismatchError) as exc_info:
+            tmpl.render(n="nope")
+        err = exc_info.value
+        assert (err.kind, err.path, err.expected, err.actual) == (
+            "type_mismatch",
+            "n",
+            "int",
+            "str",
+        )

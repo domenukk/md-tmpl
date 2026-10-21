@@ -52,11 +52,105 @@ fn set_prop(obj: &Object, key: &str, value: &JsValue) {
 /// (e.g. `"missing_params"`), so JS callers can branch on `err.name` without
 /// parsing the human-readable message. The same identifier is also exposed as
 /// an own `kind` property, matching the pure-TS engine and Go binding.
+///
+/// The structured payload of the error ([`md_tmpl::ErrorDetails`]) is attached as
+/// own properties with the same names as the pure-TS engine's error classes and
+/// the Python exception attributes (`line`, `snippet`, `variable`, `missing`,
+/// `extra`, `path`, `expected`, `actual`, `filter`, `include`, `details`); see
+/// the `MdTmplError` TypeScript interface.
 fn js_error(e: &md_tmpl::TemplateError) -> JsValue {
     let err = Error::new(&e.to_string());
     err.set_name(e.kind().as_str());
     set_prop(&err, "kind", &JsValue::from_str(e.kind().as_str()));
+    let d = e.details();
+    if let Some(line) = d.line {
+        // Saturate: a template with more than u32::MAX lines is not realistic.
+        set_prop(
+            &err,
+            "line",
+            &JsValue::from(u32::try_from(line).unwrap_or(u32::MAX)),
+        );
+    }
+    let strings = [
+        ("snippet", d.snippet),
+        ("variable", d.variable),
+        ("path", d.path),
+        ("expected", d.expected),
+        ("actual", d.actual),
+        ("filter", d.filter),
+        ("include", d.include),
+        ("details", d.details),
+    ];
+    for (key, value) in strings {
+        if let Some(value) = value {
+            set_prop(&err, key, &JsValue::from_str(value));
+        }
+    }
+    for (key, values) in [("missing", d.missing), ("extra", d.extra)] {
+        if !values.is_empty() {
+            let arr: Array = values.iter().map(|v| JsValue::from_str(v)).collect();
+            set_prop(&err, key, &arr);
+        }
+    }
     err.into()
+}
+
+#[wasm_bindgen(typescript_custom_section)]
+const MD_TMPL_ERROR_TS: &str = r#"
+/** Stable, machine-readable error kind (mirrors Rust `ErrorKind::as_str`). */
+export type MdTmplErrorKind =
+  | "io"
+  | "undefined_variable"
+  | "syntax"
+  | "missing_params"
+  | "type_mismatch"
+  | "unknown_filter"
+  | "include_not_found"
+  | "declarations_mutated"
+  | "extra_params"
+  | "panic"
+  | "";
+
+/**
+ * Shape of every `Error` thrown by this package. `name` and `kind` hold the
+ * stable kind; payload properties are present only for the matching kind.
+ */
+export interface MdTmplError extends Error {
+  readonly kind: MdTmplErrorKind;
+  /** `syntax`: 1-based, file-absolute line of the offending source. */
+  readonly line?: number;
+  /** `syntax`: the offending source line. */
+  readonly snippet?: string;
+  /** `undefined_variable`: the variable that was not found. */
+  readonly variable?: string;
+  /** `missing_params`: required parameters that were not provided. */
+  readonly missing?: readonly string[];
+  /** `extra_params`: undeclared parameters that were provided. */
+  readonly extra?: readonly string[];
+  /** `type_mismatch`: dotted path of the offending value. */
+  readonly path?: string;
+  /** `type_mismatch`: the declared type. */
+  readonly expected?: string;
+  /** `type_mismatch`: the provided type. */
+  readonly actual?: string;
+  /** `unknown_filter`: the unknown filter name. */
+  readonly filter?: string;
+  /** `include_not_found`: the include path that could not be resolved. */
+  readonly include?: string;
+  /** `declarations_mutated`: description of what changed. */
+  readonly details?: string;
+}
+
+/** Type guard for errors thrown by this package. */
+export function isMdTmplError(err: unknown): err is MdTmplError;
+"#;
+
+/// Type guard for errors thrown by this package (see the `MdTmplError` interface).
+#[wasm_bindgen(js_name = isMdTmplError, skip_typescript)]
+#[must_use]
+pub fn is_md_tmpl_error(err: &JsValue) -> bool {
+    err.is_instance_of::<Error>()
+        && Reflect::get(err, &JsValue::from_str("kind")).is_ok_and(|k| k.is_string())
 }
 
 /// Build a JavaScript `Error` object from a plain message string.

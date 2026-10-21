@@ -12,6 +12,10 @@ import {
   isOptionMatchNode,
 } from "./evaluator.js";
 import { parseBody } from "./parser.js";
+import {
+  checkUntrustedIncludePath,
+  contextualizeIncludeNodes,
+} from "./sanitize_pass.js";
 import { collectInlineTemplateMap } from "./template/inline_templates.js";
 import {
   type Value,
@@ -400,6 +404,7 @@ export function renderNodes(
         let decls: readonly VarDecl[];
         let consts: ReadonlyMap<string, Value>;
         let fileChildOpts: RenderOptions | undefined;
+        checkUntrustedIncludePath(node);
 
         if (node.path !== undefined) {
           const resolvedPath = interpolateIncludePath(node.path, scope);
@@ -422,7 +427,10 @@ export function renderNodes(
             loadedBasePath,
             loadedInline,
           ] = loaded;
-          includedNodes = loadedNodes;
+          includedNodes = contextualizeIncludeNodes(
+            loadedNodes,
+            node.sanitizeCtx,
+          );
           decls = loadedDecls;
           consts = loadedConsts;
           // Scope inline templates to the child file: use precompiled child
@@ -477,6 +485,7 @@ export function renderNodes(
                     maxDepth - 1,
                     options?.templateLoader,
                     options?.currentBasePath,
+                    node.sanitizeCtx,
                   ),
                 );
               }
@@ -495,6 +504,7 @@ export function renderNodes(
                 maxDepth - 1,
                 options?.templateLoader,
                 options?.currentBasePath,
+                node.sanitizeCtx,
               ),
             );
             break;
@@ -507,7 +517,11 @@ export function renderNodes(
             );
           }
           includedNodes =
-            node.inlineNodes ?? inline.nodes ?? parseBody(inline.body, true);
+            node.inlineNodes ??
+            contextualizeIncludeNodes(
+              inline.nodes ?? parseBody(inline.body, true),
+              node.sanitizeCtx,
+            );
           decls = inline.declarations;
           consts = inline.consts;
           fileChildOpts = {

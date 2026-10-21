@@ -8,11 +8,16 @@
 //! `with key=expr` or `for binding in list`. Implicit scope inheritance is
 //! not allowed for declared variables.
 
-use std::path::Path;
+use std::{path::Path, sync::Arc};
 
 use crate::{
-    compat::HashMap, compiled::CompiledInlineTemplate, error::TemplateError,
-    parser::IncludeDirective, scope::Scope, types::VarDecl, value::Value,
+    compat::HashMap,
+    compiled::{CompiledInclude, CompiledInlineTemplate, Segment, include_sanitize},
+    error::TemplateError,
+    parser::IncludeDirective,
+    scope::Scope,
+    types::VarDecl,
+    value::Value,
 };
 
 /// Bundles the template-specific data needed when rendering an include.
@@ -32,21 +37,28 @@ pub(crate) fn resolve_include(
     directive: &IncludeDirective<'_>,
     scope: &mut Scope<'_>,
     base_dir: Option<&Path>,
-    inline_compiled: Option<&CompiledInlineTemplate>,
+    site: Option<&CompiledInclude>,
 ) -> Result<String, TemplateError> {
     let mut output = String::new();
-    resolve_include_into(directive, scope, base_dir, inline_compiled, &mut output)?;
+    resolve_include_into(directive, scope, base_dir, site, &mut output)?;
     Ok(output)
 }
 
 /// Resolve an include directive and write directly into an output buffer.
+///
+/// `site` is the compiled call site (if any); it carries the precompiled inline body and
+/// the call-site [`include_sanitize::IncludeSanitizeContext`] applied to includes resolved
+/// at render time.
 pub(crate) fn resolve_include_into(
     directive: &IncludeDirective<'_>,
     scope: &mut Scope<'_>,
     base_dir: Option<&Path>,
-    inline_compiled: Option<&CompiledInlineTemplate>,
+    site: Option<&CompiledInclude>,
     output: &mut String,
 ) -> Result<(), TemplateError> {
+    if let Some(site) = site {
+        include_sanitize::check_untrusted_include_path(site)?;
+    }
     // Track include depth to prevent infinite recursion.
     scope.enter_include()?;
 
@@ -78,13 +90,7 @@ pub(crate) fn resolve_include_into(
         directive.clone()
     };
 
-    let result = resolve_include_inner_into(
-        &effective_directive,
-        scope,
-        base_dir,
-        inline_compiled,
-        output,
-    );
+    let result = resolve_include_inner_into(&effective_directive, scope, base_dir, site, output);
     scope.exit_include();
     // Wrap errors with include path context for debugging nested includes.
     result.map_err(|e| wrap_include_error(e, effective_directive.path))
@@ -151,17 +157,36 @@ fn wrap_include_error(err: TemplateError, include_path: &str) -> TemplateError {
     }
 }
 
+/// Child segments to render for `site`, contextualized with its call-site sanitization
+/// context (see [`include_sanitize::contextualized_segments`]).
+fn site_segments(
+    site: Option<&CompiledInclude>,
+    child: &Arc<[Segment]>,
+) -> Result<Arc<[Segment]>, TemplateError> {
+    match site {
+        Some(site) => include_sanitize::contextualized_segments(site, child),
+        None => Ok(Arc::clone(child)),
+    }
+}
+
 /// Inner include resolution — called after depth is checked.
 fn resolve_include_inner_into(
     directive: &IncludeDirective<'_>,
     scope: &mut Scope<'_>,
     base_dir: Option<&Path>,
-    inline_compiled: Option<&CompiledInlineTemplate>,
+    site: Option<&CompiledInclude>,
     output: &mut String,
 ) -> Result<(), TemplateError> {
-    // 0. Use compile-time precompiled AST if present.
-    if let Some(compiled) = inline_compiled {
-        return resolve_from_precompiled(compiled, directive, scope, base_dir, output);
+    // 0. Use compile-time precompiled AST if present (already contextualized at compile time).
+    if let Some(compiled) = site.and_then(|s| s.inline_compiled.as_ref()) {
+        return resolve_from_precompiled(
+            compiled,
+            &compiled.segments,
+            directive,
+            scope,
+            base_dir,
+            output,
+        );
     }
 
     // 1. Check inline templates first (defined via {% tmpl name %})
@@ -169,21 +194,24 @@ fn resolve_include_inner_into(
     //    Clone the compiled template to release the immutable borrow on scope,
     //    allowing mutable access for build_overrides/rendering.
     if let Some(compiled) = scope.get_inline_template(directive.path).cloned() {
-        return resolve_from_precompiled(&compiled, directive, scope, base_dir, output);
+        let segments = site_segments(site, &compiled.segments)?;
+        return resolve_from_precompiled(&compiled, &segments, directive, scope, base_dir, output);
     }
 
     // 1b. Check if path is a variable resolving to a template (higher-order).
     let Ok(Value::Tmpl(tmpl)) = scope.resolve_path_str(directive.path) else {
         // 2. Fall through to filesystem lookup.
-        return resolve_from_filesystem(directive, scope, base_dir, output);
+        return resolve_from_filesystem(directive, scope, base_dir, site, output);
     };
     let tmpl = tmpl.clone();
-    resolve_from_tmpl_value(&tmpl, directive, scope, output)
+    resolve_from_tmpl_value(&tmpl, directive, scope, site, output)
 }
 
-/// Resolve an include from a precompiled inline template.
+/// Resolve an include from a precompiled inline template, rendering `segments`
+/// (the template body, possibly contextualized for the call site).
 fn resolve_from_precompiled(
     compiled: &CompiledInlineTemplate,
+    segments: &[Segment],
     directive: &IncludeDirective<'_>,
     scope: &mut Scope<'_>,
     base_dir: Option<&Path>,
@@ -191,7 +219,7 @@ fn resolve_from_precompiled(
 ) -> Result<(), TemplateError> {
     scope.push_consts_arc(&compiled.consts, &compiled.imported_consts);
     let result = validate_and_render_into(
-        &compiled.segments,
+        segments,
         &compiled.declarations,
         directive,
         scope,
@@ -207,13 +235,15 @@ fn resolve_from_tmpl_value(
     tmpl: &std::sync::Arc<crate::template::Template>,
     directive: &IncludeDirective<'_>,
     scope: &mut Scope<'_>,
+    site: Option<&CompiledInclude>,
     output: &mut String,
 ) -> Result<(), TemplateError> {
+    let segments = site_segments(site, tmpl.segments_arc())?;
     scope.push_inline_templates(tmpl.inline_templates().clone());
     scope.push_consts_arc(&tmpl.consts(), &tmpl.imported_consts());
 
     let result = validate_and_render_into(
-        tmpl.segments(),
+        &segments,
         tmpl.declarations(),
         directive,
         scope,
@@ -231,6 +261,7 @@ fn resolve_from_filesystem(
     directive: &IncludeDirective<'_>,
     scope: &mut Scope<'_>,
     base_dir: Option<&Path>,
+    site: Option<&CompiledInclude>,
     output: &mut String,
 ) -> Result<(), TemplateError> {
     let base = base_dir.ok_or_else(|| {
@@ -246,9 +277,10 @@ fn resolve_from_filesystem(
     // unchanged include files.
     if let Some(cache) = scope.cache() {
         let cached = cache.resolve_include(&include_path, scope.compile_env())?;
+        let segments = site_segments(site, &cached.segments)?;
         scope.push_consts(cached.consts.clone(), cached.imported_consts.clone());
         let result = validate_and_render_into(
-            &cached.segments,
+            &segments,
             &cached.declarations,
             directive,
             scope,
@@ -274,7 +306,8 @@ fn resolve_from_filesystem(
         .collect();
     let (fm, body) =
         crate::frontmatter::parse_frontmatter_with_base_dir(&source, include_base, &env_pairs)?;
-    let (mut segments, included_inline_templates) = crate::compiled::compile_with_parent_scope(
+    let (mut segments, included_inline_templates) = crate::compiled::compile_source_body(
+        &source,
         body,
         &fm.type_aliases,
         &fm.type_alias_sanitize,
@@ -284,6 +317,11 @@ fn resolve_from_filesystem(
         &fm.param_sanitize,
         fm.sanitize_notice.as_deref(),
     );
+    // Freshly compiled: apply the call-site sanitization context in place (no memo needed).
+    if let Some(ctx) = site.and_then(|s| s.sanitize_ctx.as_deref()) {
+        include_sanitize::apply_include_context(&mut segments, ctx);
+    }
+    crate::compiled::check_untrusted_include_paths(&segments)?;
 
     // Scope the included file's own inline templates: push them for rendering,
     // then pop after. This ensures each file's {% tmpl %} definitions are
