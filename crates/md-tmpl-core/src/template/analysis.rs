@@ -520,6 +520,7 @@ fn check_internal_key_in_operand(op: &compiled::ConditionOperand) -> Result<(), 
         compiled::ConditionOperand::Literal(_)
         | compiled::ConditionOperand::Idx(_)
         | compiled::ConditionOperand::InterpolatedStr(_) => Ok(()),
+        compiled::ConditionOperand::Filtered { base, .. } => check_internal_key_in_operand(base),
     }
 }
 

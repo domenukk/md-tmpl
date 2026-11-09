@@ -215,4 +215,10 @@ export {
   escapeXmlAttrString,
   escapeXmlBodyString,
 } from "./xml_codec.js";
+export {
+  hasInvisibleChars,
+  isUnconditionalInvisibleCodePoint,
+  stripInvisibleStr,
+  stripInvisibleString,
+} from "./invisible.js";
 export { truncateMiddleList } from "./filter_truncate.js";

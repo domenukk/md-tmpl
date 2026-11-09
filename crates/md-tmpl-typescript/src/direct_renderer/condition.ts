@@ -8,7 +8,6 @@
 import { TemplateSyntaxError, TypeMismatchError } from "../errors.js";
 import {
   ENUM_TAG_KEY,
-  EXPR_END,
   EXPR_START,
   LIT_TRUE,
   OPTION_NONE,
@@ -18,11 +17,14 @@ import {
   unescapeStringLiteral,
 } from "../consts.js";
 import { DirectScope } from "./scope.js";
-import { directDisplay, directIsTruthy } from "./display.js";
+import { directIsTruthy } from "./display.js";
 import {
   type CompiledDirectExpr,
+  type CompiledInterpolatedPart,
   compileDirectExpr,
+  compileInterpolatedParts,
   evalCompiledDirectExpr,
+  evalInterpolatedParts,
   evaluateDirectExpr,
 } from "./expr.js";
 import {
@@ -33,7 +35,10 @@ import {
 
 type CompiledDirectOperand =
   | { readonly kind: "lit"; readonly value: unknown }
-  | { readonly kind: "interp_str"; readonly inner: string }
+  | {
+      readonly kind: "interp_str";
+      readonly parts: readonly CompiledInterpolatedPart[];
+    }
   | { readonly kind: "expr"; readonly expr: CompiledDirectExpr };
 
 export type CompiledDirectCondition =
@@ -174,7 +179,7 @@ function compileDirectOperand(operand: DirectToken): CompiledDirectOperand {
     case DirectTokKind.StrLit: {
       const inner = unescapeStringLiteral(operand.value.slice(1, -1));
       if (inner.includes(EXPR_START)) {
-        return { kind: "interp_str", inner };
+        return { kind: "interp_str", parts: compileInterpolatedParts(inner) };
       }
       return { kind: "lit", value: inner };
     }
@@ -197,7 +202,7 @@ function evalCompiledOperand(
     case "lit":
       return operand.value;
     case "interp_str":
-      return interpolateDirectString(operand.inner, scope);
+      return evalInterpolatedParts(operand.parts, scope);
     case "expr":
       return evalCompiledDirectExpr(operand.expr, scope);
   }
@@ -704,31 +709,7 @@ export function interpolateDirectString(
   input: string,
   scope: DirectScope,
 ): string {
-  let result = "";
-  let remaining = input;
-  let startIdx = remaining.indexOf(EXPR_START);
-  while (startIdx !== -1) {
-    result += remaining.slice(0, startIdx);
-    const afterStart = remaining.slice(startIdx + EXPR_START.length);
-    const endIdx = afterStart.indexOf(EXPR_END);
-    if (endIdx === -1) {
-      throw new TemplateSyntaxError(
-        `unclosed '${EXPR_START}' in interpolated string`,
-      );
-    }
-    const expr = afterStart.slice(0, endIdx).trim();
-    if (expr === "") {
-      throw new TemplateSyntaxError(
-        `empty expression '${EXPR_START}${EXPR_END}' in interpolated string`,
-      );
-    }
-    const val = evaluateDirectExpr(expr, scope);
-    result += directDisplay(val);
-    remaining = afterStart.slice(endIdx + EXPR_END.length);
-    startIdx = remaining.indexOf(EXPR_START);
-  }
-  result += remaining;
-  return result;
+  return evalInterpolatedParts(compileInterpolatedParts(input), scope);
 }
 
 export function evaluateDirectComparison(

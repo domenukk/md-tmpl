@@ -15,13 +15,17 @@ import {
 } from "../errors.js";
 import {
   ENUM_TAG_KEY,
+  EXPR_END,
   EXPR_START,
   FILTER_ADD,
   FILTER_FIXED,
   FILTER_LIMIT,
+  FILTER_SANITIZE,
   FILTER_SANITIZE_ENCLOSED,
   FILTER_SUB,
   FILTER_TRUNCATE,
+  FILTER_UNSAFE_TRUST,
+  FN_UNSAFE_TRUST,
   TYPE_FLOAT,
   TYPE_INT,
   TYPE_STR,
@@ -37,9 +41,13 @@ import {
 } from "../consts.js";
 import { ENUM_VARIANTS_KEY, fromJs } from "../value.js";
 import {
+  type ParsedTagSpec,
   escapeXmlString,
   escapeJsonString,
+  compileEnclosedSpec,
+  sanitizeEnclosedPreparsed,
   sanitizeEnclosedString,
+  sanitizeTokensString,
   sanitizeTokensWithArgs,
   fenceString,
   quarantineString,
@@ -64,9 +72,9 @@ import { formatFixedFloat, formatFixedInt } from "../numeric_format.js";
 import { truncateMiddleItems } from "../filter_truncate.js";
 import { parseJsonIndent, serializeJson } from "../filter_json.js";
 import { splitPipes } from "../evaluator.js";
+import { validateFilters } from "../parser_utils.js";
 import { DirectScope } from "./scope.js";
 import { directDisplay } from "./display.js";
-import { interpolateDirectString } from "./condition.js";
 
 const DIRECT_NUM_LITERAL_RE = /^-?[0-9]+(?:\.[0-9]+)?$/;
 const INVALID_KEYWORD_NOT = "not";
@@ -127,6 +135,13 @@ export type CompiledFilterStep =
       readonly kind: "quarantine_untrusted";
       readonly rawArg: string | undefined;
     }
+  | { readonly kind: "sanitize_inline" }
+  | {
+      readonly kind: "sanitize_enclosed";
+      readonly parsedTags: ParsedTagSpec | undefined;
+      readonly heading: boolean;
+    }
+  | { readonly kind: "unsafe_trust" }
   | {
       readonly kind: "generic";
       readonly filterName: string;
@@ -152,12 +167,16 @@ export type CompiledDirectExpr =
     }
   | { readonly kind: "loop_prop"; readonly prop: string }
   | { readonly kind: "lit"; readonly value: unknown }
-  | { readonly kind: "interp_str"; readonly inner: string }
+  | {
+      readonly kind: "interp_str";
+      readonly parts: readonly CompiledInterpolatedPart[];
+    }
   | { readonly kind: "fn_idx"; readonly binding: string }
   | { readonly kind: "fn_len"; readonly arg: CompiledDirectExpr }
   | { readonly kind: "fn_kind"; readonly arg: CompiledDirectExpr }
   | { readonly kind: "fn_kinds"; readonly arg: CompiledDirectExpr }
   | { readonly kind: "fn_has"; readonly arg: CompiledDirectExpr }
+  | { readonly kind: "fn_unsafe_trust"; readonly arg: CompiledDirectExpr }
   | { readonly kind: "fn_raw"; readonly expr: string }
   | {
       readonly kind: "filter1";
@@ -186,6 +205,24 @@ function compileFilterStep(
       return { kind: "escape_xml" };
     case "escape_json":
       return { kind: "escape_json" };
+    case FILTER_SANITIZE:
+      if (rawArg === undefined) {
+        return { kind: "sanitize_inline" };
+      }
+      return { kind: "generic", filterName, rawArg };
+    case FILTER_SANITIZE_ENCLOSED: {
+      const spec = compileEnclosedSpec(rawArg);
+      return {
+        kind: "sanitize_enclosed",
+        parsedTags: spec.parsedTags,
+        heading: spec.heading,
+      };
+    }
+    case FILTER_UNSAFE_TRUST:
+      if (rawArg === undefined) {
+        return { kind: "unsafe_trust" };
+      }
+      return { kind: "generic", filterName, rawArg };
     case "join":
       return {
         kind: "join",
@@ -235,6 +272,59 @@ function compileFilterStep(
   }
 }
 
+export type CompiledInterpolatedPart = string | CompiledDirectExpr;
+
+/** Pre-compile `{{ expr }}` segments inside an unescaped string literal once at compile time. */
+export function compileInterpolatedParts(
+  input: string,
+): readonly CompiledInterpolatedPart[] {
+  const parts: CompiledInterpolatedPart[] = [];
+  let remaining = input;
+  let startIdx = remaining.indexOf(EXPR_START);
+  while (startIdx !== -1) {
+    if (startIdx > 0) {
+      parts.push(remaining.slice(0, startIdx));
+    }
+    const afterStart = remaining.slice(startIdx + EXPR_START.length);
+    const endIdx = afterStart.indexOf(EXPR_END);
+    if (endIdx === -1) {
+      throw new TemplateSyntaxError(
+        `unclosed '${EXPR_START}' in interpolated string`,
+      );
+    }
+    const expr = afterStart.slice(0, endIdx).trim();
+    if (expr === "") {
+      throw new TemplateSyntaxError(
+        `empty expression '${EXPR_START}${EXPR_END}' in interpolated string`,
+      );
+    }
+    validateFilters(expr);
+    parts.push(compileDirectExpr(expr));
+    remaining = afterStart.slice(endIdx + EXPR_END.length);
+    startIdx = remaining.indexOf(EXPR_START);
+  }
+  if (remaining.length > 0) {
+    parts.push(remaining);
+  }
+  return parts;
+}
+
+/** Evaluate pre-compiled interpolated string parts against `scope` without string scanning. */
+export function evalInterpolatedParts(
+  parts: readonly CompiledInterpolatedPart[],
+  scope: DirectScope,
+): string {
+  let out = "";
+  for (const part of parts) {
+    if (typeof part === "string") {
+      out += part;
+    } else {
+      out += directDisplay(evalCompiledDirectExpr(part, scope));
+    }
+  }
+  return out;
+}
+
 function compileBaseDirectExpr(trimmed: string): CompiledDirectExpr {
   const first = trimmed.charCodeAt(0);
   if (
@@ -244,7 +334,7 @@ function compileBaseDirectExpr(trimmed: string): CompiledDirectExpr {
   ) {
     const inner = unescapeStringLiteral(trimmed.slice(1, -1));
     if (inner.includes(EXPR_START)) {
-      return { kind: "interp_str", inner };
+      return { kind: "interp_str", parts: compileInterpolatedParts(inner) };
     }
     return { kind: "lit", value: inner };
   }
@@ -274,6 +364,11 @@ function compileBaseDirectExpr(trimmed: string): CompiledDirectExpr {
           return { kind: "fn_kinds", arg: compileBaseDirectExpr(argStr) };
         case "has":
           return { kind: "fn_has", arg: compileBaseDirectExpr(argStr) };
+        case FN_UNSAFE_TRUST:
+          return {
+            kind: "fn_unsafe_trust",
+            arg: compileBaseDirectExpr(argStr),
+          };
         default:
           return { kind: "fn_raw", expr: trimmed };
       }
@@ -482,6 +577,23 @@ export function evalCompiledFilterStep(
         "quarantine",
         step.rawArg,
       );
+    case "sanitize_inline":
+      if (typeof value !== "string") {
+        throw new TemplateSyntaxError(`'${FILTER_SANITIZE}' requires a string`);
+      }
+      return sanitizeTokensString(value);
+    case "sanitize_enclosed":
+      if (typeof value !== "string") {
+        throw new TemplateSyntaxError(`'${FILTER_SANITIZE}' requires a string`);
+      }
+      return sanitizeEnclosedPreparsed(value, step.parsedTags, step.heading);
+    case "unsafe_trust":
+      if (typeof value !== "string") {
+        throw new TemplateSyntaxError(
+          `'${FILTER_UNSAFE_TRUST}' requires a string`,
+        );
+      }
+      return value;
     case "generic":
       return applyDirectFilter(value, step.filterName, step.rawArg);
   }
@@ -549,7 +661,7 @@ export function evalCompiledDirectExpr(
       return compiled.value;
 
     case "interp_str":
-      return interpolateDirectString(compiled.inner, scope);
+      return evalInterpolatedParts(compiled.parts, scope);
 
     case "fn_idx": {
       const binding = compiled.binding || scope.getLastLoopBinding();
@@ -600,6 +712,14 @@ export function evalCompiledDirectExpr(
         if (obj[ENUM_TAG_KEY] === OPTION_NONE) return false;
       }
       return true;
+    }
+
+    case "fn_unsafe_trust": {
+      const arg = evalCompiledDirectExpr(compiled.arg, scope);
+      if (typeof arg !== "string") {
+        throw new TemplateSyntaxError(`'${FN_UNSAFE_TRUST}' requires a string`);
+      }
+      return arg;
     }
 
     case "fn_raw":
@@ -708,6 +828,13 @@ export function resolveDirectFunction(
         if (obj[ENUM_TAG_KEY] === OPTION_NONE) return false;
       }
       return true;
+    }
+    case FN_UNSAFE_TRUST: {
+      const arg = resolveDirectExpr(argStr, scope);
+      if (typeof arg !== "string") {
+        throw new TemplateSyntaxError(`'${FN_UNSAFE_TRUST}' requires a string`);
+      }
+      return arg;
     }
     default:
       throw new TemplateSyntaxError(`unknown function '${funcName}'`);
@@ -829,6 +956,18 @@ export function applyDirectFilter(
         throw new TemplateSyntaxError("'sanitize' requires a string");
       }
       return sanitizeEnclosedString(value, rawArg);
+    case FILTER_UNSAFE_TRUST:
+      if (rawArg !== undefined) {
+        throw new TemplateSyntaxError(
+          `'${FILTER_UNSAFE_TRUST}' does not take arguments`,
+        );
+      }
+      if (typeof value !== "string") {
+        throw new TemplateSyntaxError(
+          `'${FILTER_UNSAFE_TRUST}' requires a string`,
+        );
+      }
+      return value;
     case "truncate":
     case "truncate_middle": {
       if (rawArg === undefined || rawArg.trim().length === 0) {

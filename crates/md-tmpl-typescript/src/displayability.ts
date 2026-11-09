@@ -34,6 +34,7 @@ import {
   comparisonError,
   formatVarType,
   includeContractError,
+  operandError,
   pathAccessError,
   resolveExprWithCheck,
   splitComparison,
@@ -576,7 +577,7 @@ function walkNodesWithNarrowing(
 
       case NODE_INCLUDE: {
         for (const valueExpr of node.withMappings.values()) {
-          const message = pathAccessError(valueExpr, env);
+          const message = operandError(valueExpr, env);
           if (message !== undefined) errors.push({ message, node });
         }
         const inline =

@@ -96,6 +96,7 @@ import {
 } from "./consts.js";
 import type { CompiledDirectCondition } from "./direct_renderer/condition.js";
 import type { CompiledDirectExpr } from "./direct_renderer/expr.js";
+import type { CompiledDirectCaseLabel } from "./direct_renderer/render.js";
 import type { SanitizeSpec } from "./sanitize_runtime.js";
 
 /**
@@ -160,7 +161,11 @@ export type Node =
       expr: string;
       arms: MatchArm[];
       elseArm: Node[] | undefined;
-      inlineGuard?: { variant: string; body: Node[] };
+      inlineGuard?: {
+        variant: string;
+        body: Node[];
+        _compiledVariant?: CompiledDirectCaseLabel;
+      };
       loc?: SourceLocation;
       pos?: number;
       lineMap?: LineMapSource;
@@ -175,10 +180,17 @@ export type Node =
       forBinding?: string;
       forExpr?: string;
       inlineNodes?: Node[];
+      /**
+       * Declared parameter sanitization of the bound inline template (notices resolved);
+       * only chooses the style for untrusted caller values.
+       */
+      inlineDeclared?: ReadonlyMap<string, SanitizeSpec>;
       sanitizeCtx?: IncludeSanitizeContext;
       loc?: SourceLocation;
       pos?: number;
       lineMap?: LineMapSource;
+      _compiledWith?: readonly (readonly [string, CompiledDirectExpr])[];
+      _compiledFor?: CompiledDirectExpr;
     }
   | {
       kind: typeof NODE_TMPL;
@@ -207,6 +219,7 @@ export interface MatchArm {
   body: Node[];
   guard?: string;
   _compiled?: CompiledDirectCondition;
+  _compiledVariants?: readonly CompiledDirectCaseLabel[];
 }
 
 export interface LoopMeta {
@@ -250,6 +263,7 @@ export function cloneNodes(nodes: readonly Node[]): Node[] {
           arms: node.arms.map((a) => ({
             ...a,
             _compiled: undefined,
+            _compiledVariants: undefined,
             variants: [...a.variants],
             body: cloneNodes(a.body),
           })),
@@ -257,6 +271,7 @@ export function cloneNodes(nodes: readonly Node[]): Node[] {
           inlineGuard: node.inlineGuard
             ? {
                 ...node.inlineGuard,
+                _compiledVariant: undefined,
                 body: cloneNodes(node.inlineGuard.body),
               }
             : undefined,
@@ -269,6 +284,8 @@ export function cloneNodes(nodes: readonly Node[]): Node[] {
       case NODE_INCLUDE:
         return {
           ...node,
+          _compiledWith: undefined,
+          _compiledFor: undefined,
           withMappings: new Map(node.withMappings),
           inlineNodes: node.inlineNodes
             ? cloneNodes(node.inlineNodes)

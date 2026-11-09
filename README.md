@@ -1,6 +1,6 @@
-# md-tmpl: Strongly typed markdown templates
+# md-tmpl
 
-Fast and powerful templates. Valid markdown. Strongly typed and great for agents.
+Typed prompt templates for LLMs.
 
 ## The Template
 
@@ -77,33 +77,24 @@ let output = code_review::Params::builder()
 Wrong types, missing fields, non-exhaustive matches — all caught at **build time**.
 Templates can also be loaded and validated at runtime for dynamic or hot-reload use cases.
 
-## Why?
-
-| Problem                       | Solution                                                                 |
-| ----------------------------- | ------------------------------------------------------------------------ |
-| Prompts buried in code        | **Markdown-native** — `.tmpl.md` files render in any editor or on GitHub |
-| Errors found in production    | **Strict typing** — caught at build time (Rust) or render time           |
-| LLMs drift templates silently | **Agent-safe** — the engine catches drift immediately                    |
-| Syntax breaks in previews     | **Markdown-safe** — renders cleanly in any viewer, even unrendered       |
-
 ## Features
 
-| Feature                        | Description                                                                                                                                               |
-| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Typed parameters**           | `str`, `untrusted str`, `int`, `float`, `bool`, `list(…)`, `struct(…)`, `enum(…)`, `option(…)`, `tmpl(…)`                                                 |
-| **Prompt-injection hardening** | `untrusted str` neutralizes LLM control tokens and enclosing-tag breakouts at every use — including inside includes; `sanitize` / `quarantine` filters    |
-| **Type aliases**               | `types:` defines reusable named types                                                                                                                     |
-| **Cross-template imports**     | `imports:` pulls types via dotted paths (`stem.TypeName`)                                                                                                 |
-| **Typed lists**                | `list(title = str, score = int)` — iterate with `{% for %}`, fields validated                                                                             |
-| **Enum dispatch**              | `match`/`case` with exhaustiveness checking and field narrowing                                                                                           |
-| **Includes as links**          | `{% include [name](path.tmpl.md) with … %}` — clickable, type-checked                                                                                     |
-| **Inline templates**           | `{% tmpl name %}` — reusable fragments without separate files                                                                                             |
-| **Constants**                  | `consts:` for file-scoped immutable values                                                                                                                |
-| **Environment variables**      | `env:` for compile-time injection from the build environment                                                                                              |
-| **String interpolation**       | `{{ expr }}` inside all quoted strings — conditions, includes, panic messages                                                                             |
-| **Built-in functions**         | `idx(b)`, `len(x)`, `kind(x)`, `kinds(t)`, `has(x)` + filters (`upper`, `lower`, `trim`, `join`, `limit`, `truncate`, `xml`, `json`, `sanitize`, `fence`) |
-| **Readable as markdown**       | `> {% %}` blockquote prefix keeps control flow visually separated from prose                                                                              |
-| **Markdown-safe syntax**       | Valid YAML frontmatter, clean `()` type syntax — looks good even unrendered                                                                               |
+| Feature                        | Description                                                                                                                                                                                                                                                         |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Typed parameters**           | `str` (untrusted by default), `trusted str`, `int`, `float`, `bool`, `list(…)`, `struct(…)`, `enum(…)`, `option(…)`, `tmpl(…)`                                                                                                                                      |
+| **Prompt-injection hardening** | `str` values are sanitized wherever they are emitted (control tokens, invisible characters, enclosing-tag breakouts); trust follows the value through includes; `trusted str` and `unsafe_trust(…)` opt out explicitly; `sanitize` / `quarantine` filters           |
+| **Type aliases**               | `types:` defines reusable named types                                                                                                                                                                                                                               |
+| **Cross-template imports**     | `imports:` pulls types via dotted paths (`stem.TypeName`)                                                                                                                                                                                                           |
+| **Typed lists**                | `list(title = str, score = int)` — iterate with `{% for %}`, fields validated                                                                                                                                                                                       |
+| **Enum dispatch**              | `match`/`case` with exhaustiveness checking and field narrowing                                                                                                                                                                                                     |
+| **Includes as links**          | `{% include [name](path.tmpl.md) with … %}` — clickable, type-checked                                                                                                                                                                                               |
+| **Inline templates**           | `{% tmpl name %}` — reusable fragments without separate files                                                                                                                                                                                                       |
+| **Constants**                  | `consts:` for file-scoped immutable values                                                                                                                                                                                                                          |
+| **Environment variables**      | `env:` for compile-time injection from the build environment                                                                                                                                                                                                        |
+| **String interpolation**       | `{{ expr }}` inside all quoted strings — conditions, includes, panic messages                                                                                                                                                                                       |
+| **Built-in functions**         | `idx(b)`, `len(x)`, `kind(x)`, `kinds(t)`, `has(x)`, `unsafe_trust(x)` + filters (`upper`, `lower`, `trim`, `fixed`, `join`, `limit`, `truncate`, `add`, `sub`, `xml`, `escape_json`, `json`, `sanitize`, `sanitize_tokens`, `quarantine`, `fence`, `unsafe_trust`) |
+| **Readable as markdown**       | `> {% %}` blockquote prefix keeps control flow visually separated from prose                                                                                                                                                                                        |
+| **Markdown-safe syntax**       | Valid YAML frontmatter and `()` compound type syntax                                                                                                                                                                                                                |
 
 > **Note:** The `> ` prefix is required only on `{% %}` tag lines — it is
 > stripped before compilation. Content lines between tags are normal text
@@ -136,7 +127,7 @@ let output = task_report::Params::builder()
 
 ## Performance
 
-Built for speed — the Rust core renders into a single pre-sized output buffer (reuse it across renders with the `render_*_into` variants to avoid per-render output allocation), backed by a native FFI engine in every binding.
+The Rust core renders into a single pre-sized output buffer (reuse it across renders with the `render_*_into` variants to avoid per-render output allocation), backed by a native FFI engine in Python, Go, and WebAssembly.
 
 ### Rust (render-only, pre-parsed)
 
@@ -152,9 +143,9 @@ See the language-specific READMEs or the [benchmarks suite](benchmarks/README.md
 
 ## Language Bindings
 
-First-class native packages across all major ecosystems — with tailored ergonomics and high-performance engines:
+Native packages across Rust, Python, Go, TypeScript, and WebAssembly:
 
-- **[Rust](crates/md-tmpl/README.md)** — Reusable-buffer rendering (`render_into` writes into your own `String`), build-time validation via proc macros (`include_template!`), ergonomic `TypedBuilder` & `serde` integration, `ctx!` macro, caching, and hot-reload.
+- **[Rust](crates/md-tmpl/README.md)** — Reusable-buffer rendering (`render_into` writes into your own `String`), build-time validation via proc macros (`include_template!`), `TypedBuilder` & `serde` integration, `ctx!` macro, caching, and hot-reload.
 - **[Python](crates/md-tmpl-python/README.md)** — 3–7× faster than Jinja2 for rendering (30–60× faster on cold parse). Auto-generated dataclasses, mypy/pyright static typing stubs, native Python 3.10+ structural pattern matching (`match`/`case`), and direct import hooks (`from prompts.review import CodeReview`).
 - **[Go](go/md_tmpl/README.md)** — Up to 5–6× faster than standard `text/template` on medium and large templates. Native Rust FFI engine, idiomatic struct tag mapping (`json:"field"`), map rendering, and static enum typing via `TaggedVariant`.
 - **[TypeScript](crates/md-tmpl-typescript/README.md)** — 2–8× faster than Handlebars and 1.3–6× faster than Mustache on pre-parsed rendering (with full runtime schema validation). Build-time TypeScript type generation (`generateTypesFromFile`), generic `TypedTemplate<P>` contracts, type-safe enum constructors (`defineVariants`), and exhaustive pattern matching (`match`).

@@ -39,5 +39,4 @@ pub(crate) use segments::{render_segments, render_segments_into};
 pub use value::{write_fixed_int, write_float, write_int, write_lower, write_upper};
 
 #[cfg(all(test, feature = "std"))]
-#[path = "../render_tests.rs"]
 mod render_tests;

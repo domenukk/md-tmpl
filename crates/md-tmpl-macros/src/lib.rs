@@ -213,30 +213,58 @@ const RUST_KEYWORDS: &[&str] = &[
 /// error).  For these we prefix with `__` and emit `#[serde(rename = "…")]`.
 const UNESCAPABLE_KEYWORDS: &[&str] = &["self", "Self", "super", "crate"];
 
-/// Create an identifier, using raw syntax (`r#name`) when `name` is a Rust
-/// keyword.  For the four keywords that cannot be raw identifiers (`self`,
-/// `Self`, `super`, `crate`), we prefix with `__` instead (e.g. `__self`).
+/// Create an identifier, normalizing hyphens to underscores (`my-var` → `my_var`)
+/// and using raw syntax (`r#name`) when `name` is a Rust keyword. For the four
+/// keywords that cannot be raw identifiers (`self`, `Self`, `super`, `crate`),
+/// we prefix with `__` instead (e.g. `__self`).
 ///
 /// Works for module names, field names, and any user-provided identifier that
-/// might collide with a keyword.
+/// might contain hyphens or collide with a keyword.
 pub(crate) fn make_ident(name: &str) -> Ident {
-    if UNESCAPABLE_KEYWORDS.contains(&name) {
-        format_ident!("__{}", name)
-    } else if RUST_KEYWORDS.contains(&name) {
-        format_ident!("r#{}", name)
+    let normalized = if name.contains('-') {
+        std::borrow::Cow::Owned(name.replace('-', "_"))
     } else {
-        Ident::new(name, proc_macro2::Span::call_site())
+        std::borrow::Cow::Borrowed(name)
+    };
+    let s = normalized.as_ref();
+    if UNESCAPABLE_KEYWORDS.contains(&s) {
+        format_ident!("__{}", s)
+    } else if RUST_KEYWORDS.contains(&s) {
+        format_ident!("r#{}", s)
+    } else {
+        Ident::new(s, proc_macro2::Span::call_site())
     }
 }
 
 /// Returns a `#[serde(rename = "original")]` attribute token stream when the
-/// name was mangled by [`make_ident`] (i.e., one of the un-escapable keywords).
+/// name was mangled by [`make_ident`] (un-escapable keywords or hyphenated names).
 /// Returns an empty token stream otherwise — safe to interpolate unconditionally.
 pub(crate) fn serde_rename_attr(name: &str) -> proc_macro2::TokenStream {
-    if UNESCAPABLE_KEYWORDS.contains(&name) {
+    let normalized = if name.contains('-') {
+        std::borrow::Cow::Owned(name.replace('-', "_"))
+    } else {
+        std::borrow::Cow::Borrowed(name)
+    };
+    if UNESCAPABLE_KEYWORDS.contains(&normalized.as_ref()) || name.contains('-') {
         quote! { #[serde(rename = #name)] }
     } else {
         quote! {}
+    }
+}
+
+/// Returns visibility tokens for a generated struct field (`pub(super)` for
+/// un-escapable keywords mangled with a leading `__` so `clippy::pub_underscore_fields`
+/// does not fire on `pub __self`, and `pub` for all other fields).
+pub(crate) fn field_vis(name: &str) -> proc_macro2::TokenStream {
+    let normalized = if name.contains('-') {
+        std::borrow::Cow::Owned(name.replace('-', "_"))
+    } else {
+        std::borrow::Cow::Borrowed(name)
+    };
+    if UNESCAPABLE_KEYWORDS.contains(&normalized.as_ref()) {
+        quote! { pub(super) }
+    } else {
+        quote! { pub }
     }
 }
 
@@ -294,7 +322,7 @@ fn build_imported_type_paths(
 ) -> std::collections::HashMap<String, proc_macro2::TokenStream> {
     let mut out = std::collections::HashMap::new();
     for (param, (stem, type_name)) in &fm.imported_type_params {
-        let ty = format_ident!("{}", type_name);
+        let ty = make_ident(type_name);
         if stem.is_empty() {
             out.insert(param.clone(), quote! { #ty });
         } else if let Some((_, base)) = import_paths.iter().find(|(s, _)| s == stem) {
@@ -493,6 +521,13 @@ fn emit_template_module(
                 let val_tokens = codegen_value(v);
                 quote! { (#k, #val_tokens) }
             });
+        let declared_sanitize_tokens = codegen::codegen_declared_sanitize_entries(
+            &md_tmpl_core::compiled::declared_sanitize(
+                &fm.param_sanitize,
+                fm.sanitize_notice.as_deref(),
+            ),
+            false,
+        );
 
         let struct_name = struct_name.unwrap_or_else(|| format_ident!("Params"));
         let source = StructGenSource::Module { doc_path };
@@ -510,7 +545,10 @@ fn emit_template_module(
             .as_ref()
             .map_or_else(|| quote! { None }, |d| quote! { Some(#d) });
 
+        let mod_doc = format!("Auto-generated template module for `{doc_path}`.");
+
         quote! {
+            #[doc = #mod_doc]
             pub mod #mod_ident {
                 #primary_include
                 #(const _: &str = include_str!(#dep_paths_str);)*
@@ -528,6 +566,7 @@ fn emit_template_module(
                         imported_consts: &[#(#imported_consts_tokens),*],
                         name: #name_token,
                         description: #desc_token,
+                        declared_sanitize: &[#(#declared_sanitize_tokens),*],
                     })
                 }
                 static __TEMPLATE: #crate_path::__private::LazyLock<#crate_path::Template> =

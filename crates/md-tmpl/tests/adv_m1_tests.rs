@@ -216,3 +216,48 @@ hello"#;
         "bare windows subdir path should fail"
     );
 }
+
+/// Verifies that `md_tmpl::template!` emits complete `#[doc = ...]` attributes on the generated
+/// module, structs, fields, enums, variants, type aliases, and constants under `#[deny(missing_docs)]`.
+#[deny(missing_docs)]
+pub mod strict_docs_mod {
+    md_tmpl::template!(
+        r#"---
+types:
+  - Severity = enum(Low, High(score = int))
+  - TagEntry = struct(key = str, val = str)
+
+consts:
+  - BANNER = str := "STRICT"
+
+params:
+  - title = untrusted str
+  - sev = Severity
+  - items = list(label = str, count = int)
+  - meta = struct(owner = str)
+
+allow_unused: true
+---
+{{ BANNER }}: {{ title }} ({{ kind(sev) }})"# => strict_doc_tmpl
+    );
+}
+
+#[test]
+fn template_macro_compiles_cleanly_under_deny_missing_docs() {
+    use strict_docs_mod::strict_doc_tmpl::{BANNER, Params, ParamsItemsItem, ParamsMeta, Severity};
+
+    assert_eq!(BANNER, "STRICT");
+    let p = Params {
+        title: "test".to_string(),
+        sev: Severity::High { score: 9 },
+        items: vec![ParamsItemsItem {
+            label: "a".to_string(),
+            count: 1,
+        }],
+        meta: ParamsMeta {
+            owner: "team".to_string(),
+        },
+    };
+    let rendered = p.render().expect("render succeeds");
+    assert_eq!(rendered, "STRICT: test (High)");
+}

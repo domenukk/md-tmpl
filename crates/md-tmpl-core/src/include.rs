@@ -123,13 +123,15 @@ fn interpolate_include_path(path: &str, scope: &Scope<'_>) -> Result<String, Tem
         let val_str = if let Some(lit) = crate::consts::strip_string_literal(expr) {
             crate::consts::unescape_string_literal(lit)
         } else {
-            let val = scope.resolve_path_str(expr).map_err(|_| {
-                TemplateError::syntax(format!(
-                    "unresolvable expression '{}{expr}{}' in include path '{path}'",
-                    crate::consts::EXPR_START,
-                    crate::consts::EXPR_END
-                ))
-            })?;
+            let val = crate::scope::ConditionOperand::compile(expr)
+                .and_then(|op| op.resolve(scope).map(alloc::borrow::Cow::into_owned))
+                .map_err(|_| {
+                    TemplateError::syntax(format!(
+                        "unresolvable expression '{}{expr}{}' in include path '{path}'",
+                        crate::consts::EXPR_START,
+                        crate::consts::EXPR_END
+                    ))
+                })?;
             val.to_string()
         };
 
@@ -158,13 +160,15 @@ fn wrap_include_error(err: TemplateError, include_path: &str) -> TemplateError {
 }
 
 /// Child segments to render for `site`, contextualized with its call-site sanitization
-/// context (see [`include_sanitize::contextualized_segments`]).
+/// context (see [`include_sanitize::contextualized_segments`]). `child` is an include
+/// target compiled without its own parameter policy and `declared` its declared specs.
 fn site_segments(
     site: Option<&CompiledInclude>,
     child: &Arc<[Segment]>,
+    declared: &include_sanitize::DeclaredSanitize,
 ) -> Result<Arc<[Segment]>, TemplateError> {
     match site {
-        Some(site) => include_sanitize::contextualized_segments(site, child),
+        Some(site) => include_sanitize::contextualized_segments(site, child, declared),
         None => Ok(Arc::clone(child)),
     }
 }
@@ -183,6 +187,7 @@ fn resolve_include_inner_into(
             compiled,
             &compiled.segments,
             directive,
+            site,
             scope,
             base_dir,
             output,
@@ -194,8 +199,10 @@ fn resolve_include_inner_into(
     //    Clone the compiled template to release the immutable borrow on scope,
     //    allowing mutable access for build_overrides/rendering.
     if let Some(compiled) = scope.get_inline_template(directive.path).cloned() {
-        let segments = site_segments(site, &compiled.segments)?;
-        return resolve_from_precompiled(&compiled, &segments, directive, scope, base_dir, output);
+        let segments = site_segments(site, &compiled.segments, &compiled.declared_sanitize)?;
+        return resolve_from_precompiled(
+            &compiled, &segments, directive, site, scope, base_dir, output,
+        );
     }
 
     // 1b. Check if path is a variable resolving to a template (higher-order).
@@ -213,6 +220,7 @@ fn resolve_from_precompiled(
     compiled: &CompiledInlineTemplate,
     segments: &[Segment],
     directive: &IncludeDirective<'_>,
+    site: Option<&CompiledInclude>,
     scope: &mut Scope<'_>,
     base_dir: Option<&Path>,
     output: &mut String,
@@ -222,6 +230,7 @@ fn resolve_from_precompiled(
         segments,
         &compiled.declarations,
         directive,
+        site,
         scope,
         base_dir,
         output,
@@ -238,7 +247,8 @@ fn resolve_from_tmpl_value(
     site: Option<&CompiledInclude>,
     output: &mut String,
 ) -> Result<(), TemplateError> {
-    let segments = site_segments(site, tmpl.segments_arc())?;
+    let segments =
+        include_sanitize::handle_segments(site, tmpl.segments_arc(), tmpl.declared_sanitize())?;
     scope.push_inline_templates(tmpl.inline_templates().clone());
     scope.push_consts_arc(&tmpl.consts(), &tmpl.imported_consts());
 
@@ -246,6 +256,7 @@ fn resolve_from_tmpl_value(
         &segments,
         tmpl.declarations(),
         directive,
+        site,
         scope,
         tmpl.base_dir(),
         output,
@@ -277,12 +288,13 @@ fn resolve_from_filesystem(
     // unchanged include files.
     if let Some(cache) = scope.cache() {
         let cached = cache.resolve_include(&include_path, scope.compile_env())?;
-        let segments = site_segments(site, &cached.segments)?;
+        let segments = site_segments(site, &cached.segments, &cached.declared_sanitize)?;
         scope.push_consts(cached.consts.clone(), cached.imported_consts.clone());
         let result = validate_and_render_into(
             &segments,
             &cached.declarations,
             directive,
+            site,
             scope,
             Some(cached.base_dir.as_path()),
             output,
@@ -312,14 +324,18 @@ fn resolve_from_filesystem(
         &fm.type_aliases,
         &fm.type_alias_sanitize,
     )?;
+    // Include target: parameter values take the caller's trust, so only the notice and
+    // enclosing-tag passes run before the call-site context is applied.
     crate::compiled::apply_frontmatter_sanitization(
         &mut segments,
-        &fm.param_sanitize,
+        &HashMap::new(),
         fm.sanitize_notice.as_deref(),
     );
     // Freshly compiled: apply the call-site sanitization context in place (no memo needed).
     if let Some(ctx) = site.and_then(|s| s.sanitize_ctx.as_deref()) {
-        include_sanitize::apply_include_context(&mut segments, ctx);
+        let declared =
+            crate::compiled::declared_sanitize(&fm.param_sanitize, fm.sanitize_notice.as_deref());
+        include_sanitize::apply_include_context(&mut segments, ctx, &declared);
     }
     crate::compiled::check_untrusted_include_paths(&segments)?;
 
@@ -348,6 +364,7 @@ fn resolve_from_filesystem(
         &segments,
         &fm.declarations,
         directive,
+        site,
         scope,
         Some(include_base),
         output,
@@ -362,12 +379,16 @@ fn validate_and_render_into(
     segments: &[crate::compiled::Segment],
     declarations: &[VarDecl],
     directive: &IncludeDirective<'_>,
+    site: Option<&CompiledInclude>,
     scope: &mut Scope<'_>,
     base_dir: Option<&Path>,
     output: &mut String,
 ) -> Result<(), TemplateError> {
     validate_include_contract(declarations, directive)?;
-    let overrides = build_overrides(directive, scope)?;
+    let overrides = match site {
+        Some(inc) => crate::include_core::build_compiled_overrides(&inc.compiled_with_vars, scope)?,
+        None => build_overrides(directive, scope)?,
+    };
     validate_include_types(declarations, &overrides, directive)?;
 
     scope.push_declarations(declarations);
@@ -380,7 +401,10 @@ fn validate_and_render_into(
     };
 
     let res = if let Some((binding, list_expr)) = &directive.for_each {
-        render_iterated_include_into(&ctx, binding, list_expr, scope, output)
+        let compiled_list = site
+            .and_then(|inc| inc.compiled_for_each.as_ref())
+            .map(|(_, op)| op);
+        render_iterated_include_into(&ctx, binding, list_expr, compiled_list, scope, output)
     } else {
         render_simple_include_into(&ctx, scope, directive, output)
     };
@@ -426,10 +450,16 @@ fn render_iterated_include_into(
     ctx: &IncludeRenderContext<'_>,
     binding: &str,
     list_expr: &str,
+    compiled_list: Option<&crate::scope::ConditionOperand>,
     scope: &mut Scope<'_>,
     output: &mut String,
 ) -> Result<(), TemplateError> {
-    let list_value = crate::parser::eval_expr(list_expr.trim(), scope)?;
+    let list_value = match compiled_list {
+        Some(op) => op.resolve(scope)?.into_owned(),
+        None => crate::scope::ConditionOperand::compile(list_expr)?
+            .resolve(scope)?
+            .into_owned(),
+    };
     let Value::List(items) = list_value else {
         return Err(TemplateError::syntax(format!(
             "'{list_expr}' is not a list"

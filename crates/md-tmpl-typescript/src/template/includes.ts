@@ -5,6 +5,7 @@
  */
 
 import { parseFrontmatter } from "../frontmatter.js";
+import { declaredSanitize } from "../include_sanitize.js";
 import { parseBody } from "../parser.js";
 import { applySanitizeAstPass } from "../sanitize_pass.js";
 import { type Value, fromJs, valueToJs } from "../value.js";
@@ -82,7 +83,9 @@ export function resolveIncludeEntry(
       fm.typeAliasSanitize,
       fm.sanitizeNotice,
     );
-    applySanitizeAstPass(nodes, fm.paramSanitize, fm.sanitizeNotice);
+    // Include target: parameter values take the caller's trust, so only the notice and
+    // enclosing-tag passes run; call sites apply their own context.
+    applySanitizeAstPass(nodes, undefined, fm.sanitizeNotice);
     const consts = new Map<string, Value>();
     for (const decl of fm.consts) {
       if (decl.defaultValue !== undefined) {
@@ -118,6 +121,7 @@ export function resolveIncludeEntry(
       baseDir: childBaseDir,
       typeAliases: fm.typeAliases.size > 0 ? fm.typeAliases : undefined,
       inlineTemplates,
+      declared: declaredSanitize(fm.paramSanitize, fm.sanitizeNotice),
     };
     cache.delete(absPath);
     cache.set(absPath, { hash, envHash, mtimeMs: stat.mtimeMs, cached });

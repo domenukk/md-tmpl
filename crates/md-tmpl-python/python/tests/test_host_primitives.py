@@ -23,6 +23,16 @@ def test_xml_codec() -> None:
     assert ("&amp;", "&") in md_tmpl.XML_DECODE_PAIRS
 
 
+def test_invisible_chars() -> None:
+    clean = "Hello 👨‍👩‍👧‍👦 ❤️ world"
+    assert md_tmpl.has_invisible_chars(clean) is False
+    assert md_tmpl.strip_invisible(clean) == clean
+
+    smuggled = "a\u200bb\u202ec\U000e0020d\x00e"
+    assert md_tmpl.has_invisible_chars(smuggled) is True
+    assert md_tmpl.strip_invisible(smuggled) == "abcde"
+
+
 def test_constants() -> None:
     assert md_tmpl.SANITIZE_NOTICE_TAG_PLACEHOLDER == "{tag}"
     assert md_tmpl.TOOL_OUTPUT_QUARANTINE_OPEN_TAG == "<tool_output_quarantine>"

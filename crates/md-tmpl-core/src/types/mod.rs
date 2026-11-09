@@ -118,7 +118,7 @@ impl VarType {
     ///   variants as `Value::Struct` with `__kind__` + typed fields.
     #[must_use]
     pub fn matches(&self, value: &Value) -> bool {
-        self.check(value).is_ok()
+        self.check_fast(value)
     }
 
     /// Validate `value` against this type, returning a structured error with
@@ -725,5 +725,4 @@ pub fn to_pascal_case(s: &str) -> String {
 // ---------------------------------------------------------------------------
 
 #[cfg(all(test, feature = "std"))]
-#[path = "types_tests.rs"]
 mod tests;

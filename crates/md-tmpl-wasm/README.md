@@ -34,6 +34,8 @@ console.log(tmpl.render({ name: "Alice", role: "an AI assistant" }));
 // → "You are an AI assistant. Hello Alice!"
 ```
 
+By default, `str` parameters are sanitized against control tokens, invisible characters, and XML/heading breakouts. Declare `trusted str` in frontmatter or apply `{{ expr | unsafe_trust }}` / `{{ unsafe_trust(expr) }}` at an interpolation site to emit trusted strings verbatim.
+
 ## Environment Variables
 
 Inject values at compile time from the build environment using `env:`
@@ -92,6 +94,26 @@ tmpl.importedConsts(): object
 tmpl.declarations(): [string, string][]
 tmpl.sourceHash(): number
 ```
+
+### Host Sanitization Primitives
+
+Standalone sanitization, escaping, quarantine, and truncation functions are exported alongside `Template`:
+
+```ts
+hasInvisibleChars(s: string): boolean
+stripInvisibleString(s: string): string
+escapeXmlString(s: string): string
+escapeJsonString(s: string): string
+sanitizeTokensString(s: string): string
+sanitizeRoleTokensString(s: string): string
+sanitizeString(s: string, tagSpec?: string): string
+sanitizeBlockString(s: string, tagSpec?: string, customNotice?: string): string
+quarantineUntrustedString(s: string, tagSpec?: string): string
+truncateMiddleString(s: string, limit: number, marker?: string): string
+truncateMiddleList(items: unknown[], limit: number, marker?: string): unknown[]
+```
+
+See **[SPEC.md](../../SPEC.md#host-sanitization-primitives)** for the full host primitive reference.
 
 ### Errors
 

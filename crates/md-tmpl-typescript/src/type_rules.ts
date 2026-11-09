@@ -11,6 +11,10 @@
 import type { VarDecl, VarType, VariantDecl } from "./frontmatter.js";
 import {
   DOT,
+  FILTER_UNSAFE_TRUST,
+  FN_UNSAFE_TRUST,
+  LIT_FALSE,
+  LIT_TRUE,
   OPTION_SOME,
   TYPE_ALIAS,
   TYPE_BOOL,
@@ -26,15 +30,16 @@ import {
   TYPE_UNTYPED_LIST,
 } from "./consts.js";
 import { splitPipes } from "./evaluator.js";
+import { parseFilter } from "./filters.js";
 import { closestName } from "./suggest.js";
 import type { TypeEnv } from "./type_env.js";
 
-/** A plain dotted variable path such as `user.address.city`. */
-const DOTTED_PATH_RE = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*$/;
+/** A plain dotted variable path such as `user.address.city` or `my-var.sub-field`. */
+const DOTTED_PATH_RE = /^[A-Za-z_][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*$/;
 
 /** A built-in call on a single dotted path argument, e.g. `kind(task.state)`. */
 const BUILTIN_CALL_RE =
-  /^(len|kind|has|kinds)\(\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*)\s*\)$/;
+  /^(len|kind|has|kinds|unsafe_trust)\(\s*([A-Za-z_][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*)\s*\)$/;
 
 /** Built-in functions whose argument type is checked at compile time. */
 enum Builtin {
@@ -42,6 +47,7 @@ enum Builtin {
   Kind = "kind",
   Has = "has",
   Kinds = "kinds",
+  UnsafeTrust = "unsafe_trust",
 }
 
 /** Comparison operators recognised in condition leaves (longest first). */
@@ -353,7 +359,18 @@ function builtinArgumentError(
       return isPlainEnum(ty)
         ? undefined
         : `kinds('${arg}'): expected enum type namespace, got ${label}`;
+    case Builtin.UnsafeTrust:
+      return ty.kind === TYPE_STR
+        ? undefined
+        : `'${arg}': '${FN_UNSAFE_TRUST}' requires a string, got ${label}`;
   }
+}
+
+function isNonStringLiteralOrNonStringFn(s: string): boolean {
+  const t = s.trim();
+  if (t === LIT_TRUE || t === LIT_FALSE) return true;
+  if (/^-?[0-9]+(?:\.[0-9]+)?$/.test(t)) return true;
+  return /^(len|idx|has|kinds)\s*\(/.test(t);
 }
 
 /**
@@ -439,9 +456,40 @@ export function resolveExprWithCheck(
  * argument-type error for `len()` / `kind()` / `has()` / `kinds()`.
  */
 export function operandError(expr: string, env: TypeEnv): string | undefined {
-  const operand = basePath(expr);
+  const parts = expr.includes("|") ? splitPipes(expr) : [expr];
+  const operand = (parts[0] ?? "").trim();
+  const filterStrs = parts.slice(1);
+
+  for (let i = 0; i < filterStrs.length; i++) {
+    const [fName, fArgs] = parseFilter((filterStrs[i] ?? "").trim());
+    if (fName === FILTER_UNSAFE_TRUST) {
+      if (fArgs !== undefined) {
+        return `'${FILTER_UNSAFE_TRUST}' does not take arguments`;
+      }
+      if (i === 0) {
+        if (isNonStringLiteralOrNonStringFn(operand)) {
+          return `'${FILTER_UNSAFE_TRUST}' requires a string`;
+        }
+        if (DOTTED_PATH_RE.test(operand)) {
+          const pathErr = pathAccessError(operand, env);
+          if (pathErr !== undefined) return pathErr;
+          const argType = resolvedType(operand, env);
+          if (argType !== undefined && argType.kind !== TYPE_STR) {
+            return `'${operand}': '${FILTER_UNSAFE_TRUST}' requires a string, got ${formatVarType(argType)}`;
+          }
+        }
+      }
+    }
+  }
+
   if (!operand.includes("(")) {
     return pathAccessError(operand, env);
+  }
+  if (operand.startsWith(`${FN_UNSAFE_TRUST}(`) && operand.endsWith(")")) {
+    const innerArg = operand.slice(FN_UNSAFE_TRUST.length + 1, -1).trim();
+    if (isNonStringLiteralOrNonStringFn(innerArg)) {
+      return `'${FN_UNSAFE_TRUST}' requires a string`;
+    }
   }
   const call = BUILTIN_CALL_RE.exec(operand);
   if (call === null) return pathAccessError(operand, env);

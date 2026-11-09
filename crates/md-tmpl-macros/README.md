@@ -1,16 +1,6 @@
 # md-tmpl-macros
 
-Proc macros for **build-time** template validation, pre-parsing, and
-typed parameter struct generation for
-[md-tmpl](https://github.com/domenukk/md-tmpl).
-
-## Why?
-
-The core `md-tmpl` crate validates at runtime. This companion
-crate moves validation to `cargo build` — syntax errors, unknown
-variables, and type mismatches become build errors. It also generates
-typed Rust structs from frontmatter. Templates can still be loaded at
-runtime for dynamic or hot-reload use cases.
+Build-time macros for [md-tmpl](https://github.com/domenukk/md-tmpl).
 
 ## Installation
 
@@ -120,7 +110,8 @@ let output = greeting::Params {
 
 | Frontmatter Type            | Rust Type                                            |
 | :-------------------------- | :--------------------------------------------------- |
-| `str`                       | `String`                                             |
+| `str`                       | `String` (sanitized by default)                      |
+| `trusted str`               | `String` (emitted verbatim)                          |
 | `int`                       | `i64`                                                |
 | `float`                     | `f64`                                                |
 | `bool`                      | `bool`                                               |

@@ -51,6 +51,20 @@ pub fn escape_json_string(s: &str) -> String {
     md_tmpl::escape_json_str(s).into_owned()
 }
 
+/// Return `true` if `s` contains any stripped invisible Unicode, Bidi control, Plane 14 Tag, or C0/DEL/C1 control character.
+#[wasm_bindgen(js_name = "hasInvisibleChars")]
+#[must_use]
+pub fn has_invisible_chars(s: &str) -> bool {
+    md_tmpl::has_invisible_chars(s)
+}
+
+/// Strip invisible Unicode smuggling characters, Bidi overrides/isolates, Plane 14 Tags, and C0/DEL/C1 controls in a single pass.
+#[wasm_bindgen(js_name = "stripInvisibleString")]
+#[must_use]
+pub fn strip_invisible_string(s: &str) -> String {
+    md_tmpl::strip_invisible_str(s).into_owned()
+}
+
 /// Return `true` if `s` contains any known LLM control token or `<|...|>` / `<｜...｜>` special token.
 #[wasm_bindgen(js_name = "hasControlTokens")]
 #[must_use]

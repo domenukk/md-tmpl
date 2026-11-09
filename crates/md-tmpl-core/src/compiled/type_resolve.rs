@@ -146,7 +146,8 @@ pub(super) fn resolve_operand_type<'a>(
         // Literals and interpolated strings also have no declared type.
         ConditionOperand::Literal(_)
         | ConditionOperand::InterpolatedStr(_)
-        | ConditionOperand::Kinds(_) => None,
+        | ConditionOperand::Kinds(_)
+        | ConditionOperand::Filtered { .. } => None,
     }
 }
 
@@ -154,6 +155,7 @@ pub(super) fn operand_to_str(operand: &ConditionOperand) -> &str {
     match operand {
         ConditionOperand::Literal(_) => "literal",
         ConditionOperand::InterpolatedStr(_) => "interpolated string",
+        ConditionOperand::Filtered { base, .. } => operand_to_str(base),
         ConditionOperand::Path { path, .. }
         | ConditionOperand::Len(path)
         | ConditionOperand::Kind(path)
@@ -172,8 +174,39 @@ pub(super) fn validate_operand(
         ConditionOperand::Literal(_)
         | ConditionOperand::Idx(_)
         | ConditionOperand::InterpolatedStr(_) => {}
-        ConditionOperand::Path { path, .. } => {
+        ConditionOperand::Filtered { base, filters } => {
+            validate_operand(base, env, errors);
+            if filters
+                .first()
+                .is_some_and(|f| f.kind == crate::compiled::FilterKind::UnsafeTrust)
+                && matches!(
+                    base.as_ref(),
+                    ConditionOperand::Literal(
+                        crate::value::Value::Int(_)
+                            | crate::value::Value::Float(_)
+                            | crate::value::Value::Bool(_)
+                    ) | ConditionOperand::Len(_)
+                        | ConditionOperand::Idx(_)
+                        | ConditionOperand::Has(_)
+                        | ConditionOperand::Kinds(_)
+                )
+            {
+                errors.push(String::from("'unsafe_trust' requires a string"));
+            }
+        }
+        ConditionOperand::Path { path, filters } => {
             validate_compiled_path(path, env, errors);
+            if filters
+                .first()
+                .is_some_and(|f| f.kind == crate::compiled::FilterKind::UnsafeTrust)
+                && let Some(ty) = resolve_compiled_path_type(path, env)
+                && *ty != VarType::Str
+            {
+                errors.push(format!(
+                    "'{}': 'unsafe_trust' requires a string, got {ty}",
+                    path.as_str()
+                ));
+            }
         }
         ConditionOperand::Len(path) => {
             validate_compiled_path(path, env, errors);

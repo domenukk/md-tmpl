@@ -66,6 +66,7 @@ export function tokenizeCondition(input: string): Token[] {
   const tokens: Token[] = [];
   let i = 0;
   const len = input.length;
+  let inCaseVariants = false;
 
   while (i < len) {
     const code = input.charCodeAt(i);
@@ -78,12 +79,14 @@ export function tokenizeCondition(input: string): Token[] {
     // Operators starting with &, |, =, !, <, >, (, )
     if (code === 38 /* '&' */) {
       if (input.charCodeAt(i + 1) === 38) {
+        inCaseVariants = false;
         tokens.push({ kind: TokKind.And, value: OP_AND });
         i += 2;
         continue;
       }
     } else if (code === 124 /* '|' */) {
       if (input.charCodeAt(i + 1) === 124) {
+        inCaseVariants = false;
         tokens.push({ kind: TokKind.Or, value: OP_OR });
         i += 2;
         continue;
@@ -129,12 +132,13 @@ export function tokenizeCondition(input: string): Token[] {
       i++;
       continue;
     } else if (code === 41 /* ')' */) {
+      inCaseVariants = false;
       tokens.push({ kind: TokKind.RParen, value: PAREN_CLOSE });
       i++;
       continue;
     }
 
-    // String literals
+    // String literals (possibly followed by `| filter` pipes)
     if (code === 34 /* '"' */ || code === 39 /* "'" */) {
       let j = i + 1;
       while (j < len && input.charCodeAt(j) !== code) {
@@ -146,8 +150,18 @@ export function tokenizeCondition(input: string): Token[] {
           `unclosed string literal in condition: ${input.slice(i)}`,
         );
       }
-      tokens.push({ kind: TokKind.StrLit, value: input.slice(i, j + 1) });
-      i = j + 1;
+      const strEnd = j + 1;
+      const pipedEnd = consumeTrailingFilterPipes(
+        input,
+        strEnd,
+        len,
+        inCaseVariants,
+      );
+      tokens.push({
+        kind: pipedEnd > strEnd ? TokKind.Ident : TokKind.StrLit,
+        value: input.slice(i, pipedEnd),
+      });
+      i = pipedEnd;
       continue;
     }
 
@@ -168,8 +182,17 @@ export function tokenizeCondition(input: string): Token[] {
         if ((c >= 48 && c <= 57) || c === 46 /* '.' */) j++;
         else break;
       }
-      tokens.push({ kind: TokKind.NumLit, value: input.slice(i, j) });
-      i = j;
+      const pipedEnd = consumeTrailingFilterPipes(
+        input,
+        j,
+        len,
+        inCaseVariants,
+      );
+      tokens.push({
+        kind: pipedEnd > j ? TokKind.Ident : TokKind.NumLit,
+        value: input.slice(i, pipedEnd),
+      });
+      i = pipedEnd;
       continue;
     }
 
@@ -182,8 +205,17 @@ export function tokenizeCondition(input: string): Token[] {
 
       // Check for keywords
       if (word === LIT_TRUE || word === LIT_FALSE) {
-        tokens.push({ kind: TokKind.BoolLit, value: word });
-        i = j;
+        const pipedEnd = consumeTrailingFilterPipes(
+          input,
+          j,
+          len,
+          inCaseVariants,
+        );
+        tokens.push({
+          kind: pipedEnd > j ? TokKind.Ident : TokKind.BoolLit,
+          value: input.slice(i, pipedEnd),
+        });
+        i = pipedEnd;
         continue;
       }
       if (word === KW_IN) {
@@ -197,6 +229,7 @@ export function tokenizeCondition(input: string): Token[] {
         continue;
       }
       if (word === KW_CASE) {
+        inCaseVariants = true;
         tokens.push({ kind: TokKind.Case, value: word });
         i = j;
         continue;
@@ -218,6 +251,8 @@ export function tokenizeCondition(input: string): Token[] {
           j++;
         }
       }
+      // Consume trailing filter pipes (`| filter` or `| filter(args)`) when not in `case A | B`
+      j = consumeTrailingFilterPipes(input, j, len, inCaseVariants);
       tokens.push({ kind: TokKind.Ident, value: input.slice(i, j) });
       i = j;
       continue;
@@ -231,6 +266,71 @@ export function tokenizeCondition(input: string): Token[] {
   return tokens;
 }
 
+function consumeTrailingFilterPipes(
+  input: string,
+  startPos: number,
+  len: number,
+  inCaseVariants: boolean,
+): number {
+  if (inCaseVariants) {
+    return startPos;
+  }
+  let j = startPos;
+  for (;;) {
+    let k = j;
+    while (
+      k < len &&
+      (input.charCodeAt(k) === 32 /* ' ' */ ||
+        input.charCodeAt(k) === 9) /* '\t' */
+    ) {
+      k++;
+    }
+    if (
+      k < len &&
+      input.charCodeAt(k) === 124 /* '|' */ &&
+      input.charCodeAt(k + 1) !== 124 /* not '||' */
+    ) {
+      k++;
+      while (
+        k < len &&
+        (input.charCodeAt(k) === 32 /* ' ' */ ||
+          input.charCodeAt(k) === 9) /* '\t' */
+      ) {
+        k++;
+      }
+      if (k < len && isIdentStartCode(input.charCodeAt(k))) {
+        k++;
+        while (k < len && isIdentCharCode(input.charCodeAt(k))) k++;
+        if (k < len && input.charCodeAt(k) === 40 /* '(' */) {
+          let depth = 1;
+          k++;
+          while (k < len && depth > 0) {
+            const c = input.charCodeAt(k);
+            if (c === 34 /* '"' */ || c === 39 /* "'" */) {
+              const q = c;
+              k++;
+              while (k < len && input.charCodeAt(k) !== q) {
+                if (input.charCodeAt(k) === 92 /* '\\' */ && k + 1 < len)
+                  k += 2;
+                else k++;
+              }
+            } else if (c === 40 /* '(' */) {
+              depth++;
+            } else if (c === 41 /* ')' */) {
+              depth--;
+            }
+            k++;
+          }
+        }
+        j = k;
+        continue;
+      }
+    }
+    break;
+  }
+  return j;
+}
+
 function isIdentStartCode(code: number): boolean {
   return (
     (code >= 97 && code <= 122) || (code >= 65 && code <= 90) || code === 95
@@ -238,7 +338,7 @@ function isIdentStartCode(code: number): boolean {
 }
 
 function isIdentCharCode(code: number): boolean {
-  return isIdentStartCode(code) || (code >= 48 && code <= 57);
+  return isIdentStartCode(code) || (code >= 48 && code <= 57) || code === 45;
 }
 
 export function isIdentStart(ch: string): boolean {

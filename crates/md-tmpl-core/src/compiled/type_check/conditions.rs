@@ -169,6 +169,15 @@ fn resolve_operand_vartype(operand: &ConditionOperand, env: &TypeEnv<'_>) -> Opt
         ConditionOperand::Len(_) | ConditionOperand::Idx(_) => Some(VarType::Int),
         ConditionOperand::Has(_) => Some(VarType::Bool),
         ConditionOperand::Path { path, .. } => resolve_compiled_path_type(path, env).cloned(),
+        ConditionOperand::Filtered { base, filters } => match filters.last().map(|f| f.kind) {
+            Some(
+                crate::compiled::FilterKind::Add
+                | crate::compiled::FilterKind::Sub
+                | crate::compiled::FilterKind::Limit,
+            )
+            | None => resolve_operand_vartype(base, env),
+            Some(_) => Some(VarType::Str),
+        },
     }
 }
 

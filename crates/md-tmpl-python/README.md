@@ -1,6 +1,6 @@
 # md-tmpl
 
-Strongly-typed prompt templates for LLMs.
+Typed prompt templates for LLMs.
 
 ```python
 from md_tmpl import template
@@ -50,12 +50,6 @@ Review by {{ reviewer }}:
 
 > {% /for %}
 ```
-
-## Why?
-
-- **Type-safe** — every parameter declares a type; mismatches are caught at render time with clear errors, not silently buried in LLM output.
-- **Markdown-native** — prompts live in `.tmpl.md` files, readable in any editor and on GitHub. No string soup.
-- **Fast** — native-speed engine, 4–8× faster than Jinja2 for rendering, 75× faster to parse.
 
 ## Installation
 
@@ -110,7 +104,8 @@ type alias `priority` → class `Priority`.
 
 | Frontmatter Type            | Python Equivalent                             |
 | :-------------------------- | :-------------------------------------------- |
-| `str`                       | `str`                                         |
+| `str`                       | `str` (sanitized by default)                  |
+| `trusted str`               | `str` (emitted verbatim)                      |
 | `int`                       | `int`                                         |
 | `float`                     | `float`                                       |
 | `bool`                      | `bool`                                        |
@@ -276,31 +271,36 @@ on templates where every parameter has a default.
 
 ### Filters
 
-| Filter            | Example                                                                   |
-| ----------------- | ------------------------------------------------------------------------- |
-| `upper`           | `{{ name \| upper }}`                                                     |
-| `lower`           | `{{ name \| lower }}`                                                     |
-| `trim`            | `{{ name \| trim }}`                                                      |
-| `fixed(N)`        | `{{ score \| fixed(2) }}`                                                 |
-| `join(sep)`       | `{{ tags \| join(", ") }}`                                                |
-| `limit(N)`        | `{{ items \| limit(3) }}`                                                 |
-| `add(N)`          | `{{ count \| add(1) }}`                                                   |
-| `sub(N)`          | `{{ count \| sub(1) }}`                                                   |
-| `escape_xml`      | `{{ val \| escape_xml }}` (alias: `xml`)                                  |
-| `escape_json`     | `{{ val \| escape_json }}` (alias: `json`)                                |
-| `sanitize_tokens` | `{{ val \| sanitize_tokens }}` or `{{ val \| sanitize_tokens("tag") }}`   |
-| `fence(lang)`     | `{{ code \| fence("python") }}`                                           |
-| `quarantine(tag)` | `{{ untrusted \| quarantine }}` or `{{ untrusted \| quarantine("tag") }}` |
+| Filter             | Example                                                                   |
+| ------------------ | ------------------------------------------------------------------------- |
+| `upper`            | `{{ name \| upper }}`                                                     |
+| `lower`            | `{{ name \| lower }}`                                                     |
+| `trim`             | `{{ name \| trim }}`                                                      |
+| `fixed(N)`         | `{{ score \| fixed(2) }}`                                                 |
+| `join(sep)`        | `{{ tags \| join(", ") }}`                                                |
+| `limit(N)`         | `{{ items \| limit(3) }}`                                                 |
+| `truncate(N, [m])` | `{{ text \| truncate(1024) }}` (middle-out string/list truncation)        |
+| `add(N)`           | `{{ count \| add(1) }}`                                                   |
+| `sub(N)`           | `{{ count \| sub(1) }}`                                                   |
+| `escape_xml`       | `{{ val \| escape_xml }}` (alias: `xml`)                                  |
+| `escape_json`      | `{{ val \| escape_json }}` (escape JSON string body)                      |
+| `json([N])`        | `{{ val \| json }}` or `{{ val \| json(2) }}` (serialize value to JSON)   |
+| `sanitize`         | `{{ val \| sanitize }}` or `{{ val \| sanitize("tag") }}`                 |
+| `sanitize_tokens`  | `{{ val \| sanitize_tokens }}` or `{{ val \| sanitize_tokens("tag") }}`   |
+| `fence(lang)`      | `{{ code \| fence("python") }}`                                           |
+| `quarantine(tag)`  | `{{ untrusted \| quarantine }}` or `{{ untrusted \| quarantine("tag") }}` |
+| `unsafe_trust`     | `{{ raw_fragment \| unsafe_trust }}`                                      |
 
 ### Built-in Functions
 
-| Function       | Example                                             |
-| -------------- | --------------------------------------------------- |
-| `idx(binding)` | `{{ idx(item) }}` — 0-based loop index              |
-| `len(expr)`    | `{{ len(items) }}` — list or string length          |
-| `kind(expr)`   | `{{ kind(status) }}` — enum variant name            |
-| `kinds(type)`  | `{{ kinds(Status) }}` — list of enum variant names  |
-| `has(expr)`    | `{{ has(field) }}` — true if `option(T)` is present |
+| Function             | Example                                                   |
+| -------------------- | --------------------------------------------------------- |
+| `idx(binding)`       | `{{ idx(item) }}` — 0-based loop index                    |
+| `len(expr)`          | `{{ len(items) }}` — list or string length                |
+| `kind(expr)`         | `{{ kind(status) }}` — enum variant name                  |
+| `kinds(type)`        | `{{ kinds(Status) }}` — list of enum variant names        |
+| `has(expr)`          | `{{ has(field) }}` — true if `option(T)` is present       |
+| `unsafe_trust(expr)` | `{{ unsafe_trust(raw_fragment) }}` — emit string verbatim |
 
 ### Includes
 
@@ -388,6 +388,28 @@ cache.clear()           # invalidate all entries
 | `tmpl.declarations()`                          | Return `[(name, type_str), …]` for all params           |
 | `tmpl.consts()`                                | Return `{name: value, …}` for constants                 |
 | `tmpl.validate_declarations_against(…)`        | Raise `ValueError` if declarations changed (hot-reload) |
+
+### Host Sanitization Primitives
+
+Standalone sanitization, escaping, quarantine, and truncation functions are exported from `md_tmpl`:
+
+```python
+from md_tmpl import (
+    has_invisible_chars,
+    strip_invisible,
+    escape_xml,
+    escape_json,
+    sanitize_tokens,
+    sanitize_role_tokens,
+    sanitize,
+    sanitize_block,
+    quarantine_untrusted,
+    truncate_middle,
+    truncate_middle_list,
+)
+```
+
+See **[SPEC.md](../../SPEC.md#host-sanitization-primitives)** for the full host primitive reference.
 
 ### Errors
 

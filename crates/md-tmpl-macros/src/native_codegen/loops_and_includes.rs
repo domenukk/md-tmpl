@@ -163,30 +163,64 @@ fn remove_shadowed_bindings(bindings: &mut HashMap<String, Binding>, root_name: 
     bindings.retain(|k, _| k != root_name && !k.starts_with(&prefix));
 }
 
+fn unwrap_unsafe_trust_arg(raw: &str) -> Option<&str> {
+    let mut cur = raw.trim();
+    let (base, tail) = md_tmpl_core::split_pipe_aware(cur);
+    if !tail.trim().is_empty() {
+        for step in md_tmpl_core::split_filters_aware(tail) {
+            if step.trim() != "unsafe_trust" {
+                return None;
+            }
+        }
+        cur = base.trim();
+    }
+    while let Some(rest) = cur.strip_prefix("unsafe_trust") {
+        let rest = rest.trim_start();
+        let Some(inner) = rest.strip_prefix('(').and_then(|s| s.strip_suffix(')')) else {
+            break;
+        };
+        cur = inner.trim();
+    }
+    if cur.is_empty() { None } else { Some(cur) }
+}
+
+struct IncludeWithSpec<'a> {
+    key: &'a str,
+    val_expr: &'a str,
+    compiled_op: Option<&'a md_tmpl_core::compiled::ConditionOperand>,
+    expected_vt: &'a VarType,
+}
+
 fn bind_include_with_var(
-    key: &str,
-    val_expr: &str,
-    expected_vt: &VarType,
+    spec: &IncludeWithSpec<'_>,
     scope: &NativeScope,
     child_scope: &mut NativeScope,
     setup_stmts: &mut Vec<TokenStream>,
     counter: &mut usize,
 ) -> Option<()> {
+    let key = spec.key;
+    let expected_vt = spec.expected_vt;
     let cp = crate_path();
+    let precompiled_interp = match spec.compiled_op {
+        Some(md_tmpl_core::compiled::ConditionOperand::InterpolatedStr(segs)) => Some(segs),
+        Some(md_tmpl_core::compiled::ConditionOperand::Filtered { base, filters })
+            if filters.len() == 1
+                && filters[0].kind == md_tmpl_core::compiled::FilterKind::UnsafeTrust =>
+        {
+            match base.as_ref() {
+                md_tmpl_core::compiled::ConditionOperand::InterpolatedStr(segs) => Some(segs),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    let val_expr = unwrap_unsafe_trust_arg(spec.val_expr)?;
     if let Some(inner) = md_tmpl_core::consts::strip_string_literal(val_expr) {
         if *expected_vt != VarType::Str {
             return None;
         }
-        let unescaped = md_tmpl_core::consts::unescape_string_literal(inner);
-        if unescaped.contains(md_tmpl_core::consts::EXPR_START) {
-            let segs = match md_tmpl_core::compiled::compile_body(&unescaped) {
-                Ok(s) => s,
-                Err(err) => {
-                    drop(err);
-                    return None;
-                }
-            };
-            let seg_tokens = codegen_segments(&segs, scope, counter)?;
+        if let Some(segs) = precompiled_interp {
+            let seg_tokens = codegen_segments(segs, scope, counter)?;
             let id = *counter;
             *counter += 1;
             let arg_ident = format_ident!("_md_inc_arg_{id}_{}", sanitize_ident(key));
@@ -205,16 +239,16 @@ fn bind_include_with_var(
                     type_prefix: String::new(),
                 },
             );
-        } else {
-            child_scope
-                .static_values
-                .insert(key.to_string(), Value::Str(unescaped));
+            return Some(());
         }
+        let unescaped = md_tmpl_core::consts::unescape_string_literal(inner);
+        if unescaped.contains(md_tmpl_core::consts::EXPR_START) {
+            return None;
+        }
+        child_scope
+            .static_values
+            .insert(key.to_string(), Value::Str(unescaped));
         return Some(());
-    }
-
-    if val_expr.contains(md_tmpl_core::consts::PIPE) {
-        return None;
     }
 
     let path = CompiledPath::compile(val_expr);
@@ -262,7 +296,8 @@ fn codegen_include_for_each(
     setup_stmts: &[TokenStream],
     counter: &mut usize,
 ) -> Option<TokenStream> {
-    let list_path = CompiledPath::compile(list_expr_str.trim());
+    let list_unwrapped = unwrap_unsafe_trust_arg(list_expr_str)?;
+    let list_path = CompiledPath::compile(list_unwrapped);
     let ResolvedValue::Runtime(list_binding) = scope.resolve_path(&list_path)? else {
         return None;
     };
@@ -344,17 +379,21 @@ pub(super) fn codegen_include(
     let mut setup_stmts = Vec::new();
     let mut provided_keys = std::collections::HashSet::new();
 
-    for (key_cow, val_expr_cow) in &inc.with_vars {
+    for (idx, (key_cow, val_expr_cow)) in inc.with_vars.iter().enumerate() {
         let key = key_cow.as_ref();
         let val_expr = val_expr_cow.as_ref().trim();
+        let compiled_op = inc.compiled_with_vars.get(idx).map(|(_, op)| op);
         provided_keys.insert(key.to_string());
 
         let decl = compiled.declarations.iter().find(|d| d.name == key)?;
         let expected_vt = normalize_var_type(&decl.var_type);
         bind_include_with_var(
-            key,
-            val_expr,
-            &expected_vt,
+            &IncludeWithSpec {
+                key,
+                val_expr,
+                compiled_op,
+                expected_vt: &expected_vt,
+            },
             scope,
             &mut child_scope,
             &mut setup_stmts,

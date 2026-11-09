@@ -125,7 +125,8 @@ fn build_direct_enum_setter(
             let mut dummy_subs = Vec::new();
             for inner_decl in &var.fields {
                 let inner_field = crate::make_ident(&inner_decl.name);
-                let bound_ident = format_ident!("__md_tmpl_enum_field_{}", inner_decl.name);
+                let bound_ident =
+                    format_ident!("__md_tmpl_enum_field_{}", inner_decl.name.replace('-', "_"));
                 let (_, inner_set) = var_type_to_rust(
                     &inner_decl.var_type,
                     &format!("{parent_prefix}{var_ident}"),
@@ -169,10 +170,11 @@ pub(crate) fn generate_toplevel_enum(
     name: &str,
     variants: &[md_tmpl_core::VariantDecl],
 ) -> proc_macro2::TokenStream {
-    let enum_ident = format_ident!("{}", name);
+    let clean_name = name.replace('-', "_");
+    let enum_ident = crate::make_ident(name);
     let doc = format!("Type alias `{name}` from template `types:` block.");
     let mut sub_types = Vec::new();
-    let def = emit_enum_definition(&enum_ident, &doc, variants, name, &mut sub_types);
+    let def = emit_enum_definition(&enum_ident, &doc, variants, &clean_name, &mut sub_types);
     quote! {
         #(#sub_types)*
         #def
@@ -203,8 +205,10 @@ fn emit_enum_definition(
             None
         };
 
+        let var_doc = format!("Variant `{}`.", var.name);
         if var.fields.is_empty() {
             variant_tokens.push(quote! {
+                #[doc = #var_doc]
                 #serde_rename
                 #var_ident
             });
@@ -223,9 +227,18 @@ fn emit_enum_definition(
                 } else {
                     quote! {}
                 };
-                struct_fields.push(quote! { #inner_rename #inner_field: #inner_type });
+                let field_doc = format!(
+                    "Variant field `{}` (`{}`).",
+                    inner_decl.name, inner_decl.var_type
+                );
+                struct_fields.push(quote! {
+                    #[doc = #field_doc]
+                    #inner_rename
+                    #inner_field: #inner_type
+                });
             }
             variant_tokens.push(quote! {
+                #[doc = #var_doc]
                 #serde_rename
                 #var_ident {
                     #(#struct_fields),*
@@ -455,7 +468,7 @@ fn mixed_serialize_arms(
                 let bound_idents: Vec<_> = v
                     .fields
                     .iter()
-                    .map(|f| format_ident!("__md_tmpl_field_{}", f.name))
+                    .map(|f| format_ident!("__md_tmpl_field_{}", f.name.replace('-', "_")))
                     .collect();
                 let field_names: Vec<_> = v.fields.iter().map(|f| f.name.as_str()).collect();
                 quote! {
@@ -489,7 +502,7 @@ fn mixed_deserialize_kind_arms(
             let field_idents: Vec<_> = v
                 .fields
                 .iter()
-                .map(|f| format_ident!("__field_{}", f.name))
+                .map(|f| format_ident!("__field_{}", f.name.replace('-', "_")))
                 .collect();
             let field_names: Vec<_> = v.fields.iter().map(|f| f.name.as_str()).collect();
             let field_result_idents: Vec<_> = v

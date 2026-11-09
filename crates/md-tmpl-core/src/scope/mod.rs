@@ -2,7 +2,6 @@
 
 mod expr;
 #[cfg(test)]
-#[path = "scope_tests.rs"]
 mod tests;
 
 use alloc::{
@@ -678,125 +677,6 @@ impl<'a> Scope<'a> {
         }
     }
 
-    /// Try to evaluate a function call expression like `idx(item)` or `len(items)`.
-    ///
-    /// Returns `None` if the expression doesn't look like a function call,
-    /// `Some(Ok(...))` on success, or `Some(Err(...))` on evaluation failure.
-    pub(crate) fn try_call_function(&self, expr: &str) -> Option<Result<Value, TemplateError>> {
-        use crate::consts::{FN_HAS, FN_IDX, FN_KIND, FN_KINDS, FN_LEN};
-        let (func_name, arg) = parse_function_call(expr)?;
-        match func_name {
-            FN_IDX => self.call_idx(arg),
-            FN_LEN => Some(self.call_len(arg)),
-            FN_KIND => Some(self.call_kind(arg)),
-            FN_KINDS => Some(self.call_kinds(arg)),
-            FN_HAS => Some(self.call_has(arg)),
-            _ => None,
-        }
-    }
-
-    /// Evaluate `idx(binding)` — returns the current loop index.
-    fn call_idx(&self, arg: &str) -> Option<Result<Value, TemplateError>> {
-        let meta = self.get_loop_meta(arg)?;
-        Some(Ok(Value::Int(meta.index)))
-    }
-
-    /// Evaluate `len(path)` — returns the length of a list or string.
-    fn call_len(&self, arg: &str) -> Result<Value, TemplateError> {
-        let val = self.resolve_path_str(arg)?;
-        let count = match val {
-            // `.len()` cannot exceed `isize::MAX`, which always fits in `i64`.
-            Value::List(l) => i64::try_from(l.len()).expect("len <= isize::MAX < i64::MAX"),
-            Value::Str(s) => i64::try_from(s.len()).expect("len <= isize::MAX < i64::MAX"),
-            _ => {
-                return Err(TemplateError::syntax(format!(
-                    "len() requires a list or string, got {}",
-                    val.type_name()
-                )));
-            }
-        };
-        Ok(Value::Int(count))
-    }
-
-    /// Evaluate `kind(path)` — returns the variant name of an enum value.
-    fn call_kind(&self, arg: &str) -> Result<Value, TemplateError> {
-        use crate::consts::ENUM_TAG_KEY;
-        let val = self.resolve_path_str(arg)?;
-        if self.is_option_path(arg) {
-            return match val {
-                Value::None => Ok(Value::Str(crate::consts::OPTION_NONE.into())),
-                _ => Ok(Value::Str(crate::consts::OPTION_SOME.into())),
-            };
-        }
-        match val {
-            Value::Struct(d) => {
-                if let Some(Value::Str(kind)) = d.get(ENUM_TAG_KEY) {
-                    Ok(Value::Str(kind.clone()))
-                } else {
-                    Err(TemplateError::syntax(
-                        "kind() requires an enum value (dict with variant tag)",
-                    ))
-                }
-            }
-            Value::Str(s) => {
-                if let Some(decl_ty) = self.resolve_declared_type(arg) {
-                    let is_enum_or_option_enum = match decl_ty {
-                        crate::types::VarType::Enum(_) => true,
-                        crate::types::VarType::Option(inner) => {
-                            matches!(inner.as_ref(), crate::types::VarType::Enum(_))
-                        }
-                        _ => false,
-                    };
-                    if !is_enum_or_option_enum {
-                        return Err(TemplateError::syntax(format!(
-                            "kind() requires an enum or option value, got {decl_ty} on '{arg}'"
-                        )));
-                    }
-                }
-                Ok(Value::Str(s.clone()))
-            }
-            Value::None => Ok(Value::Str(crate::consts::OPTION_NONE.into())),
-            _ => Err(TemplateError::syntax(format!(
-                "kind() requires an enum value, got {}",
-                val.type_name()
-            ))),
-        }
-    }
-
-    /// Evaluate `kinds(path)` — returns the variant names list of an enum type namespace.
-    fn call_kinds(&self, arg: &str) -> Result<Value, TemplateError> {
-        use crate::consts::ENUM_VARIANTS_KEY;
-        let val = self.resolve_path_str(arg)?;
-        match val {
-            Value::Struct(d) => {
-                if let Some(list_val) = d.get(ENUM_VARIANTS_KEY) {
-                    Ok(list_val.clone())
-                } else {
-                    Err(TemplateError::syntax(
-                        "kinds() requires an enum type namespace",
-                    ))
-                }
-            }
-            _ => Err(TemplateError::syntax(format!(
-                "kinds() requires an enum type namespace, got {}",
-                val.type_name()
-            ))),
-        }
-    }
-
-    /// Evaluate `has(path)` — returns `true` if an option value is `Some`.
-    fn call_has(&self, arg: &str) -> Result<Value, TemplateError> {
-        if let Some(decl_ty) = self.resolve_declared_type(arg)
-            && !decl_ty.is_option()
-        {
-            return Err(TemplateError::syntax(format!(
-                "has() requires an option value, got {decl_ty} on '{arg}'"
-            )));
-        }
-        let val = self.resolve_path_str(arg)?;
-        Ok(Value::Bool(Self::is_option_some(val)))
-    }
-
     /// Check if an option value is present (`Some`).
     pub(crate) fn is_option_some(val: &Value) -> bool {
         !matches!(val, Value::None)
@@ -879,6 +759,23 @@ impl<'a> Scope<'a> {
         None
     }
 
+    #[inline]
+    fn get_imported_const_pair(&self, p0: &str, p1: &str) -> Option<&Value> {
+        let needed = p0.len() + 1 + p1.len();
+        let mut stack_buf = [0u8; 128];
+        let owned_stem;
+        let stem_key: &str = if needed <= stack_buf.len() {
+            stack_buf[..p0.len()].copy_from_slice(p0.as_bytes());
+            stack_buf[p0.len()] = b'.';
+            stack_buf[p0.len() + 1..needed].copy_from_slice(p1.as_bytes());
+            core::str::from_utf8(&stack_buf[..needed]).expect("valid UTF-8 segments")
+        } else {
+            owned_stem = alloc::format!("{p0}.{p1}");
+            &owned_stem
+        };
+        self.get_imported_const(stem_key)
+    }
+
     /// Resolve a simple (non-dotted) variable name.
     #[inline]
     #[must_use]
@@ -924,6 +821,49 @@ impl<'a> Scope<'a> {
         }
         // 4. Fallback to render context.
         self.ctx.get(key)
+    }
+
+    /// Resolve a dotted path string slice without heap allocations if present, returning `None`
+    /// if any segment is missing.
+    #[inline]
+    #[must_use]
+    pub fn try_resolve_path_str(&self, raw: &str) -> Option<&Value> {
+        let stripped = raw
+            .trim()
+            .strip_prefix(crate::consts::PREFIX_CONSTS_DOT)
+            .or_else(|| raw.trim().strip_prefix(crate::consts::PREFIX_OPTS_DOT))
+            .or_else(|| raw.trim().strip_prefix(crate::consts::PREFIX_OPTIONS_DOT))
+            .or_else(|| raw.trim().strip_prefix(crate::consts::PREFIX_PARAMS_DOT))
+            .unwrap_or_else(|| raw.trim())
+            .trim();
+        let Some((p0, rest_after_p0)) = stripped.split_once(crate::consts::PATH_SEP) else {
+            return self.resolve(stripped);
+        };
+        let p0 = p0.trim();
+        if p0.is_empty() || p0 == crate::consts::LOOP {
+            return None;
+        }
+        if self.has_any_imported_consts() {
+            let (p1, tail) = rest_after_p0
+                .split_once(crate::consts::PATH_SEP)
+                .map_or((rest_after_p0.trim(), None), |(a, b)| (a.trim(), Some(b)));
+            if let Some(mut current) = self.get_imported_const_pair(p0, p1) {
+                if let Some(tail_parts) = tail {
+                    for part in tail_parts.split(crate::consts::PATH_SEP) {
+                        current = current.get_field_unchecked(part.trim())?;
+                    }
+                }
+                return Some(current);
+            }
+        }
+        if self.is_option_path(p0) {
+            return None;
+        }
+        let mut current = self.resolve(p0)?;
+        for part in rest_after_p0.split(crate::consts::PATH_SEP) {
+            current = current.get_field_unchecked(part.trim())?;
+        }
+        Some(current)
     }
 
     /// Resolve a pre-compiled dotted path.
@@ -976,32 +916,19 @@ impl<'a> Scope<'a> {
         }
 
         // 1. Check if it's an imported constant (stem.NAME[.field]*).
-        if self.has_any_imported_consts() && path.parts.len() >= 2 {
-            let p0 = &path.parts[0];
-            let p1 = &path.parts[1];
-            let needed = p0.len() + 1 + p1.len();
-            let mut stack_buf = [0u8; 128];
-            let stem_key: &str = if needed <= stack_buf.len() {
-                stack_buf[..p0.len()].copy_from_slice(p0.as_bytes());
-                stack_buf[p0.len()] = b'.';
-                stack_buf[p0.len() + 1..needed].copy_from_slice(p1.as_bytes());
-                core::str::from_utf8(&stack_buf[..needed]).unwrap_or(&path.raw)
-            } else {
-                &path.raw
-            };
-
-            if let Some(v) = self.get_imported_const(stem_key) {
-                let mut current = v;
-                for part in &path.parts[2..] {
-                    current = current.get_field_unchecked(part).ok_or_else(|| {
-                        TemplateError::UndefinedVariable(format!(
-                            "field '{part}' not found on {}",
-                            current.type_name()
-                        ))
-                    })?;
-                }
-                return Ok(current);
+        if self.has_any_imported_consts()
+            && path.parts.len() >= 2
+            && let Some(mut current) = self.get_imported_const_pair(&path.parts[0], &path.parts[1])
+        {
+            for part in &path.parts[2..] {
+                current = current.get_field_unchecked(part).ok_or_else(|| {
+                    TemplateError::UndefinedVariable(format!(
+                        "field '{part}' not found on {}",
+                        current.type_name()
+                    ))
+                })?;
             }
+            return Ok(current);
         }
 
         let root_key = &path.parts[0];
@@ -1073,21 +1000,19 @@ impl<'a> Scope<'a> {
         if self.has_any_imported_consts() {
             let mut parts = path.split(crate::consts::PATH_SEP);
             let first = parts.next().unwrap_or("").trim();
-            if let Some(second) = parts.next() {
-                let stem_name = format!("{}.{}", first, second.trim());
-                if let Some(v) = self.get_imported_const(&stem_name) {
-                    let mut current = v;
-                    for part in parts {
-                        let part = part.trim();
-                        current = current.get_field(part).ok_or_else(|| {
-                            TemplateError::UndefinedVariable(format!(
-                                "field '{part}' not found on {}",
-                                current.type_name()
-                            ))
-                        })?;
-                    }
-                    return Ok(current);
+            if let Some(second) = parts.next()
+                && let Some(mut current) = self.get_imported_const_pair(first, second.trim())
+            {
+                for part in parts {
+                    let part = part.trim();
+                    current = current.get_field(part).ok_or_else(|| {
+                        TemplateError::UndefinedVariable(format!(
+                            "field '{part}' not found on {}",
+                            current.type_name()
+                        ))
+                    })?;
                 }
+                return Ok(current);
             }
         }
 

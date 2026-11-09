@@ -14,8 +14,7 @@ use alloc::{
 use super::{
     params::{find_char_at_depth_zero, parse_type_annotation, split_at_depth_zero},
     sanitize_decl::{
-        collect_inherited_alias_sanitize, extract_type_sanitize_specs,
-        validate_sanitize_specs_on_type,
+        TrustMode, extract_type_sanitize_specs_with_aliases, validate_sanitize_specs_on_type,
     },
 };
 use crate::{
@@ -100,9 +99,12 @@ pub(crate) fn parse_types_value_with_sanitize(
             )));
         }
 
-        let (cleaned_expr, mut rel_specs) = extract_type_sanitize_specs(type_expr)
-            .map_err(|err| TemplateError::syntax(format!("type '{type_name}': {err}")))?;
-        collect_inherited_alias_sanitize(&cleaned_expr, "", &alias_sanitize, &mut rel_specs);
+        let (cleaned_expr, rel_specs) = extract_type_sanitize_specs_with_aliases(
+            type_expr,
+            TrustMode::SafeByDefault,
+            &alias_sanitize,
+        )
+        .map_err(|err| TemplateError::syntax(format!("type '{type_name}': {err}")))?;
 
         // Parse the type expression using already-defined aliases for chained refs.
         let var_type = parse_type_annotation(&cleaned_expr, &aliases, &empty_imports)

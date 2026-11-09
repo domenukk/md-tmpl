@@ -29,9 +29,12 @@ import {
   decodeXmlString,
   escapeXmlAttrString,
   escapeXmlBodyString,
+  hasInvisibleChars,
   quarantineUntrustedIdempotentString,
   sanitizeBlockIdempotentString,
   sanitizeBlockString,
+  stripInvisibleStr,
+  stripInvisibleString,
   stripOuterQuarantineTag,
   truncateMiddleList,
   unquarantineString,
@@ -314,6 +317,18 @@ describe("XML codec and list truncation match the Rust host primitives", () => {
       escapeXmlBodyString("a&b<c>\"d'\n\0"),
       "a&amp;b&lt;c&gt;\"d'\n\\0",
     );
+  });
+
+  it("hasInvisibleChars and stripInvisibleString match the Rust state machine", () => {
+    const clean = "Hello 👨‍👩‍👧‍👦 ❤️ world";
+    assert.strictEqual(hasInvisibleChars(clean), false);
+    assert.strictEqual(stripInvisibleStr(clean), clean);
+    assert.strictEqual(stripInvisibleString(clean), clean);
+
+    const smuggled = "a\u200Bb\u202Ec\u{E0020}d\u0000e";
+    assert.strictEqual(hasInvisibleChars(smuggled), true);
+    assert.strictEqual(stripInvisibleStr(smuggled), "abcde");
+    assert.strictEqual(stripInvisibleString(smuggled), "abcde");
   });
 
   it("truncateMiddleList keeps head/tail around one marker item", () => {

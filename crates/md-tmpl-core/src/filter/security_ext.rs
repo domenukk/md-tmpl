@@ -239,23 +239,62 @@ pub fn sanitize_block_idempotent_str(
     tag_spec: Option<&str>,
     custom_notice: Option<&str>,
 ) -> Result<String, TemplateError> {
+    let mut buf = String::new();
+    sanitize_block_idempotent_into(s, tag_spec, custom_notice, &mut buf)?;
+    Ok(buf)
+}
+
+/// Buffer variant of [`sanitize_block_idempotent_str`], used by the template render paths so a
+/// value that is already block-quarantined (by the host or an including template) is never
+/// wrapped twice: sanitizing twice is the same as sanitizing once.
+///
+/// # Errors
+/// Returns [`TemplateError::Syntax`] if any tag name in `tag_spec` is not a valid ASCII XML `NCName`.
+pub fn sanitize_block_idempotent_into(
+    s: &str,
+    tag_spec: Option<&str>,
+    custom_notice: Option<&str>,
+    buf: &mut String,
+) -> Result<(), TemplateError> {
     let tag_cow = match tag_spec {
         Some(raw_arg) => strip_quotes(raw_arg),
         None => Cow::Borrowed(DEFAULT_SANITIZE_TAG),
     };
     let (primary_tag, valid_spec) = validate_sanitize_tag_spec(&tag_cow)?;
-    if is_sanitized_block_str(s, Some(valid_spec), custom_notice) {
-        return Ok(s.to_owned());
-    }
-    let mut inner = strip_outer_quarantine_tag(s.trim(), primary_tag).unwrap_or(s);
     let notice = format_sanitize_notice(primary_tag, custom_notice);
     let notice_trimmed = notice.trim_end_matches('\n');
-    if !notice_trimmed.is_empty()
-        && let Some(after_notice) = inner.strip_prefix(notice_trimmed)
-    {
-        inner = after_notice.strip_prefix('\n').unwrap_or(after_notice);
+    let trimmed = s.trim();
+    if trimmed.starts_with('<') {
+        if s.starts_with('<')
+            && let Some(stripped) = strip_outer_quarantine_tag(s, primary_tag)
+        {
+            let payload = if notice_trimmed.is_empty() {
+                Some(stripped)
+            } else {
+                stripped
+                    .strip_prefix(notice_trimmed)
+                    .map(|after| after.strip_prefix('\n').unwrap_or(after))
+            };
+            if let Some(p) = payload
+                && !has_untrusted_breakout(p, valid_spec)
+            {
+                buf.push_str(s);
+                return Ok(());
+            }
+        }
+        let mut inner = strip_outer_quarantine_tag(trimmed, primary_tag).unwrap_or(s);
+        if !notice_trimmed.is_empty()
+            && let Some(after_notice) = inner.strip_prefix(notice_trimmed)
+        {
+            inner = after_notice.strip_prefix('\n').unwrap_or(after_notice);
+        }
+        let sanitized = sanitize_untrusted_str(inner, valid_spec);
+        write_sanitize_envelope(primary_tag, &notice, &sanitized, buf);
+        return Ok(());
     }
-    sanitize_block_str(inner, Some(valid_spec), custom_notice)
+    let sanitized = sanitize_untrusted_str(s, valid_spec);
+    write_sanitize_envelope(primary_tag, &notice, &sanitized, buf);
+    Ok(())
 }
 
 fn split_filter_args_comma(raw: &str) -> Vec<&str> {
@@ -347,7 +386,19 @@ pub(crate) fn parse_sanitize_filter_mode(
     }
 }
 
+fn has_heading_line_break_byte(bytes: &[u8]) -> bool {
+    for &b in bytes {
+        if matches!(b, b'\n' | b'\r' | 0x0B | 0x0C | 0xC2 | 0xE2) {
+            return true;
+        }
+    }
+    false
+}
+
 fn collapse_heading_line_breaks(cow: Cow<'_, str>) -> Cow<'_, str> {
+    if !has_heading_line_break_byte(cow.as_bytes()) {
+        return cow;
+    }
     let is_line_break = |c: char| {
         matches!(
             c,
@@ -362,6 +413,28 @@ fn collapse_heading_line_breaks(cow: Cow<'_, str>) -> Cow<'_, str> {
             .map(|c| if is_line_break(c) { ' ' } else { c })
             .collect(),
     )
+}
+
+/// Fast-path inline sanitization into `buf` for native proc-macro codegen and compiled renderers.
+pub fn sanitize_inline_into(s: &str, enclosing_tags: Option<&str>, buf: &mut String) {
+    let cow = match enclosing_tags {
+        None | Some("") => sanitize_tokens_str(s),
+        Some(tags) if tags == crate::compiled::sanitize_pass::INLINE_HEADING_SENTINEL => {
+            collapse_heading_line_breaks(sanitize_tokens_str(s))
+        }
+        Some(tags) => {
+            let sanitized = sanitize_untrusted_str(s, tags);
+            if tags
+                .split(',')
+                .any(|t| t.trim() == crate::compiled::sanitize_pass::INLINE_HEADING_SENTINEL)
+            {
+                collapse_heading_line_breaks(sanitized)
+            } else {
+                sanitized
+            }
+        }
+    };
+    buf.push_str(&cow);
 }
 
 pub(super) fn sanitize_cow_with_mode<'a>(
@@ -385,6 +458,16 @@ pub(super) fn sanitize_cow_with_mode<'a>(
                     Cow::Owned(s) => Cow::Owned(s),
                 },
             }),
+            Some(tags) if tags == crate::compiled::sanitize_pass::INLINE_HEADING_SENTINEL => {
+                let tok = match input {
+                    Cow::Borrowed(b) => sanitize_tokens_str(b),
+                    Cow::Owned(o) => match sanitize_tokens_str(&o) {
+                        Cow::Borrowed(_) => Cow::Owned(o),
+                        Cow::Owned(s) => Cow::Owned(s),
+                    },
+                };
+                Ok(collapse_heading_line_breaks(tok))
+            }
             Some(tags) => {
                 let sanitized = match input {
                     Cow::Borrowed(b) => sanitize_untrusted_str(b, tags),
@@ -403,11 +486,9 @@ pub(super) fn sanitize_cow_with_mode<'a>(
                 }
             }
         },
-        SanitizeFilterMode::Block { tag_spec, notice } => Ok(Cow::Owned(sanitize_block_str(
-            &input,
-            Some(tag_spec),
-            notice.as_deref(),
-        )?)),
+        SanitizeFilterMode::Block { tag_spec, notice } => Ok(Cow::Owned(
+            sanitize_block_idempotent_str(&input, Some(tag_spec), notice.as_deref())?,
+        )),
     }
 }
 
@@ -426,24 +507,11 @@ pub(super) fn sanitize_into_with_mode(
     };
     match effective_mode {
         SanitizeFilterMode::Inline { enclosing_tags } => {
-            let cow = match enclosing_tags.as_deref() {
-                None | Some("") => sanitize_tokens_str(s),
-                Some(tags) => {
-                    let sanitized = sanitize_untrusted_str(s, tags);
-                    if tags.split(',').any(|t| {
-                        t.trim() == crate::compiled::sanitize_pass::INLINE_HEADING_SENTINEL
-                    }) {
-                        collapse_heading_line_breaks(sanitized)
-                    } else {
-                        sanitized
-                    }
-                }
-            };
-            buf.push_str(&cow);
+            sanitize_inline_into(s, enclosing_tags.as_deref(), buf);
             Ok(())
         }
         SanitizeFilterMode::Block { tag_spec, notice } => {
-            sanitize_block_into(s, Some(tag_spec), notice.as_deref(), buf)
+            sanitize_block_idempotent_into(s, Some(tag_spec), notice.as_deref(), buf)
         }
     }
 }

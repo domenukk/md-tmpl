@@ -5,9 +5,11 @@
  */
 
 import type { Node } from "../parser.js";
+import { splitPipes } from "../evaluator.js";
 import {
   BACKSLASH,
   EXPR_START,
+  FN_UNSAFE_TRUST,
   PIPE,
   PATH_SEP,
   PREFIX_CONSTS_DOT,
@@ -31,7 +33,14 @@ import {
 // ---------------------------------------------------------------------------
 
 /** Built-in function names whose argument is extracted as the reference. */
-const BUILTIN_FUNCTIONS = new Set(["idx", "len", "kind", "kinds", "has"]);
+const BUILTIN_FUNCTIONS = new Set([
+  "idx",
+  "len",
+  "kind",
+  "kinds",
+  "has",
+  "unsafe_trust",
+]);
 
 /**
  * Extract the root variable name from an expression string.
@@ -45,12 +54,18 @@ function extractRootVariable(
   const trimmed = expr.trim();
   if (trimmed.length === 0) return undefined;
 
+  // Handle pipe expressions first so `unsafe_trust(x) | trim` unwraps `x`
+  const pipeIdx = trimmed.indexOf(PIPE);
+  const beforePipe = (
+    pipeIdx >= 0 ? trimmed.slice(0, pipeIdx) : trimmed
+  ).trim();
+
   // Handle function calls: func(arg)
-  const parenIdx = trimmed.indexOf("(");
-  if (parenIdx > 0 && trimmed.endsWith(")")) {
-    const funcName = trimmed.slice(0, parenIdx).trim();
+  const parenIdx = beforePipe.indexOf("(");
+  if (parenIdx > 0 && beforePipe.endsWith(")")) {
+    const funcName = beforePipe.slice(0, parenIdx).trim();
     if (BUILTIN_FUNCTIONS.has(funcName)) {
-      const arg = stripPathPrefix(trimmed.slice(parenIdx + 1, -1).trim());
+      const arg = stripPathPrefix(beforePipe.slice(parenIdx + 1, -1).trim());
       const dotIdx = arg.indexOf(PATH_SEP);
       const root = (dotIdx >= 0 ? arg.slice(0, dotIdx) : arg).trim();
       if (
@@ -64,11 +79,7 @@ function extractRootVariable(
     }
   }
 
-  // Handle pipe expressions: take the part before the first `|`
-  const pipeIdx = trimmed.indexOf(PIPE);
-  const base = stripPathPrefix(
-    (pipeIdx >= 0 ? trimmed.slice(0, pipeIdx) : trimmed).trim(),
-  );
+  const base = stripPathPrefix(beforePipe);
   const dotIdx = base.indexOf(PATH_SEP);
   const root = (dotIdx >= 0 ? base.slice(0, dotIdx) : base).trim();
   // isValidIdentifier rejects malformed roots (e.g. fragments containing
@@ -106,7 +117,7 @@ function stripPathPrefix(token: string): string {
 
 /**
  * Returns true if `token` is a syntactically valid identifier
- * (`[A-Za-z_][A-Za-z0-9_]*`). Mirrors the Rust core so both engines agree on
+ * (`[A-Za-z_][A-Za-z0-9_-]*`). Mirrors the Rust core so both engines agree on
  * which tokens can name a variable, rejecting malformed roots that would
  * otherwise produce spurious "undeclared variable" errors.
  */
@@ -127,7 +138,8 @@ function isValidIdentifier(token: string): boolean {
       (c >= 65 && c <= 90) ||
       (c >= 97 && c <= 122) ||
       (c >= 48 && c <= 57) ||
-      c === 95;
+      c === 95 ||
+      c === 45;
     if (!validCont) {
       return false;
     }
@@ -234,18 +246,33 @@ function extractConditionVariables(
  * Extract variable refs from a condition operand.
  * Handles plain variables, function calls, and string interpolation.
  */
+function unwrapUnsafeTrustCall(raw: string): string {
+  let cur = raw.trim();
+  while (cur.startsWith(FN_UNSAFE_TRUST) && cur.endsWith(")")) {
+    const rest = cur.slice(FN_UNSAFE_TRUST.length).trimStart();
+    if (!rest.startsWith("(")) {
+      break;
+    }
+    cur = rest.slice(1, -1).trim();
+  }
+  return cur;
+}
+
 function extractOperandRefs(
   operand: string,
   refs: Set<string>,
   loopBindings: ReadonlySet<string>,
 ): void {
-  // If it's a string literal with interpolation, extract {{ expr }} refs
+  // If the base (before any trailing filters and inside any `unsafe_trust(...)`
+  // wrapper) is a string literal with interpolation, extract {{ expr }} refs.
+  const baseOperand = unwrapUnsafeTrustCall(
+    (splitPipes(operand)[0] ?? "").trim(),
+  );
   if (
-    (operand.startsWith('"') && operand.endsWith('"')) ||
-    (operand.startsWith("'") && operand.endsWith("'"))
+    (baseOperand.startsWith('"') && baseOperand.endsWith('"')) ||
+    (baseOperand.startsWith("'") && baseOperand.endsWith("'"))
   ) {
-    const inner = operand.slice(1, -1);
-    extractInterpolationRefs(inner, refs, loopBindings);
+    extractInterpolationRefs(baseOperand.slice(1, -1), refs, loopBindings);
     return;
   }
   // Otherwise extract the root variable. If none is found, there is no
@@ -436,11 +463,8 @@ function collectRefsInner(
         const matchRoot = extractRootVariable(node.expr, loopBindings);
         if (matchRoot) refs.add(matchRoot);
         for (const arm of node.arms) {
-          // Scan quoted case labels for {{ expr }} interpolation refs.
-          // Unquoted labels are either enum variant names or param-ref
-          // matches — the collector cannot distinguish them without type
-          // context, so param-ref labels are handled separately by the
-          // unused-param checker (which has the declared param set).
+          // Scan quoted case labels for {{ expr }} interpolation refs, and
+          // dotted unquoted case labels (`cfg.expected`) for root variable refs.
           for (const variant of arm.variants) {
             if (
               (variant.startsWith('"') && variant.endsWith('"')) ||
@@ -451,7 +475,13 @@ function collectRefsInner(
                 refs,
                 loopBindings,
               );
+            } else if (variant.includes(PATH_SEP)) {
+              const dottedRoot = extractRootVariable(variant, loopBindings);
+              if (dottedRoot) refs.add(dottedRoot);
             }
+          }
+          if (arm.guard) {
+            extractConditionVariables(arm.guard, refs, loopBindings);
           }
           collectRefsInner(arm.body, refs, loopBindings, forBindings);
         }
@@ -459,6 +489,20 @@ function collectRefsInner(
           collectRefsInner(node.elseArm, refs, loopBindings, forBindings);
         }
         if (node.inlineGuard) {
+          const igVariant = node.inlineGuard.variant;
+          if (
+            (igVariant.startsWith('"') && igVariant.endsWith('"')) ||
+            (igVariant.startsWith("'") && igVariant.endsWith("'"))
+          ) {
+            extractInterpolationRefs(
+              igVariant.slice(1, -1),
+              refs,
+              loopBindings,
+            );
+          } else if (igVariant.includes(PATH_SEP)) {
+            const dottedRoot = extractRootVariable(igVariant, loopBindings);
+            if (dottedRoot) refs.add(dottedRoot);
+          }
           collectRefsInner(
             node.inlineGuard.body,
             refs,
@@ -478,11 +522,14 @@ function collectRefsInner(
         // renderer); collect those refs the same way. An unquoted value is a
         // plain expression (path/function/filter).
         for (const [, valExpr] of node.withMappings) {
+          const baseExpr = unwrapUnsafeTrustCall(
+            (splitPipes(valExpr)[0] ?? "").trim(),
+          );
           if (
-            (valExpr.startsWith('"') && valExpr.endsWith('"')) ||
-            (valExpr.startsWith("'") && valExpr.endsWith("'"))
+            (baseExpr.startsWith('"') && baseExpr.endsWith('"')) ||
+            (baseExpr.startsWith("'") && baseExpr.endsWith("'"))
           ) {
-            extractInterpolationRefs(valExpr.slice(1, -1), refs, loopBindings);
+            extractInterpolationRefs(baseExpr.slice(1, -1), refs, loopBindings);
           } else {
             const root = extractRootVariable(valExpr, loopBindings);
             if (root) refs.add(root);
@@ -589,19 +636,22 @@ export function collectUnquotedCaseLabels(nodes: readonly Node[]): Set<string> {
   return labels;
 }
 
+function addUnquotedLabel(variant: string, labels: Set<string>): void {
+  const isDoubleQuoted = variant.startsWith('"') && variant.endsWith('"');
+  const isSingleQuoted = variant.startsWith("'") && variant.endsWith("'");
+  if (!isDoubleQuoted && !isSingleQuoted) {
+    labels.add(variant);
+    const root = extractRootVariable(variant, new Set());
+    if (root) labels.add(root);
+  }
+}
+
 function collectLabelsInner(nodes: readonly Node[], labels: Set<string>): void {
   for (const node of nodes) {
     if (node.kind === NODE_MATCH) {
       for (const arm of node.arms) {
         for (const variant of arm.variants) {
-          // Only collect unquoted labels (not quoted strings)
-          const isDoubleQuoted =
-            variant.startsWith('"') && variant.endsWith('"');
-          const isSingleQuoted =
-            variant.startsWith("'") && variant.endsWith("'");
-          if (!isDoubleQuoted && !isSingleQuoted) {
-            labels.add(variant);
-          }
+          addUnquotedLabel(variant, labels);
         }
         collectLabelsInner(arm.body, labels);
       }
@@ -609,6 +659,7 @@ function collectLabelsInner(nodes: readonly Node[], labels: Set<string>): void {
         collectLabelsInner(node.elseArm, labels);
       }
       if (node.inlineGuard) {
+        addUnquotedLabel(node.inlineGuard.variant, labels);
         collectLabelsInner(node.inlineGuard.body, labels);
       }
     } else if ("body" in node && Array.isArray(node.body)) {

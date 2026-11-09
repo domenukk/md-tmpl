@@ -7,7 +7,7 @@
  * @module
  */
 
-import { DEFAULT_SANITIZE_TAG, FILTER_QUARANTINE } from "./consts.js";
+import { FILTER_QUARANTINE } from "./consts.js";
 import {
   DEFAULT_QUARANTINE_TAG,
   hasUntrustedBreakout,
@@ -17,10 +17,14 @@ import {
   validateTagSpecForFilter,
 } from "./filters.js";
 import {
-  formatSanitizeNotice,
-  isSanitizedBlockString,
-  sanitizeBlockString,
-  validateSanitizeTagSpec,
+  envelopeBody,
+  stripEnvelopeNewlines,
+  stripOuterQuarantineTag,
+} from "./sanitize_runtime.js";
+
+export {
+  sanitizeBlockIdempotentString,
+  stripOuterQuarantineTag,
 } from "./sanitize_runtime.js";
 
 /** Canonical XML tag name for `<tool_output_quarantine>` envelopes. */
@@ -35,44 +39,6 @@ export const TOOL_OUTPUT_QUARANTINE_CLOSE_TAG = `</${TOOL_OUTPUT_QUARANTINE_TAG}
 export const UNTRUSTED_QUARANTINE_OPEN_TAG = `<${UNTRUSTED_TOOL_OUTPUT_TAG}>`;
 /** Canonical closing tag for `<untrusted_tool_output>` framing. */
 export const UNTRUSTED_QUARANTINE_CLOSE_TAG = `</${UNTRUSTED_TOOL_OUTPUT_TAG}>`;
-
-const ENVELOPE_NEWLINE = "\n";
-
-/** Remove at most one leading and one trailing envelope newline. */
-function stripEnvelopeNewlines(body: string): string {
-  const withoutLeading = body.startsWith(ENVELOPE_NEWLINE)
-    ? body.slice(ENVELOPE_NEWLINE.length)
-    : body;
-  return withoutLeading.endsWith(ENVELOPE_NEWLINE)
-    ? withoutLeading.slice(0, -ENVELOPE_NEWLINE.length)
-    : withoutLeading;
-}
-
-/** Return the raw body between `<tag>` and `</tag>`, or `undefined` if `s` is not wrapped. */
-function envelopeBody(s: string, tagName: string): string | undefined {
-  const open = `<${tagName}>`;
-  const close = `</${tagName}>`;
-  if (
-    s.length < open.length + close.length ||
-    !s.startsWith(open) ||
-    !s.endsWith(close)
-  ) {
-    return undefined;
-  }
-  return s.slice(open.length, s.length - close.length);
-}
-
-/**
- * Strip outer `<tagName>` and `</tagName>` tags if present, along with at most
- * one leading and one trailing `\n` of envelope framing.
- */
-export function stripOuterQuarantineTag(
-  s: string,
-  tagName: string,
-): string | undefined {
-  const body = envelopeBody(s, tagName);
-  return body === undefined ? undefined : stripEnvelopeNewlines(body);
-}
 
 /**
  * Extract the inner payload of a quarantined string if and only if `s` is a
@@ -121,34 +87,4 @@ export function quarantineUntrustedIdempotentString(
   }
   const inner = stripOuterQuarantineTag(s.trim(), primaryTag) ?? s;
   return quarantineUntrustedString(inner, validSpec);
-}
-
-/**
- * Idempotently sanitize and wrap `s` in `<primary_tag>\n{notice}\n{sanitized}\n</primary_tag>`:
- * an already valid block is returned unchanged, and a dirty block is unwrapped
- * once (dropping a leading notice line) and re-wrapped cleanly.
- */
-export function sanitizeBlockIdempotentString(
-  s: string,
-  tagArg?: string,
-  customNotice?: string,
-): string {
-  const rawSpec =
-    tagArg !== undefined ? stripQuotes(tagArg) : DEFAULT_SANITIZE_TAG;
-  const [primaryTag, validSpec] = validateSanitizeTagSpec(rawSpec);
-  if (isSanitizedBlockString(s, validSpec, customNotice)) {
-    return s;
-  }
-  let inner = stripOuterQuarantineTag(s.trim(), primaryTag) ?? s;
-  const notice = formatSanitizeNotice(primaryTag, customNotice).replace(
-    /\n+$/,
-    "",
-  );
-  if (notice.length > 0 && inner.startsWith(notice)) {
-    const afterNotice = inner.slice(notice.length);
-    inner = afterNotice.startsWith(ENVELOPE_NEWLINE)
-      ? afterNotice.slice(ENVELOPE_NEWLINE.length)
-      : afterNotice;
-  }
-  return sanitizeBlockString(inner, validSpec, customNotice);
 }

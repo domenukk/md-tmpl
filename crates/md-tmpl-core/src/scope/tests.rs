@@ -678,3 +678,33 @@ fn test_value_serde_serialize_roundtrip() {
     let deserialized: Value = serde_json::from_str(&json_str).unwrap();
     assert_eq!(val, deserialized);
 }
+
+#[test]
+fn try_resolve_path_str_and_resolve_path_long_imported_const_over_128_bytes() {
+    let ctx = Context::new();
+    let mut scope = Scope::new(&ctx);
+    let long_stem = "s".repeat(80);
+    let long_const = "C".repeat(80);
+    let stem_key = alloc::format!("{long_stem}.{long_const}");
+    assert!(stem_key.len() > 128);
+
+    let mut inner_struct = crate::compat::HashMap::new();
+    inner_struct.insert("label".to_string(), Value::Str("resolved-long".into()));
+    let mut imported = crate::compat::HashMap::new();
+    imported.insert(
+        stem_key.clone(),
+        Value::Struct(alloc::sync::Arc::new(inner_struct)),
+    );
+    scope.push_consts(crate::compat::HashMap::new(), imported);
+
+    let full_path = alloc::format!("{stem_key}.label");
+    assert_eq!(
+        scope.try_resolve_path_str(&full_path),
+        Some(&Value::Str("resolved-long".into()))
+    );
+    let compiled = crate::scope::CompiledPath::compile(&full_path);
+    assert_eq!(
+        scope.resolve_path(&compiled).unwrap(),
+        &Value::Str("resolved-long".into())
+    );
+}

@@ -242,12 +242,12 @@ params:
 
 [[tests]]
 name = "include_path_interpolation_param_dir_pass"
-description = "Include path with variable interpolation from parameter"
+description = "Include path with variable interpolation from trusted parameter"
 parent_template = '''
 ---
 params:
   - name = str
-  - dir = str
+  - dir = trusted str
 ---
 > {% include [greet]({{ dir }}/greet.tmpl.md) with name=name %}'''
 expected_output = "Hi World!"

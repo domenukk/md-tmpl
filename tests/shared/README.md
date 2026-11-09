@@ -1,12 +1,12 @@
-# E2E Test Infra: prompt-templates
+# E2E Test Infra: md-tmpl
 
-This document defines the authoritative end-to-end (E2E) test infrastructure, architecture, feature inventory, and verification methodology for the cross-language `prompt-templates` template engine. It serves as the specification for ensuring behavioral and diagnostic parity across all language bindings (Rust, TypeScript, Python, and WASM).
+This document defines the end-to-end (E2E) test infrastructure, architecture, feature inventory, and verification methodology for the cross-language `md-tmpl` template engine across all language bindings (Rust, TypeScript, Python, Go, and WASM).
 
 ---
 
 ## Test Philosophy
 
-The testing infrastructure for `prompt-templates` is built upon two core foundational pillars:
+The testing infrastructure for `md-tmpl` is built upon two core foundational pillars:
 
 1. **Opaque-Box, Requirement-Driven Testing**: All E2E tests evaluate the template engine from the perspective of an external consumer using the public rendering interface. Tests do not rely on internal AST structures, language-specific memory layouts, or private engine APIs. By defining tests strictly against functional requirements and public behaviors, the suite guarantees absolute parity across Rust, TypeScript, Python, and WebAssembly implementations.
 2. **Systematic Test Methodology**:
@@ -61,9 +61,15 @@ The E2E test suite utilizes a unified, language-agnostic TOML fixture architectu
 - **WASM (`crates/md-tmpl-wasm/tests/shared_tests.test.ts`)**:
   - **Integration**: Executed via `npm test` (`node:test`) as part of the WASM package's suite, running the exact same shared TOML fixtures against the compiled WASM engine.
   - **Mechanism**: Reads fixtures from `tests/shared/` and drives them through the WASM `Template` API, mirroring the TypeScript runner.
-- **Python Bindings**:
-  - **Current State**: Python tests reside in `crates/md-tmpl-python/python/tests/` (topic modules such as `test_construction.py` and `test_rendering.py`, plus `test_conformance.py`, ...). The 121-case conformance corpus (`tests/conformance/`) already runs via `test_conformance.py`; the broader shared E2E fixtures (`tests/shared/`) are not yet wired in.
-  - **E2E Integration Plan**: A `test_shared.py` harness (loading fixtures via `tomllib` under `pytest`) will execute these exact same shared TOML fixtures. Because the schema requires only standard dictionary passing and substring error matching, no fixture changes will be required when the harness comes online.
+- **Python (`crates/md-tmpl-python/python/tests/test_shared.py`)**:
+  - **Integration**: Executed via `pytest` (`just test-python`) alongside topic modules and `test_conformance.py`.
+  - **Mechanism**: Loads every fixture in `tests/shared/` via `tomllib` at collection time and verifies `Template.from_source_with_base_dir` / `Template.from_file` rendering and error substrings.
+- **Go (`go/md_tmpl/shared_tests_test.go`)**:
+  - **Integration**: Executed via `go test ./...` (`just test-go`).
+  - **Mechanism**: Parses `tests/shared/` fixtures with `BurntSushi/toml` and drives them through the Go C FFI binding.
+- **Rust Proc-Macro Compile Tests (`crates/md-tmpl-compile-tests/build.rs`)**:
+  - **Integration**: Executed via `cargo test -p md-tmpl-compile-tests` (`just test-rust`).
+  - **Mechanism**: Generates a build-time `md_tmpl::template!` proc-macro test for every positive fixture in `tests/shared/`.
 
 ### TOML Fixture Format
 
@@ -112,8 +118,12 @@ tests/shared/
 ├── inline_control_tests/         # Advanced conditionals, loops, and block scoping (<topic>.toml)
 ├── tmpl_param_tests.toml         # Frontmatter parameter declarations and typing
 ├── include_tests/                # Template inclusion and inheritance structures (<topic>.toml)
+│   ├── untrusted_propagation.toml    # Cross-include untrusted taint and context propagation (9 cases)
+│   └── ...
 ├── env_tests.toml                # `env:` compile-time environment injection
 ├── feature_e2e_tests/            # Broad end-to-end feature coverage (<topic>.toml)
+│   ├── filter_sanitize_parity.toml   # Sanitization, escaping, fence, quarantine, and truncate parity (30 cases)
+│   └── ...
 └── templates/                    # External template file assets referenced by "template" path
     ├── include/
     ├── inline_control/

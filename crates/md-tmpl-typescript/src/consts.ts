@@ -89,6 +89,7 @@ export const FM_SANITIZE_NOTICE_PREFIX = "sanitize_notice:";
 export const FM_DELIMITER = "---";
 export const FILTER_SANITIZE = "sanitize";
 export const FILTER_SANITIZE_TOKENS = "sanitize_tokens";
+export const FILTER_UNSAFE_TRUST = "unsafe_trust";
 /**
  * Internal-only filter emitted by the compile-time sanitize pass for a 0-arg
  * `| sanitize` inside statically enclosing XML tags or an ATX heading (mirrors
@@ -109,6 +110,8 @@ export const SANITIZE_KIND_BLOCK = "block";
 export const PIPE_SPACED = " | ";
 export const LOOP = "loop";
 export const TYPE_UNTRUSTED = "untrusted";
+export const TYPE_TRUSTED = "trusted";
+export const TYPE_UNSAFE_TRUST = "unsafe_trust";
 export const DEFAULT_QUARANTINE_TAG = "untrusted_content";
 export const DEFAULT_SANITIZE_TAG = DEFAULT_QUARANTINE_TAG;
 export const SANITIZE_NOTICE_TAG_PLACEHOLDER = "{tag}";
@@ -128,6 +131,7 @@ export const FN_LEN = "len";
 export const FN_KIND = "kind";
 export const FN_KINDS = "kinds";
 export const FN_HAS = "has";
+export const FN_UNSAFE_TRUST = "unsafe_trust";
 
 // Literals
 export const LIT_TRUE = "true";
@@ -217,6 +221,9 @@ export const ERR_BARE_STMT_TAG =
 export const ERR_BARE_COMMENT =
   "comment at line start must be blockquote-prefixed with '> '";
 /** Comment content not separated from its delimiters by whitespace. */
+/** Error for `unsafe_trust` used as a declaration modifier (Rust parity). */
+export const ERR_UNSAFE_TRUST_DECLARATION =
+  "'unsafe_trust' marks a single emission, not a declaration: declare 'trusted str' for values the host vouches for, or write 'unsafe_trust(x)' where the value is emitted";
 export const ERR_COMMENT_SPACING =
   "Comments must have spaces around the content (e.g. `{# comment #}` or `{#- comment -#}`)";
 /**

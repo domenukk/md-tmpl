@@ -175,6 +175,28 @@ pub enum ConditionOperand {
     Kinds(CompiledPath),
     /// Option presence check `has(path)` — returns `true` if option is `Some`.
     Has(CompiledPath),
+    /// A non-path operand (literal, interpolated string, or built-in function) followed by
+    /// one or more pipe filters (e.g. `"  {{ u }}  " | trim`).
+    Filtered {
+        /// Base operand before the first top-level `|`.
+        base: alloc::boxed::Box<Self>,
+        /// Filter chain applied to the resolved base value.
+        filters: Vec<ParsedFilter>,
+    },
+}
+
+fn parse_condition_filters(filter_chain: &str) -> Result<Vec<ParsedFilter>, TemplateError> {
+    let mut filters = Vec::new();
+    for filter_str in crate::parser::split_filters_aware(filter_chain) {
+        let filter_str = filter_str.trim();
+        if filter_str.is_empty() {
+            continue;
+        }
+        let (name, args) = crate::filter::parse_filter(filter_str);
+        let kind = crate::compiled::parse_filter_kind(name)?;
+        filters.push(ParsedFilter::parse(kind, args)?);
+    }
+    Ok(filters)
 }
 
 impl ConditionOperand {
@@ -187,6 +209,24 @@ impl ConditionOperand {
         let token = token.trim();
         if token.is_empty() {
             return Err(TemplateError::syntax("empty token in expression"));
+        }
+
+        // If a top-level pipe filter chain is present on a non-path operand (e.g.
+        // `"  {{ u }}  " | trim`, `"hi" | upper`, `len(xs) | add(1)`), compile the base
+        // operand first and attach the parsed filter chain.
+        let (path_part, filter_chain) = crate::parser::split_pipe_aware(token);
+        if !filter_chain.is_empty() {
+            let base_trimmed = path_part.trim();
+            let mut tail_filters = parse_condition_filters(filter_chain)?;
+            let base_op = Self::compile(base_trimmed)?;
+            if let Self::Path { path, mut filters } = base_op {
+                filters.append(&mut tail_filters);
+                return Ok(Self::Path { path, filters });
+            }
+            return Ok(Self::Filtered {
+                base: alloc::boxed::Box::new(base_op),
+                filters: tail_filters,
+            });
         }
 
         // 1. String literals (with optional {{ expr }} interpolation)
@@ -214,7 +254,7 @@ impl ConditionOperand {
             return Ok(Self::Literal(num));
         }
 
-        // 5. Function calls: idx(binding), len(list), kind(enum)
+        // 5. Function calls: idx(binding), len(list), kind(enum), kinds(enum), has(opt), unsafe_trust(str)
         if let Some((func_name, arg)) = parse_function_call(token) {
             match func_name {
                 crate::consts::FN_IDX => return Ok(Self::Idx(Cow::Owned(arg.to_string()))),
@@ -222,6 +262,7 @@ impl ConditionOperand {
                 crate::consts::FN_KIND => return Ok(Self::Kind(CompiledPath::compile(arg))),
                 crate::consts::FN_KINDS => return Ok(Self::Kinds(CompiledPath::compile(arg))),
                 crate::consts::FN_HAS => return Ok(Self::Has(CompiledPath::compile(arg))),
+                crate::consts::FN_UNSAFE_TRUST => {}
                 _ => {
                     return Err(TemplateError::syntax(format!(
                         "unknown function '{func_name}'"
@@ -230,21 +271,36 @@ impl ConditionOperand {
             }
         }
 
-        // 6. Dotted path (possibly with filters)
-        let (path_part, filter_chain) = crate::parser::split_pipe_aware(token);
-        let path = CompiledPath::compile(path_part.trim());
+        // 6. Unfiltered dotted path (or `unsafe_trust(...)`)
         let mut filters = Vec::new();
-        if !filter_chain.is_empty() {
-            for filter_str in crate::parser::split_filters_aware(filter_chain) {
-                let filter_str = filter_str.trim();
-                if filter_str.is_empty() {
-                    continue;
+        let path =
+            if let Some((crate::consts::FN_UNSAFE_TRUST, inner_arg)) = parse_function_call(token) {
+                if crate::parser::parse_scalar_literal(inner_arg).is_some()
+                    || parse_function_call(inner_arg).is_some()
+                {
+                    let inner_op = Self::compile(inner_arg)?;
+                    return Ok(Self::Filtered {
+                        base: alloc::boxed::Box::new(inner_op),
+                        filters: alloc::vec![ParsedFilter {
+                            kind: crate::compiled::FilterKind::UnsafeTrust,
+                            args: None,
+                            parsed_num: None,
+                            sanitize_mode: None,
+                            origin: crate::compiled::FilterOrigin::Template,
+                        }],
+                    });
                 }
-                let (name, args) = crate::filter::parse_filter(filter_str);
-                let kind = crate::compiled::parse_filter_kind(name)?;
-                filters.push(ParsedFilter::parse(kind, args)?);
-            }
-        }
+                filters.push(ParsedFilter {
+                    kind: crate::compiled::FilterKind::UnsafeTrust,
+                    args: None,
+                    parsed_num: None,
+                    sanitize_mode: None,
+                    origin: crate::compiled::FilterOrigin::Template,
+                });
+                CompiledPath::compile(inner_arg)
+            } else {
+                CompiledPath::compile(token)
+            };
         Ok(Self::Path { path, filters })
     }
 
@@ -318,6 +374,13 @@ impl ConditionOperand {
                     }
                 };
                 Ok(Cow::Owned(Value::Bool(is_has)))
+            }
+            Self::Filtered { base, filters } => {
+                let mut owned_value = base.resolve(scope)?.into_owned();
+                for f in filters {
+                    owned_value = crate::filter::apply_filter_parsed(f, &owned_value)?;
+                }
+                Ok(Cow::Owned(owned_value))
             }
         }
     }
@@ -456,5 +519,38 @@ pub(crate) fn parse_number_literal(raw: &str) -> Option<Value> {
             return None;
         }
         raw.parse::<i64>().ok().map(Value::Int)
+    }
+}
+
+impl Scope<'_> {
+    /// Resolve a pre-compiled dotted path without allocating error messages on misses.
+    #[inline]
+    #[must_use]
+    pub fn try_resolve_compiled_path(&self, path: &CompiledPath) -> Option<&Value> {
+        let parts = path.parts();
+        let first = parts.first()?;
+        if parts.len() == 1 {
+            return self.resolve(first);
+        }
+        if first == crate::consts::LOOP {
+            return None;
+        }
+        if self.has_any_imported_consts()
+            && parts.len() >= 2
+            && let Some(mut current) = self.get_imported_const_pair(first, &parts[1])
+        {
+            for part in &parts[2..] {
+                current = current.get_field_unchecked(part)?;
+            }
+            return Some(current);
+        }
+        if self.is_option_path(first) {
+            return None;
+        }
+        let mut current = self.resolve(first)?;
+        for part in &parts[1..] {
+            current = current.get_field_unchecked(part)?;
+        }
+        Some(current)
     }
 }

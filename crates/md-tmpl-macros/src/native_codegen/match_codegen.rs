@@ -329,13 +329,13 @@ fn codegen_match_scalar(
             break;
         }
 
-        let mut label_checks = Vec::with_capacity(arm.variants.len());
+        let mut label_checks = Vec::with_capacity(arm.compiled_variants.len());
         if !is_default {
-            for label_cow in &arm.variants {
+            for compiled_label in &arm.compiled_variants {
                 let check = codegen_scalar_case_check(
                     &val_ident,
                     &scalar_binding.var_type,
-                    label_cow.as_ref(),
+                    compiled_label,
                     scope,
                     counter,
                 )?;
@@ -397,26 +397,26 @@ fn codegen_match_scalar(
 fn codegen_scalar_case_check(
     val_ident: &syn::Ident,
     var_type: &VarType,
-    label: &str,
+    compiled_label: &md_tmpl_core::compiled::CompiledCaseLabel,
     scope: &NativeScope,
     counter: &mut usize,
 ) -> Option<TokenStream> {
+    use md_tmpl_core::compiled::CompiledCaseLabel;
     let cp = crate_path();
-    // 1. Quoted string literal (possibly interpolated `"...{{ x }}..."`).
-    if let Some(inner) = md_tmpl_core::consts::strip_string_literal(label) {
-        if *var_type != VarType::Str {
-            return None;
+    let (label, dotted_path) = match compiled_label {
+        CompiledCaseLabel::Default => return Some(quote! { true }),
+        CompiledCaseLabel::LiteralStr(unescaped) => {
+            if *var_type != VarType::Str {
+                return None;
+            }
+            let s = unescaped.as_ref();
+            return Some(quote! { (#val_ident == #s) });
         }
-        let unescaped = md_tmpl_core::consts::unescape_string_literal(inner);
-        if unescaped.contains(md_tmpl_core::consts::EXPR_START) {
-            let segs = match md_tmpl_core::compiled::compile_body(&unescaped) {
-                Ok(s) => s,
-                Err(err) => {
-                    drop(err);
-                    return None;
-                }
-            };
-            let seg_tokens = codegen_segments(&segs, scope, counter)?;
+        CompiledCaseLabel::InterpolatedStr(segs) => {
+            if *var_type != VarType::Str {
+                return None;
+            }
+            let seg_tokens = codegen_segments(segs, scope, counter)?;
             return Some(quote! {
                 (#val_ident == ({
                     let mut __case_str = #cp::__private::String::new();
@@ -428,8 +428,8 @@ fn codegen_scalar_case_check(
                 }).as_str())
             });
         }
-        return Some(quote! { (#val_ident == #unescaped) });
-    }
+        CompiledCaseLabel::Unquoted { raw, dotted_path } => (raw.as_ref(), dotted_path.as_ref()),
+    };
 
     // 2. Literal scalar according to `var_type`.
     match var_type {
@@ -458,7 +458,9 @@ fn codegen_scalar_case_check(
     }
 
     // 3. Variable or constant reference (or unquoted string fallback on `VarType::Str`).
-    let path = CompiledPath::compile(label);
+    let path = dotted_path
+        .cloned()
+        .unwrap_or_else(|| CompiledPath::compile(label));
     if scope.resolve_path(&path).is_some() {
         let op = ConditionOperand::Path {
             path,

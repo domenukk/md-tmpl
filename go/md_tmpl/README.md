@@ -1,13 +1,6 @@
 # md-tmpl for Go
 
-Strongly-typed prompt templates for LLMs.
-
-## Why?
-
-- **Markdown-native** — prompts live in `.tmpl.md` files, readable in any editor or on GitHub.
-- **Strict typing** — every parameter declares a type; mismatches are caught at render time with clear errors.
-- **Agent-safe** — when an LLM edits prompts, the engine catches drift immediately.
-- **Fast** — 3–6× faster than `text/template` on medium/large templates.
+Typed prompt templates for LLMs.
 
 ## Quick Example
 
@@ -134,7 +127,8 @@ result, err := tmpl.RenderStruct(ReviewParams{
 
 | Frontmatter Type            | Go Type in Struct                                    |
 | :-------------------------- | :--------------------------------------------------- |
-| `str`                       | `string`                                             |
+| `str`                       | `string` (sanitized by default)                      |
+| `trusted str`               | `string` (emitted verbatim)                          |
 | `int`                       | `int`, `int64`                                       |
 | `float`                     | `float64`                                            |
 | `bool`                      | `bool`                                               |
@@ -334,20 +328,24 @@ result, _ := tmpl.RenderMap(map[string]any{"name": "Alice"})
 ### Filters
 
 ````
-{{ name | upper }}        → ALICE
-{{ name | lower }}        → alice
-{{ name | trim }}         → (strips whitespace)
-{{ score | fixed(2) }}    → 3.14
-{{ items | join(", ") }}  → a, b, c
-{{ items | limit(2) }}    → first 2 elements
+{{ name | upper }}            → ALICE
+{{ name | lower }}            → alice
+{{ name | trim }}             → (strips whitespace)
+{{ score | fixed(2) }}        → 3.14
+{{ items | join(", ") }}      → a, b, c
+{{ items | limit(2) }}        → first 2 elements
+{{ text | truncate(1024) }}   → middle-out string/list truncation
 {{ count | add(1) }}          → 43
 {{ count | sub(1) }}          → 41
 {{ name | trim | upper }}     → chains work
 {{ val | escape_xml }}        → &lt;tag&gt; (or | xml)
-{{ val | escape_json }}       → safe\/json (or | json)
+{{ val | escape_json }}       → safe\/json
+{{ val | json(2) }}           → formatted JSON string (or | json)
+{{ text | sanitize }}         → sanitizes in-place (or sanitize("tag") to wrap with notice)
 {{ text | sanitize_tokens }}  → neutralizes LLM control tokens (or sanitize_tokens("tag"))
 {{ code | fence("go") }}      → ```go\ncode\n``` (adaptive)
 {{ input | quarantine }}      → <untrusted_content>...</untrusted_content> (or quarantine("tag"))
+{{ raw | unsafe_trust }}      → emits untrusted string verbatim at this site
 ````
 
 ### Built-in Functions
@@ -359,6 +357,7 @@ result, _ := tmpl.RenderMap(map[string]any{"name": "Alice"})
 {{ kind(status) }}        → "Done" (variant name)
 {{ kinds(Status) }}       → ["Search", "Done"] (enum variant names)
 {{ has(field) }}          → true if option(T) is present
+{{ unsafe_trust(raw) }}   → emits untrusted string verbatim at this site
 ```
 
 `idx(binding)` tracks each loop variable independently in nested loops.
@@ -473,6 +472,26 @@ ctx.SetTmpl("card", cardTemplate)
 ctx.Set("key", value) // auto-detect type
 ctx.MergeStruct(myStruct) // merge struct fields into context
 ```
+
+### Host Sanitization Primitives
+
+Standalone sanitization, escaping, quarantine, and truncation functions are exported in `md_tmpl`:
+
+```go
+pt.HasInvisibleChars(s string) bool
+pt.StripInvisible(s string) string
+pt.EscapeXML(s string) string
+pt.EscapeJSON(s string) string
+pt.SanitizeTokens(s string) string
+pt.SanitizeRoleTokens(s string) string
+pt.Sanitize(s string, tagSpec string) (string, error)
+pt.SanitizeBlock(s string, tagSpec string) (string, error)
+pt.QuarantineUntrusted(s string, tagSpec string) (string, error)
+pt.TruncateMiddle(s string, limit uint) (string, error)
+pt.TruncateMiddleList(items []any, limit uint) ([]any, error)
+```
+
+See **[SPEC.md](../../SPEC.md#host-sanitization-primitives)** for the full host primitive reference.
 
 ### Errors
 

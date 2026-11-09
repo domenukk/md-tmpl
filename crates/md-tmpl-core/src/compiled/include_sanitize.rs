@@ -1,13 +1,22 @@
 //! Sanitization context propagation across `{% include %}` boundaries.
 //!
+//! **Trust follows the value, not the declaration.** An include target (inline
+//! `{% tmpl %}`, included file, or `tmpl(...)` handle) receives every parameter value either
+//! from its caller, who knows whether that value is trusted, or from its own frontmatter
+//! defaults, which are developer-authored. Include targets therefore render without their
+//! own parameter sanitization policy: a trusted caller value (literal, constant, `trusted
+//! str` parameter, `unsafe_trust(...)`) is emitted verbatim, and an untrusted one is
+//! sanitized exactly once, at the emission point, with the emission context. The target's
+//! declared specs only choose the *style* for untrusted values: a declared block quarantine
+//! (`str | sanitize("tag")`) wins over the caller's style (see [`resolve_include_spec`]).
+//!
 //! Inline `{% tmpl %}` includes are bound into the host AST at compile time, so the
 //! regular sanitize passes already see their bodies. File includes, higher-order
 //! `tmpl(...)` parameters, and recursive inline includes are resolved at render time,
 //! so the call site records an [`IncludeSanitizeContext`] instead:
 //!
 //! - **Untrusted taint**: `with key = <untrusted expr>` and `for item in <untrusted list>`
-//!   mark the corresponding child parameter paths as untrusted, even when the child
-//!   declares them as plain `str`.
+//!   mark the corresponding child parameter paths as untrusted, whatever the child declares.
 //! - **Enclosing XML tags / ATX heading state** that are open at the call site, so a
 //!   value rendered inside the child cannot close a tag opened by the parent.
 //! - **Untrusted include paths**: an include path that interpolates an untrusted value
@@ -22,7 +31,7 @@ use alloc::{
     vec::Vec,
 };
 
-use super::{CompiledInclude, Segment, sanitize_pass};
+use super::{CompiledInclude, FilterOrigin, Segment, sanitize_pass};
 use crate::{compat::HashMap, error::TemplateError, scope::CompiledPath, types::SanitizeSpec};
 
 /// Sanitization context captured at an `{% include %}` call site that is resolved at
@@ -67,6 +76,53 @@ impl IncludeSanitizeContext {
     }
 }
 
+/// Declared parameter sanitization of an include target: canonical parameter path → spec,
+/// with block notices already resolved against the target's own `sanitize_notice:`.
+///
+/// Include targets take their parameters' trust from the caller, so these specs never
+/// sanitize a trusted value; they only choose the style for untrusted caller values (see
+/// [`apply_include_context`]).
+pub type DeclaredSanitize = HashMap<String, SanitizeSpec>;
+
+/// Build the [`DeclaredSanitize`] of an include target from its frontmatter policy, giving
+/// block specs without their own notice the target's template-level `sanitize_notice`.
+#[must_use]
+pub fn declared_sanitize(
+    param_sanitize: &HashMap<String, SanitizeSpec>,
+    sanitize_notice: Option<&str>,
+) -> DeclaredSanitize {
+    param_sanitize
+        .iter()
+        .map(|(path, spec)| (path.clone(), transfer_spec(spec, sanitize_notice)))
+        .collect()
+}
+
+/// Sanitization style for an untrusted caller value arriving at child path `path`.
+///
+/// The child's declared block quarantine wins because it shapes the child's own output;
+/// otherwise the caller's declared style for the value applies.
+fn resolve_include_spec(
+    path: &str,
+    caller_spec: &SanitizeSpec,
+    declared: &DeclaredSanitize,
+) -> SanitizeSpec {
+    match declared.get(path) {
+        Some(block @ SanitizeSpec::Block { .. }) => block.clone(),
+        Some(SanitizeSpec::Inline) | None => caller_spec.clone(),
+    }
+}
+
+/// Resolve every untrusted call-site entry against the child's [`DeclaredSanitize`].
+fn effective_untrusted_map(
+    entries: &[(String, SanitizeSpec)],
+    declared: &DeclaredSanitize,
+) -> HashMap<String, SanitizeSpec> {
+    entries
+        .iter()
+        .map(|(path, spec)| (path.clone(), resolve_include_spec(path, spec, declared)))
+        .collect()
+}
+
 /// Per-call-site memo of contextualized child segments (read-mostly: renders take a
 /// shared read lock and compare the child by pointer identity).
 ///
@@ -97,9 +153,10 @@ impl core::fmt::Debug for IncludeContextMemo {
 
 /// Return the child segments to render for the include call site `inc`.
 ///
-/// When the call site carries an [`IncludeSanitizeContext`], the child is re-run through
-/// the sanitize passes with that context (memoized per call site); otherwise `child` is
-/// returned unchanged. Callers check the call site's own path with
+/// `child` is the include target compiled without its own parameter policy and `declared`
+/// its [`DeclaredSanitize`]. When the call site carries an [`IncludeSanitizeContext`], the
+/// child is re-run through the sanitize passes with that context (memoized per call site);
+/// otherwise `child` is returned unchanged. Callers check the call site's own path with
 /// [`check_untrusted_include_path`] before resolving the child.
 ///
 /// # Errors
@@ -108,12 +165,68 @@ impl core::fmt::Debug for IncludeContextMemo {
 pub(crate) fn contextualized_segments(
     inc: &CompiledInclude,
     child: &Arc<[Segment]>,
+    declared: &DeclaredSanitize,
 ) -> Result<Arc<[Segment]>, TemplateError> {
     let Some(ctx) = inc.sanitize_ctx.as_deref() else {
         return Ok(Arc::clone(child));
     };
+    memoized(inc, child, || {
+        if ctx.untrusted.is_empty() && !sanitize_pass::needs_enclosing_pass(child) {
+            // Nothing to rewrite: memoize the child itself so the tree walk runs once.
+            return Ok(Arc::clone(child));
+        }
+        let mut segments = child.to_vec();
+        apply_include_context(&mut segments, ctx, declared);
+        check_untrusted_include_paths(&segments)?;
+        Ok(Arc::from(segments))
+    })
+}
+
+/// Return the segments to render for a `tmpl(...)` handle included at call site `site`.
+///
+/// A handle is compiled for the host boundary, with its own parameter policy. Included,
+/// its parameters take the caller's trust like every other include target, so the
+/// declared policy is stripped (see [`strip_declared_sanitization`]) before the call-site
+/// context is applied with the handle's `declared` specs. Memoized per call site.
+///
+/// # Errors
+/// Returns [`TemplateError::Syntax`] if a nested include path in the handle interpolates
+/// an untrusted value.
+pub(crate) fn handle_segments(
+    site: Option<&CompiledInclude>,
+    own: &Arc<[Segment]>,
+    declared: &DeclaredSanitize,
+) -> Result<Arc<[Segment]>, TemplateError> {
+    if declared.is_empty() {
+        // No declarative policy: nothing to strip.
+        return match site {
+            Some(inc) => contextualized_segments(inc, own, declared),
+            None => Ok(Arc::clone(own)),
+        };
+    }
+    let derive = || {
+        let mut segments = own.to_vec();
+        strip_declared_sanitization(&mut segments);
+        if let Some(ctx) = site.and_then(|inc| inc.sanitize_ctx.as_deref()) {
+            apply_include_context(&mut segments, ctx, declared);
+        }
+        check_untrusted_include_paths(&segments)?;
+        Ok(Arc::from(segments))
+    };
+    match site {
+        Some(inc) => memoized(inc, own, derive),
+        None => derive(),
+    }
+}
+
+/// Return `derive()` for call site `inc` and `child`, memoized by the child's identity.
+#[cfg(feature = "std")]
+fn memoized(
+    inc: &CompiledInclude,
+    child: &Arc<[Segment]>,
+    derive: impl FnOnce() -> Result<Arc<[Segment]>, TemplateError>,
+) -> Result<Arc<[Segment]>, TemplateError> {
     // Fast path: memo hit for this call site and child (one lock + pointer compare).
-    #[cfg(feature = "std")]
     {
         let slot = inc
             .memo
@@ -126,35 +239,91 @@ pub(crate) fn contextualized_segments(
             return Ok(Arc::clone(derived));
         }
     }
-    let derived: Arc<[Segment]> =
-        if ctx.untrusted.is_empty() && !sanitize_pass::needs_enclosing_pass(child) {
-            // Nothing to rewrite: memoize the child itself so the tree walk runs once.
-            Arc::clone(child)
-        } else {
-            let mut segments = child.to_vec();
-            apply_include_context(&mut segments, ctx);
-            check_untrusted_include_paths(&segments)?;
-            Arc::from(segments)
-        };
-    #[cfg(feature = "std")]
-    {
-        let mut slot = inc
-            .memo
-            .slot
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *slot = Some((Arc::clone(child), Arc::clone(&derived)));
-    }
+    let derived = derive()?;
+    let mut slot = inc
+        .memo
+        .slot
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *slot = Some((Arc::clone(child), Arc::clone(&derived)));
     Ok(derived)
+}
+
+/// `no_std` has no shared memo slot: derive the segments on every render.
+#[cfg(not(feature = "std"))]
+fn memoized(
+    _inc: &CompiledInclude,
+    _child: &Arc<[Segment]>,
+    derive: impl FnOnce() -> Result<Arc<[Segment]>, TemplateError>,
+) -> Result<Arc<[Segment]>, TemplateError> {
+    derive()
+}
+
+/// Remove every filter a declarative parameter policy added (and the taint it recorded on
+/// nested include call sites), turning a host-boundary compilation into an include-target
+/// compilation. Explicit template filters, notices, and enclosing-tag state are kept.
+fn strip_declared_sanitization(segments: &mut [Segment]) {
+    for seg in segments {
+        match seg {
+            Segment::Expr { filters, .. } => {
+                filters.retain(|f| f.origin != FilterOrigin::Declaration);
+            }
+            Segment::ForLoop {
+                body, else_body, ..
+            } => {
+                strip_declared_sanitization(body);
+                strip_declared_sanitization(else_body);
+            }
+            Segment::If {
+                branches,
+                else_body,
+            } => {
+                for (_, body) in branches {
+                    strip_declared_sanitization(body);
+                }
+                strip_declared_sanitization(else_body);
+            }
+            Segment::Match { arms, .. } => {
+                for arm in arms {
+                    strip_declared_sanitization(&mut arm.body);
+                }
+            }
+            Segment::Panic(inner) => strip_declared_sanitization(inner),
+            Segment::Include(inc) => {
+                if let Some(ctx) = inc.sanitize_ctx.as_mut() {
+                    let ctx = Arc::make_mut(ctx);
+                    ctx.untrusted.clear();
+                    ctx.untrusted_path_ref = None;
+                }
+                if inc
+                    .sanitize_ctx
+                    .as_deref()
+                    .is_some_and(IncludeSanitizeContext::is_empty)
+                {
+                    inc.sanitize_ctx = None;
+                }
+                if let Some(ic) = &mut inc.inline_compiled {
+                    strip_declared_sanitization(Arc::make_mut(&mut ic.segments));
+                }
+            }
+            Segment::Static(_) | Segment::Raw(_) | Segment::Comment(_) => {}
+        }
+    }
 }
 
 /// Apply a call-site [`IncludeSanitizeContext`] to freshly compiled child `segments` in place.
 ///
-/// Used when an include body is bound into its call site ahead of rendering (e.g. by the
+/// `segments` must be compiled without the child's own parameter policy; `declared` is the
+/// child's [`DeclaredSanitize`], used to choose the style for untrusted caller values. Used
+/// when an include body is bound into its call site ahead of rendering (e.g. by the
 /// compile-time proc macros, which resolve file includes into `inline_compiled`).
-pub fn apply_include_context(segments: &mut [Segment], ctx: &IncludeSanitizeContext) {
+pub fn apply_include_context(
+    segments: &mut [Segment],
+    ctx: &IncludeSanitizeContext,
+    declared: &DeclaredSanitize,
+) {
     if !ctx.untrusted.is_empty() {
-        let map: HashMap<String, SanitizeSpec> = ctx.untrusted.iter().cloned().collect();
+        let map = effective_untrusted_map(&ctx.untrusted, declared);
         sanitize_pass::propagate_param_sanitization(segments, &map, None);
     }
     sanitize_pass::apply_enclosing_xml_tags_from(
@@ -264,7 +433,7 @@ pub(super) fn record_enclosing(
     ctx.pending_open_tag = pending_open_tag.map(ToString::to_string);
 }
 
-/// Returns `true` if `s` is a plain dotted identifier path (`a`, `a.b.c`).
+/// Returns `true` if `s` is a plain dotted identifier path (`a`, `my-var`, `a.b-c.d`).
 fn is_plain_path(s: &str) -> bool {
     !s.is_empty()
         && s.split(crate::consts::PATH_SEP).all(|part| {
@@ -272,7 +441,7 @@ fn is_plain_path(s: &str) -> bool {
             bytes
                 .next()
                 .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
-                && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
+                && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
         })
 }
 
@@ -325,7 +494,68 @@ fn map_path(
     }
 }
 
-/// Returns the first `{{ expr }}` interpolation in `text` whose base path is untrusted.
+/// Returns `true` when `expr` explicitly opts out of untrusted taint via
+/// `unsafe_trust(x)` or `x | unsafe_trust`.
+fn has_unsafe_trust_opt_out(expr: &str) -> bool {
+    let (base, filter_chain) = crate::parser::split_pipe_aware(expr.trim());
+    if let Some((func_name, _)) = crate::scope::parse_function_call(base.trim())
+        && func_name == crate::consts::FN_UNSAFE_TRUST
+    {
+        return true;
+    }
+    if !filter_chain.is_empty() {
+        for f in crate::parser::split_filters_aware(filter_chain) {
+            let (name, _) = crate::filter::parse_filter(f.trim());
+            if name == crate::consts::FILTER_UNSAFE_TRUST {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Static trust class of the base of an include argument or interpolation (the part before
+/// the first top-level `|`).
+enum BaseTrust {
+    /// A plain variable path whose trust is looked up in the declarative policy.
+    Path,
+    /// A literal or a built-in function returning a non-injectable value (`len`, `idx`,
+    /// `kind`, `kinds`, `has`).
+    Trusted,
+    /// Anything else: treated as untrusted so no unrecognized form can launder taint.
+    Unknown,
+}
+
+/// Classify `base` for trust propagation; see [`BaseTrust`].
+fn classify_base(base: &str) -> BaseTrust {
+    if is_plain_path(base) {
+        return BaseTrust::Path;
+    }
+    if let Some(lit) = crate::consts::strip_string_literal(base) {
+        return if lit.contains(crate::consts::EXPR_START) {
+            BaseTrust::Unknown
+        } else {
+            BaseTrust::Trusted
+        };
+    }
+    if crate::parser::parse_scalar_literal(base).is_some() {
+        return BaseTrust::Trusted;
+    }
+    match crate::scope::parse_function_call(base) {
+        Some((
+            crate::consts::FN_LEN
+            | crate::consts::FN_IDX
+            | crate::consts::FN_KIND
+            | crate::consts::FN_KINDS
+            | crate::consts::FN_HAS,
+            _,
+        )) => BaseTrust::Trusted,
+        Some(_) | None => BaseTrust::Unknown,
+    }
+}
+
+/// Returns the first `{{ expr }}` interpolation in `text` whose value is untrusted (an
+/// untrusted path or an unrecognized expression), unless it opts out via `unsafe_trust`.
 fn first_untrusted_interpolation(
     text: &str,
     param_sanitize: &HashMap<String, SanitizeSpec>,
@@ -336,18 +566,59 @@ fn first_untrusted_interpolation(
         let rest = &search[start + crate::consts::EXPR_START.len()..];
         let end = rest.find(crate::consts::EXPR_END)?;
         let inner = rest[..end].trim();
-        let (base, _) = crate::parser::split_pipe_aware(inner);
-        let base = base.trim();
-        if is_plain_path(base) {
-            let mut hits = Vec::new();
-            map_path("", base, param_sanitize, None, loop_aliases, &mut hits);
-            if !hits.is_empty() {
-                return Some(base.to_string());
+        if !has_unsafe_trust_opt_out(inner) {
+            let (base, _) = crate::parser::split_pipe_aware(inner);
+            let base = base.trim();
+            match classify_base(base) {
+                BaseTrust::Path => {
+                    let mut hits = Vec::new();
+                    map_path("", base, param_sanitize, None, loop_aliases, &mut hits);
+                    if !hits.is_empty() {
+                        return Some(base.to_string());
+                    }
+                }
+                BaseTrust::Trusted => {}
+                BaseTrust::Unknown => return Some(base.to_string()),
             }
         }
         search = &rest[end + crate::consts::EXPR_END.len()..];
     }
     None
+}
+
+/// Append the untrusted child entries for argument `expr` passed to child path `target`.
+fn push_argument_taint(
+    target: &str,
+    expr: &str,
+    param_sanitize: &HashMap<String, SanitizeSpec>,
+    host_notice: Option<&str>,
+    loop_aliases: &HashMap<String, String>,
+    entries: &mut Vec<(String, SanitizeSpec)>,
+) {
+    let expr = expr.trim();
+    if has_unsafe_trust_opt_out(expr) {
+        return;
+    }
+    let (base, _) = crate::parser::split_pipe_aware(expr);
+    let base = base.trim();
+    if let Some(lit) = crate::consts::strip_string_literal(base) {
+        if first_untrusted_interpolation(lit, param_sanitize, loop_aliases).is_some() {
+            entries.push((target.to_string(), SanitizeSpec::Inline));
+        }
+        return;
+    }
+    match classify_base(base) {
+        BaseTrust::Path => map_path(
+            target,
+            base,
+            param_sanitize,
+            host_notice,
+            loop_aliases,
+            entries,
+        ),
+        BaseTrust::Trusted => {}
+        BaseTrust::Unknown => entries.push((target.to_string(), SanitizeSpec::Inline)),
+    }
 }
 
 /// Compute the child untrusted parameter map for include call site `inc` from the host
@@ -366,39 +637,24 @@ pub(super) fn propagate_include_taint(
     }
     let mut entries = Vec::new();
     for (key, expr) in &inc.with_vars {
-        let expr = expr.trim();
-        if let Some(lit) = crate::consts::strip_string_literal(expr) {
-            if first_untrusted_interpolation(lit, param_sanitize, loop_aliases).is_some() {
-                entries.push((key.to_string(), SanitizeSpec::Inline));
-            }
-            continue;
-        }
-        let (base, _) = crate::parser::split_pipe_aware(expr);
-        let base = base.trim();
-        if is_plain_path(base) {
-            map_path(
-                key,
-                base,
-                param_sanitize,
-                host_notice,
-                loop_aliases,
-                &mut entries,
-            );
-        }
+        push_argument_taint(
+            key,
+            expr,
+            param_sanitize,
+            host_notice,
+            loop_aliases,
+            &mut entries,
+        );
     }
     if let Some((binding, list_expr)) = &inc.for_each {
-        let (base, _) = crate::parser::split_pipe_aware(list_expr.trim());
-        let base = base.trim();
-        if is_plain_path(base) {
-            map_path(
-                binding,
-                base,
-                param_sanitize,
-                host_notice,
-                loop_aliases,
-                &mut entries,
-            );
-        }
+        push_argument_taint(
+            binding,
+            list_expr,
+            param_sanitize,
+            host_notice,
+            loop_aliases,
+            &mut entries,
+        );
     }
     if entries.is_empty() {
         return;
@@ -406,7 +662,7 @@ pub(super) fn propagate_include_taint(
     entries.sort_by(|(a, _), (b, _)| a.cmp(b));
     entries.dedup_by(|(a, _), (b, _)| a == b);
     if let Some(ic) = &mut inc.inline_compiled {
-        let map: HashMap<String, SanitizeSpec> = entries.into_iter().collect();
+        let map = effective_untrusted_map(&entries, &ic.declared_sanitize);
         sanitize_pass::propagate_param_sanitization(Arc::make_mut(&mut ic.segments), &map, None);
     } else {
         record_untrusted(inc, entries);

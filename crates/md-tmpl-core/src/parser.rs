@@ -13,7 +13,6 @@ use crate::{
         TAG_FOR_PREFIX, TAG_INCLUDE_PREFIX, TAG_WITH_PREFIX, TAG_WITH_SPACED, TRIM_MARKER,
     },
     error::TemplateError,
-    scope::Scope,
 };
 
 /// The types of tags in our templates.
@@ -330,7 +329,9 @@ fn find_block_close(haystack: &str, close_keyword: &str) -> Option<(usize, usize
 ///
 /// This is needed because filter arguments may contain pipes:
 /// `name | default("a | b")` should split into `("name ", " default(\"a | b\")")`.
-pub(crate) fn split_pipe_aware(expr: &str) -> (&str, &str) {
+#[doc(hidden)]
+#[must_use]
+pub fn split_pipe_aware(expr: &str) -> (&str, &str) {
     use crate::consts::{PAREN_CLOSE, PAREN_OPEN, PIPE, QUOTE_DOUBLE, QUOTE_SINGLE};
 
     let mut depth: u32 = 0;
@@ -362,10 +363,10 @@ pub(crate) fn split_pipe_aware(expr: &str) -> (&str, &str) {
     (expr, "")
 }
 
-/// Split a filter chain string at top-level `|` delimiters, skipping pipes
-/// inside quotes and parentheses.
-pub(crate) fn split_filters_aware(chain: &str) -> Vec<&str> {
-    use crate::consts::{PAREN_CLOSE, PAREN_OPEN, PIPE, QUOTE_DOUBLE, QUOTE_SINGLE};
+/// Split a string at top-level `delim` characters, skipping occurrences inside
+/// single/double quotes (with backslash escapes) and parentheses `(...)`.
+fn split_top_level_delim(input: &str, delim: char) -> Vec<&str> {
+    use crate::consts::{PAREN_CLOSE, PAREN_OPEN, QUOTE_DOUBLE, QUOTE_SINGLE};
 
     let mut result = Vec::new();
     let mut start = 0;
@@ -373,7 +374,7 @@ pub(crate) fn split_filters_aware(chain: &str) -> Vec<&str> {
     let mut in_quote: Option<char> = None;
     let mut escaped = false;
 
-    for (i, ch) in chain.char_indices() {
+    for (i, ch) in input.char_indices() {
         if in_quote.is_some() {
             if escaped {
                 escaped = false;
@@ -389,37 +390,23 @@ pub(crate) fn split_filters_aware(chain: &str) -> Vec<&str> {
             QUOTE_DOUBLE | QUOTE_SINGLE if in_quote.is_none() => in_quote = Some(ch),
             PAREN_OPEN if in_quote.is_none() => depth += 1,
             PAREN_CLOSE if in_quote.is_none() && depth > 0 => depth -= 1,
-            PIPE if in_quote.is_none() && depth == 0 => {
-                result.push(&chain[start..i]);
-                start = i + 1;
+            c if c == delim && in_quote.is_none() && depth == 0 => {
+                result.push(&input[start..i]);
+                start = i + c.len_utf8();
             }
             _ => {}
         }
     }
-    result.push(&chain[start..]);
+    result.push(&input[start..]);
     result
 }
 
-/// Evaluate an expression and return its value, with optional pipe-separated filters.
-pub(crate) fn eval_expr(expr: &str, scope: &Scope<'_>) -> Result<Value, TemplateError> {
-    let (path_part, filter_chain) = split_pipe_aware(expr);
-    let path = path_part.trim();
-
-    // Literals first (same grammar as `CompiledExpr::compile`, so `with v = true`,
-    // `with n = -5`, and `with x = 1.5` behave like any other expression position),
-    // then function calls (`idx(item)`, `len(items)`), then variable paths.
-    let mut value = if let Some(literal) = parse_scalar_literal(path) {
-        literal
-    } else if let Some(result) = scope.try_call_function(path) {
-        result?
-    } else {
-        scope.resolve_path_str(path)?.clone()
-    };
-
-    if !filter_chain.is_empty() {
-        value = apply_filter_chain(value, filter_chain)?;
-    }
-    Ok(value)
+/// Split a filter chain string at top-level `|` delimiters, skipping pipes
+/// inside quotes and parentheses.
+#[doc(hidden)]
+#[must_use]
+pub fn split_filters_aware(chain: &str) -> Vec<&str> {
+    split_top_level_delim(chain, crate::consts::PIPE)
 }
 
 /// Parse a scalar literal token (`"str"` / `'str'`, `true`, `false`, or a strict
@@ -433,20 +420,6 @@ pub(crate) fn parse_scalar_literal(raw: &str) -> Option<Value> {
         crate::consts::LIT_FALSE => Some(Value::Bool(false)),
         _ => crate::scope::parse_number_literal(raw),
     }
-}
-
-/// Apply a chain of pipe-separated filters using typed dispatch.
-fn apply_filter_chain(mut value: Value, chain: &str) -> Result<Value, TemplateError> {
-    for filter_str in split_filters_aware(chain) {
-        let filter_str = filter_str.trim();
-        if filter_str.is_empty() {
-            continue;
-        }
-        let (name, args) = crate::filter::parse_filter(filter_str);
-        let kind = crate::compiled::parse_filter_kind(name)?;
-        value = crate::filter::apply_filter_typed(kind, &value, args)?;
-    }
-    Ok(value)
 }
 
 /// Parse a for-tag body like `item in items` or `for item in items`.
@@ -507,7 +480,7 @@ pub(crate) fn parse_include_tag(tag_body: &str) -> Result<IncludeDirective<'_>, 
     };
 
     if let Some(with_body) = rest.strip_prefix(TAG_WITH_PREFIX) {
-        for assignment in with_body.split(crate::consts::COMMA) {
+        for assignment in split_top_level_delim(with_body, crate::consts::COMMA) {
             let assignment = assignment.trim();
             if assignment.is_empty() {
                 continue;
@@ -589,8 +562,20 @@ fn parse_markdown_link_path(input: &str) -> Result<(&str, &str), TemplateError> 
         )));
     }
     let after_paren = &after_close[1..];
-    let close_paren = after_paren
-        .find(crate::consts::PAREN_CLOSE)
+    let mut depth = 1usize;
+    let mut close_paren = None;
+    for (idx, ch) in after_paren.char_indices() {
+        if ch == crate::consts::PAREN_OPEN {
+            depth += 1;
+        } else if ch == crate::consts::PAREN_CLOSE {
+            depth -= 1;
+            if depth == 0 {
+                close_paren = Some(idx);
+                break;
+            }
+        }
+    }
+    let close_paren = close_paren
         .ok_or_else(|| TemplateError::syntax(format!("include: unclosed '(' in '{input}'")))?;
     let path = after_paren[..close_paren].trim();
     if !crate::consts::is_valid_include_path(path) {

@@ -3,12 +3,28 @@
  * enclosing-tag / heading state at the call site, and untrusted include paths.
  * Mirrors the Rust `compiled/include_sanitize.rs`.
  *
+ * Trust follows the value, not the declaration: include targets (inline `{% tmpl %}`,
+ * included files, `tmpl(...)` handles) render without their own parameter policy, so a
+ * trusted caller value stays verbatim and an untrusted one is sanitized once, at the
+ * emission point. The target's declared specs only choose the style for untrusted
+ * values: a declared block quarantine wins over the caller's style.
+ *
  * @module
  */
 
 import type { IncludeSanitizeContext, Node } from "./ast.js";
 import {
   DOT,
+  EXPR_START,
+  FILTER_UNSAFE_TRUST,
+  FN_HAS,
+  FN_IDX,
+  FN_KIND,
+  FN_KINDS,
+  FN_LEN,
+  FN_UNSAFE_TRUST,
+  LIT_FALSE,
+  LIT_TRUE,
   NODE_FOR,
   NODE_IF,
   NODE_INCLUDE,
@@ -20,6 +36,7 @@ import {
 } from "./consts.js";
 import { TemplateSyntaxError } from "./errors.js";
 import { splitPipes } from "./evaluator.js";
+import { parseFilter } from "./filters.js";
 import type { SanitizeSpec } from "./sanitize_runtime.js";
 
 /** Canonical (loop-alias resolved, `params.`-stripped) dot path for `rawPath`. */
@@ -40,7 +57,8 @@ export function resolveCanonicalPath(
   return `${resolvedRoot}${withoutParams.slice(dotIdx)}`;
 }
 
-const PLAIN_PATH_RE = /^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/;
+export const PLAIN_PATH_RE =
+  /^[A-Za-z_][A-Za-z0-9_-]*(?:\.[A-Za-z_][A-Za-z0-9_-]*)*$/;
 
 export interface IncludeTaint {
   /** Child parameter paths receiving untrusted values, sorted and deduplicated. */
@@ -79,6 +97,101 @@ function transferSpec(
 }
 
 /**
+ * Declared parameter sanitization of an include target: canonical parameter path → spec,
+ * with block notices resolved against the target's own `sanitize_notice:`. Never applied
+ * to trusted values; it only chooses the style for untrusted caller values.
+ */
+export type DeclaredSanitize = ReadonlyMap<string, SanitizeSpec>;
+
+/** Declared sanitization of an include target without a parameter policy. */
+export const EMPTY_DECLARED_SANITIZE: DeclaredSanitize = new Map();
+
+/**
+ * Build the {@link DeclaredSanitize} of an include target from its frontmatter policy,
+ * giving block specs without their own notice the target's `sanitize_notice`.
+ */
+export function declaredSanitize(
+  paramSanitize: ReadonlyMap<string, SanitizeSpec> | undefined,
+  sanitizeNotice: string | undefined,
+): DeclaredSanitize {
+  if (paramSanitize === undefined || paramSanitize.size === 0) {
+    return EMPTY_DECLARED_SANITIZE;
+  }
+  const out = new Map<string, SanitizeSpec>();
+  for (const [path, spec] of paramSanitize) {
+    out.set(path, transferSpec(spec, sanitizeNotice));
+  }
+  return out;
+}
+
+/**
+ * Style for an untrusted caller value arriving at child path `path`: the child's declared
+ * block quarantine wins (it shapes the child's own output), otherwise the caller's style.
+ */
+function resolveIncludeSpec(
+  path: string,
+  callerSpec: SanitizeSpec,
+  declared: DeclaredSanitize,
+): SanitizeSpec {
+  const own = declared.get(path);
+  return own?.kind === SANITIZE_KIND_BLOCK ? own : callerSpec;
+}
+
+/** Resolve every untrusted call-site entry against the child's declared specs. */
+export function effectiveUntrustedMap(
+  entries: readonly (readonly [string, SanitizeSpec])[],
+  declared: DeclaredSanitize,
+): Map<string, SanitizeSpec> {
+  const map = new Map<string, SanitizeSpec>();
+  for (const [path, spec] of entries) {
+    map.set(path, resolveIncludeSpec(path, spec, declared));
+  }
+  return map;
+}
+
+/** Static trust class of the base of an include argument or interpolation. */
+const BaseTrust = {
+  /** A plain variable path whose trust is looked up in the declarative policy. */
+  Path: "path",
+  /** A literal or a built-in function returning a non-injectable value. */
+  Trusted: "trusted",
+  /** Anything else: untrusted, so no unrecognized form can launder taint. */
+  Unknown: "unknown",
+} as const;
+type BaseTrust = (typeof BaseTrust)[keyof typeof BaseTrust];
+
+/** Built-in functions whose results cannot carry injected text. */
+const TRUSTED_FUNCTIONS: ReadonlySet<string> = new Set([
+  FN_LEN,
+  FN_IDX,
+  FN_KIND,
+  FN_KINDS,
+  FN_HAS,
+]);
+const NUMBER_LITERAL_RE = /^-?[0-9]+(?:\.[0-9]+)?$/;
+const FUNCTION_CALL_RE = /^([A-Za-z0-9_]+)\s*\((.+)\)$/s;
+
+/** Classify `base` for trust propagation (mirrors Rust `classify_base`). */
+function classifyBase(base: string): BaseTrust {
+  if (PLAIN_PATH_RE.test(base)) {
+    return BaseTrust.Path;
+  }
+  const lit = stripStringLiteral(base);
+  if (lit !== undefined) {
+    return lit.includes(EXPR_START) ? BaseTrust.Unknown : BaseTrust.Trusted;
+  }
+  if (NUMBER_LITERAL_RE.test(base) || base === LIT_TRUE || base === LIT_FALSE) {
+    return BaseTrust.Trusted;
+  }
+  const call = FUNCTION_CALL_RE.exec(base);
+  const fnName = call?.[1];
+  if (fnName !== undefined && TRUSTED_FUNCTIONS.has(fnName)) {
+    return BaseTrust.Trusted;
+  }
+  return BaseTrust.Unknown;
+}
+
+/**
  * Map an untrusted host path expression onto child path `target`:
  * exact match → `target`; nested field `K == C.rest` → `target.rest`;
  * sub-path of an untrusted value `C == K.rest` → `target`.
@@ -109,6 +222,22 @@ function mapUntrustedPath(
   }
 }
 
+/** Return `true` when `expr` explicitly opts out of untrusted taint via `unsafe_trust(x)` or `x | unsafe_trust`. */
+function hasUnsafeTrustOptOut(expr: string): boolean {
+  const parts = splitPipes(expr.trim());
+  const base = (parts[0] ?? "").trim();
+  if (base.startsWith(`${FN_UNSAFE_TRUST}(`) && base.endsWith(")")) {
+    return true;
+  }
+  for (let i = 1; i < parts.length; i++) {
+    const [fName] = parseFilter((parts[i] ?? "").trim());
+    if (fName === FILTER_UNSAFE_TRUST) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Return the first `{{ expr }}` interpolation in `text` whose base path is untrusted. */
 function firstUntrustedInterpolation(
   text: string,
@@ -123,13 +252,71 @@ function firstUntrustedInterpolation(
     const end = rest.indexOf("}}");
     if (end === -1) return undefined;
     const inner = rest.slice(0, end).trim();
-    const base = (splitPipes(inner)[0] ?? "").trim();
-    if (PLAIN_PATH_RE.test(base)) {
-      const hits: [string, SanitizeSpec][] = [];
-      mapUntrustedPath("", base, paramSanitize, undefined, loopAliases, hits);
-      if (hits.length > 0) return base;
+    if (!hasUnsafeTrustOptOut(inner)) {
+      const base = (splitPipes(inner)[0] ?? "").trim();
+      switch (classifyBase(base)) {
+        case BaseTrust.Path: {
+          const hits: [string, SanitizeSpec][] = [];
+          mapUntrustedPath(
+            "",
+            base,
+            paramSanitize,
+            undefined,
+            loopAliases,
+            hits,
+          );
+          if (hits.length > 0) return base;
+          break;
+        }
+        case BaseTrust.Trusted:
+          break;
+        case BaseTrust.Unknown:
+          return base;
+      }
     }
     search = rest.slice(end + 2);
+  }
+}
+
+/** Append the untrusted child entries for argument `rawExpr` passed to child path `target`. */
+function pushArgumentTaint(
+  target: string,
+  rawExpr: string,
+  paramSanitize: ReadonlyMap<string, SanitizeSpec>,
+  hostNotice: string | undefined,
+  loopAliases: ReadonlyMap<string, string>,
+  entries: [string, SanitizeSpec][],
+): void {
+  const expr = rawExpr.trim();
+  if (hasUnsafeTrustOptOut(expr)) {
+    return;
+  }
+  const base = (splitPipes(expr)[0] ?? "").trim();
+  const lit = stripStringLiteral(base);
+  if (lit !== undefined) {
+    if (
+      firstUntrustedInterpolation(lit, paramSanitize, loopAliases) !== undefined
+    ) {
+      entries.push([target, { kind: SANITIZE_KIND_INLINE }]);
+    }
+    return;
+  }
+  switch (classifyBase(base)) {
+    case BaseTrust.Path:
+      mapUntrustedPath(
+        target,
+        base,
+        paramSanitize,
+        hostNotice,
+        loopAliases,
+        entries,
+      );
+      break;
+    case BaseTrust.Trusted:
+      break;
+    case BaseTrust.Unknown:
+      entries.push([target, { kind: SANITIZE_KIND_INLINE }]);
+      break;
   }
 }
 
@@ -149,41 +336,24 @@ export function computeIncludeTaint(
       : undefined;
   const entries: [string, SanitizeSpec][] = [];
   for (const [key, rawExpr] of node.withMappings) {
-    const expr = rawExpr.trim();
-    const lit = stripStringLiteral(expr);
-    if (lit !== undefined) {
-      if (
-        firstUntrustedInterpolation(lit, paramSanitize, loopAliases) !==
-        undefined
-      ) {
-        entries.push([key, { kind: SANITIZE_KIND_INLINE }]);
-      }
-      continue;
-    }
-    const base = (splitPipes(expr)[0] ?? "").trim();
-    if (PLAIN_PATH_RE.test(base)) {
-      mapUntrustedPath(
-        key,
-        base,
-        paramSanitize,
-        hostNotice,
-        loopAliases,
-        entries,
-      );
-    }
+    pushArgumentTaint(
+      key,
+      rawExpr,
+      paramSanitize,
+      hostNotice,
+      loopAliases,
+      entries,
+    );
   }
   if (node.forBinding !== undefined && node.forExpr !== undefined) {
-    const base = (splitPipes(node.forExpr.trim())[0] ?? "").trim();
-    if (PLAIN_PATH_RE.test(base)) {
-      mapUntrustedPath(
-        node.forBinding,
-        base,
-        paramSanitize,
-        hostNotice,
-        loopAliases,
-        entries,
-      );
-    }
+    pushArgumentTaint(
+      node.forBinding,
+      node.forExpr,
+      paramSanitize,
+      hostNotice,
+      loopAliases,
+      entries,
+    );
   }
   entries.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
   const deduped = entries.filter(

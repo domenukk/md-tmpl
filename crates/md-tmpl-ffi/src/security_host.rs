@@ -111,6 +111,36 @@ unsafe fn map_str(
     }
 }
 
+/// Return `true` if `data[..len]` contains any stripped invisible Unicode, Bidi control, Plane 14 Tag,
+/// or C0/DEL/C1 control character. Null `data` with `len > 0` fails closed (`true`).
+///
+/// # Safety
+///
+/// If `len > 0`, `data` must point to `len` valid initialized bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pt_has_invisible_chars(data: *const u8, len: usize) -> bool {
+    let Ok(s) = (unsafe { bytes_to_str_lossy(data, len) }) else {
+        return true;
+    };
+    md_tmpl::has_invisible_chars(&s)
+}
+
+/// Strip invisible Unicode smuggling characters, Bidi overrides/isolates, Plane 14 Tags, and
+/// dangerous C0/DEL/C1 control characters in a single pass.
+///
+/// # Safety
+///
+/// - If `len > 0`, `data` must point to `len` valid initialized bytes.
+/// - `out_err` must be a valid pointer to a `*mut c_char`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn pt_strip_invisible(
+    data: *const u8,
+    len: usize,
+    out_err: *mut *mut c_char,
+) -> *mut c_char {
+    unsafe { map_str(data, len, out_err, md_tmpl::strip_invisible_str) }
+}
+
 /// Decode the standard XML entity references (`&quot;`, `&#39;`, `&apos;`, `&lt;`, `&gt;`, `&amp;`).
 ///
 /// # Safety
@@ -353,4 +383,148 @@ pub unsafe extern "C" fn pt_truncate_middle_list_json(
     let truncated = md_tmpl::truncate_middle_list(&items, limit, marker);
     unsafe { *out_err = ptr::null_mut() };
     into_cstring_raw(value_to_json(&Value::List(std::sync::Arc::new(truncated))))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::{CStr, CString};
+
+    use super::*;
+    use crate::pt_free_string;
+
+    unsafe fn take_cstr(ptr: *mut c_char) -> String {
+        assert!(!ptr.is_null());
+        let s = unsafe { CStr::from_ptr(ptr) }
+            .to_str()
+            .expect("valid UTF-8 C string")
+            .to_owned();
+        unsafe { pt_free_string(ptr) };
+        s
+    }
+
+    #[test]
+    fn ffi_host_constants_and_invisible_chars() {
+        unsafe {
+            let constants_json = take_cstr(pt_security_constants_json());
+            assert!(constants_json.contains("\"DEFAULT_SANITIZE_TAG\":\"untrusted_content\""));
+            assert!(constants_json.contains("\"XML_DECODE_PAIRS\":"));
+
+            let clean = "Hello 👨‍👩‍👧‍👦 ❤️ world";
+            assert!(!pt_has_invisible_chars(clean.as_ptr(), clean.len()));
+            // Null pointer with non-zero length fails closed (true).
+            assert!(pt_has_invisible_chars(ptr::null(), 4));
+
+            let mut err: *mut c_char = ptr::null_mut();
+            let stripped_clean = take_cstr(pt_strip_invisible(
+                clean.as_ptr(),
+                clean.len(),
+                &raw mut err,
+            ));
+            assert!(err.is_null());
+            assert_eq!(stripped_clean, clean);
+
+            let smuggled = "a\u{200B}b\u{202E}c\u{E0020}d\0e";
+            assert!(pt_has_invisible_chars(smuggled.as_ptr(), smuggled.len()));
+            let stripped = take_cstr(pt_strip_invisible(
+                smuggled.as_ptr(),
+                smuggled.len(),
+                &raw mut err,
+            ));
+            assert!(err.is_null());
+            assert_eq!(stripped, "abcde");
+        }
+    }
+
+    #[test]
+    fn ffi_host_xml_codec_envelopes_and_truncation() {
+        unsafe {
+            let mut err: *mut c_char = ptr::null_mut();
+            let decoded = take_cstr(pt_decode_xml(b"a &lt;b&gt;".as_ptr(), 11, &raw mut err));
+            assert!(err.is_null());
+            assert_eq!(decoded, "a <b>");
+
+            let attr = take_cstr(pt_escape_xml_attr(b"a\"b\nc".as_ptr(), 5, &raw mut err));
+            assert!(err.is_null());
+            assert_eq!(attr, "a&quot;b\\nc");
+
+            let body = take_cstr(pt_escape_xml_body(b"a<b\0c".as_ptr(), 5, &raw mut err));
+            assert!(err.is_null());
+            assert_eq!(body, "a&lt;b\\0c");
+
+            let tag_doc = CString::new("doc").unwrap();
+            let custom_notice = CString::new("see {tag}").unwrap();
+            let notice = take_cstr(pt_format_sanitize_notice(
+                tag_doc.as_ptr(),
+                custom_notice.as_ptr(),
+                &raw mut err,
+            ));
+            assert!(err.is_null());
+            assert_eq!(notice, "see doc");
+
+            let wrapped = "<doc>\n\nhello\n\n</doc>";
+            let inner = take_cstr(pt_strip_outer_quarantine_tag(
+                wrapped.as_ptr(),
+                wrapped.len(),
+                tag_doc.as_ptr(),
+            ));
+            assert_eq!(inner, "\nhello\n");
+
+            let clean_env = "<doc>\nok\n</doc>";
+            let unq = take_cstr(pt_unquarantine(
+                clean_env.as_ptr(),
+                clean_env.len(),
+                tag_doc.as_ptr(),
+            ));
+            assert_eq!(unq, "ok");
+
+            let dirty_env = "<doc>\n<|im_start|>\n</doc>";
+            let rewrapped = take_cstr(pt_quarantine_untrusted_idempotent(
+                dirty_env.as_ptr(),
+                dirty_env.len(),
+                tag_doc.as_ptr(),
+                &raw mut err,
+            ));
+            assert!(err.is_null());
+            assert_eq!(rewrapped, "<doc>\n&lt;|im_start|&gt;\n</doc>");
+
+            let san_block = take_cstr(pt_sanitize_block_idempotent(
+                b"payload".as_ptr(),
+                7,
+                tag_doc.as_ptr(),
+                ptr::null(),
+                &raw mut err,
+            ));
+            assert!(err.is_null());
+            let san_again = take_cstr(pt_sanitize_block_idempotent(
+                san_block.as_ptr(),
+                san_block.len(),
+                tag_doc.as_ptr(),
+                ptr::null(),
+                &raw mut err,
+            ));
+            assert!(err.is_null());
+            assert_eq!(san_again, san_block);
+
+            let trunc_str = take_cstr(pt_truncate_middle(
+                b"abcdef".as_ptr(),
+                6,
+                100,
+                ptr::null(),
+                &raw mut err,
+            ));
+            assert!(err.is_null());
+            assert_eq!(trunc_str, "abcdef");
+
+            let items_json = CString::new(r#"["a","b","c","d","e"]"#).unwrap();
+            let marker = CString::new("..{skipped}..").unwrap();
+            let trunc_list = take_cstr(pt_truncate_middle_list_json(
+                items_json.as_ptr(),
+                3,
+                marker.as_ptr(),
+                &raw mut err,
+            ));
+            assert!(err.is_null());
+            assert_eq!(trunc_list, r#"["a", "..2..", "d", "e"]"#);
+        }
+    }
 }

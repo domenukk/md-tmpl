@@ -41,6 +41,7 @@ import {
   parseSanitizeNoticeValue,
   registerDeclSanitizeSpecs,
   type SanitizeSpec,
+  type TypeAliasSanitize,
 } from "../sanitize_pass.js";
 
 // ---------------------------------------------------------------------------
@@ -64,10 +65,7 @@ function declarationLabel(name: string): string {
 export function parseFrontmatter(
   source: string,
   parentTypeAliases?: ReadonlyMap<string, VarType>,
-  parentTypeAliasSanitize?: ReadonlyMap<
-    string,
-    ReadonlyMap<string, SanitizeSpec>
-  >,
+  parentTypeAliasSanitize?: TypeAliasSanitize,
 ): [Frontmatter, string] {
   // Normalize CRLF → LF for cross-platform consistency.
   const normalized = source.includes("\r")
@@ -331,10 +329,7 @@ export function parseFrontmatterYaml(
   rawLines: string[],
   startLineNo = 2,
   parentTypeAliases?: ReadonlyMap<string, VarType>,
-  parentTypeAliasSanitize?: ReadonlyMap<
-    string,
-    ReadonlyMap<string, SanitizeSpec>
-  >,
+  parentTypeAliasSanitize?: TypeAliasSanitize,
   bodyStartLine?: number,
 ): Frontmatter {
   // Fold multi-line declarations onto single logical lines before parsing.

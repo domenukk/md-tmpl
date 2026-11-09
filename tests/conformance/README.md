@@ -1,6 +1,6 @@
 # md-tmpl — Shared Conformance Corpus
 
-One **language-neutral** corpus of test cases, replayed by **all four** backends
+One **language-neutral** corpus of test cases, replayed by **all five** backends
 so that the independent implementations are proven to agree, case-for-case:
 
 | Backend    | Harness                                                   |
@@ -9,6 +9,7 @@ so that the independent implementations are proven to agree, case-for-case:
 | TypeScript | `crates/md-tmpl-typescript/src/tests/conformance.test.ts` |
 | Go         | `go/md_tmpl/conformance_test.go`                          |
 | Python     | `crates/md-tmpl-python/python/tests/test_conformance.py`  |
+| WASM       | `crates/md-tmpl-wasm/tests/conformance.test.ts`           |
 
 Run every harness at once:
 
@@ -23,15 +24,15 @@ immediately diagnosable.
 
 | File                 | What it asserts                                        | Cases |
 | -------------------- | ------------------------------------------------------ | ----- |
-| `render.toml`        | `source` + `params` → exact rendered `output`          | 50    |
+| `render.toml`        | `source` + `params` → exact rendered `output`          | 79    |
 | `frontmatter.toml`   | `source` → `defaults()` object                         | 18    |
-| `errors.toml`        | `source` (+`params`) → an error at a given phase       | 15    |
+| `errors.toml`        | `source` (+`params`) → an error at a given phase       | 31    |
 | `escapes.toml`       | string-escape (`S`) matrix → `defaults()`              | 8     |
 | `comments.toml`      | trailing-comment (`C`) matrix → `defaults()`           | 5     |
 | `interpolation.toml` | `{{ }}` interpolation inside statement string contexts | 2     |
 | `literals.toml`      | literals usable in every general expression position   | 32    |
 
-Total: **130** cases, every one satisfied by **all four** backends.
+Total: **175** cases, every one satisfied by **all five** backends.
 
 ## Format: TOML
 
@@ -121,14 +122,15 @@ These are not style choices — the engine enforces them, so cases must follow:
 - **`list(struct(...))` is rejected** in favour of the field shorthand
   `list(name = str, ...)`.
 - Available **filters**: `upper`, `lower`, `trim`, `fixed(n)`, `join(sep)`,
-  `limit(n)`, `add(n)`, `sub(n)`, `escape_xml` (`xml`), `escape_json` (`json`),
-  `sanitize_tokens`, `fence(lang)`, `quarantine(tag)`.
-- Available **functions**: `len(...)`, `kind(Enum.Variant)`, `kinds(Enum)`,
-  `has(option)`.
+  `limit(n)`, `truncate(n, [marker])`, `add(n)`, `sub(n)`, `escape_xml` (`xml`),
+  `escape_json`, `json([n])`, `sanitize([tag], [notice])`, `sanitize_tokens([tag])`,
+  `fence([lang])`, `quarantine([tag])`, `unsafe_trust`.
+- Available **functions**: `idx(binding)`, `len(...)`, `kind(Enum.Variant)`,
+  `kinds(Enum)`, `has(option)`, `unsafe_trust(expr)`.
 
 ## Adding a case
 
 1. Add a `[[cases]]` block to the relevant file with a unique `name`.
 2. Encode option-`None` as `{ __none__ = true }` (never a bare `null`).
-3. Run `just test-conformance` — the case must pass in **all four** backends. A
+3. Run `just test-conformance` — the case must pass in **all five** backends. A
    divergence is a real bug to fix, not a case to special-case.

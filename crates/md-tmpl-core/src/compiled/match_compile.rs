@@ -14,6 +14,97 @@ use crate::{
     parser,
 };
 
+/// Pre-compiled match-arm case label (`{% case ... %}`).
+///
+/// Unescapes quoted string literals, pre-compiles embedded `{{ expr }}`
+/// interpolations into [`Segment`]s, and pre-splits dotted variable paths once
+/// at template compile time so `arm_matches` never scans quotes, unescapes
+/// backslashes, splits paths, or invokes [`compile_body`] during rendering.
+#[derive(Debug, Clone)]
+pub enum CompiledCaseLabel {
+    /// Wildcard fallback arm (`_`, emitted for `{% else %}`).
+    Default,
+    /// Quoted string literal without interpolation (`"Active"`, `'say "hi"'`), unescaped once.
+    LiteralStr(Cow<'static, str>),
+    /// Quoted string literal containing `{{ expr }}` interpolation, compiled at parse time.
+    InterpolatedStr(Vec<Segment>),
+    /// Unquoted token: enum variant name, scalar literal, or variable / dotted-path reference.
+    Unquoted {
+        /// Trimmed raw label token.
+        raw: Cow<'static, str>,
+        /// Pre-compiled dotted path when `raw` contains `.` (`cfg.expected`, `consts.TAG`).
+        dotted_path: Option<CompiledPath>,
+    },
+}
+
+impl CompiledCaseLabel {
+    /// Compile a single trimmed case-label token into a [`CompiledCaseLabel`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TemplateError`] if an interpolated quoted string contains malformed `{{ ... }}` syntax.
+    pub fn compile(label: &str) -> Result<Self, TemplateError> {
+        let label = label.trim();
+        if label == crate::consts::MATCH_DEFAULT {
+            return Ok(Self::Default);
+        }
+        if let Some(inner) = crate::consts::strip_string_literal(label) {
+            let unescaped = crate::consts::unescape_string_literal(inner);
+            if unescaped.contains(crate::consts::EXPR_START) {
+                let segments = compile_body(&unescaped)?;
+                return Ok(Self::InterpolatedStr(segments));
+            }
+            return Ok(Self::LiteralStr(Cow::Owned(unescaped)));
+        }
+        let dotted_path = label
+            .contains(crate::consts::PATH_SEP)
+            .then(|| CompiledPath::compile(label));
+        Ok(Self::Unquoted {
+            raw: Cow::Owned(label.to_string()),
+            dotted_path,
+        })
+    }
+
+    /// Compile a slice of raw variant strings into [`CompiledCaseLabel`]s.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TemplateError`] if any interpolated label fails compilation.
+    pub fn compile_all(variants: &[Cow<'static, str>]) -> Result<Vec<Self>, TemplateError> {
+        variants.iter().map(|v| Self::compile(v.as_ref())).collect()
+    }
+}
+
+/// Split a `{% case ... %}` clause into `(variants_part, optional_guard)` at the
+/// first top-level `" && "` outside single or double quotes.
+fn split_case_guard(variant: &str) -> (&str, Option<&str>) {
+    use crate::consts::{QUOTE_DOUBLE, QUOTE_SINGLE};
+
+    let mut in_quote: Option<char> = None;
+    let mut escaped = false;
+    for (i, ch) in variant.char_indices() {
+        if in_quote.is_some() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+        }
+        match ch {
+            QUOTE_DOUBLE | QUOTE_SINGLE if in_quote == Some(ch) => in_quote = None,
+            QUOTE_DOUBLE | QUOTE_SINGLE if in_quote.is_none() => in_quote = Some(ch),
+            ' ' if in_quote.is_none() && variant[i..].starts_with(" && ") => {
+                return (&variant[..i], Some(variant[i + 4..].trim()));
+            }
+            _ => {}
+        }
+    }
+    (variant, None)
+}
+///
 /// Returns `true` if the match arms use option-style variant names (`Some`/`None`).
 ///
 /// Called once at compile time so the renderer can use a discriminant check
@@ -66,11 +157,7 @@ pub(super) fn compile_match<'a>(
         let case_body = compile_body(case_text)?;
 
         // Parse guard: `Variant && guard_condition`.
-        let (variant_part, guard_str) = if let Some(pos) = variant.find(" && ") {
-            (&variant[..pos], Some(variant[pos + 4..].trim()))
-        } else {
-            (variant, None)
-        };
+        let (variant_part, guard_str) = split_case_guard(variant);
         let guard = if let Some(g) = guard_str {
             Some(parse_condition(g)?)
         } else {
@@ -78,8 +165,9 @@ pub(super) fn compile_match<'a>(
         };
 
         let variant_part = variant_part.trim();
-        if variant_part
-            .split(crate::consts::PIPE)
+        let split_variants = parser::split_filters_aware(variant_part);
+        if split_variants
+            .iter()
             .any(|v| v.trim() == crate::consts::MATCH_DEFAULT)
         {
             return Err(TemplateError::syntax(
@@ -87,11 +175,14 @@ pub(super) fn compile_match<'a>(
                     .to_string(),
             ));
         }
+        let variants: Vec<Cow<'static, str>> = split_variants
+            .into_iter()
+            .map(|v| Cow::Owned(v.trim().to_string()))
+            .collect();
+        let compiled_variants = CompiledCaseLabel::compile_all(&variants)?;
         let mut arms = vec![MatchArm {
-            variants: variant_part
-                .split(crate::consts::PIPE)
-                .map(|v| Cow::Owned(v.trim().to_string()))
-                .collect(),
+            variants,
+            compiled_variants,
             guard,
             body: case_body,
         }];
@@ -99,6 +190,7 @@ pub(super) fn compile_match<'a>(
             let else_body = compile_body(else_body_text)?;
             arms.push(MatchArm {
                 variants: vec![Cow::Borrowed(crate::consts::MATCH_DEFAULT)],
+                compiled_variants: vec![CompiledCaseLabel::Default],
                 guard: None,
                 body: else_body,
             });
@@ -133,19 +225,16 @@ pub(super) fn compile_match<'a>(
 }
 
 fn parse_case_arm<'a>(variant: &str, after: &'a str) -> Result<(MatchArm, &'a str), TemplateError> {
-    let (variant_part, guard_str) = if let Some(pos) = variant.find(" && ") {
-        (&variant[..pos], Some(variant[pos + 4..].trim()))
-    } else {
-        (variant, None)
-    };
+    let (variant_part, guard_str) = split_case_guard(variant);
     let variant_part = variant_part.trim();
     if variant_part.is_empty() {
         return Err(TemplateError::syntax(
             "match: empty variant name in {% case %}".to_string(),
         ));
     }
-    if variant_part
-        .split(crate::consts::PIPE)
+    let split_variants = parser::split_filters_aware(variant_part);
+    if split_variants
+        .iter()
         .any(|v| v.trim() == crate::consts::MATCH_DEFAULT)
     {
         return Err(TemplateError::syntax(
@@ -156,10 +245,11 @@ fn parse_case_arm<'a>(variant: &str, after: &'a str) -> Result<(MatchArm, &'a st
 
     let arm_body = scan_to_next_case_or_end(after)?;
     let arm_segments = compile_body(arm_body)?;
-    let variants = variant_part
-        .split(crate::consts::PIPE)
+    let variants: Vec<Cow<'static, str>> = split_variants
+        .into_iter()
         .map(|v| Cow::Owned(v.trim().to_string()))
         .collect();
+    let compiled_variants = CompiledCaseLabel::compile_all(&variants)?;
     let guard = if let Some(g) = guard_str {
         Some(parse_condition(g)?)
     } else {
@@ -167,6 +257,7 @@ fn parse_case_arm<'a>(variant: &str, after: &'a str) -> Result<(MatchArm, &'a st
     };
     let arm = MatchArm {
         variants,
+        compiled_variants,
         guard,
         body: arm_segments,
     };
@@ -178,6 +269,7 @@ fn parse_else_arm(after: &str) -> Result<(MatchArm, &str), TemplateError> {
     let arm_segments = compile_body(arm_body)?;
     let arm = MatchArm {
         variants: vec![Cow::Borrowed(crate::consts::MATCH_DEFAULT)],
+        compiled_variants: vec![CompiledCaseLabel::Default],
         guard: None,
         body: arm_segments,
     };

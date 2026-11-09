@@ -193,8 +193,9 @@ pub(crate) fn eval_condition(
                 let label = v.as_ref();
                 label == crate::consts::MATCH_DEFAULT
                     || active_variant == label
-                    || crate::consts::strip_string_literal(label)
-                        .is_some_and(|inner| active_variant == inner)
+                    || crate::consts::strip_string_literal(label).is_some_and(|inner| {
+                        active_variant == crate::consts::unescape_string_literal(inner)
+                    })
             }))
         }
     }

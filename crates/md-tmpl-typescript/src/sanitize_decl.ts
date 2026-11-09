@@ -1,6 +1,6 @@
 /**
- * Frontmatter `| sanitize(...)` declaration parsing, AST extraction,
- * type resolution, and validation.
+ * Frontmatter `| sanitize(...)`, `trusted`, and `untrusted` declaration parsing,
+ * AST extraction, type resolution, and validation.
  *
  * @module
  */
@@ -11,6 +11,7 @@ import {
   DOT,
   EQUALS,
   FILTER_SANITIZE,
+  FILTER_UNSAFE_TRUST,
   PAREN_CLOSE,
   PAREN_OPEN,
   PIPE,
@@ -19,13 +20,19 @@ import {
   SANITIZE_KIND_BLOCK,
   SANITIZE_KIND_INLINE,
   TYPE_ALIAS,
+  TYPE_BOOL,
   TYPE_ENUM,
+  TYPE_FLOAT,
+  TYPE_INT,
   TYPE_LIST,
   TYPE_OPTION,
   TYPE_SCALAR_LIST,
   TYPE_STR,
   TYPE_STRUCT,
   TYPE_TMPL,
+  TYPE_TRUSTED,
+  TYPE_UNSAFE_TRUST,
+  ERR_UNSAFE_TRUST_DECLARATION,
   TYPE_UNTRUSTED,
 } from "./consts.js";
 import { TemplateSyntaxError } from "./errors.js";
@@ -39,8 +46,46 @@ import {
 } from "./frontmatter/var_type.js";
 import {
   type SanitizeSpec,
+  type TypeAliasSanitize,
   parseSanitizeFilterArgs,
 } from "./sanitize_runtime.js";
+
+export type TrustMode = "safe" | "trusted";
+
+/**
+ * Strip a single leading `trusted` or `untrusted` modifier (`kw T` or `kw(T)`),
+ * returning the inner type expression. Does not strip `kw("tag")` string-literal
+ * arguments so invalid forms like `untrusted("doc") str` or `trusted("doc") str`
+ * are rejected by the type parser.
+ */
+export function stripSingleTrustKeyword(
+  s: string,
+  kw: string,
+): string | undefined {
+  if (!s.startsWith(kw)) return undefined;
+  const rest = s.slice(kw.length);
+  const restTrimmed = rest.trim();
+  if (rest.startsWith(" ") || rest.startsWith("\t")) {
+    if (restTrimmed.length > 0) {
+      return restTrimmed;
+    }
+  } else if (
+    restTrimmed.startsWith(PAREN_OPEN) &&
+    restTrimmed.endsWith(PAREN_CLOSE)
+  ) {
+    const inner = restTrimmed
+      .slice(PAREN_OPEN.length, -PAREN_CLOSE.length)
+      .trim();
+    if (
+      inner.length > 0 &&
+      !inner.startsWith(QUOTE_DOUBLE) &&
+      !inner.startsWith(QUOTE_SINGLE)
+    ) {
+      return inner;
+    }
+  }
+  return undefined;
+}
 
 function splitPipeAware(s: string): [string, string] {
   let depth = 0;
@@ -83,6 +128,9 @@ function parseDeclSanitizeChain(chain: string): SanitizeSpec {
     const trimmed = rawFilter.trim();
     if (trimmed.length === 0) continue;
     const [name, args] = parseFilter(trimmed);
+    if (name === FILTER_UNSAFE_TRUST) {
+      throw new Error(ERR_UNSAFE_TRUST_DECLARATION);
+    }
     if (name !== FILTER_SANITIZE) {
       throw new Error(
         `unsupported parameter filter '${name}' in frontmatter (only '| sanitize' is allowed on declarations)`,
@@ -183,7 +231,11 @@ function findCharAtDepthZero(s: string, target: string): number {
 function extractFieldsSanitize(
   inner: string,
   prefix: string,
+  mode: TrustMode,
+  explicitUntrustedElem: boolean,
+  typeAliasSanitize: TypeAliasSanitize | undefined,
   specs: Map<string, SanitizeSpec>,
+  trustedPaths: Set<string>,
 ): string {
   const entries = splitTopLevel(inner, COMMA);
   const cleanedEntries: string[] = [];
@@ -198,11 +250,23 @@ function extractFieldsSanitize(
       const cleanedFieldType = extractTypeSanitizeInner(
         fieldTypeRaw,
         fieldPrefix,
+        mode,
+        false,
+        typeAliasSanitize,
         specs,
+        trustedPaths,
       );
       cleanedEntries.push(`${fieldName} = ${cleanedFieldType}`);
     } else {
-      const cleanedElem = extractTypeSanitizeInner(f, prefix, specs);
+      const cleanedElem = extractTypeSanitizeInner(
+        f,
+        prefix,
+        mode,
+        explicitUntrustedElem,
+        typeAliasSanitize,
+        specs,
+        trustedPaths,
+      );
       cleanedEntries.push(cleanedElem);
     }
   }
@@ -212,7 +276,10 @@ function extractFieldsSanitize(
 function extractEnumVariantsSanitize(
   inner: string,
   prefix: string,
+  mode: TrustMode,
+  typeAliasSanitize: TypeAliasSanitize | undefined,
   specs: Map<string, SanitizeSpec>,
+  trustedPaths: Set<string>,
 ): string {
   const entries = splitTopLevel(inner, COMMA);
   const cleanedVariants: string[] = [];
@@ -223,7 +290,15 @@ function extractEnumVariantsSanitize(
     if (openPos !== -1 && v.endsWith(PAREN_CLOSE)) {
       const varName = v.slice(0, openPos).trim();
       const varInner = v.slice(openPos + 1, -1);
-      const cleanedFields = extractFieldsSanitize(varInner, prefix, specs);
+      const cleanedFields = extractFieldsSanitize(
+        varInner,
+        prefix,
+        mode,
+        false,
+        typeAliasSanitize,
+        specs,
+        trustedPaths,
+      );
       cleanedVariants.push(
         `${varName}${PAREN_OPEN}${cleanedFields}${PAREN_CLOSE}`,
       );
@@ -237,64 +312,133 @@ function extractEnumVariantsSanitize(
 function extractTypeSanitizeInner(
   raw: string,
   prefix: string,
+  initialMode: TrustMode,
+  inheritedExplicitUntrusted: boolean,
+  typeAliasSanitize: TypeAliasSanitize | undefined,
   specs: Map<string, SanitizeSpec>,
+  trustedPaths: Set<string>,
 ): string {
   const [basePart, filterChain] = splitPipeAware(raw);
   let base = basePart.trim();
+  let mode = initialMode;
+  let explicitUntrusted = inheritedExplicitUntrusted;
   if (filterChain.trim().length > 0) {
-    const spec = parseDeclSanitizeChain(filterChain);
-    insertSpec(specs, prefix, spec);
+    insertSpec(specs, prefix, parseDeclSanitizeChain(filterChain));
   }
 
-  if (base.startsWith(TYPE_UNTRUSTED)) {
-    const rest = base.slice(TYPE_UNTRUSTED.length);
-    const restTrimmed = rest.trim();
-    if (rest.startsWith(" ") || rest.startsWith("\t")) {
-      insertSpec(specs, prefix, { kind: SANITIZE_KIND_INLINE });
-      base = restTrimmed;
-    } else if (
-      restTrimmed.startsWith(PAREN_OPEN) &&
-      restTrimmed.endsWith(PAREN_CLOSE)
-    ) {
-      // Mirrors Rust `strip_type_brackets`: the parentheses must span the whole rest.
-      insertSpec(specs, prefix, { kind: SANITIZE_KIND_INLINE });
-      base = restTrimmed.slice(PAREN_OPEN.length, -PAREN_CLOSE.length).trim();
+  for (;;) {
+    const innerUntrusted = stripSingleTrustKeyword(base, TYPE_UNTRUSTED);
+    if (innerUntrusted !== undefined) {
+      mode = "safe";
+      explicitUntrusted = true;
+      trustedPaths.delete(prefix);
+      base = innerUntrusted;
+      continue;
     }
+    const innerTrusted = stripSingleTrustKeyword(base, TYPE_TRUSTED);
+    if (innerTrusted !== undefined) {
+      mode = "trusted";
+      explicitUntrusted = false;
+      trustedPaths.add(prefix);
+      base = innerTrusted;
+      continue;
+    }
+    if (stripSingleTrustKeyword(base, TYPE_UNSAFE_TRUST) !== undefined) {
+      throw new Error(ERR_UNSAFE_TRUST_DECLARATION);
+    }
+    break;
   }
 
   if (startsWithCompoundType(base, TYPE_OPTION)) {
     const inner = stripTypeBrackets(base, TYPE_OPTION);
-    const cleanedInner = extractTypeSanitizeInner(inner, prefix, specs);
+    const cleanedInner = extractTypeSanitizeInner(
+      inner,
+      prefix,
+      mode,
+      explicitUntrusted,
+      typeAliasSanitize,
+      specs,
+      trustedPaths,
+    );
     return `${TYPE_OPTION}${PAREN_OPEN}${cleanedInner}${PAREN_CLOSE}`;
   }
 
   for (const compoundKw of [TYPE_STRUCT, TYPE_LIST, TYPE_TMPL] as const) {
     if (startsWithCompoundType(base, compoundKw)) {
       const inner = stripTypeBrackets(base, compoundKw);
-      const cleanedFields = extractFieldsSanitize(inner, prefix, specs);
+      const childMode: TrustMode = compoundKw === TYPE_TMPL ? "trusted" : mode;
+      const cleanedFields = extractFieldsSanitize(
+        inner,
+        prefix,
+        childMode,
+        explicitUntrusted && compoundKw === TYPE_LIST,
+        typeAliasSanitize,
+        specs,
+        trustedPaths,
+      );
       return `${compoundKw}${PAREN_OPEN}${cleanedFields}${PAREN_CLOSE}`;
     }
   }
 
   if (startsWithCompoundType(base, TYPE_ENUM)) {
     const inner = stripTypeBrackets(base, TYPE_ENUM);
-    const cleanedVariants = extractEnumVariantsSanitize(inner, prefix, specs);
+    const cleanedVariants = extractEnumVariantsSanitize(
+      inner,
+      prefix,
+      mode,
+      typeAliasSanitize,
+      specs,
+      trustedPaths,
+    );
     return `${TYPE_ENUM}${PAREN_OPEN}${cleanedVariants}${PAREN_CLOSE}`;
+  }
+
+  if (base === TYPE_STR) {
+    if (mode === "safe") {
+      insertSpec(specs, prefix, { kind: SANITIZE_KIND_INLINE });
+    }
+  } else if (mode === "safe") {
+    const isBuiltinScalar =
+      base === TYPE_BOOL || base === TYPE_INT || base === TYPE_FLOAT;
+    const aliasSpecs = isBuiltinScalar
+      ? undefined
+      : typeAliasSanitize?.get(base);
+    if (aliasSpecs !== undefined) {
+      for (const [rel, spec] of aliasSpecs) {
+        const key = joinPrefix(prefix, rel);
+        if (!specs.has(key)) {
+          specs.set(key, spec);
+        }
+      }
+    } else if (explicitUntrusted) {
+      insertSpec(specs, prefix, { kind: SANITIZE_KIND_INLINE });
+    }
   }
 
   return base;
 }
 
 /**
- * Strip any `| sanitize(...)` annotations from a type expression, returning
- * `[cleanedTypeStr, relSpecs]`.
+ * Strip any `| sanitize(...)`, `trusted`, and `untrusted` annotations from a type expression,
+ * returning `[cleanedTypeStr, relSpecs, trustedPaths]`.
  */
 export function extractTypeSanitizeSpecs(
   rawType: string,
-): [string, Map<string, SanitizeSpec>] {
+  initialMode: TrustMode = "safe",
+  typeAliasSanitize?: TypeAliasSanitize,
+): [string, Map<string, SanitizeSpec>, Set<string>] {
   const specs = new Map<string, SanitizeSpec>();
-  const cleaned = extractTypeSanitizeInner(rawType.trim(), "", specs);
-  return [cleaned, specs];
+  const trustedPaths = new Set<string>();
+  const cleaned = extractTypeSanitizeInner(
+    rawType.trim(),
+    "",
+    initialMode,
+    false,
+    typeAliasSanitize,
+    specs,
+    trustedPaths,
+  );
+  return [cleaned, specs, trustedPaths];
 }
 
 function resolveAlias(
@@ -320,10 +464,10 @@ function allowsSanitize(
   const resolved = resolveAlias(vt, typeAliases);
   if (resolved.kind === TYPE_STR) return true;
   if (resolved.kind === TYPE_OPTION) {
-    return resolveAlias(resolved.innerType, typeAliases).kind === TYPE_STR;
+    return allowsSanitize(resolved.innerType, typeAliases);
   }
   if (resolved.kind === TYPE_SCALAR_LIST) {
-    return resolveAlias(resolved.elementType, typeAliases).kind === TYPE_STR;
+    return allowsSanitize(resolved.elementType, typeAliases);
   }
   if (resolved.kind === TYPE_ALIAS) {
     // Imported type alias not yet resolved at frontmatter parse time
@@ -405,7 +549,7 @@ export function validateSanitizeSpecsOnType(
 export function collectInheritedAliasSanitize(
   rawCleanedType: string,
   prefix: string,
-  typeAliasSanitize: ReadonlyMap<string, ReadonlyMap<string, SanitizeSpec>>,
+  typeAliasSanitize: TypeAliasSanitize,
   out: Map<string, SanitizeSpec>,
 ): void {
   if (typeAliasSanitize.size === 0) return;
@@ -476,23 +620,39 @@ export function collectInheritedAliasSanitize(
   }
 }
 
+function isCoveredByTrustedPath(
+  path: string,
+  trustedPaths?: ReadonlySet<string>,
+): boolean {
+  if (!trustedPaths || trustedPaths.size === 0) return false;
+  if (trustedPaths.has("") || trustedPaths.has(path)) return true;
+  for (const tp of trustedPaths) {
+    if (tp.length > 0 && path.startsWith(`${tp}.`)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Collect inherited `| sanitize` specs from a parsed `VarType` tree against `typeAliasSanitize`. */
 export function collectInheritedAliasSanitizeFromVarType(
   varType: VarType,
   prefix: string,
-  typeAliasSanitize: ReadonlyMap<string, ReadonlyMap<string, SanitizeSpec>>,
+  typeAliasSanitize: TypeAliasSanitize,
   out: Map<string, SanitizeSpec>,
   typeAliases?: ReadonlyMap<string, VarType>,
   seenAliases = new Set<string>(),
+  trustedPaths?: ReadonlySet<string>,
 ): void {
   if (typeAliasSanitize.size === 0) return;
+  if (isCoveredByTrustedPath(prefix, trustedPaths)) return;
   switch (varType.kind) {
     case TYPE_ALIAS: {
       const aliasSpecs = typeAliasSanitize.get(varType.name);
       if (aliasSpecs) {
         for (const [rel, spec] of aliasSpecs) {
           const key = joinPrefix(prefix, rel);
-          if (!out.has(key)) {
+          if (!isCoveredByTrustedPath(key, trustedPaths) && !out.has(key)) {
             out.set(key, spec);
           }
         }
@@ -508,6 +668,7 @@ export function collectInheritedAliasSanitizeFromVarType(
             out,
             typeAliases,
             seenAliases,
+            trustedPaths,
           );
           seenAliases.delete(varType.name);
         }
@@ -522,6 +683,7 @@ export function collectInheritedAliasSanitizeFromVarType(
         out,
         typeAliases,
         seenAliases,
+        trustedPaths,
       );
       return;
     case TYPE_SCALAR_LIST:
@@ -532,11 +694,13 @@ export function collectInheritedAliasSanitizeFromVarType(
         out,
         typeAliases,
         seenAliases,
+        trustedPaths,
       );
       return;
     case TYPE_STRUCT:
     case TYPE_LIST:
     case TYPE_TMPL:
+      if (varType.kind === TYPE_TMPL) return;
       for (const field of varType.fields) {
         collectInheritedAliasSanitizeFromVarType(
           field.varType,
@@ -545,6 +709,7 @@ export function collectInheritedAliasSanitizeFromVarType(
           out,
           typeAliases,
           seenAliases,
+          trustedPaths,
         );
       }
       return;
@@ -558,6 +723,7 @@ export function collectInheritedAliasSanitizeFromVarType(
             out,
             typeAliases,
             seenAliases,
+            trustedPaths,
           );
         }
       }
@@ -568,30 +734,27 @@ export function collectInheritedAliasSanitizeFromVarType(
 }
 
 /**
- * Extract `| sanitize(...)` annotations from a declaration's `typeStr` and optional `defaultLiteral`.
+ * Extract `| sanitize(...)`, `trusted`, and `untrusted` annotations from a declaration's
+ * `typeStr` and optional `defaultLiteral`.
  */
-const EMPTY_SANITIZE_MAP = new Map<string, SanitizeSpec>();
-
 export function extractDeclarationSanitize(
   name: string,
   typeStr: string,
   defaultLiteral: string | undefined,
   isConstant: boolean,
-  typeAliasSanitize?: ReadonlyMap<string, ReadonlyMap<string, SanitizeSpec>>,
-): [string, string | undefined, Map<string, SanitizeSpec>] {
-  if (
-    !typeStr.includes(PIPE) &&
-    !typeStr.includes(TYPE_UNTRUSTED) &&
-    !defaultLiteral?.includes(PIPE) &&
-    (!typeAliasSanitize || typeAliasSanitize.size === 0)
-  ) {
-    return [typeStr.trim(), defaultLiteral, EMPTY_SANITIZE_MAP];
-  }
-
+  typeAliasSanitize?: TypeAliasSanitize,
+): [string, string | undefined, Map<string, SanitizeSpec>, Set<string>] {
   let cleanedType: string;
   let relSpecs: Map<string, SanitizeSpec>;
+  let trustedPaths: Set<string>;
+  const initialMode: TrustMode = isConstant ? "trusted" : "safe";
+  const aliasMap = isConstant ? undefined : typeAliasSanitize;
   try {
-    [cleanedType, relSpecs] = extractTypeSanitizeSpecs(typeStr);
+    [cleanedType, relSpecs, trustedPaths] = extractTypeSanitizeSpecs(
+      typeStr,
+      initialMode,
+      aliasMap,
+    );
   } catch (err) {
     throw new TemplateSyntaxError(
       `declaration '${name}': ${err instanceof Error ? err.message : String(err)}`,
@@ -603,8 +766,7 @@ export function extractDeclarationSanitize(
     const [baseDp, dpFilter] = splitPipeAware(defaultLiteral);
     if (dpFilter.trim().length > 0) {
       try {
-        const spec = parseDeclSanitizeChain(dpFilter);
-        insertSpec(relSpecs, "", spec);
+        insertSpec(relSpecs, "", parseDeclSanitizeChain(dpFilter));
       } catch (err) {
         throw new TemplateSyntaxError(
           `declaration '${name}': ${err instanceof Error ? err.message : String(err)}`,
@@ -620,11 +782,7 @@ export function extractDeclarationSanitize(
     );
   }
 
-  if (!isConstant && typeAliasSanitize) {
-    collectInheritedAliasSanitize(cleanedType, "", typeAliasSanitize, relSpecs);
-  }
-
-  return [cleanedType, cleanedDefault, relSpecs];
+  return [cleanedType, cleanedDefault, relSpecs, trustedPaths];
 }
 
 /** Merge a declaration's relative sanitize specs into `paramSanitize`. */

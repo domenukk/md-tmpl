@@ -4,7 +4,7 @@ use alloc::{borrow::Cow, string::String};
 
 use super::{condition::eval_condition, segments::render_interpolated_str};
 use crate::{
-    compiled::MatchArm,
+    compiled::{CompiledCaseLabel, MatchArm},
     error::TemplateError,
     scope::{CompiledPath, Scope},
     value::Value,
@@ -28,7 +28,7 @@ pub(super) fn render_match(
     let active_variant = resolve_match_variant(expr, is_option, scope)?;
 
     for arm in arms {
-        if arm_matches(&active_variant, &arm.variants, scope)? {
+        if arm_matches(&active_variant, &arm.compiled_variants, scope)? {
             // Evaluate guard if present.
             if let Some(ref guard) = arm.guard {
                 if !eval_condition(guard, scope)? {
@@ -68,7 +68,7 @@ pub(super) fn render_match_no_std(
     let active_variant = resolve_match_variant(expr, is_option, scope)?;
 
     for arm in arms {
-        if arm_matches(&active_variant, &arm.variants, scope)? {
+        if arm_matches(&active_variant, &arm.compiled_variants, scope)? {
             if let Some(ref guard) = arm.guard {
                 if !eval_condition(guard, scope)? {
                     continue;
@@ -92,52 +92,61 @@ pub(super) fn render_match_no_std(
     Ok(())
 }
 
-/// Check if any arm variant matches the active variant.
+/// Check if any pre-compiled arm variant matches the active variant.
 ///
 /// Matching rules:
-/// - `_` (`MATCH_DEFAULT`): always matches
-/// - Quoted label (e.g. `"Active"`): strip quotes, compare literally
-/// - Unquoted label matching an enum variant: compare literally
-/// - Unquoted label (param-ref on str match): resolve the param value
-///   from scope and compare the resolved value against `active_variant`
+/// - [`CompiledCaseLabel::Default`] (`_`): always matches
+/// - [`CompiledCaseLabel::LiteralStr`]: pre-unescaped literal comparison
+/// - [`CompiledCaseLabel::InterpolatedStr`]: evaluate pre-compiled [`Segment`]s and compare
+/// - [`CompiledCaseLabel::Unquoted`]: compare literally (enum variant / scalar) or resolve
+///   from scope as a string variable / pre-compiled dotted path
 fn arm_matches(
     active_variant: &str,
-    variants: &[Cow<'_, str>],
+    variants: &[CompiledCaseLabel],
     scope: &Scope<'_>,
 ) -> Result<bool, TemplateError> {
     for v in variants {
-        let label = v.as_ref();
-        if label == crate::consts::MATCH_DEFAULT {
-            return Ok(true);
-        }
-        // Quoted string literal: strip quotes, unescape, interpolate if needed,
-        // and compare.
-        if let Some(inner) = crate::consts::strip_string_literal(label) {
-            let inner = crate::consts::unescape_string_literal(inner);
-            if inner.contains(crate::consts::EXPR_START) {
-                // Contains {{ expr }} — compile and render the interpolated string.
-                let segments = crate::compiled::compile_body(&inner)?;
-                let rendered = render_interpolated_str(&segments, scope)?;
+        match v {
+            CompiledCaseLabel::Default => return Ok(true),
+            CompiledCaseLabel::LiteralStr(lit) => {
+                if active_variant == lit.as_ref() {
+                    return Ok(true);
+                }
+            }
+            CompiledCaseLabel::InterpolatedStr(segments) => {
+                let rendered = render_interpolated_str(segments, scope)?;
                 if rendered == active_variant {
                     return Ok(true);
                 }
-            } else if active_variant == inner.as_str() {
-                return Ok(true);
             }
-            continue;
-        }
-        // Direct comparison (enum variant name).
-        if active_variant == label {
-            return Ok(true);
-        }
-        // Param-ref: resolve label as a variable and compare its string value.
-        if let Some(Value::Str(s)) = scope.resolve(label) {
-            if active_variant == s.as_str() {
-                return Ok(true);
+            CompiledCaseLabel::Unquoted { raw, dotted_path } => {
+                if active_variant == raw.as_ref() {
+                    return Ok(true);
+                }
+                if let Some(s) = resolve_case_label_str(raw.as_ref(), dotted_path.as_ref(), scope)
+                    && active_variant == s
+                {
+                    return Ok(true);
+                }
             }
         }
     }
     Ok(false)
+}
+
+fn resolve_case_label_str<'a>(
+    label: &str,
+    dotted_path: Option<&CompiledPath>,
+    scope: &'a Scope<'_>,
+) -> Option<&'a str> {
+    let resolved = match dotted_path {
+        None => scope.resolve(label),
+        Some(path) => scope.try_resolve_compiled_path(path),
+    };
+    match resolved {
+        Some(Value::Str(s)) => Some(s.as_str()),
+        _ => None,
+    }
 }
 
 /// Resolve the active variant name for a match expression.

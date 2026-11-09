@@ -1,7 +1,6 @@
 # md-tmpl
 
-Strongly-typed prompt templates for LLMs — markdown files with YAML frontmatter,
-validated at **build time** via proc macros, with a full runtime API for dynamic loading.
+Typed prompt templates for LLMs.
 
 ```rust
 use md_tmpl::include_template;
@@ -63,15 +62,6 @@ Priority: {{ kind(priority) }}
 > {% /for %}
 ```
 
-Rename a variant, add a field, remove a param — the compiler catches it
-immediately. No runtime surprises.
-
-## Why?
-
-- **Build-time validation** — proc macros parse and validate syntax, types, and variable references at `cargo build`. Typos, missing fields, and type mismatches are build errors. Templates can also be loaded and validated at runtime.
-- **Markdown-native** — prompts live in `.tmpl.md` files, readable in any editor or on GitHub. Compound types use `()` (never `<>`), control-flow tags use `> {% %}` blockquote prefixes.
-- **Agent-safe** — when an LLM edits prompts, the compiler catches drift immediately. `validate_template()` enables hot-reload with contract enforcement.
-
 ## Installation
 
 Available on crates.io: <https://crates.io/crates/md-tmpl> (and <https://crates.io/crates/md-tmpl-macros>)
@@ -86,21 +76,22 @@ cargo add md-tmpl
 
 ## Template Syntax & Features
 
-| Feature                    | Syntax / Example                                                                                                                                                                                       |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Typed parameters**       | `str`, `int`, `float`, `bool`, `list(…)`, `struct(…)`, `enum(…)`, `option(…)`, `tmpl(…)`                                                                                                               |
-| **Type aliases**           | `types:` block defines reusable named types (`Priority = enum(High, Low)`)                                                                                                                             |
-| **Cross-template imports** | `imports:` pulls types via dotted paths (`stem.TypeName`)                                                                                                                                              |
-| **Constants**              | `consts:` block for file-scoped immutable values                                                                                                                                                       |
-| **Environment variables**  | `env:` block for compile-time injection from the build environment                                                                                                                                     |
-| **String interpolation**   | `{{ expr }}` inside all quoted strings — conditions, includes, panic messages                                                                                                                          |
-| **For loops & else**       | `> {% for task in tasks %} … > {% else %} empty > {% /for %}`                                                                                                                                          |
-| **Conditionals**           | `> {% if count > 0 %} … > {% elif active %} … > {% else %} … > {% /if %}`                                                                                                                              |
-| **Enum dispatch**          | `> {% match status %} > {% case Approved %} … > {% case Rejected %} … > {% /match %}`                                                                                                                  |
-| **Includes as links**      | `> {% include [widget](widget.tmpl.md) with title = "Hello" %}`                                                                                                                                        |
-| **Inline templates**       | `> {% tmpl header %} … > {% /tmpl %}` (call with `{% include header %}`)                                                                                                                               |
-| **Built-in functions**     | `idx(b)`, `len(x)`, `kind(x)`, `kinds(Type)`, `has(x)`                                                                                                                                                 |
-| **Filters**                | `upper`, `lower`, `trim`, `fixed(N)`, `join(sep)`, `limit(N)`, `add(N)`, `sub(N)`, `escape_xml` (`xml`), `escape_json` (`json`), `sanitize([tag], [notice])`, `sanitize_tokens([tags])`, `fence(lang)` |
+| Feature                        | Syntax / Example                                                                                                                                                                                                                                                           |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Typed parameters**           | `str` (untrusted by default), `trusted str`, `int`, `float`, `bool`, `list(…)`, `struct(…)`, `enum(…)`, `option(…)`, `tmpl(…)`                                                                                                                                             |
+| **Prompt-injection hardening** | `str` values are sanitized wherever they are emitted (control tokens, invisible characters, enclosing-tag breakouts); trust follows the value through includes; `trusted str` and `unsafe_trust(…)` opt out explicitly; `sanitize` / `quarantine` filters                  |
+| **Type aliases**               | `types:` block defines reusable named types (`Priority = enum(High, Low)`)                                                                                                                                                                                                 |
+| **Cross-template imports**     | `imports:` pulls types via dotted paths (`stem.TypeName`)                                                                                                                                                                                                                  |
+| **Constants**                  | `consts:` block for file-scoped immutable values                                                                                                                                                                                                                           |
+| **Environment variables**      | `env:` block for compile-time injection from the build environment                                                                                                                                                                                                         |
+| **String interpolation**       | `{{ expr }}` inside all quoted strings — conditions, includes, panic messages                                                                                                                                                                                              |
+| **For loops & else**           | `> {% for task in tasks %} … > {% else %} empty > {% /for %}`                                                                                                                                                                                                              |
+| **Conditionals**               | `> {% if count > 0 %} … > {% elif active %} … > {% else %} … > {% /if %}`                                                                                                                                                                                                  |
+| **Enum dispatch**              | `> {% match status %} > {% case Approved %} … > {% case Rejected %} … > {% /match %}`                                                                                                                                                                                      |
+| **Includes as links**          | `> {% include [widget](widget.tmpl.md) with title = "Hello" %}`                                                                                                                                                                                                            |
+| **Inline templates**           | `> {% tmpl header %} … > {% /tmpl %}` (call with `{% include header %}`)                                                                                                                                                                                                   |
+| **Built-in functions**         | `idx(b)`, `len(x)`, `kind(x)`, `kinds(Type)`, `has(x)`, `unsafe_trust(x)`                                                                                                                                                                                                  |
+| **Filters**                    | `upper`, `lower`, `trim`, `fixed(N)`, `join(sep)`, `limit(N)`, `truncate(N, [marker])`, `add(N)`, `sub(N)`, `escape_xml` (`xml`), `escape_json`, `json([N])`, `sanitize([tag], [notice])`, `sanitize_tokens([tags])`, `quarantine([tag])`, `fence([lang])`, `unsafe_trust` |
 
 ## Build-Time Typed Structs
 
@@ -140,8 +131,8 @@ assert_eq!(output, "Hello World!\n");
 
 ## `TypedBuilder` Integration
 
-Every generated param struct derives `TypedBuilder` for ergonomic,
-compile-time-checked construction. This is **always available** — no feature
+Every generated param struct derives `TypedBuilder` for compile-time-checked
+builder construction. This is **always available** — no feature
 flag to enable and no `typed-builder` dependency to add yourself (the derive is
 re-exported by `md-tmpl`):
 
@@ -249,7 +240,7 @@ For dynamic or scripting use cases, parse templates at runtime.
 
 ### `ctx!` Macro
 
-Ergonomic context construction with nested structs and lists:
+Context construction with nested structs and lists:
 
 ```rust
 use md_tmpl::{ctx, Template};
@@ -406,7 +397,7 @@ assert_eq!(tmpl.render_ctx(&ctx).unwrap(), "Alice (5)");
 ### vs Competitors
 
 Criterion benchmarks comparing pre-parsed render time as well as full end-to-end (serde struct serialization + context validation + render) time.
-([source](../../benchmarks/benches/comparison.rs))
+([source](../../benchmarks/benches/comparison/main.rs))
 
 #### Render Only (Pre-built Context / Typed Params)
 

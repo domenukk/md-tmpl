@@ -43,6 +43,7 @@ import {
   FN_KIND,
   FN_KINDS,
   FN_HAS,
+  FN_UNSAFE_TRUST,
   TYPE_BOOL,
   TYPE_FLOAT,
   TYPE_INT,
@@ -261,6 +262,15 @@ function resolveExpr(expr: string, scope: Scope): Value {
           else if (val.type === TYPE_LIST) hasVal = val.items.length > 0;
           return { type: TYPE_BOOL, value: hasVal };
         }
+      }
+      case FN_UNSAFE_TRUST: {
+        const val = resolveExpr(arg, scope);
+        if (val.type !== TYPE_STR) {
+          throw new TemplateSyntaxError(
+            `'${FN_UNSAFE_TRUST}' requires a string`,
+          );
+        }
+        return val;
       }
       default:
         throw new TemplateSyntaxError(`unknown function '${funcName}'`);

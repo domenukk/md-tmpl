@@ -1,8 +1,8 @@
 # md-tmpl
 
-Strongly-typed prompt templates for LLMs.
+Typed prompt templates for LLMs.
 
-## The Cool Part
+## Example
 
 Define a prompt as a `.tmpl.md` file — readable markdown with typed frontmatter:
 
@@ -97,12 +97,6 @@ export const CONSTANTS = {
 } as const;
 ```
 
-## Why?
-
-- **Markdown-native** — prompts live in `.tmpl.md` files, readable in any editor or on GitHub. No embedded strings, no escaping.
-- **Strict typing** — every parameter declares a type; `generateTypes()` emits TypeScript interfaces from frontmatter. Catch errors before deployment, not at 3 AM in production.
-- **Agent-safe** — when an LLM edits prompts, the engine catches drift immediately. Renamed a field? Changed a type? Broke the contract? You'll know before it ships.
-
 ## Installation
 
 Available on npm: <https://www.npmjs.com/package/md-tmpl>
@@ -147,18 +141,19 @@ Output includes `Params`, item interfaces, enum unions, `CONSTANTS`, and `DEFAUL
 
 ### Type Mapping
 
-| Frontmatter Type            | TypeScript Type                                 |
-| :-------------------------- | :---------------------------------------------- |
-| `str`                       | `string`                                        |
-| `int`                       | `number`                                        |
-| `float`                     | `number`                                        |
-| `bool`                      | `boolean`                                       |
-| `list(field = type, ...)`   | `readonly GeneratedItem[]`                      |
-| `list(type)`                | `readonly T[]` (e.g. `readonly string[]`)       |
-| `struct(field = type, ...)` | `GeneratedInterface`                            |
-| `enum(Variant, ...)`        | Union type (`Variant1 \| Variant2_Struct`)      |
-| `option(type)`              | `T \| null` (`T \| undefined` is also accepted) |
-| `tmpl(...)`                 | `ITemplate` (or callable template reference)    |
+| Frontmatter Type            | TypeScript Type                                                                                                                   |
+| :-------------------------- | :-------------------------------------------------------------------------------------------------------------------------------- |
+| `str`                       | `string` (untrusted by default: strips invisible/bidi chars, neutralizes control tokens & closing-tag breakouts on interpolation) |
+| `trusted str`               | `string` (trusted: emitted verbatim without sanitization)                                                                         |
+| `int`                       | `number`                                                                                                                          |
+| `float`                     | `number`                                                                                                                          |
+| `bool`                      | `boolean`                                                                                                                         |
+| `list(field = type, ...)`   | `readonly GeneratedItem[]`                                                                                                        |
+| `list(type)`                | `readonly T[]` (e.g. `readonly string[]`)                                                                                         |
+| `struct(field = type, ...)` | `GeneratedInterface`                                                                                                              |
+| `enum(Variant, ...)`        | Union type (`Variant1 \| Variant2_Struct`)                                                                                        |
+| `option(type)`              | `T \| null` (`T \| undefined` is also accepted)                                                                                   |
+| `tmpl(...)`                 | `ITemplate` (or callable template reference)                                                                                      |
 
 ## Enum Dispatch
 
@@ -290,14 +285,18 @@ Expert: {{ name }}
 {{ score | fixed(2) }}        → 3.14
 {{ items | join(", ") }}      → a, b, c
 {{ items | limit(2) }}        → first 2 elements
+{{ text | truncate(1024) }}   → middle-out string/list truncation
 {{ count | add(1) }}          → 43
 {{ count | sub(1) }}          → 41
 {{ name | trim | upper }}     → chains work
 {{ val | escape_xml }}        → &lt;tag&gt; (or | xml)
-{{ val | escape_json }}       → safe\/json (or | json)
+{{ val | escape_json }}       → safe\/json
+{{ val | json(2) }}           → formatted JSON string (or | json)
+{{ text | sanitize }}         → sanitizes in-place (or sanitize("tag") to wrap with notice)
 {{ text | sanitize_tokens }}  → neutralizes LLM control tokens (or sanitize_tokens("tag"))
 {{ code | fence("ts") }}      → ```ts\ncode\n``` (adaptive)
 {{ input | quarantine }}      → <untrusted_content>...</untrusted_content> (or quarantine("tag"))
+{{ raw | unsafe_trust }}      → emits untrusted string verbatim at this site
 ````
 
 ### Built-in Functions
@@ -309,6 +308,7 @@ Expert: {{ name }}
 {{ kind(status) }}        → "Done" (variant name)
 {{ kinds(Status) }}       → ["Done", "InProgress", "Blocked"] (all variant names)
 {{ has(field) }}          → true if option(T) is present
+{{ unsafe_trust(raw) }}   → emits untrusted string verbatim at this site
 ```
 
 ## Browser
@@ -400,6 +400,26 @@ function renderGreeting(tmpl: ITemplate, name: string): string {
 }
 ```
 
+### Host Sanitization Primitives
+
+Standalone sanitization, escaping, quarantine, and truncation functions are exported from `"md-tmpl"`:
+
+```ts
+hasInvisibleChars(s: string): boolean
+stripInvisibleString(s: string): string
+escapeXmlString(s: string): string
+escapeJsonString(s: string): string
+sanitizeTokensString(s: string): string
+sanitizeRoleTokensString(s: string): string
+sanitizeString(s: string, tagSpec?: string): string
+sanitizeBlockString(s: string, tagSpec?: string, customNotice?: string): string
+quarantineUntrustedString(s: string, tagSpec?: string): string
+truncateMiddleString(s: string, limit: number, marker?: string): string
+truncateMiddleList<T>(items: readonly T[], limit: number, marker?: string): (T | string)[]
+```
+
+See **[SPEC.md](../../SPEC.md#host-sanitization-primitives)** for the full host primitive reference.
+
 ## Performance
 
 ### Internal Benchmarks
@@ -474,7 +494,7 @@ just bench-ts-compare   # vs Handlebars & Mustache
 ## Testing
 
 ```bash
-just test-ts    # 1,935 tests
+just test-ts    # 2,045 tests
 just lint-ts    # strict type-check with tsc
 just fmt-ts     # format with prettier
 ```

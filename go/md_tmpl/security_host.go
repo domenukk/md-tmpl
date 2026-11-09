@@ -7,6 +7,8 @@ package md_tmpl
 
 extern void pt_free_string(char *ptr);
 extern char *pt_security_constants_json(void);
+extern _Bool pt_has_invisible_chars(const uint8_t *data, size_t len);
+extern char *pt_strip_invisible(const uint8_t *data, size_t len, char **out_err);
 extern char *pt_decode_xml(const uint8_t *data, size_t len, char **out_err);
 extern char *pt_escape_xml_attr(const uint8_t *data, size_t len, char **out_err);
 extern char *pt_escape_xml_body(const uint8_t *data, size_t len, char **out_err);
@@ -112,6 +114,25 @@ func takeOptional(res *C.char) (string, bool) {
 	}
 	defer C.pt_free_string(res)
 	return C.GoString(res), true
+}
+
+// HasInvisibleChars reports whether s contains any stripped invisible Unicode, Bidi control,
+// Plane 14 Tag, or C0/DEL/C1 control character.
+func HasInvisibleChars(s string) bool {
+	ptr, n := strPtrAndLen(s)
+	return bool(C.pt_has_invisible_chars(ptr, n))
+}
+
+// StripInvisible strips invisible Unicode smuggling characters, Bidi overrides/isolates,
+// Plane 14 Tags, and C0/DEL/C1 control characters in a single pass.
+func StripInvisible(s string) string {
+	ptr, n := strPtrAndLen(s)
+	var errPtr *C.char
+	out, err := takeString(C.pt_strip_invisible(ptr, n, &errPtr), errPtr)
+	if err != nil {
+		panic(err)
+	}
+	return out
 }
 
 // DecodeXML decodes the standard XML entity references in a single pass.

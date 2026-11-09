@@ -10,8 +10,8 @@ use quote::{format_ident, quote};
 
 use super::{
     Binding, NativeScope, NumExpr, ResolvedValue, codegen_expr, codegen_kind_expr_str,
-    codegen_segments, fold_numeric_filters, is_copy_scalar, resolve_static_kinds, sanitize_ident,
-    try_extract_num_expr,
+    codegen_segments, codegen_str_expr_filters, fold_numeric_filters, is_copy_scalar,
+    resolve_static_kinds, sanitize_ident, try_extract_num_expr,
 };
 use crate::{crate_path, type_gen::deduplicate_variant_idents};
 
@@ -338,6 +338,16 @@ fn codegen_truthy(
                 }).is_empty()
             })
         }
+        ConditionOperand::Filtered { .. } => {
+            let op_val = codegen_operand_typed(operand, scope, counter)?;
+            match op_val {
+                TypedOperand::Bool(e) => Some(e),
+                TypedOperand::Int(e) => Some(quote! { (#e != 0) }),
+                TypedOperand::Float(e) => Some(quote! { (#e != 0.0) }),
+                TypedOperand::Str(e) => Some(quote! { !(#e).is_empty() }),
+                TypedOperand::List { .. } => None,
+            }
+        }
         ConditionOperand::Path { path, filters } => {
             if !filters.is_empty() {
                 let op_val = codegen_operand_typed(operand, scope, counter)?;
@@ -454,9 +464,52 @@ pub(super) fn codegen_operand_typed(
                 }).as_str()
             }))
         }
+        ConditionOperand::Filtered { base, filters } => {
+            codegen_filtered_operand_typed(base, filters, scope, counter)
+        }
         ConditionOperand::Path { path, filters } => {
             codegen_path_operand_typed(path, filters, scope)
         }
+    }
+}
+
+fn codegen_filtered_operand_typed(
+    base: &ConditionOperand,
+    filters: &[md_tmpl_core::compiled::ParsedFilter],
+    scope: &NativeScope,
+    counter: &mut usize,
+) -> Option<TypedOperand> {
+    let cp = crate_path();
+    let base_typed = codegen_operand_typed(base, scope, counter)?;
+    match base_typed {
+        TypedOperand::Int(t) => {
+            let folded = fold_numeric_filters(NumExpr::Int(t), filters)?;
+            Some(match folded {
+                NumExpr::Int(e) => TypedOperand::Int(e),
+                NumExpr::Float(e) => TypedOperand::Float(e),
+            })
+        }
+        TypedOperand::Float(t) => {
+            let folded = fold_numeric_filters(NumExpr::Float(t), filters)?;
+            Some(match folded {
+                NumExpr::Int(e) => TypedOperand::Int(e),
+                NumExpr::Float(e) => TypedOperand::Float(e),
+            })
+        }
+        TypedOperand::Str(s_tok) => {
+            let write_stmts = codegen_str_expr_filters(&s_tok, filters);
+            Some(TypedOperand::Str(quote! {
+                ({
+                    let mut __op_str = #cp::__private::String::new();
+                    {
+                        let __out = &mut __op_str;
+                        #write_stmts
+                    }
+                    __op_str
+                }).as_str()
+            }))
+        }
+        TypedOperand::Bool(_) | TypedOperand::List { .. } => None,
     }
 }
 

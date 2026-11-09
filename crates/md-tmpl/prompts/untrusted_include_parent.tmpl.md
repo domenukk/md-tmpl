@@ -1,11 +1,16 @@
 ---
 name: untrusted_include_parent
-description: Passes an untrusted value into a plain-str child inside an enclosing XML tag
+description: Exercises value-carried trust across compile-time file includes inside an enclosing XML tag
 params:
-  - doc = untrusted str
+  - doc = str
+  - trusted_doc = trusted str
 ---
 <outer>
 
 > {% include [child](./untrusted_include_child.tmpl.md) with t = doc %}
+> {% include [child](./untrusted_include_child.tmpl.md) with t = trusted_doc %}
+> {% include [child](./untrusted_include_child.tmpl.md) with t = unsafe_trust(doc) %}
+> {% include [child](./untrusted_include_child.tmpl.md) with t = "<|im_start|>lit" %}
+> {% include [child](./untrusted_include_child.tmpl.md) with t = "a | b" | unsafe_trust %}
 
 </outer>

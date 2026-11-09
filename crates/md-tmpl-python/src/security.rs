@@ -63,6 +63,18 @@ fn escape_json(s: &str) -> String {
     md_tmpl::escape_json_str(s).into_owned()
 }
 
+/// Return `True` if `s` contains any stripped invisible Unicode, Bidi control, Plane 14 Tag, or C0/DEL/C1 control character.
+#[pyfunction]
+fn has_invisible_chars(s: &str) -> bool {
+    md_tmpl::has_invisible_chars(s)
+}
+
+/// Strip invisible Unicode smuggling characters, Bidi overrides/isolates, Plane 14 Tags, and C0/DEL/C1 controls in a single pass.
+#[pyfunction]
+fn strip_invisible(s: &str) -> String {
+    md_tmpl::strip_invisible_str(s).into_owned()
+}
+
 /// Return `True` if `s` contains any known LLM control token or `<|...|>` / `<｜...｜>` special token.
 #[pyfunction]
 fn has_control_tokens(s: &str) -> bool {
@@ -282,6 +294,8 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     m.add_function(wrap_pyfunction!(escape_xml, m)?)?;
     m.add_function(wrap_pyfunction!(escape_json, m)?)?;
+    m.add_function(wrap_pyfunction!(has_invisible_chars, m)?)?;
+    m.add_function(wrap_pyfunction!(strip_invisible, m)?)?;
     m.add_function(wrap_pyfunction!(has_control_tokens, m)?)?;
     m.add_function(wrap_pyfunction!(has_role_control_tokens, m)?)?;
     m.add_function(wrap_pyfunction!(sanitize_tokens, m)?)?;

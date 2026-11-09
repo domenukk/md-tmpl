@@ -15,13 +15,22 @@ import {
   TYPE_ALIAS,
   FILTER_SANITIZE,
   FILTER_SANITIZE_TOKENS,
+  FILTER_UNSAFE_TRUST,
+  FN_UNSAFE_TRUST,
   PIPE,
   DOT,
 } from "./consts.js";
 import { splitPipes } from "./evaluator.js";
 
 /** Built-in functions that always return a scalar (displayable) value. */
-const SCALAR_FUNCTIONS = new Set(["len", "idx", "kind", "has", TYPE_STR]);
+const SCALAR_FUNCTIONS = new Set([
+  "len",
+  "idx",
+  "kind",
+  "has",
+  FN_UNSAFE_TRUST,
+  TYPE_STR,
+]);
 const EMPTY_NARROWINGS: ReadonlyMap<string, VarType> = new Map();
 
 /**
@@ -78,6 +87,7 @@ export class TypeEnv {
             trimmed.startsWith("sanitize(") ||
             trimmed === FILTER_SANITIZE_TOKENS ||
             trimmed.startsWith("sanitize_tokens(") ||
+            trimmed === FILTER_UNSAFE_TRUST ||
             trimmed === "quarantine" ||
             trimmed.startsWith("quarantine(") ||
             trimmed.startsWith("limit(") ||

@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------------------
 # Param-based include paths (runtime interpolation)
 # ---------------------------------------------------------------------------
-# Include paths can use runtime params — resolved at render time.
+# Include paths can use runtime `trusted str` params — resolved at render time.
 
 [[tests]]
 name = "param_based_include_path"
@@ -11,7 +11,7 @@ description = "Include path uses a runtime param to select the template director
 parent_template = '''
 ---
 params:
-  - tmpl_dir = str
+  - tmpl_dir = trusted str
   - name = str
 ---
 > {% include [greet]({{ tmpl_dir }}/greet.tmpl.md) with name=name %}'''
@@ -34,7 +34,7 @@ description = "Same param-based include path pattern works with different runtim
 parent_template = '''
 ---
 params:
-  - locale = str
+  - locale = trusted str
   - name = str
 ---
 > {% include [greet](./locales/{{ locale }}/greet.tmpl.md) with name=name %}'''
@@ -59,7 +59,7 @@ parent_template = '''
 env: [BASE = str]
 
 params:
-  - variant = str
+  - variant = trusted str
   - name = str
 ---
 > {% include [greet]({{ BASE }}/{{ variant }}/greet.tmpl.md) with name=name %}'''

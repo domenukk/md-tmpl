@@ -302,9 +302,11 @@ pub(crate) fn resolve_includes_recursive(
                     if inc.inline_compiled.is_none() {
                         let mut compiled = compiled.clone();
                         if let Some(ctx) = inc.sanitize_ctx.as_deref() {
+                            let declared = std::sync::Arc::clone(&compiled.declared_sanitize);
                             md_tmpl_core::compiled::apply_include_context(
                                 std::sync::Arc::make_mut(&mut compiled.segments),
                                 ctx,
+                                &declared,
                             );
                         }
                         inc.inline_compiled = Some(compiled);
@@ -422,25 +424,51 @@ pub(crate) fn load_include_declarations(
             include_path.display()
         )
     })?;
+    let declared_sanitize = compile_as_include_target(&mut included_segments, &included_fm);
+    inc.inline_compiled = Some(included_inline_template(
+        included_segments,
+        included_fm,
+        declared_sanitize,
+    ));
+    Ok(())
+}
+
+/// Run the notice and enclosing-tag passes on an include target compiled from `fm`
+/// and return its declared parameter sanitization.
+///
+/// Include targets take their parameters' trust from the caller, so the target's own
+/// parameter policy only chooses the style for untrusted caller values.
+fn compile_as_include_target(
+    segments: &mut [md_tmpl_core::compiled::Segment],
+    fm: &md_tmpl_core::Frontmatter,
+) -> md_tmpl_core::compiled::DeclaredSanitize {
     md_tmpl_core::compiled::apply_frontmatter_sanitization(
-        &mut included_segments,
-        &included_fm.param_sanitize,
-        included_fm.sanitize_notice.as_deref(),
+        segments,
+        &hashbrown::HashMap::new(),
+        fm.sanitize_notice.as_deref(),
     );
-    // Build const values map from included file's own consts.
-    let mut included_consts = hashbrown::HashMap::new();
-    for d in &included_fm.consts {
+    md_tmpl_core::compiled::declared_sanitize(&fm.param_sanitize, fm.sanitize_notice.as_deref())
+}
+
+/// Package a compiled include target as a precompiled inline template body.
+fn included_inline_template(
+    segments: Vec<md_tmpl_core::compiled::Segment>,
+    fm: md_tmpl_core::Frontmatter,
+    declared_sanitize: md_tmpl_core::compiled::DeclaredSanitize,
+) -> md_tmpl_core::compiled::CompiledInlineTemplate {
+    let mut consts = hashbrown::HashMap::new();
+    for d in &fm.consts {
         if let Some(ref v) = d.default_value {
-            included_consts.insert(d.name.clone(), v.clone());
+            consts.insert(d.name.clone(), v.clone());
         }
     }
-    inc.inline_compiled = Some(md_tmpl_core::compiled::CompiledInlineTemplate {
-        segments: std::sync::Arc::from(included_segments),
-        declarations: std::sync::Arc::from(included_fm.declarations),
-        consts: std::sync::Arc::new(included_consts),
-        imported_consts: std::sync::Arc::new(included_fm.imported_consts),
-    });
-    Ok(())
+    md_tmpl_core::compiled::CompiledInlineTemplate {
+        segments: std::sync::Arc::from(segments),
+        declarations: std::sync::Arc::from(fm.declarations),
+        consts: std::sync::Arc::new(consts),
+        imported_consts: std::sync::Arc::new(fm.imported_consts),
+        declared_sanitize: std::sync::Arc::new(declared_sanitize),
+    }
 }
 
 /// Process a single include directive: load, compile, and recurse into
@@ -482,11 +510,7 @@ pub(crate) fn resolve_single_include(
                 include_path.display()
             )
         })?;
-    md_tmpl_core::compiled::apply_frontmatter_sanitization(
-        &mut included_segments,
-        &included_fm.param_sanitize,
-        included_fm.sanitize_notice.as_deref(),
-    );
+    let declared_sanitize = compile_as_include_target(&mut included_segments, &included_fm);
 
     let child_base_dir = include_path.parent().unwrap_or(base_dir);
     // Use the INCLUDED FILE'S own inline templates, not the parent's.
@@ -513,23 +537,19 @@ pub(crate) fn resolve_single_include(
     // enclosing XML tags, heading state) into the body now that it is precompiled:
     // the runtime renders `inline_compiled` bodies as-is.
     if let Some(ctx) = inc.sanitize_ctx.as_deref() {
-        md_tmpl_core::compiled::apply_include_context(&mut included_segments, ctx);
+        md_tmpl_core::compiled::apply_include_context(
+            &mut included_segments,
+            ctx,
+            &declared_sanitize,
+        );
     }
     md_tmpl_core::compiled::check_untrusted_include_paths(&included_segments)
         .map_err(|e| format!("in include {}: {e}", include_path.display()))?;
 
-    // Build const values map from included file's own consts.
-    let mut included_consts = hashbrown::HashMap::new();
-    for d in &included_fm.consts {
-        if let Some(ref v) = d.default_value {
-            included_consts.insert(d.name.clone(), v.clone());
-        }
-    }
-    inc.inline_compiled = Some(md_tmpl_core::compiled::CompiledInlineTemplate {
-        segments: std::sync::Arc::from(included_segments),
-        declarations: std::sync::Arc::from(included_fm.declarations),
-        consts: std::sync::Arc::new(included_consts),
-        imported_consts: std::sync::Arc::new(included_fm.imported_consts),
-    });
+    inc.inline_compiled = Some(included_inline_template(
+        included_segments,
+        included_fm,
+        declared_sanitize,
+    ));
     Ok(())
 }

@@ -243,7 +243,7 @@ describe("browser E2E: dynamic include paths", () => {
   before(async () => {
     srv = await startServer({
       "/dynamic/router.tmpl.md": `---
-params: [page = str]
+params: [page = trusted str]
 ---
 > {% include [p](./pages/{{ page }}.tmpl.md) %}`,
 

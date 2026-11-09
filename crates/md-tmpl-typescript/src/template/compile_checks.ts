@@ -10,7 +10,10 @@ import { type Frontmatter } from "../frontmatter.js";
 import { nodeLoc } from "../ast.js";
 import { type Node } from "../parser.js";
 import { ERR_UNDECLARED_PREFIX, EXPR_START, TYPE_ENUM } from "../consts.js";
+import { compileDirectExpr } from "../direct_renderer/expr.js";
+import { compileDirectCaseLabel } from "../direct_renderer/render.js";
 import { validateConditionSyntax } from "../evaluator.js";
+import { validateFilters } from "../parser_utils.js";
 import { closestName } from "../suggest.js";
 import {
   collectReferencedParams,
@@ -43,6 +46,9 @@ export function walkNodesForConditionSyntax(nodes: readonly Node[]): void {
         break;
       case "match":
         for (const arm of node.arms) {
+          for (const variant of arm.variants) {
+            compileDirectCaseLabel(variant);
+          }
           if (arm.guard !== undefined) {
             validateConditionSyntax(arm.guard);
           }
@@ -52,7 +58,18 @@ export function walkNodesForConditionSyntax(nodes: readonly Node[]): void {
           walkNodesForConditionSyntax(node.elseArm);
         }
         if (node.inlineGuard) {
+          compileDirectCaseLabel(node.inlineGuard.variant);
           walkNodesForConditionSyntax(node.inlineGuard.body);
+        }
+        break;
+      case "include":
+        for (const valExpr of node.withMappings.values()) {
+          validateFilters(valExpr);
+          compileDirectExpr(valExpr);
+        }
+        if (node.forExpr !== undefined) {
+          validateFilters(node.forExpr);
+          compileDirectExpr(node.forExpr);
         }
         break;
       case "for":

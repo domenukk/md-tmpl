@@ -17,14 +17,11 @@
 //!
 //! Plus `hero_e2e` and `mega_e2e` measuring end-to-end (struct serialization + validation + render) pipelines.
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group};
 use std::hint::black_box;
 
-#[path = "comparison/engines.rs"]
 mod engines;
-#[path = "comparison/models.rs"]
 mod models;
-#[path = "comparison/scenarios.rs"]
 mod scenarios;
 
 use engines::{assert_engines_match, HandlebarsEngine, MdTmplEngine, MiniJinjaEngine, TeraEngine};
@@ -153,7 +150,10 @@ fn build_mega_macro_data(shared_data: &MegaReport) -> mega_macro::Params {
                 name: t.name.clone(),
                 lead: t.lead.clone(),
                 active: t.active,
-                idx: t.idx.unwrap_or(0) as i64,
+                idx: match t.idx {
+                    Some(idx) => i64::try_from(idx).expect("team index fits in i64"),
+                    None => 0,
+                },
                 members: t
                     .members
                     .iter()
@@ -520,4 +520,34 @@ criterion_group!(
     bench_hero_e2e,
     bench_mega_e2e
 );
-criterion_main!(benches);
+
+fn main() {
+    let raw_args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let has_test_threads = raw_args.iter().skip(1).any(|arg| {
+        let s = arg.to_string_lossy();
+        s == "--test-threads" || s.starts_with("--test-threads=")
+    });
+    if has_test_threads {
+        let exe = std::env::current_exe().expect("benchmark executable path must resolve");
+        let mut filtered = Vec::with_capacity(raw_args.len());
+        let mut iter = raw_args.into_iter().skip(1);
+        while let Some(arg) = iter.next() {
+            let s = arg.to_string_lossy();
+            if s == "--test-threads" {
+                iter.next().expect("--test-threads flag requires a value");
+            } else if !s.starts_with("--test-threads=") {
+                filtered.push(arg);
+            }
+        }
+        let status = std::process::Command::new(exe)
+            .args(filtered)
+            .status()
+            .expect("re-invoking Criterion benchmark without libtest --test-threads must succeed");
+        match status.code() {
+            Some(code) => std::process::exit(code),
+            None => std::process::exit(1),
+        }
+    }
+    benches();
+    Criterion::default().configure_from_args().final_summary();
+}

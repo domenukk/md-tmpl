@@ -24,7 +24,12 @@ import {
   TYPE_STR,
   TYPE_STRUCT,
   TYPE_TMPL,
+  TYPE_TRUSTED,
+  TYPE_UNSAFE_TRUST,
+  ERR_UNSAFE_TRUST_DECLARATION,
+  TYPE_UNTRUSTED,
 } from "../consts.js";
+import { stripSingleTrustKeyword } from "../sanitize_decl.js";
 import { type VarDecl, type VarType, type VariantDecl } from "./types.js";
 import { stripStringLiteral } from "./paths.js";
 
@@ -63,7 +68,23 @@ const VAR_TYPE_INT: VarType = { kind: TYPE_INT };
 const VAR_TYPE_FLOAT: VarType = { kind: TYPE_FLOAT };
 
 export function parseVarType(typeStr: string): VarType {
-  const t = stripStringLiteral(typeStr);
+  let t = stripStringLiteral(typeStr);
+  for (;;) {
+    const innerUntrusted = stripSingleTrustKeyword(t, TYPE_UNTRUSTED);
+    if (innerUntrusted !== undefined) {
+      t = stripStringLiteral(innerUntrusted);
+      continue;
+    }
+    const innerTrusted = stripSingleTrustKeyword(t, TYPE_TRUSTED);
+    if (innerTrusted !== undefined) {
+      t = stripStringLiteral(innerTrusted);
+      continue;
+    }
+    if (stripSingleTrustKeyword(t, TYPE_UNSAFE_TRUST) !== undefined) {
+      throw new TemplateSyntaxError(ERR_UNSAFE_TRUST_DECLARATION);
+    }
+    break;
+  }
 
   if (t === TYPE_STR) return VAR_TYPE_STR;
   if (t === TYPE_BOOL) return VAR_TYPE_BOOL;

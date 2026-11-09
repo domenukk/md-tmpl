@@ -36,6 +36,10 @@ import {
 } from "../sanitize_pass.js";
 import type { IncludeSanitizeContext } from "../ast.js";
 import {
+  type DeclaredSanitize,
+  declaredSanitize,
+} from "../include_sanitize.js";
+import {
   type Node,
   type RenderOptions,
   Scope as ScopeImpl,
@@ -166,6 +170,10 @@ export class Template implements ITemplate, TmplRef {
   /** Compile-time env values, stored for propagation to included templates. */
   private readonly _compileEnv: Record<string, unknown>;
   private _includeCache?: Map<string, IncludeCacheEntry>;
+  /** Declared parameter sanitization (notices resolved), used for `tmpl(...)` includes. */
+  private readonly declaredSanitize: DeclaredSanitize;
+  /** Lazily parsed body without the own parameter policy (see `includeTargetNodes`). */
+  private _includeTargetNodes: readonly Node[] | undefined;
 
   /** Get the base path for include resolution (if set). */
   get basePath(): string | undefined {
@@ -188,6 +196,10 @@ export class Template implements ITemplate, TmplRef {
     this.fm = fm;
     this.bodyStr = bodyStr;
     this.nodes = nodes;
+    this.declaredSanitize = declaredSanitize(
+      fm.paramSanitize,
+      fm.sanitizeNotice,
+    );
     this.sourceStr = source;
     this._basePath = basePath;
     this._compileEnv = compileEnv ?? {};
@@ -717,13 +729,45 @@ params:
       opts.templateLoader = templateLoader as RenderOptions["templateLoader"];
       opts.currentBasePath = basePath;
     }
-    // Apply the include call-site sanitization context (untrusted taint, enclosing
-    // XML tags) to this template's body; memoized per (context, nodes).
+    // Included, this template's parameters take the caller's trust: render the body
+    // without its own parameter policy and apply the call-site context (untrusted
+    // taint, enclosing XML tags); memoized per (context, nodes).
     return renderNodes(
-      contextualizeIncludeNodes(this.nodes, sanitizeCtx),
+      contextualizeIncludeNodes(
+        this.includeTargetNodes(),
+        sanitizeCtx,
+        this.declaredSanitize,
+      ),
       scope,
       opts,
     );
+  }
+
+  /**
+   * Body nodes without this template's own parameter policy, used when it is included
+   * as a `tmpl(...)` handle. Parsed lazily on first use; templates without a declared
+   * policy reuse their compiled nodes.
+   */
+  private includeTargetNodes(): readonly Node[] {
+    if (this.declaredSanitize.size === 0) {
+      return this.nodes;
+    }
+    this._includeTargetNodes ??= this.parseIncludeTargetNodes();
+    return this._includeTargetNodes;
+  }
+
+  private parseIncludeTargetNodes(): Node[] {
+    const nodes = parseBody(this.bodyStr, false, this.fm.bodyStartLine ?? 1);
+    if (this.bodyStr.includes(TYPE_TMPL)) {
+      collectInlineTemplateMap(
+        nodes,
+        this.fm.typeAliases,
+        this.fm.typeAliasSanitize,
+        this.fm.sanitizeNotice,
+      );
+    }
+    applySanitizeAstPass(nodes, undefined, this.fm.sanitizeNotice);
+    return nodes;
   }
 
   /** Convert this Template to a TmplValue for passing as a parameter. */
@@ -945,6 +989,7 @@ params:
         cached.declarations,
         cached.baseDir,
         cached.inlineTemplates,
+        cached.declared,
       ];
     };
   }
@@ -975,6 +1020,7 @@ params:
         cached.declarations,
         cached.baseDir,
         cached.inlineTemplates,
+        cached.declared,
       ];
     };
 

@@ -21,11 +21,15 @@ pub(crate) const FN_KINDS: &str = "kinds";
 /// Name of the option-presence function: `has(expr)`.
 pub(crate) const FN_HAS: &str = "has";
 
+/// Name of the explicit trust opt-out function: `unsafe_trust(expr)`.
+pub(crate) const FN_UNSAFE_TRUST: &str = "unsafe_trust";
+
 /// All built-in function names.
 ///
 /// Used by static analysis to avoid treating function names as variable
 /// references (e.g. `idx` in `idx(item)` is not a variable).
-pub(crate) const BUILTIN_FUNCTIONS: &[&str] = &[FN_IDX, FN_LEN, FN_KIND, FN_KINDS, FN_HAS];
+pub(crate) const BUILTIN_FUNCTIONS: &[&str] =
+    &[FN_IDX, FN_LEN, FN_KIND, FN_KINDS, FN_HAS, FN_UNSAFE_TRUST];
 
 // -- Filter names -------------------------------------------------------------
 
@@ -79,12 +83,18 @@ pub(crate) const FILTER_FENCE: &str = "fence";
 pub(crate) const FILTER_QUARANTINE: &str = "quarantine";
 /// Name of the unified `sanitize` filter.
 pub(crate) const FILTER_SANITIZE: &str = "sanitize";
+/// Name of the explicit trust opt-out filter: `unsafe_trust`.
+pub(crate) const FILTER_UNSAFE_TRUST: &str = "unsafe_trust";
 /// Name of the `truncate` filter.
 pub(crate) const FILTER_TRUNCATE: &str = "truncate";
 /// Name of the `truncate_middle` filter alias.
 pub(crate) const FILTER_TRUNCATE_MIDDLE: &str = "truncate_middle";
 /// Keyword prefix for untrusted type annotations: `untrusted`.
 pub(crate) const TYPE_UNTRUSTED: &str = "untrusted";
+/// Keyword prefix for trusted type annotations: `trusted`.
+pub(crate) const TYPE_TRUSTED: &str = "trusted";
+/// Keyword prefix for `unsafe_trust` type annotations: `unsafe_trust`.
+pub(crate) const TYPE_UNSAFE_TRUST: &str = "unsafe_trust";
 
 // -- Enum tag key -------------------------------------------------------------
 
@@ -456,6 +466,10 @@ pub fn unescape_string_literal(inner: &str) -> alloc::string::String {
 // -- Error messages -----------------------------------------------------------
 
 /// Error when frontmatter block is missing.
+/// Error for `unsafe_trust` used as a declaration modifier (`x = unsafe_trust str`,
+/// `x = str | unsafe_trust`): trust is declared with `trusted`, and `unsafe_trust`
+/// declassifies a single emission.
+pub(crate) const ERR_UNSAFE_TRUST_DECLARATION: &str = "'unsafe_trust' marks a single emission, not a declaration: declare 'trusted str' for values the host vouches for, or write 'unsafe_trust(x)' where the value is emitted";
 pub(crate) const ERR_MISSING_FM: &str =
     "missing mandatory YAML frontmatter block (starts with ---)";
 /// Error when frontmatter block is unclosed.
@@ -651,11 +665,12 @@ mod tests {
         assert!(BUILTIN_FUNCTIONS.contains(&"kind"));
         assert!(BUILTIN_FUNCTIONS.contains(&"kinds"));
         assert!(BUILTIN_FUNCTIONS.contains(&"has"));
+        assert!(BUILTIN_FUNCTIONS.contains(&"unsafe_trust"));
     }
 
     #[test]
     fn builtin_functions_length() {
-        assert_eq!(BUILTIN_FUNCTIONS.len(), 5);
+        assert_eq!(BUILTIN_FUNCTIONS.len(), 6);
     }
 
     // -- Delimiter constants --------------------------------------------------

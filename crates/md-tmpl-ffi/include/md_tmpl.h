@@ -182,6 +182,8 @@ char *pt_unsanitize_block(const uint8_t *data, size_t len,
 /* ---- Host envelope, XML codec, notice & truncation primitives ----------- */
 
 char *pt_security_constants_json(void);
+bool pt_has_invisible_chars(const uint8_t *data, size_t len);
+char *pt_strip_invisible(const uint8_t *data, size_t len, char **out_err);
 char *pt_decode_xml(const uint8_t *data, size_t len, char **out_err);
 char *pt_escape_xml_attr(const uint8_t *data, size_t len, char **out_err);
 char *pt_escape_xml_body(const uint8_t *data, size_t len, char **out_err);

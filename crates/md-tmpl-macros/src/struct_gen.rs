@@ -128,7 +128,14 @@ pub(crate) fn generate_struct_tokens(
 
         let builder_attrs = builder_field_attrs(&decl.var_type);
         let rename_attr = crate::serde_rename_attr(&decl.name);
-        fields.push(quote! { #rename_attr #builder_attrs pub #field_name: #field_type });
+        let vis = crate::field_vis(&decl.name);
+        let field_doc = format!("Template parameter `{}` (`{}`).", decl.name, decl.var_type);
+        fields.push(quote! {
+            #[doc = #field_doc]
+            #rename_attr
+            #builder_attrs
+            #vis #field_name: #field_type
+        });
         set_stmts.push(field_set(quote! { self.#field_name }, var_name_str));
         expected_vars.push(var_name_str.clone());
     }
@@ -237,6 +244,7 @@ pub(crate) fn generate_const_decl_tokens(
             var_type_to_rust(&decl.var_type, struct_name_str, &decl.name, sub_structs);
 
         if let Some(v) = &decl.default_value {
+            let const_doc = format!("Template constant `{}` (`{}`).", decl.name, decl.var_type);
             if is_scalar(&decl.var_type) {
                 let (final_type, val_tokens) =
                     if let (md_tmpl_core::Value::Str(s), md_tmpl_core::VarType::Str) =
@@ -253,12 +261,14 @@ pub(crate) fn generate_const_decl_tokens(
                         (rust_type, vt)
                     };
                 const_decls.push(quote! {
+                    #[doc = #const_doc]
                     pub const #const_ident: #final_type = #val_tokens;
                 });
             } else {
                 let val_tokens =
                     codegen_value_as_rust_literal(v, &decl.var_type, struct_name_str, &decl.name);
                 const_decls.push(quote! {
+                    #[doc = #const_doc]
                     pub static #const_ident: #cp::__private::LazyLock<#rust_type> = #cp::__private::LazyLock::new({
                         #[cold]
                         #[inline(never)]

@@ -117,11 +117,15 @@ pub fn extract_inline_templates_with_sanitize(
                 parent_type_alias_sanitize,
             )?;
             let mut segments = compile_body(tmpl_body)?;
+            // Inline templates are include targets: parameter values take the caller's
+            // trust, so only the notice and enclosing-tag passes run here.
             super::apply_frontmatter_sanitization(
                 &mut segments,
-                &fm.param_sanitize,
+                &HashMap::new(),
                 fm.sanitize_notice.as_deref(),
             );
+            let declared_sanitize =
+                super::declared_sanitize(&fm.param_sanitize, fm.sanitize_notice.as_deref());
 
             // Build const values map from inline template's own consts.
             let mut inline_consts = HashMap::new();
@@ -138,6 +142,7 @@ pub fn extract_inline_templates_with_sanitize(
                     declarations: Arc::from(fm.declarations),
                     consts: Arc::new(inline_consts),
                     imported_consts: Arc::new(fm.imported_consts),
+                    declared_sanitize: Arc::new(declared_sanitize),
                 },
             );
             remaining = after_close;

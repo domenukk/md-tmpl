@@ -26,9 +26,10 @@ use alloc::{
 // Re-export submodule items used by the rest of the crate.
 pub use analysis::{collect_referenced_params, collect_unquoted_case_labels};
 pub use include_sanitize::{
-    IncludeContextMemo, IncludeSanitizeContext, apply_include_context,
-    check_untrusted_include_paths,
+    DeclaredSanitize, IncludeContextMemo, IncludeSanitizeContext, apply_include_context,
+    check_untrusted_include_paths, declared_sanitize,
 };
+pub use match_compile::CompiledCaseLabel;
 use match_compile::compile_match;
 #[cfg(feature = "std")]
 pub(crate) use render::register_loop_meta;
@@ -63,10 +64,12 @@ use crate::{
 ///
 /// Frontmatter is parsed and segments are compiled once at extraction time,
 /// so rendering an inline template via `{% include name %}` avoids
-/// re-parsing and re-compiling.
+/// re-parsing and re-compiling. Like every include target, the segments are compiled
+/// without the template's own parameter sanitization: parameter values take the caller's
+/// trust (see [`apply_include_context`]).
 #[derive(Debug, Clone)]
 pub struct CompiledInlineTemplate {
-    /// Pre-compiled segment instructions.
+    /// Pre-compiled segment instructions (without the template's own parameter policy).
     pub segments: Arc<[Segment]>,
     /// Declared variables from inline frontmatter.
     pub declarations: Arc<[VarDecl]>,
@@ -74,6 +77,9 @@ pub struct CompiledInlineTemplate {
     pub consts: Arc<HashMap<String, crate::value::Value>>,
     /// Imported constants from inline frontmatter `imports:` block.
     pub imported_consts: Arc<HashMap<String, crate::value::Value>>,
+    /// Declared parameter sanitization, used only to choose the style for untrusted caller
+    /// values (see [`DeclaredSanitize`]).
+    pub declared_sanitize: Arc<DeclaredSanitize>,
 }
 
 // ---------------------------------------------------------------------------
@@ -86,8 +92,10 @@ pub struct CompiledInlineTemplate {
 /// and may have an optional guard condition (`&& guard`).
 #[derive(Debug, Clone)]
 pub struct MatchArm {
-    /// Variant names matched by this arm.
+    /// Raw variant labels matched by this arm (retained for static type/exhaustiveness checks).
     pub variants: Vec<Cow<'static, str>>,
+    /// Pre-compiled case labels evaluated at render time without re-parsing quotes or `{{ expr }}`.
+    pub compiled_variants: Vec<CompiledCaseLabel>,
     /// Optional guard condition: `{% case Variant && guard %}`.
     pub guard: Option<Condition>,
     /// Body segments to render when this arm matches.
@@ -197,6 +205,17 @@ pub enum ComparisonOp {
     In,
 }
 
+/// Where a [`ParsedFilter`] comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FilterOrigin {
+    /// Written in the template source (`{{ x | trim }}`, `unsafe_trust(x)`).
+    #[default]
+    Template,
+    /// Added by a declarative parameter sanitization policy (`x = str`,
+    /// `x = str | sanitize("tag")`) or by caller taint propagated into an include target.
+    Declaration,
+}
+
 /// A pre-parsed filter with typed kind and optional argument.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedFilter {
@@ -209,6 +228,8 @@ pub struct ParsedFilter {
     pub parsed_num: Option<usize>,
     /// Pre-resolved execution mode for [`FilterKind::Sanitize`].
     pub sanitize_mode: Option<SanitizeFilterMode>,
+    /// Whether the filter was written in the template or added by a sanitization policy.
+    pub origin: FilterOrigin,
 }
 
 /// Strongly-typed filter names, resolved at compile time.
@@ -244,6 +265,8 @@ pub enum FilterKind {
     Quarantine,
     /// `| sanitize` / `| sanitize(tag)` / `| sanitize(tag, notice)` — unified untrusted-data sanitization.
     Sanitize,
+    /// `| unsafe_trust` / `unsafe_trust(x)` — explicit opt-out of default string sanitization.
+    UnsafeTrust,
     /// `| truncate(limit)` / `| truncate(limit, marker)` — middle-out truncation.
     Truncate,
 }
@@ -268,6 +291,7 @@ impl FilterKind {
             Self::Fence => crate::consts::FILTER_FENCE,
             Self::Quarantine => crate::consts::FILTER_QUARANTINE,
             Self::Sanitize => crate::consts::FILTER_SANITIZE,
+            Self::UnsafeTrust => crate::consts::FILTER_UNSAFE_TRUST,
             Self::Truncate => crate::consts::FILTER_TRUNCATE,
         }
     }
@@ -276,15 +300,22 @@ impl FilterKind {
 /// A `(key, expression)` pair used in `{% include ... with key=expr %}` overrides.
 pub type WithVarPair = (Cow<'static, str>, Cow<'static, str>);
 
+/// A `(key, compiled_operand)` pair used in pre-compiled `{% include ... with key=expr %}` overrides.
+pub type CompiledWithVarPair = (Cow<'static, str>, ConditionOperand);
+
 /// A pre-parsed include directive.
 #[derive(Debug, Clone)]
 pub struct CompiledInclude {
     /// Path to the included template file.
     pub path: Cow<'static, str>,
-    /// `with key=expr` variable overrides.
+    /// Raw `with key=expr` variable overrides (used by static analysis and taint propagation).
     pub with_vars: Vec<WithVarPair>,
-    /// Optional `for var in list` iteration.
+    /// Pre-compiled `with key=expr` variable overrides evaluated at render time without re-parsing.
+    pub compiled_with_vars: Vec<CompiledWithVarPair>,
+    /// Optional raw `for var in list` iteration.
     pub for_each: Option<WithVarPair>,
+    /// Optional pre-compiled `for var in list` iteration expression.
+    pub compiled_for_each: Option<CompiledWithVarPair>,
     /// Pre-compiled inline template body (for `{% tmpl %}` blocks).
     pub inline_compiled: Option<CompiledInlineTemplate>,
     /// Sanitization context captured at this call site for includes resolved at render
@@ -709,8 +740,24 @@ pub(crate) fn check_post_sanitize_filter(
 /// Compile an expression tag into a `Segment::Expr`.
 fn compile_expr(expr: &str) -> Result<Segment, TemplateError> {
     let (base_expr, filter_chain) = crate::parser::split_pipe_aware(expr);
-    let expr_obj = CompiledExpr::compile(base_expr)?;
-    let filters = parse_filter_chain(filter_chain)?;
+    let mut filters = parse_filter_chain(filter_chain)?;
+    let expr_obj = if let Some((crate::consts::FN_UNSAFE_TRUST, arg)) =
+        crate::scope::parse_function_call(base_expr.trim())
+    {
+        filters.insert(
+            0,
+            ParsedFilter {
+                kind: FilterKind::UnsafeTrust,
+                args: None,
+                parsed_num: None,
+                sanitize_mode: None,
+                origin: FilterOrigin::Template,
+            },
+        );
+        CompiledExpr::compile(arg)?
+    } else {
+        CompiledExpr::compile(base_expr)?
+    };
 
     Ok(Segment::Expr {
         expr: expr_obj,
@@ -724,7 +771,7 @@ pub(crate) fn parse_filter_kind(name: &str) -> Result<FilterKind, TemplateError>
         FILTER_ADD, FILTER_ESCAPE_JSON, FILTER_ESCAPE_XML, FILTER_FENCE, FILTER_FIXED, FILTER_JOIN,
         FILTER_JSON, FILTER_LIMIT, FILTER_LOWER, FILTER_QUARANTINE, FILTER_SANITIZE,
         FILTER_SANITIZE_TOKENS, FILTER_SUB, FILTER_TO_JSON, FILTER_TOJSON, FILTER_TRIM,
-        FILTER_UPPER, FILTER_XML,
+        FILTER_UNSAFE_TRUST, FILTER_UPPER, FILTER_XML,
     };
     match name {
         FILTER_UPPER => Ok(FilterKind::Upper),
@@ -742,6 +789,7 @@ pub(crate) fn parse_filter_kind(name: &str) -> Result<FilterKind, TemplateError>
         FILTER_FENCE => Ok(FilterKind::Fence),
         FILTER_QUARANTINE => Ok(FilterKind::Quarantine),
         FILTER_SANITIZE => Ok(FilterKind::Sanitize),
+        FILTER_UNSAFE_TRUST => Ok(FilterKind::UnsafeTrust),
         crate::consts::FILTER_TRUNCATE | crate::consts::FILTER_TRUNCATE_MIDDLE => {
             Ok(FilterKind::Truncate)
         }
@@ -885,21 +933,28 @@ fn compile_include<'a>(
 ) -> Result<(Segment, &'a str), TemplateError> {
     let directive = parser::parse_include_tag(stmt)?;
 
-    let with_vars: Vec<(Cow<'static, str>, Cow<'static, str>)> = directive
-        .with_vars
-        .iter()
-        .map(|&(k, v)| (Cow::Owned(k.to_string()), Cow::Owned(v.to_string())))
-        .collect();
+    let mut with_vars = Vec::with_capacity(directive.with_vars.len());
+    let mut compiled_with_vars = Vec::with_capacity(directive.with_vars.len());
+    for &(k, v) in &directive.with_vars {
+        with_vars.push((Cow::Owned(k.to_string()), Cow::Owned(v.to_string())));
+        compiled_with_vars.push((Cow::Owned(k.to_string()), ConditionOperand::compile(v)?));
+    }
 
-    let for_each = directive
-        .for_each
-        .map(|(b, l)| (Cow::Owned(b.to_string()), Cow::Owned(l.to_string())));
+    let (for_each, compiled_for_each) = match directive.for_each {
+        Some((b, l)) => (
+            Some((Cow::Owned(b.to_string()), Cow::Owned(l.to_string()))),
+            Some((Cow::Owned(b.to_string()), ConditionOperand::compile(l)?)),
+        ),
+        None => (None, None),
+    };
 
     Ok((
         Segment::Include(CompiledInclude {
             path: Cow::Owned(directive.path.to_string()),
             with_vars,
+            compiled_with_vars,
             for_each,
+            compiled_for_each,
             inline_compiled: None,
             sanitize_ctx: None,
             memo: IncludeContextMemo::default(),

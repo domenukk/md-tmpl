@@ -7,6 +7,7 @@
 import { type VarDecl, type VarType } from "../frontmatter.js";
 import { type Node } from "../parser.js";
 import { type Value } from "../value.js";
+import { type DeclaredSanitize } from "../include_sanitize.js";
 import { type InlineTemplateEntry } from "./inline_templates.js";
 
 // ---------------------------------------------------------------------------
@@ -102,6 +103,12 @@ export interface CachedInclude {
   readonly typeAliases?: ReadonlyMap<string, VarType>;
   /** Pre-compiled inline templates defined inside the included file. */
   readonly inlineTemplates: Map<string, InlineTemplateEntry>;
+  /**
+   * Declared parameter sanitization of the included file. Its `nodes` are parsed without
+   * it (include targets take their parameters' trust from the caller); it only chooses
+   * the style for untrusted caller values.
+   */
+  readonly declared: DeclaredSanitize;
 }
 
 /**

@@ -149,6 +149,16 @@ describe("WASM host envelope, XML codec, notice, and truncation primitives", () 
     );
   });
 
+  it("detects and strips invisible Unicode, Bidi, Tag, and control chars", () => {
+    const clean = "Hello 👨‍👩‍👧‍👦 ❤️ world";
+    assert.strictEqual(wasm.hasInvisibleChars(clean), false);
+    assert.strictEqual(wasm.stripInvisibleString(clean), clean);
+
+    const smuggled = "a\u200Bb\u202Ec\u{E0020}d\u0000e";
+    assert.strictEqual(wasm.hasInvisibleChars(smuggled), true);
+    assert.strictEqual(wasm.stripInvisibleString(smuggled), "abcde");
+  });
+
   it("formats notices and handles quarantine envelopes", () => {
     assert.strictEqual(
       wasm.formatSanitizeNotice("doc", "see {tag}"),

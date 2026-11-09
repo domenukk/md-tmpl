@@ -65,6 +65,10 @@ fn include_inside_match_arm() {
         expr: CompiledPath::compile("outcome"),
         arms: vec![crate::compiled::MatchArm {
             variants: vec!["Confirmed".into()],
+            compiled_variants: crate::compiled::CompiledCaseLabel::compile_all(&[
+                "Confirmed".into()
+            ])
+            .unwrap(),
             guard: None,
             body: vec![Segment::Include(inc)],
         }],
@@ -139,7 +143,12 @@ fn same_name_different_content_both_type_checked() {
             std::borrow::Cow::Borrowed("msg"),
             std::borrow::Cow::Borrowed("a"),
         )],
+        compiled_with_vars: vec![(
+            std::borrow::Cow::Borrowed("msg"),
+            crate::scope::ConditionOperand::compile("a").unwrap(),
+        )],
         for_each: None,
+        compiled_for_each: None,
         inline_compiled: Some(CompiledInlineTemplate {
             segments: Arc::from(vec![Segment::Expr {
                 expr: CompiledExpr::compile("msg").unwrap(),
@@ -148,6 +157,7 @@ fn same_name_different_content_both_type_checked() {
             declarations: Arc::from(vec![str_decl("msg")]),
             consts: std::sync::Arc::new(crate::compat::HashMap::new()),
             imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
+            declared_sanitize: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
         sanitize_ctx: None,
         memo: crate::compiled::IncludeContextMemo::default(),
@@ -158,7 +168,12 @@ fn same_name_different_content_both_type_checked() {
             std::borrow::Cow::Borrowed("msg"),
             std::borrow::Cow::Borrowed("b"),
         )],
+        compiled_with_vars: vec![(
+            std::borrow::Cow::Borrowed("msg"),
+            crate::scope::ConditionOperand::compile("b").unwrap(),
+        )],
         for_each: None,
+        compiled_for_each: None,
         inline_compiled: Some(CompiledInlineTemplate {
             // This body references "ghost" which is NOT declared.
             segments: Arc::from(vec![
@@ -174,6 +189,7 @@ fn same_name_different_content_both_type_checked() {
             declarations: Arc::from(vec![str_decl("msg")]),
             consts: std::sync::Arc::new(crate::compat::HashMap::new()),
             imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
+            declared_sanitize: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
         sanitize_ctx: None,
         memo: crate::compiled::IncludeContextMemo::default(),
@@ -209,12 +225,18 @@ fn same_arc_deduplicates_body_walk() {
             std::borrow::Cow::Borrowed("msg"),
             std::borrow::Cow::Borrowed("a"),
         )],
+        compiled_with_vars: vec![(
+            std::borrow::Cow::Borrowed("msg"),
+            crate::scope::ConditionOperand::compile("a").unwrap(),
+        )],
         for_each: None,
+        compiled_for_each: None,
         inline_compiled: Some(CompiledInlineTemplate {
             segments: Arc::clone(&shared_segments),
             declarations: Arc::clone(&shared_decls),
             consts: std::sync::Arc::new(crate::compat::HashMap::new()),
             imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
+            declared_sanitize: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
         sanitize_ctx: None,
         memo: crate::compiled::IncludeContextMemo::default(),
@@ -225,12 +247,18 @@ fn same_arc_deduplicates_body_walk() {
             std::borrow::Cow::Borrowed("msg"),
             std::borrow::Cow::Borrowed("b"),
         )],
+        compiled_with_vars: vec![(
+            std::borrow::Cow::Borrowed("msg"),
+            crate::scope::ConditionOperand::compile("b").unwrap(),
+        )],
         for_each: None,
+        compiled_for_each: None,
         inline_compiled: Some(CompiledInlineTemplate {
             segments: Arc::clone(&shared_segments),
             declarations: Arc::clone(&shared_decls),
             consts: std::sync::Arc::new(crate::compat::HashMap::new()),
             imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
+            declared_sanitize: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
         sanitize_ctx: None,
         memo: crate::compiled::IncludeContextMemo::default(),
@@ -254,7 +282,12 @@ fn include_no_inline_compiled_validates_parent_paths() {
             std::borrow::Cow::Borrowed("msg"),
             std::borrow::Cow::Borrowed("ghost"),
         )],
+        compiled_with_vars: vec![(
+            std::borrow::Cow::Borrowed("msg"),
+            crate::scope::ConditionOperand::compile("ghost").unwrap(),
+        )],
         for_each: None,
+        compiled_for_each: None,
         inline_compiled: None, // Not resolved
         sanitize_ctx: None,
         memo: crate::compiled::IncludeContextMemo::default(),
@@ -280,7 +313,9 @@ fn include_no_inline_compiled_skips_contract() {
     let inc = CompiledInclude {
         path: std::borrow::Cow::Borrowed("unknown.tmpl.md"),
         with_vars: vec![],
+        compiled_with_vars: vec![],
         for_each: None,
+        compiled_for_each: None,
         inline_compiled: None,
         sanitize_ctx: None,
         memo: crate::compiled::IncludeContextMemo::default(),
@@ -401,12 +436,18 @@ fn same_template_different_sites() {
             std::borrow::Cow::Borrowed("msg"),
             std::borrow::Cow::Borrowed("my_str"),
         )],
+        compiled_with_vars: vec![(
+            std::borrow::Cow::Borrowed("msg"),
+            crate::scope::ConditionOperand::compile("my_str").unwrap(),
+        )],
         for_each: None,
+        compiled_for_each: None,
         inline_compiled: Some(CompiledInlineTemplate {
             segments: Arc::clone(&child_segments),
             declarations: Arc::clone(&child_decls),
             consts: std::sync::Arc::new(crate::compat::HashMap::new()),
             imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
+            declared_sanitize: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
         sanitize_ctx: None,
         memo: crate::compiled::IncludeContextMemo::default(),
@@ -418,12 +459,18 @@ fn same_template_different_sites() {
             std::borrow::Cow::Borrowed("msg"),
             std::borrow::Cow::Borrowed("my_int"),
         )],
+        compiled_with_vars: vec![(
+            std::borrow::Cow::Borrowed("msg"),
+            crate::scope::ConditionOperand::compile("my_int").unwrap(),
+        )],
         for_each: None,
+        compiled_for_each: None,
         inline_compiled: Some(CompiledInlineTemplate {
             segments: Arc::clone(&child_segments),
             declarations: Arc::clone(&child_decls),
             consts: std::sync::Arc::new(crate::compat::HashMap::new()),
             imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
+            declared_sanitize: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
         sanitize_ctx: None,
         memo: crate::compiled::IncludeContextMemo::default(),
@@ -563,12 +610,18 @@ fn nested_include_grandchild_type_error() {
             std::borrow::Cow::Borrowed("msg"),
             std::borrow::Cow::Borrowed("child_msg"),
         )],
+        compiled_with_vars: vec![(
+            std::borrow::Cow::Borrowed("msg"),
+            crate::scope::ConditionOperand::compile("child_msg").unwrap(),
+        )],
         for_each: None,
+        compiled_for_each: None,
         inline_compiled: Some(CompiledInlineTemplate {
             segments: grandchild_segments,
             declarations: grandchild_decls,
             consts: std::sync::Arc::new(crate::compat::HashMap::new()),
             imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
+            declared_sanitize: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
         sanitize_ctx: None,
         memo: crate::compiled::IncludeContextMemo::default(),
@@ -589,12 +642,18 @@ fn nested_include_grandchild_type_error() {
             std::borrow::Cow::Borrowed("child_msg"),
             std::borrow::Cow::Borrowed("parent_msg"),
         )],
+        compiled_with_vars: vec![(
+            std::borrow::Cow::Borrowed("child_msg"),
+            crate::scope::ConditionOperand::compile("parent_msg").unwrap(),
+        )],
         for_each: None,
+        compiled_for_each: None,
         inline_compiled: Some(CompiledInlineTemplate {
             segments: child_segments,
             declarations: child_decls,
             consts: std::sync::Arc::new(crate::compat::HashMap::new()),
             imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
+            declared_sanitize: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
         sanitize_ctx: None,
         memo: crate::compiled::IncludeContextMemo::default(),

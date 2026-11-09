@@ -584,3 +584,122 @@ params:
     let result = tmpl.render_ctx(&ctx).unwrap();
     assert_eq!(result.trim(), "solo");
 }
+
+#[test]
+fn precompiled_include_with_vars_and_for_each_populate_typed_operands() {
+    use crate::{
+        compiled::{FilterKind, Segment},
+        scope::ConditionOperand,
+        value::Value,
+    };
+
+    let body = r#"> {% include child for item in rows | limit(2) with msg = "Hi, {{ who | upper }}!", trimmed = "  {{ who }}  " | trim, count = 7 %}"#;
+    let empty_aliases = crate::compat::HashMap::new();
+    let (segments, _) = crate::compiled::compile(body, &empty_aliases).unwrap();
+    let Some(Segment::Include(inc)) = segments.first() else {
+        panic!("expected Segment::Include, got {segments:?}");
+    };
+
+    assert_eq!(inc.compiled_with_vars.len(), 3);
+    assert_eq!(inc.compiled_with_vars[0].0.as_ref(), "msg");
+    assert!(matches!(
+        &inc.compiled_with_vars[0].1,
+        ConditionOperand::InterpolatedStr(segs) if segs.len() == 3
+    ));
+    assert_eq!(inc.compiled_with_vars[1].0.as_ref(), "trimmed");
+    assert!(matches!(
+        &inc.compiled_with_vars[1].1,
+        ConditionOperand::Filtered { base, filters }
+            if matches!(base.as_ref(), ConditionOperand::InterpolatedStr(_))
+                && filters.len() == 1
+                && filters[0].kind == FilterKind::Trim
+    ));
+    assert_eq!(inc.compiled_with_vars[2].0.as_ref(), "count");
+    assert!(matches!(
+        &inc.compiled_with_vars[2].1,
+        ConditionOperand::Literal(Value::Int(7))
+    ));
+
+    let (for_binding, for_op) = inc
+        .compiled_for_each
+        .as_ref()
+        .expect("compiled_for_each present");
+    assert_eq!(for_binding.as_ref(), "item");
+    assert!(matches!(
+        for_op,
+        ConditionOperand::Path { path, filters }
+            if path.as_str() == "rows"
+                && filters.len() == 1
+                && filters[0].kind == FilterKind::Limit
+                && filters[0].parsed_num == Some(2)
+    ));
+}
+
+#[test]
+fn malformed_include_with_interpolation_or_filter_rejected_at_compile_time() {
+    let unclosed_src = r#"---
+params:
+  - p = str
+---
+> {% tmpl sub %}
+---
+params:
+  - msg = str
+---
+{{ msg }}
+
+> {% /tmpl %}
+
+> {% include sub with msg = "say {{ p" %}
+"#;
+    let err = crate::Template::from_source(unclosed_src).unwrap_err();
+    assert!(
+        err.to_string().contains("unclosed"),
+        "expected compile-time unclosed error, got: {err}"
+    );
+
+    let bad_filter_src = r"---
+params:
+  - p = str
+---
+> {% tmpl sub %}
+---
+params:
+  - msg = str
+---
+{{ msg }}
+
+> {% /tmpl %}
+
+> {% include sub with msg = p | no_such_filter_xyz %}
+";
+    let err2 = crate::Template::from_source(bad_filter_src).unwrap_err();
+    assert!(
+        err2.to_string().contains("unknown filter"),
+        "expected compile-time unknown filter error, got: {err2}"
+    );
+}
+
+#[test]
+fn unsafe_trust_non_string_literal_in_include_with_reports_type_error() {
+    let src = r"---
+params: []
+---
+> {% tmpl sub %}
+---
+params:
+  - msg = str
+---
+{{ msg }}
+
+> {% /tmpl %}
+
+> {% include sub with msg = unsafe_trust(42) %}
+";
+    let tmpl = crate::Template::from_source(src).unwrap();
+    let err = tmpl.render_ctx(&Context::new()).unwrap_err();
+    assert!(
+        err.to_string().contains("'unsafe_trust' requires a string"),
+        "expected unsafe_trust string error, got: {err}"
+    );
+}

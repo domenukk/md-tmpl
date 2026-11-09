@@ -371,6 +371,7 @@ export const VALID_FILTERS = new Set([
   "fence",
   "quarantine",
   "sanitize",
+  "unsafe_trust",
   "truncate",
   "truncate_middle",
 ]);
@@ -430,6 +431,8 @@ export function validateFilters(expr: string): void {
       }
       if (filterName === "sanitize") {
         parseSanitizeFilterArgs(rawArg);
+      } else if (filterName === "unsafe_trust" && rawArg !== undefined) {
+        throw new TemplateSyntaxError("'unsafe_trust' does not take arguments");
       }
     }
   }

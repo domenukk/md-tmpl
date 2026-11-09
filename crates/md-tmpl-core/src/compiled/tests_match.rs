@@ -321,3 +321,106 @@ Section B
         "should NOT render if branch: {output:?}"
     );
 }
+
+#[test]
+fn precompiled_case_labels_populate_all_four_variants() {
+    use crate::compiled::{CompiledCaseLabel, Segment};
+
+    let body = r#"> {% match status %}
+> {% case "exact_\"quote\"" | "prefix_{{ tag | upper }}" %}
+
+hit_quoted
+
+> {% case plain_var | cfg.expected %}
+
+hit_unquoted
+
+> {% else %}
+
+hit_default
+
+> {% /match %}
+"#;
+    let empty_aliases = crate::compat::HashMap::new();
+    let (segments, _) = crate::compiled::compile(body, &empty_aliases).unwrap();
+    let Some(Segment::Match { arms, .. }) = segments.first() else {
+        panic!("expected Segment::Match, got {segments:?}");
+    };
+    assert_eq!(arms.len(), 3);
+
+    // Arm 0: LiteralStr (with unescaped quotes) + InterpolatedStr (pre-compiled segments).
+    assert_eq!(arms[0].compiled_variants.len(), 2);
+    assert!(matches!(
+        &arms[0].compiled_variants[0],
+        CompiledCaseLabel::LiteralStr(s) if s.as_ref() == "exact_\"quote\""
+    ));
+    assert!(matches!(
+        &arms[0].compiled_variants[1],
+        CompiledCaseLabel::InterpolatedStr(segs) if segs.len() == 2
+    ));
+
+    // Arm 1: Unquoted simple var + Unquoted pre-split dotted path.
+    assert_eq!(arms[1].compiled_variants.len(), 2);
+    assert!(matches!(
+        &arms[1].compiled_variants[0],
+        CompiledCaseLabel::Unquoted { raw, dotted_path: None } if raw.as_ref() == "plain_var"
+    ));
+    assert!(matches!(
+        &arms[1].compiled_variants[1],
+        CompiledCaseLabel::Unquoted { raw, dotted_path: Some(p) }
+            if raw.as_ref() == "cfg.expected" && p.parts() == ["cfg", "expected"]
+    ));
+
+    // Arm 2: Default (`{% else %}`).
+    assert_eq!(arms[2].compiled_variants.len(), 1);
+    assert!(matches!(
+        &arms[2].compiled_variants[0],
+        CompiledCaseLabel::Default
+    ));
+}
+
+#[test]
+fn malformed_interpolated_case_label_rejected_at_compile_time() {
+    let unclosed_src = r#"---
+params:
+  - s = str
+  - x = str
+---
+> {% match s %}
+> {% case "ok" %}
+
+matched
+
+> {% case "bad {{ x" %}
+
+unreachable
+
+> {% else %}
+
+other
+
+> {% /match %}
+"#;
+    let err = crate::Template::from_source(unclosed_src).unwrap_err();
+    assert!(
+        err.to_string().contains("unclosed"),
+        "expected compile-time unclosed error, got: {err}"
+    );
+
+    let unknown_filter_src = r#"---
+params:
+  - s = str
+  - x = str
+---
+> {% match s case "{{ x | bogus_filter_xyz }}" %}
+
+hit
+
+> {% /match %}
+"#;
+    let err2 = crate::Template::from_source(unknown_filter_src).unwrap_err();
+    assert!(
+        err2.to_string().contains("unknown filter"),
+        "expected compile-time unknown filter error, got: {err2}"
+    );
+}

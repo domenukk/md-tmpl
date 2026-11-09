@@ -30,6 +30,17 @@ fn escape_xml_body_str_escapes_markup_and_nul() {
     assert_eq!(escape_xml_body_str(BODY_INPUT), BODY_EXPECTED);
 }
 
+#[test]
+fn invisible_chars_detect_and_strip() {
+    let clean = "Hello 👨‍👩‍👧‍👦 ❤️ world";
+    assert!(!has_invisible_chars(clean));
+    assert_eq!(strip_invisible_str(clean), clean);
+
+    let smuggled = "a\u{200B}b\u{202E}c\u{E0020}d\u{0000}e";
+    assert!(has_invisible_chars(smuggled));
+    assert_eq!(strip_invisible_str(smuggled), "abcde");
+}
+
 fn letters(items: &[&str]) -> Vec<Value> {
     items.iter().map(|s| Value::Str((*s).to_string())).collect()
 }

@@ -20,11 +20,7 @@ pub(crate) mod analysis;
 mod render_methods;
 #[cfg(not(feature = "std"))]
 use self::analysis::hash_source_no_std;
-use self::analysis::{
-    check_bare_enum_access, check_internal_key_access, check_name_collisions,
-    check_static_enum_in_conditions, check_undeclared_variables, check_unused_params,
-    collect_enum_type_keys, inject_enum_type_constants,
-};
+use self::{analysis::inject_enum_type_constants, traits_and_io::run_static_analysis};
 
 /// Configuration for template compilation.
 ///
@@ -140,6 +136,9 @@ pub struct Template {
     env_values: alloc::sync::Arc<[(String, Value)]>,
     /// Pre-computed set of all declared variable names and constants.
     declared_names: Arc<HashSet<String>>,
+    /// Declared parameter sanitization (block notices resolved), used when this template
+    /// is included as a `tmpl(...)` handle: its parameters then take the caller's trust.
+    declared_sanitize: Arc<compiled::DeclaredSanitize>,
     /// Cached `TypeId`s of Rust types that have passed validation.
     ///
     /// When `render::<T>()` is called, the first invocation runs full
@@ -184,6 +183,7 @@ impl Clone for Template {
             #[cfg(feature = "std")]
             env_values: self.env_values.clone(),
             declared_names: self.declared_names.clone(),
+            declared_sanitize: self.declared_sanitize.clone(),
             // Clone inherits cached type IDs — the validation is
             // shape-based, not instance-based.
             #[cfg(feature = "std")]
@@ -220,6 +220,8 @@ pub(crate) struct CachedTemplateData {
     pub name: Option<String>,
     /// Template description.
     pub description: Option<String>,
+    /// Declared parameter sanitization (block notices resolved).
+    pub declared_sanitize: Arc<compiled::DeclaredSanitize>,
 }
 
 /// Pre-compiled template data for compile-time macro integration.
@@ -243,6 +245,8 @@ pub struct PrecompiledTemplateData<'a> {
     pub name: Option<&'a str>,
     /// Template description.
     pub description: Option<&'a str>,
+    /// Declared parameter sanitization (block notices resolved).
+    pub declared_sanitize: &'a [(&'a str, crate::types::SanitizeSpec)],
 }
 
 fn build_declared_names(
@@ -436,6 +440,10 @@ impl Template {
             .map(|(k, v)| (k.to_string(), v.clone()))
             .collect();
         let declared_names = build_declared_names(&fm.declarations, &consts);
+        let declared_sanitize = Arc::new(compiled::declared_sanitize(
+            &fm.param_sanitize,
+            fm.sanitize_notice.as_deref(),
+        ));
         let tmpl = Self {
             body,
             name: fm.name.clone(),
@@ -454,6 +462,7 @@ impl Template {
             estimated_capacity,
             env_values,
             declared_names,
+            declared_sanitize,
             checked_type_ids: std::sync::Mutex::new(Vec::new()),
         };
         Ok((tmpl, fm))
@@ -508,6 +517,10 @@ impl Template {
         let segments: Arc<[Segment]> = Arc::from(segments);
         let estimated_capacity = compiled::render::estimate_output_capacity(&segments);
         let declared_names = build_declared_names(&fm.declarations, &consts);
+        let declared_sanitize = Arc::new(compiled::declared_sanitize(
+            &fm.param_sanitize,
+            fm.sanitize_notice.as_deref(),
+        ));
         let tmpl = Self {
             body,
             name: fm.name.clone(),
@@ -524,6 +537,7 @@ impl Template {
             imported_consts: Arc::new(fm.imported_consts.clone()),
             estimated_capacity,
             declared_names,
+            declared_sanitize,
         };
         Ok((tmpl, fm))
     }
@@ -564,6 +578,7 @@ impl Template {
             estimated_capacity,
             env_values: alloc::sync::Arc::from([]),
             declared_names,
+            declared_sanitize: data.declared_sanitize,
             checked_type_ids: std::sync::Mutex::new(Vec::new()),
         }
     }
@@ -584,6 +599,11 @@ impl Template {
             .collect();
         let imported_const_map = data
             .imported_consts
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect();
+        let declared_sanitize = data
+            .declared_sanitize
             .iter()
             .map(|(k, v)| (k.to_string(), v.clone()))
             .collect();
@@ -618,6 +638,7 @@ impl Template {
             #[cfg(feature = "std")]
             env_values: alloc::sync::Arc::from([]),
             declared_names,
+            declared_sanitize: Arc::new(declared_sanitize),
             #[cfg(feature = "std")]
             checked_type_ids: std::sync::Mutex::new(Vec::new()),
         }
@@ -806,6 +827,13 @@ impl Template {
         &self.segments
     }
 
+    /// Declared parameter sanitization (block notices resolved), used when this template is
+    /// included as a `tmpl(...)` handle.
+    #[must_use]
+    pub(crate) fn declared_sanitize(&self) -> &compiled::DeclaredSanitize {
+        &self.declared_sanitize
+    }
+
     /// Returns the base directory used for resolving filesystem `{% include %}` paths.
     #[cfg(feature = "std")]
     #[must_use]
@@ -878,167 +906,11 @@ impl Template {
     pub fn source_hash(&self) -> u64 {
         self.source_hash
     }
-
-    /// Validate that a (possibly reloaded) template's variable declarations
-    /// match an expected set.
-    ///
-    /// Call this after re-loading a template from disk to ensure that
-    /// nobody (e.g. an autonomous agent editing markdown files at runtime)
-    /// has modified the `params:` block in the frontmatter.
-    ///
-    /// The template body may be changed freely — only the variable
-    /// declarations must remain stable.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`TemplateError::DeclarationsMutated`] with a human-readable
-    /// diff if the declarations don't match.
-    pub fn validate_declarations(&self, expected: &[VarDecl]) -> Result<(), TemplateError> {
-        let current: HashMap<&str, &crate::types::VarType> = self
-            .declared_variables
-            .iter()
-            .map(|d| (d.name.as_str(), &d.var_type))
-            .collect();
-        let expected_map: HashMap<&str, &crate::types::VarType> = expected
-            .iter()
-            .map(|d| (d.name.as_str(), &d.var_type))
-            .collect();
-
-        let current_names: HashSet<&str> = current.keys().copied().collect();
-        let expected_names: HashSet<&str> = expected_map.keys().copied().collect();
-
-        let missing: Vec<&str> = expected_names.difference(&current_names).copied().collect();
-        let extra: Vec<&str> = current_names.difference(&expected_names).copied().collect();
-
-        // Check for type changes on variables that exist in both.
-        let retyped: Vec<String> = current_names
-            .intersection(&expected_names)
-            .filter_map(|name| {
-                let cur_type = current[name];
-                let exp_type = expected_map[name];
-                if cur_type == exp_type {
-                    None
-                } else {
-                    Some(format!("{name}: {exp_type} → {cur_type}"))
-                }
-            })
-            .collect();
-
-        if missing.is_empty() && extra.is_empty() && retyped.is_empty() {
-            return Ok(());
-        }
-
-        let mut parts = Vec::new();
-        if !missing.is_empty() {
-            parts.push(format!("removed: {}", missing.join(", ")));
-        }
-        if !extra.is_empty() {
-            parts.push(format!("added: {}", extra.join(", ")));
-        }
-        if !retyped.is_empty() {
-            parts.push(format!("retyped: {}", retyped.join(", ")));
-        }
-
-        Err(TemplateError::DeclarationsMutated {
-            details: parts.join("; "),
-        })
-    }
 }
 
-// ---------------------------------------------------------------------------
-// Trait impls for embedding Template in macro-generated structs
-// ---------------------------------------------------------------------------
-
-/// Two templates are considered equal if they were compiled from the same
-/// source (compared via non-cryptographic 64-bit hash).
-///
-/// **Note:** This is an approximate comparison — different sources that
-/// produce the same hash would incorrectly compare as equal.  Do not use
-/// `Template` as a `HashMap` key or rely on `Eq` for deduplication in
-/// security-sensitive contexts.  For exact source comparison, compare
-/// [`body()`](Self::body) and [`declarations()`](Self::declarations).
-impl PartialEq for Template {
-    fn eq(&self, other: &Self) -> bool {
-        self.source_hash == other.source_hash
-    }
-}
-
-impl Eq for Template {}
-
-/// Serialize a [`Template`] as a source-hash identifier.
-///
-/// Templates embedded in macro-generated parameter structs need `Serialize`
-/// to satisfy derive bounds, even when the struct is never actually
-/// serialized.  The hash lets debug/logging code produce something readable.
-#[cfg(feature = "serde")]
-impl serde::Serialize for Template {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&format!("template:{:016x}", self.source_hash))
-    }
-}
-
-/// Deserialize always fails — [`Template`] must be constructed from source.
-///
-/// This impl exists solely to satisfy derive bounds on macro-generated
-/// parameter structs.  Actual deserialization of a compiled template is not
-/// meaningful.
-#[cfg(feature = "serde")]
-impl<'de> serde::Deserialize<'de> for Template {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        <serde::de::IgnoredAny as serde::Deserialize>::deserialize(deserializer)?;
-        Err(serde::de::Error::custom(
-            "Template cannot be deserialized; construct from source with \
-             Template::from_source() or Template::from_file()",
-        ))
-    }
-}
-
-fn run_static_analysis(
-    segments: &[Segment],
-    fm: &Frontmatter,
-    inline_templates: &HashMap<String, compiled::CompiledInlineTemplate>,
-    force_allow_unused: bool,
-) -> Result<(), TemplateError> {
-    let referenced = compiled::collect_referenced_params(segments);
-    let case_labels = compiled::collect_unquoted_case_labels(segments);
-    check_undeclared_variables(&referenced, fm, inline_templates)?;
-    check_unused_params(
-        &fm.declarations,
-        &referenced,
-        &case_labels,
-        force_allow_unused || fm.allow_unused,
-    )?;
-    check_name_collisions(fm, inline_templates, segments)?;
-    let enum_keys = collect_enum_type_keys(fm);
-    check_bare_enum_access(segments, &enum_keys)?;
-    check_static_enum_in_conditions(segments, &fm.type_aliases)?;
-    check_internal_key_access(segments)?;
-    let label_errors =
-        compiled::validate_match_labels(segments, &fm.declarations, &fm.type_aliases);
-    if !label_errors.is_empty() {
-        return Err(TemplateError::Syntax(label_errors.join("; ").into()));
-    }
-    // Flow-sensitive type check (field access, displayability, built-in
-    // argument types) — the same checker the `template!` proc macro runs.
-    let type_errors = fm.validate_field_types(segments);
-    if !type_errors.is_empty() {
-        return Err(TemplateError::Syntax(type_errors.join("; ").into()));
-    }
-    Ok(())
-}
-
-/// Load a named template from a directory.
-///
-/// Looks for `<name>.tmpl.md` in `dir`.
-///
-/// # Errors
-///
-/// Returns [`TemplateError::Io`] if the file is not found or cannot be read.
+mod traits_and_io;
 #[cfg(feature = "std")]
-pub fn load_template(dir: &Path, name: &str) -> Result<Template, TemplateError> {
-    let path = dir.join(format!("{name}.tmpl.md"));
-    Template::from_file(&path)
-}
+pub use traits_and_io::load_template;
 
 #[cfg(all(test, feature = "std"))]
 mod adversarial_tests;

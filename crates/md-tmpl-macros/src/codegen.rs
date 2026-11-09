@@ -144,9 +144,20 @@ fn codegen_segment_include(
     let with_vars = inc.with_vars.iter().map(|(k, v)| {
         quote! { (#cp::__private::Cow::Borrowed(#k), #cp::__private::Cow::Borrowed(#v)) }
     });
+    let compiled_with_vars = inc.compiled_with_vars.iter().map(|(k, op)| {
+        let op_tokens = codegen_condition_operand(op);
+        quote! { (#cp::__private::Cow::Borrowed(#k), #op_tokens) }
+    });
     let for_each = inc.for_each.as_ref().map_or_else(
         || quote! { ::core::option::Option::None },
         |(b, l)| quote! { ::core::option::Option::Some((#cp::__private::Cow::Borrowed(#b), #cp::__private::Cow::Borrowed(#l))) },
+    );
+    let compiled_for_each = inc.compiled_for_each.as_ref().map_or_else(
+        || quote! { ::core::option::Option::None },
+        |(b, op)| {
+            let op_tokens = codegen_condition_operand(op);
+            quote! { ::core::option::Option::Some((#cp::__private::Cow::Borrowed(#b), #op_tokens)) }
+        },
     );
     let inline_compiled = inc.inline_compiled.as_ref().map_or_else(
         || quote! { ::core::option::Option::None },
@@ -167,7 +178,9 @@ fn codegen_segment_include(
             #cp::compiled::CompiledInclude {
                 path: #cp::__private::Cow::Borrowed(#path),
                 with_vars: #cp::__private::vec![#(#with_vars),*],
+                compiled_with_vars: #cp::__private::vec![#(#compiled_with_vars),*],
                 for_each: #for_each,
+                compiled_for_each: #compiled_for_each,
                 inline_compiled: #inline_compiled,
                 sanitize_ctx: #sanitize_ctx,
                 memo: ::core::default::Default::default(),
@@ -183,35 +196,18 @@ fn codegen_include_sanitize_ctx(
     ctx: &md_tmpl_core::compiled::IncludeSanitizeContext,
 ) -> proc_macro2::TokenStream {
     let cp = crate_path();
-    let opt_string = |v: Option<&str>| {
-        v.map_or_else(
-            || quote! { ::core::option::Option::None },
-            |s| quote! { ::core::option::Option::Some(#cp::__private::String::from(#s)) },
-        )
-    };
     let tags = ctx
         .enclosing_tags
         .iter()
         .map(|t| quote! { #cp::__private::String::from(#t) });
     let untrusted = ctx.untrusted.iter().map(|(path, spec)| {
-        let spec_tokens = match spec {
-            md_tmpl_core::SanitizeSpec::Inline => quote! { #cp::SanitizeSpec::Inline },
-            md_tmpl_core::SanitizeSpec::Block { tag, notice } => {
-                let notice_tokens = opt_string(notice.as_deref());
-                quote! {
-                    #cp::SanitizeSpec::Block {
-                        tag: #cp::__private::String::from(#tag),
-                        notice: #notice_tokens,
-                    }
-                }
-            }
-        };
+        let spec_tokens = codegen_sanitize_spec(spec);
         quote! { (#cp::__private::String::from(#path), #spec_tokens) }
     });
     let in_atx_heading = ctx.in_atx_heading;
     let at_line_start = ctx.at_line_start;
-    let pending = opt_string(ctx.pending_open_tag.as_deref());
-    let path_ref = opt_string(ctx.untrusted_path_ref.as_deref());
+    let pending = codegen_opt_string(ctx.pending_open_tag.as_deref());
+    let path_ref = codegen_opt_string(ctx.untrusted_path_ref.as_deref());
     quote! {
         #cp::compiled::IncludeSanitizeContext {
             enclosing_tags: #cp::__private::vec![#(#tags),*],
@@ -220,6 +216,88 @@ fn codegen_include_sanitize_ctx(
             pending_open_tag: #pending,
             untrusted: #cp::__private::vec![#(#untrusted),*],
             untrusted_path_ref: #path_ref,
+        }
+    }
+}
+
+/// Emit tokens for an owned `Option<String>`.
+fn codegen_opt_string(v: Option<&str>) -> proc_macro2::TokenStream {
+    let cp = crate_path();
+    v.map_or_else(
+        || quote! { ::core::option::Option::None },
+        |s| quote! { ::core::option::Option::Some(#cp::__private::String::from(#s)) },
+    )
+}
+
+/// Emit tokens reconstructing a declarative [`md_tmpl_core::SanitizeSpec`].
+pub(crate) fn codegen_sanitize_spec(spec: &md_tmpl_core::SanitizeSpec) -> proc_macro2::TokenStream {
+    let cp = crate_path();
+    match spec {
+        md_tmpl_core::SanitizeSpec::Inline => quote! { #cp::SanitizeSpec::Inline },
+        md_tmpl_core::SanitizeSpec::Block { tag, notice } => {
+            let notice_tokens = codegen_opt_string(notice.as_deref());
+            quote! {
+                #cp::SanitizeSpec::Block {
+                    tag: #cp::__private::String::from(#tag),
+                    notice: #notice_tokens,
+                }
+            }
+        }
+    }
+}
+
+/// Emit `(path, spec)` tuple tokens for a [`md_tmpl_core::compiled::DeclaredSanitize`] map,
+/// sorted by path so the generated code is deterministic.
+pub(crate) fn codegen_declared_sanitize_entries(
+    declared: &md_tmpl_core::compiled::DeclaredSanitize,
+    owned_keys: bool,
+) -> Vec<proc_macro2::TokenStream> {
+    let cp = crate_path();
+    let mut entries: Vec<_> = declared.iter().collect();
+    entries.sort_unstable_by_key(|(path, _)| *path);
+    entries
+        .into_iter()
+        .map(|(path, spec)| {
+            let spec_tokens = codegen_sanitize_spec(spec);
+            if owned_keys {
+                quote! { (#cp::__private::String::from(#path), #spec_tokens) }
+            } else {
+                quote! { (#path, #spec_tokens) }
+            }
+        })
+        .collect()
+}
+
+fn codegen_compiled_case_label(
+    label: &md_tmpl_core::compiled::CompiledCaseLabel,
+) -> proc_macro2::TokenStream {
+    use md_tmpl_core::compiled::CompiledCaseLabel;
+    let cp = crate_path();
+    match label {
+        CompiledCaseLabel::Default => quote! { #cp::compiled::CompiledCaseLabel::Default },
+        CompiledCaseLabel::LiteralStr(lit) => {
+            let s = lit.as_ref();
+            quote! { #cp::compiled::CompiledCaseLabel::LiteralStr(#cp::__private::Cow::Borrowed(#s)) }
+        }
+        CompiledCaseLabel::InterpolatedStr(segs) => {
+            let segs_vec = codegen_segment_vec(segs);
+            quote! { #cp::compiled::CompiledCaseLabel::InterpolatedStr(#segs_vec) }
+        }
+        CompiledCaseLabel::Unquoted { raw, dotted_path } => {
+            let r = raw.as_ref();
+            let dotted_tokens = dotted_path.as_ref().map_or_else(
+                || quote! { ::core::option::Option::None },
+                |p| {
+                    let pt = codegen_compiled_path(p);
+                    quote! { ::core::option::Option::Some(#pt) }
+                },
+            );
+            quote! {
+                #cp::compiled::CompiledCaseLabel::Unquoted {
+                    raw: #cp::__private::Cow::Borrowed(#r),
+                    dotted_path: #dotted_tokens,
+                }
+            }
         }
     }
 }
@@ -235,6 +313,10 @@ fn codegen_segment_match(
         let variant_tokens = arm.variants.iter().map(|v| {
             quote! { #cp::__private::Cow::Borrowed(#v) }
         });
+        let compiled_variant_tokens = arm
+            .compiled_variants
+            .iter()
+            .map(codegen_compiled_case_label);
         let guard_tokens = arm.guard.as_ref().map_or_else(
             || quote! { ::core::option::Option::None },
             |g| {
@@ -245,6 +327,7 @@ fn codegen_segment_match(
         quote! {
             #cp::compiled::MatchArm {
                 variants: #cp::__private::vec![#(#variant_tokens),*],
+                compiled_variants: #cp::__private::vec![#(#compiled_variant_tokens),*],
                 guard: #guard_tokens,
                 body: #body_vec,
             }
@@ -302,12 +385,21 @@ pub(crate) fn codegen_parsed_filter(
             }
         },
     );
+    let origin = match f.origin {
+        md_tmpl_core::compiled::FilterOrigin::Template => {
+            quote! { #cp::compiled::FilterOrigin::Template }
+        }
+        md_tmpl_core::compiled::FilterOrigin::Declaration => {
+            quote! { #cp::compiled::FilterOrigin::Declaration }
+        }
+    };
     quote! {
         #cp::compiled::ParsedFilter {
             kind: #kind,
             args: #args,
             parsed_num: #parsed_num,
             sanitize_mode: #sanitize_mode,
+            origin: #origin,
         }
     }
 }
@@ -333,6 +425,7 @@ pub(crate) fn codegen_filter_kind(
         FilterKind::Fence => quote! { #cp::compiled::FilterKind::Fence },
         FilterKind::Quarantine => quote! { #cp::compiled::FilterKind::Quarantine },
         FilterKind::Sanitize => quote! { #cp::compiled::FilterKind::Sanitize },
+        FilterKind::UnsafeTrust => quote! { #cp::compiled::FilterKind::UnsafeTrust },
         FilterKind::Truncate => quote! { #cp::compiled::FilterKind::Truncate },
     }
 }
@@ -491,6 +584,16 @@ fn codegen_condition_operand(
             let segs_vec = codegen_segment_vec(segs);
             quote! { #cp::compiled::ConditionOperand::InterpolatedStr(#segs_vec) }
         }
+        ConditionOperand::Filtered { base, filters } => {
+            let base_tokens = codegen_condition_operand(base);
+            let filters_tokens = filters.iter().map(codegen_parsed_filter);
+            quote! {
+                #cp::compiled::ConditionOperand::Filtered {
+                    base: #cp::__private::Box::new(#base_tokens),
+                    filters: #cp::__private::vec![#(#filters_tokens),*],
+                }
+            }
+        }
     }
 }
 
@@ -535,6 +638,7 @@ pub(crate) fn codegen_compiled_inline_template(
             let v_tokens = codegen_value(v);
             quote! { (#cp::__private::String::from(#k), #v_tokens) }
         });
+    let declared_entries = codegen_declared_sanitize_entries(&t.declared_sanitize, true);
     quote! {
         {
             #[cold]
@@ -545,6 +649,7 @@ pub(crate) fn codegen_compiled_inline_template(
                     declarations: #cp::__private::Arc::from([#(#decls_tokens),*]),
                     consts: #cp::__private::Arc::new([#(#const_entries),*].into_iter().collect()),
                     imported_consts: #cp::__private::Arc::new([#(#imported_const_entries),*].into_iter().collect()),
+                    declared_sanitize: #cp::__private::Arc::new([#(#declared_entries),*].into_iter().collect()),
                 }
             }
             __init_inline()

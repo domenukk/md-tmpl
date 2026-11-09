@@ -55,6 +55,24 @@ func TestHostXMLCodec(t *testing.T) {
 	}
 }
 
+func TestHostInvisibleChars(t *testing.T) {
+	clean := "Hello 👨‍👩‍👧‍👦 ❤️ world"
+	if HasInvisibleChars(clean) {
+		t.Errorf("HasInvisibleChars(%q) = true, want false", clean)
+	}
+	if got := StripInvisible(clean); got != clean {
+		t.Errorf("StripInvisible(%q) = %q", clean, got)
+	}
+
+	smuggled := "a\u200Bb\u202Ec\U000E0020d\x00e"
+	if !HasInvisibleChars(smuggled) {
+		t.Errorf("HasInvisibleChars(%q) = false, want true", smuggled)
+	}
+	if got := StripInvisible(smuggled); got != "abcde" {
+		t.Errorf("StripInvisible(%q) = %q, want %q", smuggled, got, "abcde")
+	}
+}
+
 func TestHostNoticeAndEnvelopes(t *testing.T) {
 	notice, err := FormatSanitizeNotice("doc")
 	if err != nil || notice != strings.ReplaceAll(DefaultSanitizeNotice, SanitizeNoticeTagPlaceholder, "doc") {

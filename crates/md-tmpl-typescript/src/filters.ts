@@ -18,6 +18,7 @@ import {
   FILTER_SANITIZE,
   FILTER_SANITIZE_ENCLOSED,
   FILTER_SANITIZE_TOKENS,
+  FILTER_UNSAFE_TRUST,
   TYPE_FLOAT,
   TYPE_INT,
   TYPE_LIST,
@@ -35,6 +36,18 @@ import {
 } from "./filter_args.js";
 import { applyToJson } from "./filter_json.js";
 import { escapeJsonBody } from "./json_escape.js";
+import {
+  hasInvisibleChars,
+  isInvisibleCandidateUnit,
+  isUnconditionalInvisibleCodePoint,
+  stripInvisibleStr,
+} from "./invisible.js";
+
+export {
+  hasInvisibleChars,
+  isUnconditionalInvisibleCodePoint,
+  stripInvisibleStr,
+};
 
 /** Parse a filter expression like `fixed(2)` into `[name, args?]`. */
 export function parseFilter(filter: string): [string, string | undefined] {
@@ -115,6 +128,18 @@ export function applyFilter(
         throw new TemplateSyntaxError(`'${FILTER_SANITIZE}' requires a string`);
       }
       return str(sanitizeEnclosedString(value.value, args));
+    case FILTER_UNSAFE_TRUST:
+      if (args !== undefined) {
+        throw new TemplateSyntaxError(
+          `'${FILTER_UNSAFE_TRUST}' does not take arguments`,
+        );
+      }
+      if (value.type !== "str") {
+        throw new TemplateSyntaxError(
+          `'${FILTER_UNSAFE_TRUST}' requires a string`,
+        );
+      }
+      return value;
     default:
       throw new UnknownFilterError(filterName);
   }
@@ -271,326 +296,16 @@ function applyEscapeJson(value: Value): Value {
   return str(escapeJsonString(value.value));
 }
 
-/** Minimum length of any rule in `TOKEN_DELIMITERS` (`"</s>"`, `4` chars). */
-const MIN_RULE_LEN = 4;
-/** Maximum inner length for generic `<|...|>` / `<｜...｜>` special control tokens. */
-const MAX_PIPE_TOKEN_INNER_LEN = 64;
-const ESCAPED_LT = "&lt;";
-const ESCAPED_GT = "&gt;";
-const FULLWIDTH_PIPE_OPEN = "<｜";
+import {
+  ESCAPED_GT,
+  ESCAPED_LT,
+  ROLE_TOKEN_DELIMITERS,
+  TOKEN_DELIMITERS,
+  isAsciiWhitespaceCode,
+  matchControlTokenAt,
+} from "./token_delimiters.js";
 
-const ROLE_DELIMITER_COUNT = 79;
-
-/** Delimiter pairs for LLM control token neutralization across all supported dialects. */
-export const TOKEN_DELIMITERS: readonly [string, string][] = [
-  // ChatML / OpenAI / Qwen
-  ["<|im_start|>", "&lt;|im_start|&gt;"],
-  ["<|im_end|>", "&lt;|im_end|&gt;"],
-  ["<|endoftext|>", "&lt;|endoftext|&gt;"],
-  // Llama 3
-  ["<|start_header_id|>", "&lt;|start_header_id|&gt;"],
-  ["<|end_header_id|>", "&lt;|end_header_id|&gt;"],
-  ["<|eot_id|>", "&lt;|eot_id|&gt;"],
-  // Llama 2
-  ["[INST]", "&#91;INST&#93;"],
-  ["[/INST]", "&#91;/INST&#93;"],
-  ["<<SYS>>", "&lt;&lt;SYS&gt;&gt;"],
-  ["<</SYS>>", "&lt;&lt;/SYS&gt;&gt;"],
-  ["</s>", "&lt;/s&gt;"],
-  // Gemma 2 & Gemma 4
-  ["<start_of_turn>", "&lt;start_of_turn&gt;"],
-  ["<end_of_turn>", "&lt;end_of_turn&gt;"],
-  ["<|turn>", "&lt;|turn&gt;"],
-  ["<turn|>", "&lt;turn|&gt;"],
-  ["<|tool>", "&lt;|tool&gt;"],
-  ["<tool|>", "&lt;tool|&gt;"],
-  ["<|tool_call>", "&lt;|tool_call&gt;"],
-  ["<tool_call|>", "&lt;tool_call|&gt;"],
-  ["<|tool_response>", "&lt;|tool_response&gt;"],
-  ["<tool_response|>", "&lt;tool_response|&gt;"],
-  ["<|thought", "&lt;|thought"],
-  ["<thought|>", "&lt;thought|&gt;"],
-  ["<|think|>", "&lt;|think|&gt;"],
-  ['<|"|>', '&lt;|"|&gt;'],
-  ["<bos>", "&lt;bos&gt;"],
-  ["<eos>", "&lt;eos&gt;"],
-  // T5 / CodeGemma / ChatGLM / GLM-4 / Cohere / Yi / InternLM
-  ["<extra_id_", "&lt;extra_id_"],
-  ["[gMASK]", "&#91;gMASK&#93;"],
-  ["<sop>", "&lt;sop&gt;"],
-  ["<eop>", "&lt;eop&gt;"],
-  ["<SPECIAL_", "&lt;SPECIAL_"],
-  ["<beginning_of_sentence>", "&lt;beginning_of_sentence&gt;"],
-  ["<end_of_sentence>", "&lt;end_of_sentence&gt;"],
-  // DeepSeek V3
-  ["<｜begin▁of▁sentence｜>", "&lt;｜begin▁of▁sentence｜&gt;"],
-  ["<｜end▁of▁sentence｜>", "&lt;｜end▁of▁sentence｜&gt;"],
-  ["<｜begin▁of▁thought｜>", "&lt;｜begin▁of▁thought｜&gt;"],
-  ["<｜end▁of▁thought｜>", "&lt;｜end▁of▁thought｜&gt;"],
-  ["<｜User｜>", "&lt;｜User｜&gt;"],
-  ["<｜Assistant｜>", "&lt;｜Assistant｜&gt;"],
-  ["<｜tool▁calls▁begin｜>", "&lt;｜tool▁calls▁begin｜&gt;"],
-  ["<｜tool▁calls▁end｜>", "&lt;｜tool▁calls▁end｜&gt;"],
-  ["<｜tool▁call▁begin｜>", "&lt;｜tool▁call▁begin｜&gt;"],
-  ["<｜tool▁call▁end｜>", "&lt;｜tool▁call▁end｜&gt;"],
-  ["<｜tool▁sep｜>", "&lt;｜tool▁sep｜&gt;"],
-  ["<｜tool▁outputs▁begin｜>", "&lt;｜tool▁outputs▁begin｜&gt;"],
-  ["<｜tool▁outputs▁end｜>", "&lt;｜tool▁outputs▁end｜&gt;"],
-  ["<｜tool▁output▁begin｜>", "&lt;｜tool▁output▁begin｜&gt;"],
-  ["<｜tool▁output▁end｜>", "&lt;｜tool▁output▁end｜&gt;"],
-  // Phi-3/4, Command-R, Bailing & Harmony
-  ["<|user|>", "&lt;|user|&gt;"],
-  ["<|assistant|>", "&lt;|assistant|&gt;"],
-  ["<|system|>", "&lt;|system|&gt;"],
-  ["<|end|>", "&lt;|end|&gt;"],
-  ["<|start|>", "&lt;|start|&gt;"],
-  ["<|channel|>", "&lt;|channel|&gt;"],
-  ["<|message|>", "&lt;|message|&gt;"],
-  ["<|call|>", "&lt;|call|&gt;"],
-  ["<|return|>", "&lt;|return|&gt;"],
-  ["<|constrain|>", "&lt;|constrain|&gt;"],
-  ["<|role_end|>", "&lt;|role_end|&gt;"],
-  ["<|START_OF_TURN_TOKEN|>", "&lt;|START_OF_TURN_TOKEN|&gt;"],
-  ["<|END_OF_TURN_TOKEN|>", "&lt;|END_OF_TURN_TOKEN|&gt;"],
-  ["<role>", "&lt;role&gt;"],
-  ["</role>", "&lt;/role&gt;"],
-  // Mistral & Ministral
-  ["[SYSTEM_PROMPT]", "&#91;SYSTEM_PROMPT&#93;"],
-  ["[/SYSTEM_PROMPT]", "&#91;/SYSTEM_PROMPT&#93;"],
-  ["[TOOL_CALLS]", "&#91;TOOL_CALLS&#93;"],
-  ["[AVAILABLE_TOOLS]", "&#91;AVAILABLE_TOOLS&#93;"],
-  ["[/TOOL_CALLS]", "&#91;/TOOL_CALLS&#93;"],
-  ["[/AVAILABLE_TOOLS]", "&#91;/AVAILABLE_TOOLS&#93;"],
-  ["[TOOL_RESULTS]", "&#91;TOOL_RESULTS&#93;"],
-  ["[/TOOL_RESULTS]", "&#91;/TOOL_RESULTS&#93;"],
-  ["[TOOL_CONTENT]", "&#91;TOOL_CONTENT&#93;"],
-  ["[ARGS]", "&#91;ARGS&#93;"],
-  ["[/ARGS]", "&#91;/ARGS&#93;"],
-  ["[THINK]", "&#91;THINK&#93;"],
-  ["[/THINK]", "&#91;/THINK&#93;"],
-  // Anthropic
-  ["\n\nHuman:", "\n\nHuman&#58;"],
-  ["\n\nAssistant:", "\n\nAssistant&#58;"],
-  // Tool Calling & Qwen3-Coder / Anthropic XML
-  ["<tool_call>", "&lt;tool_call&gt;"],
-  ["</tool_call>", "&lt;/tool_call&gt;"],
-  ["<tool_response>", "&lt;tool_response&gt;"],
-  ["</tool_response>", "&lt;/tool_response&gt;"],
-  ["<function=", "&lt;function="],
-  ["</function>", "&lt;/function&gt;"],
-  ["<function>", "&lt;function&gt;"],
-  ["<parameter=", "&lt;parameter="],
-  ["</parameter>", "&lt;/parameter&gt;"],
-  ["<tools>", "&lt;tools&gt;"],
-  ["</tools>", "&lt;/tools&gt;"],
-  ["<function_calls>", "&lt;function_calls&gt;"],
-  ["</function_calls>", "&lt;/function_calls&gt;"],
-  ["<function_results>", "&lt;function_results&gt;"],
-  ["</function_results>", "&lt;/function_results&gt;"],
-  // Reasoning XML
-  ["<think>", "&lt;think&gt;"],
-  ["</think>", "&lt;/think&gt;"],
-  // Quarantine envelopes
-  ["<untrusted_tool_output>", "&lt;untrusted_tool_output&gt;"],
-  ["</untrusted_tool_output>", "&lt;/untrusted_tool_output&gt;"],
-  ["<tool_output_quarantine>", "&lt;tool_output_quarantine&gt;"],
-  ["</tool_output_quarantine>", "&lt;/tool_output_quarantine&gt;"],
-  ["<untrusted_content>", "&lt;untrusted_content&gt;"],
-  ["</untrusted_content>", "&lt;/untrusted_content&gt;"],
-];
-
-/** Subset of `TOKEN_DELIMITERS` covering role/turn headers and special control tokens. */
-export const ROLE_TOKEN_DELIMITERS: readonly [string, string][] =
-  TOKEN_DELIMITERS.slice(0, ROLE_DELIMITER_COUNT);
-
-/** Anthropic `\n\nHuman:` / `\n\nAssistant:` turn markers (matched anywhere). */
-const ANTHROPIC_TURN_RULES: readonly [string, string][] = [
-  ["\n\nHuman:", "\n\nHuman&#58;"],
-  ["\n\nAssistant:", "\n\nAssistant&#58;"],
-];
-
-/** Single-newline `\nHuman:` / `\nAssistant:` turn markers (matched only at input start). */
-const ANTHROPIC_START_TURN_RULES: readonly [string, string][] = [
-  ["\nHuman:", "\nHuman&#58;"],
-  ["\nAssistant:", "\nAssistant&#58;"],
-];
-
-const BRACKET_TOKEN_RULES: readonly [string, string][] =
-  ROLE_TOKEN_DELIMITERS.filter(([pat]) => pat.charCodeAt(0) === 91 /* '[' */);
-
-function isBracketSecondCode(c1: number): boolean {
-  return (
-    c1 === 73 /* 'I' */ ||
-    c1 === 47 /* '/' */ ||
-    c1 === 103 /* 'g' */ ||
-    c1 === 83 /* 'S' */ ||
-    c1 === 84 /* 'T' */ ||
-    c1 === 65 /* 'A' */
-  );
-}
-
-function isAngleSecondCode(c1: number): boolean {
-  return (
-    c1 === 124 /* '|' */ ||
-    c1 === 0xff5c /* '｜' */ ||
-    c1 === 47 /* '/' */ ||
-    c1 === 60 /* '<' */ ||
-    c1 === 115 /* 's' */ ||
-    c1 === 101 /* 'e' */ ||
-    c1 === 116 /* 't' */ ||
-    c1 === 98 /* 'b' */ ||
-    c1 === 83 /* 'S' */ ||
-    c1 === 114 /* 'r' */ ||
-    c1 === 102 /* 'f' */ ||
-    c1 === 112 /* 'p' */ ||
-    c1 === 117 /* 'u' */
-  );
-}
-
-function isAsciiWhitespaceCode(c: number): boolean {
-  return (
-    c === 32 /* ' ' */ ||
-    c === 9 /* '\t' */ ||
-    c === 10 /* '\n' */ ||
-    c === 12 /* '\f' */ ||
-    c === 13 /* '\r' */
-  );
-}
-
-function isPipeTokenForbiddenCode(code: number): boolean {
-  return (
-    isAsciiWhitespaceCode(code) ||
-    code === 60 /* '<' */ ||
-    code === 62 /* '>' */
-  );
-}
-
-function matchGenericPipeToken(s: string, i: number): number | undefined {
-  const ASCII_PIPE_CODE = 124;
-  const FULLWIDTH_PIPE_CODE = 0xff5c;
-  const ASCII_GT_CODE = 62;
-  let openLen: number;
-  let closePipeCode: number;
-  if (s.startsWith("<|", i)) {
-    openLen = 2;
-    closePipeCode = ASCII_PIPE_CODE;
-  } else if (s.startsWith(FULLWIDTH_PIPE_OPEN, i)) {
-    openLen = FULLWIDTH_PIPE_OPEN.length;
-    closePipeCode = FULLWIDTH_PIPE_CODE;
-  } else {
-    return undefined;
-  }
-  const start = i + openLen;
-  const maxEnd = Math.min(s.length - 1, start + MAX_PIPE_TOKEN_INNER_LEN);
-  let utf8Bytes = 0;
-  for (let pos = start; pos <= maxEnd; pos++) {
-    const code = s.charCodeAt(pos);
-    if (code === closePipeCode && s.charCodeAt(pos + 1) === ASCII_GT_CODE) {
-      return utf8Bytes > 0 ? pos + 2 : undefined;
-    }
-    if (isPipeTokenForbiddenCode(code)) {
-      return undefined;
-    }
-    if (code < 0x80) {
-      utf8Bytes += 1;
-    } else if (code < 0x800) {
-      utf8Bytes += 2;
-    } else if (
-      code >= 0xd800 &&
-      code <= 0xdbff &&
-      pos + 1 <= maxEnd &&
-      s.charCodeAt(pos + 1) >= 0xdc00 &&
-      s.charCodeAt(pos + 1) <= 0xdfff
-    ) {
-      utf8Bytes += 4;
-      pos++;
-    } else {
-      utf8Bytes += 3;
-    }
-    if (utf8Bytes > MAX_PIPE_TOKEN_INNER_LEN) {
-      return undefined;
-    }
-  }
-  return undefined;
-}
-
-type ControlTokenMatch =
-  | {
-      readonly kind: "rule";
-      readonly len: number;
-      readonly replacement: string;
-    }
-  | { readonly kind: "pipe"; readonly endIdx: number };
-
-function matchControlTokenAt(
-  s: string,
-  i: number,
-  rules: readonly [string, string][],
-): ControlTokenMatch | undefined {
-  if (i + MIN_RULE_LEN > s.length) {
-    return undefined;
-  }
-  const c0 = s.charCodeAt(i);
-  const c1 = s.charCodeAt(i + 1);
-  if (c0 === 10 /* '\n' */) {
-    // `\n\nHuman:` anywhere, or `\nHuman:` at the very start of the input.
-    let turnRules: readonly [string, string][] = [];
-    if (c1 === 10) {
-      turnRules = ANTHROPIC_TURN_RULES;
-    } else if (i === 0) {
-      turnRules = ANTHROPIC_START_TURN_RULES;
-    }
-    for (const [pat, replacement] of turnRules) {
-      if (s.startsWith(pat, i)) {
-        return { kind: "rule", len: pat.length, replacement };
-      }
-    }
-    return undefined;
-  }
-  if (c0 === 91 /* '[' */) {
-    if (!isBracketSecondCode(c1)) {
-      return undefined;
-    }
-    const c2 = s.charCodeAt(i + 2);
-    const c3 = s.charCodeAt(i + 3);
-    for (const [pat, replacement] of BRACKET_TOKEN_RULES) {
-      if (
-        pat.charCodeAt(1) === c1 &&
-        pat.charCodeAt(2) === c2 &&
-        pat.charCodeAt(3) === c3 &&
-        s.startsWith(pat, i)
-      ) {
-        return { kind: "rule", len: pat.length, replacement };
-      }
-    }
-    return undefined;
-  }
-  if (c0 === 60 /* '<' */) {
-    if (!isAngleSecondCode(c1)) {
-      return undefined;
-    }
-    if (c1 === 124 /* '|' */ || c1 === 0xff5c /* '｜' */) {
-      const endIdx = matchGenericPipeToken(s, i);
-      if (endIdx !== undefined) {
-        return { kind: "pipe", endIdx };
-      }
-    }
-    const c2 = s.charCodeAt(i + 2);
-    const c3 = s.charCodeAt(i + 3);
-    for (const [pat, replacement] of rules) {
-      if (
-        pat.charCodeAt(0) === 60 &&
-        pat.charCodeAt(1) === c1 &&
-        pat.charCodeAt(2) === c2 &&
-        pat.charCodeAt(3) === c3 &&
-        s.startsWith(pat, i)
-      ) {
-        return { kind: "rule", len: pat.length, replacement };
-      }
-    }
-  }
-  return undefined;
-}
+export { ROLE_TOKEN_DELIMITERS, TOKEN_DELIMITERS };
 
 export const DEFAULT_QUARANTINE_TAG = "untrusted_content";
 
@@ -643,21 +358,21 @@ function isValidNcname(name: string): boolean {
 
 export const INLINE_HEADING_SENTINEL = "#heading";
 
-const HEADING_LINE_BREAK_CHARS = new Set([
-  0x0a, // \n
-  0x0d, // \r
-  0x0b, // \v
-  0x0c, // \f
-  0x85, // NEL
-  0x2028, // LS
-  0x2029, // PS
-]);
+function isHeadingLineBreakCode(code: number): boolean {
+  return code <= 0x85
+    ? code === 0x0a ||
+        code === 0x0d ||
+        code === 0x0b ||
+        code === 0x0c ||
+        code === 0x85
+    : code === 0x2028 || code === 0x2029;
+}
 
 function collapseHeadingLineBreaks(s: string): string {
   let out = "";
   let last = 0;
   for (let i = 0; i < s.length; i++) {
-    if (HEADING_LINE_BREAK_CHARS.has(s.charCodeAt(i))) {
+    if (isHeadingLineBreakCode(s.charCodeAt(i))) {
       out += `${s.slice(last, i)} `;
       last = i + 1;
     }
@@ -694,7 +409,7 @@ function validateQuarantineTagSpec(spec: string): [string, string] {
   return validateTagSpecForFilter(spec, FILTER_QUARANTINE);
 }
 
-interface ParsedTagSpec {
+export interface ParsedTagSpec {
   readonly firstCharMask: number;
   readonly tagsLower: readonly string[];
 }
@@ -812,7 +527,7 @@ function matchAnyQuarantineTag(
   return undefined;
 }
 
-function hasBreakoutWithRules(
+function hasBreakoutClean(
   s: string,
   rules: readonly [string, string][],
   parsedTags: ParsedTagSpec | undefined,
@@ -835,6 +550,108 @@ function hasBreakoutWithRules(
   return false;
 }
 
+function hasBreakoutWithRules(
+  s: string,
+  rules: readonly [string, string][],
+  parsedTags: ParsedTagSpec | undefined,
+): boolean {
+  let checkedInvisible = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c === 60 /* '<' */ || c === 91 /* '[' */ || c === 10 /* '\n' */) {
+      if (rules.length > 0 && matchControlTokenAt(s, i, rules) !== undefined) {
+        return true;
+      }
+      if (
+        c === 60 &&
+        parsedTags !== undefined &&
+        matchAnyQuarantineTag(s, i, parsedTags) !== undefined
+      ) {
+        return true;
+      }
+    } else if (!checkedInvisible && isInvisibleCandidateUnit(c)) {
+      checkedInvisible = true;
+      const stripped = stripInvisibleStr(s);
+      if (stripped !== s) {
+        return (
+          rules.length > 0 || hasBreakoutClean(stripped, rules, parsedTags)
+        );
+      }
+    }
+  }
+  return false;
+}
+
+function sanitizeWithRulesClean(
+  s: string,
+  rules: readonly [string, string][],
+  parsedTags: ParsedTagSpec | undefined,
+): string {
+  let out: string | undefined;
+  let lastCopied = 0;
+  let i = 0;
+  while (i < s.length) {
+    const c = s.charCodeAt(i);
+    if (c === 60 /* '<' */ || c === 91 /* '[' */ || c === 10 /* '\n' */) {
+      if (c === 60 && parsedTags !== undefined) {
+        const afterTag = matchAnyQuarantineTag(s, i, parsedTags);
+        if (afterTag !== undefined) {
+          let j = afterTag;
+          while (
+            j < s.length &&
+            s.charCodeAt(j) !== 62 /* '>' */ &&
+            s.charCodeAt(j) !== 60 /* '<' */
+          ) {
+            j++;
+          }
+          if (j < s.length && s.charCodeAt(j) === 62 /* '>' */) {
+            const inner = s.slice(i + 1, j);
+            const sanitizedInner =
+              rules.length === 0
+                ? inner
+                : sanitizeWithRulesClean(inner, rules, undefined);
+            out =
+              (out ?? "") +
+              s.slice(lastCopied, i) +
+              `${ESCAPED_LT}${sanitizedInner}${ESCAPED_GT}`;
+            i = j + 1;
+            lastCopied = i;
+            continue;
+          }
+          out = (out ?? "") + s.slice(lastCopied, i) + ESCAPED_LT;
+          i++;
+          lastCopied = i;
+          continue;
+        }
+      }
+      if (rules.length > 0) {
+        const matched = matchControlTokenAt(s, i, rules);
+        if (matched !== undefined) {
+          if (matched.kind === "rule") {
+            out = (out ?? "") + s.slice(lastCopied, i) + matched.replacement;
+            i += matched.len;
+          } else {
+            const innerPipe = sanitizeWithRulesClean(
+              s.slice(i + 1, matched.endIdx - 1),
+              rules,
+              undefined,
+            );
+            out =
+              (out ?? "") +
+              s.slice(lastCopied, i) +
+              `${ESCAPED_LT}${innerPipe}${ESCAPED_GT}`;
+            i = matched.endIdx;
+          }
+          lastCopied = i;
+          continue;
+        }
+      }
+    }
+    i++;
+  }
+  return out !== undefined ? out + s.slice(lastCopied) : s;
+}
+
 function sanitizeWithRules(
   s: string,
   rules: readonly [string, string][],
@@ -842,6 +659,7 @@ function sanitizeWithRules(
 ): string {
   let out: string | undefined;
   let lastCopied = 0;
+  let checkedInvisible = false;
   let i = 0;
   while (i < s.length) {
     const c = s.charCodeAt(i);
@@ -899,6 +717,12 @@ function sanitizeWithRules(
           continue;
         }
       }
+    } else if (!checkedInvisible && isInvisibleCandidateUnit(c)) {
+      checkedInvisible = true;
+      const stripped = stripInvisibleStr(s);
+      if (stripped !== s) {
+        return sanitizeWithRulesClean(stripped, rules, parsedTags);
+      }
     }
     i++;
   }
@@ -943,19 +767,49 @@ export function sanitizeTokensWithArgs(s: string, tagArg?: string): string {
  * line breaks collapsed when the tags include the `#heading` sentinel (mirrors
  * Rust `SanitizeFilterMode::Inline { enclosing_tags }`).
  */
+/** Pre-decoded `sanitize#enclosed` execution plan (zero runtime Map lookups). */
+export interface CompiledEnclosedSpec {
+  readonly parsedTags: ParsedTagSpec | undefined;
+  readonly heading: boolean;
+}
+
+/** Pre-decode a `sanitize#enclosed` filter argument once at template compile time. */
+export function compileEnclosedSpec(
+  tagArg: string | undefined,
+): CompiledEnclosedSpec {
+  if (tagArg === undefined) {
+    return { parsedTags: undefined, heading: false };
+  }
+  const spec = enclosedSpec(tagArg);
+  return {
+    parsedTags: spec.tags.length === 0 ? undefined : parseTagSpec(spec.tags),
+    heading: spec.heading,
+  };
+}
+
+/** Fast path for `direct_renderer` using a compile-time pre-decoded `CompiledEnclosedSpec`. */
+export function sanitizeEnclosedPreparsed(
+  s: string,
+  parsedTags: ParsedTagSpec | undefined,
+  heading: boolean,
+): string {
+  const sanitized = sanitizeWithRules(s, TOKEN_DELIMITERS, parsedTags);
+  return heading ? collapseHeadingLineBreaks(sanitized) : sanitized;
+}
+
 export function sanitizeEnclosedString(s: string, tagArg?: string): string {
   if (tagArg === undefined) {
     return sanitizeTokensString(s);
   }
   const spec = enclosedSpec(tagArg);
-  if (spec.tags.length === 0) {
-    return sanitizeTokensString(s);
-  }
-  const sanitized = sanitizeUntrustedString(s, spec.tags);
+  const sanitized =
+    spec.tags.length === 0
+      ? sanitizeTokensString(s)
+      : sanitizeUntrustedString(s, spec.tags);
   return spec.heading ? collapseHeadingLineBreaks(sanitized) : sanitized;
 }
 
-/** Decoded `sanitize#enclosed` argument: unquoted tag list + heading flag. */
+/** Decoded `sanitize#enclosed` argument: unquoted XML tag list + heading flag. */
 interface EnclosedSpec {
   readonly tags: string;
   readonly heading: boolean;
@@ -969,10 +823,25 @@ function enclosedSpec(tagArg: string): EnclosedSpec {
   if (cached !== undefined) {
     return cached;
   }
-  const tags = stripQuotes(tagArg);
+  const raw = stripQuotes(tagArg);
+  if (raw === INLINE_HEADING_SENTINEL) {
+    const spec: EnclosedSpec = { tags: "", heading: true };
+    ENCLOSED_SPEC_CACHE.set(tagArg, spec);
+    return spec;
+  }
+  let heading = false;
+  const xmlTags: string[] = [];
+  for (const part of raw.split(",")) {
+    const trimmed = part.trim();
+    if (trimmed === INLINE_HEADING_SENTINEL) {
+      heading = true;
+    } else if (trimmed.length > 0) {
+      xmlTags.push(trimmed);
+    }
+  }
   const spec: EnclosedSpec = {
-    tags,
-    heading: tags.split(",").some((t) => t.trim() === INLINE_HEADING_SENTINEL),
+    tags: xmlTags.join(","),
+    heading,
   };
   if (ENCLOSED_SPEC_CACHE.size >= TAG_SPEC_CACHE_MAX) {
     ENCLOSED_SPEC_CACHE.clear();
@@ -1038,9 +907,6 @@ export function hasUntrustedBreakout(s: string, tagSpec: string): boolean {
 
 /** Sanitize embedded open/close quarantine tags inside payload for one or more comma-separated tag names. */
 export function sanitizeQuarantinePayload(s: string, tagSpec: string): string {
-  if (!s.includes("<")) {
-    return s;
-  }
   return sanitizeWithRules(s, [], parseTagSpec(tagSpec));
 }
 

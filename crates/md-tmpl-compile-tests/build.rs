@@ -264,8 +264,6 @@ fn generate_test_module(
 
     // Escape the template source for use as a raw string literal.
     let (open_delim, close_delim) = raw_string_delimiters(template_src);
-    let (exp_open, exp_close) = raw_string_delimiters(expected_output);
-    let (params_open, params_close) = raw_string_delimiters(&params_toml);
 
     // Generate the template! invocation inside a unique module
     // to prevent borrow checker conflicts between LazyLock closures.
@@ -281,8 +279,8 @@ fn generate_test_module(
 
     #[test]
     fn compile_time() {{
-        let expected = {exp_open}{expected_output}{exp_close};
-        let params_toml = {params_open}{params_toml}{params_close};
+        let expected = {expected_output:?};
+        let params_toml = {params_toml:?};
         let ctx = toml_to_context(params_toml);
         let tmpl = {mod_name}::template();
         let output = tmpl

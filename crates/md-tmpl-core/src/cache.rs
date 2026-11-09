@@ -44,6 +44,25 @@ pub(crate) struct CachedInclude {
     pub consts: HashMap<String, Value>,
     /// Imported constants (e.g. from `imports:` in frontmatter).
     pub imported_consts: HashMap<String, Value>,
+    /// Declared parameter sanitization (block notices resolved). The segments are compiled
+    /// without it: include targets take their parameters' trust from the caller.
+    pub declared_sanitize: Arc<compiled::DeclaredSanitize>,
+}
+
+/// Constants of a compiled template: its `consts:` values plus resolved `env:` values
+/// (a `consts:` entry wins over an `env:` entry of the same name).
+fn frontmatter_consts(fm: &Frontmatter) -> HashMap<String, Value> {
+    let mut consts: HashMap<String, Value> = fm
+        .consts
+        .iter()
+        .filter_map(|d| d.default_value.clone().map(|v| (d.name.clone(), v)))
+        .collect();
+    for d in &fm.env {
+        if let Some(ref v) = d.default_value {
+            consts.entry(d.name.clone()).or_insert_with(|| v.clone());
+        }
+    }
+    consts
 }
 
 /// Content-hash of a source string.
@@ -76,6 +95,8 @@ struct CacheEntry {
     imported_consts: Arc<HashMap<String, crate::value::Value>>,
     /// Full parsed frontmatter.
     frontmatter: Frontmatter,
+    /// Declared parameter sanitization (block notices resolved).
+    declared_sanitize: Arc<compiled::DeclaredSanitize>,
 }
 
 /// Internal trait for generic LRU eviction across different cache entry types.
@@ -356,6 +377,7 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
             imported_consts: entry.imported_consts.clone(),
             name: entry.frontmatter.name.clone(),
             description: entry.frontmatter.description.clone(),
+            declared_sanitize: entry.declared_sanitize.clone(),
         });
         let fm = if need_frontmatter {
             Some(entry.frontmatter.clone())
@@ -438,16 +460,7 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
         );
         compiled::check_untrusted_include_paths(&segments)?;
 
-        let mut consts: HashMap<String, crate::value::Value> = fm
-            .consts
-            .iter()
-            .filter_map(|d| d.default_value.clone().map(|v| (d.name.clone(), v)))
-            .collect();
-        for d in &fm.env {
-            if let Some(ref v) = d.default_value {
-                consts.entry(d.name.clone()).or_insert_with(|| v.clone());
-            }
-        }
+        let mut consts = frontmatter_consts(&fm);
         crate::template::analysis::inject_enum_type_constants(&fm.type_aliases, &mut consts);
         let consts = Arc::new(consts);
         let imported_consts = Arc::new(fm.imported_consts.clone());
@@ -461,6 +474,10 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
             inline_templates: Arc::new(inline_templates),
             consts: consts.clone(),
             imported_consts: imported_consts.clone(),
+            declared_sanitize: Arc::new(compiled::declared_sanitize(
+                &fm.param_sanitize,
+                fm.sanitize_notice.as_deref(),
+            )),
             frontmatter: fm.clone(),
         };
 
@@ -483,6 +500,7 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
             imported_consts: entry.imported_consts,
             name: entry.frontmatter.name.clone(),
             description: entry.frontmatter.description.clone(),
+            declared_sanitize: entry.declared_sanitize,
         });
         Ok((tmpl, Some(fm)))
     }
@@ -562,34 +580,28 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
             &fm.type_aliases,
             &fm.type_alias_sanitize,
         )?;
+        // Include target: parameter values take the caller's trust, so only the notice and
+        // enclosing-tag passes run; call sites apply their own context.
         compiled::apply_frontmatter_sanitization(
             &mut segments,
-            &fm.param_sanitize,
+            &HashMap::new(),
             fm.sanitize_notice.as_deref(),
         );
         compiled::check_untrusted_include_paths(&segments)?;
 
-        let mut include_consts = HashMap::new();
-        for d in &fm.consts {
-            if let Some(v) = d.default_value.clone() {
-                include_consts.insert(d.name.clone(), v);
-            }
-        }
-        // Inject resolved env values as constants.
-        for d in &fm.env {
-            if let Some(ref v) = d.default_value {
-                include_consts
-                    .entry(d.name.clone())
-                    .or_insert_with(|| v.clone());
-            }
-        }
+        let include_consts = frontmatter_consts(&fm);
 
+        let declared_sanitize = Arc::new(compiled::declared_sanitize(
+            &fm.param_sanitize,
+            fm.sanitize_notice.as_deref(),
+        ));
         let cached = CachedInclude {
             segments: Arc::from(segments),
             declarations: Arc::from(fm.declarations),
             base_dir,
             consts: include_consts,
             imported_consts: fm.imported_consts,
+            declared_sanitize,
         };
 
         {

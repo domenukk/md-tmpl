@@ -387,3 +387,27 @@ params:
 > {% /for %}'''
 params = { items = ["a", "b"] }
 expect = { kind = "error", phase = "compile", error_contains = "does not return a list" }
+
+[[cases]]
+name = "err_untrusted_int_rejected"
+note = "untrusted modifier on non-string scalar type is rejected at compile time"
+source = '''
+---
+params:
+  - count = untrusted int
+---
+{{ count }}'''
+params = { count = 1 }
+expect = { kind = "error", phase = "compile", error_contains = "only supported on 'str'" }
+
+[[cases]]
+name = "err_trusted_with_string_arg_rejected"
+note = "trusted modifier does not accept string literal arguments"
+source = '''
+---
+params:
+  - x = trusted("tag") str
+---
+{{ x }}'''
+params = { x = "a" }
+expect = { kind = "error", phase = "compile", error_contains = "unknown type" }

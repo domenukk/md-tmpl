@@ -9,7 +9,7 @@ use alloc::{
     vec::Vec,
 };
 
-use super::{Condition, FilterKind, ParsedFilter, Segment};
+use super::{Condition, FilterKind, FilterOrigin, ParsedFilter, Segment};
 use crate::{
     compat::{HashMap, HashSet},
     error::TemplateError,
@@ -43,6 +43,11 @@ impl ParsedFilter {
     /// Returns [`TemplateError::Syntax`] if `kind == FilterKind::Sanitize` and `args` has invalid
     /// arity or invalid XML `NCName` tag names.
     pub fn parse(kind: FilterKind, args: Option<&str>) -> Result<Self, TemplateError> {
+        if kind == FilterKind::UnsafeTrust && args.is_some() {
+            return Err(TemplateError::syntax(
+                "'unsafe_trust' does not take arguments",
+            ));
+        }
         let parsed_num = args.and_then(|a| a.parse::<usize>().ok());
         let sanitize_mode = if kind == FilterKind::Sanitize {
             Some(parse_sanitize_filter_mode(args)?)
@@ -54,6 +59,7 @@ impl ParsedFilter {
             args: args.map(|a| Cow::Owned(a.to_string())),
             parsed_num,
             sanitize_mode,
+            origin: FilterOrigin::Template,
         })
     }
 
@@ -78,6 +84,7 @@ impl ParsedFilter {
             args: None,
             parsed_num: None,
             sanitize_mode: Some(sanitize_mode),
+            origin: FilterOrigin::Declaration,
         }
     }
 }
@@ -645,9 +652,12 @@ fn apply_sanitize_to_path_filters(
 ) {
     let canonical = resolve_canonical_path(path, loop_aliases);
     if let Some(spec) = param_sanitize.get(&canonical) {
-        let has_token_sanitize = filters
-            .iter()
-            .any(|f| matches!(f.kind, FilterKind::Sanitize | FilterKind::SanitizeTokens));
+        let has_token_sanitize = filters.iter().any(|f| {
+            matches!(
+                f.kind,
+                FilterKind::Sanitize | FilterKind::SanitizeTokens | FilterKind::UnsafeTrust
+            )
+        });
         if let Some(q_idx) = filters
             .iter()
             .position(|f| f.kind == FilterKind::Quarantine)
@@ -660,6 +670,7 @@ fn apply_sanitize_to_path_filters(
                         args: None,
                         parsed_num: None,
                         sanitize_mode: None,
+                        origin: FilterOrigin::Declaration,
                     },
                 );
             }
@@ -697,47 +708,43 @@ fn apply_notice_to_filters(filters: &mut [ParsedFilter], sanitize_notice: Option
     }
 }
 
-fn propagate_condition_sanitization(
-    cond: &mut Condition,
-    param_sanitize: &HashMap<String, SanitizeSpec>,
-    sanitize_notice: Option<&str>,
-    loop_aliases: &mut HashMap<String, String>,
-) {
+fn propagate_condition_sanitization(cond: &mut Condition, sanitize_notice: Option<&str>) {
     match cond {
         Condition::Truthy(op) => {
-            propagate_operand_sanitization(op, param_sanitize, sanitize_notice, loop_aliases);
+            propagate_operand_sanitization(op, sanitize_notice);
         }
         Condition::Not(inner) => {
-            propagate_condition_sanitization(inner, param_sanitize, sanitize_notice, loop_aliases);
+            propagate_condition_sanitization(inner, sanitize_notice);
         }
         Condition::Comparison { left, right, .. } => {
-            propagate_operand_sanitization(left, param_sanitize, sanitize_notice, loop_aliases);
-            propagate_operand_sanitization(right, param_sanitize, sanitize_notice, loop_aliases);
+            propagate_operand_sanitization(left, sanitize_notice);
+            propagate_operand_sanitization(right, sanitize_notice);
         }
         Condition::And(a, b) | Condition::Or(a, b) => {
-            propagate_condition_sanitization(a, param_sanitize, sanitize_notice, loop_aliases);
-            propagate_condition_sanitization(b, param_sanitize, sanitize_notice, loop_aliases);
+            propagate_condition_sanitization(a, sanitize_notice);
+            propagate_condition_sanitization(b, sanitize_notice);
         }
         Condition::MatchVariant { .. } => {}
     }
 }
 
-fn propagate_operand_sanitization(
-    op: &mut ConditionOperand,
-    param_sanitize: &HashMap<String, SanitizeSpec>,
-    sanitize_notice: Option<&str>,
-    loop_aliases: &mut HashMap<String, String>,
-) {
+fn propagate_operand_sanitization(op: &mut ConditionOperand, sanitize_notice: Option<&str>) {
     match op {
         ConditionOperand::Path { filters, .. } => {
             apply_notice_to_filters(filters, sanitize_notice);
         }
+        ConditionOperand::Filtered { base, filters } => {
+            propagate_operand_sanitization(base, sanitize_notice);
+            apply_notice_to_filters(filters, sanitize_notice);
+        }
         ConditionOperand::InterpolatedStr(segs) => {
+            let empty_sanitize = HashMap::new();
+            let mut empty_aliases = HashMap::new();
             propagate_frontmatter_sanitization_inner(
                 segs,
-                param_sanitize,
+                &empty_sanitize,
                 sanitize_notice,
-                loop_aliases,
+                &mut empty_aliases,
             );
         }
         ConditionOperand::Literal(_)
@@ -821,12 +828,7 @@ fn propagate_frontmatter_sanitization_inner(
                 else_body,
             } => {
                 for (cond, branch_body) in branches {
-                    propagate_condition_sanitization(
-                        cond,
-                        param_sanitize,
-                        sanitize_notice,
-                        loop_aliases,
-                    );
+                    propagate_condition_sanitization(cond, sanitize_notice);
                     propagate_frontmatter_sanitization_inner(
                         branch_body,
                         param_sanitize,
@@ -844,12 +846,7 @@ fn propagate_frontmatter_sanitization_inner(
             Segment::Match { arms, .. } => {
                 for arm in arms {
                     if let Some(guard) = &mut arm.guard {
-                        propagate_condition_sanitization(
-                            guard,
-                            param_sanitize,
-                            sanitize_notice,
-                            loop_aliases,
-                        );
+                        propagate_condition_sanitization(guard, sanitize_notice);
                     }
                     propagate_frontmatter_sanitization_inner(
                         &mut arm.body,

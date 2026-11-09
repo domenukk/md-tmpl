@@ -107,7 +107,7 @@ A:{{ x }}`,
   it("resolves dynamic (param-dependent) includes without preloading", async () => {
     const { fetch, requested } = fakeFetch({
       [`${ORIGIN}/t3/main.tmpl.md`]: `---
-params: [section = str]
+params: [section = trusted str]
 ---
 > {% include [s](./sections/{{ section }}.tmpl.md) %}`,
       [`${ORIGIN}/t3/sections/intro.tmpl.md`]: `---
@@ -505,7 +505,7 @@ v2`;
   it("concurrent renderAsync calls do not corrupt each other", async () => {
     const { fetch } = fakeFetch({
       [`${ORIGIN}/cc/main.tmpl.md`]: `---
-params: [branch = str]
+params: [branch = trusted str]
 ---
 > {% include [b](./sections/{{ branch }}.tmpl.md) %}`,
       [`${ORIGIN}/cc/sections/alpha.tmpl.md`]: `---

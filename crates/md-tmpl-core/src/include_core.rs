@@ -7,8 +7,8 @@
 use alloc::string::{String, ToString};
 
 use crate::{
-    compat::HashMap, error::TemplateError, parser::IncludeDirective, scope::Scope, types::VarDecl,
-    value::Value,
+    compat::HashMap, compiled::CompiledWithVarPair, error::TemplateError, parser::IncludeDirective,
+    scope::Scope, types::VarDecl, value::Value,
 };
 
 /// Validate that all variables declared by an included template are explicitly
@@ -91,26 +91,29 @@ pub(crate) fn validate_include_types(
     Ok(())
 }
 
+/// Evaluate pre-compiled `with key=expr` overrides against `scope` without re-parsing
+/// expressions, filters, or interpolated `{{ expr }}` segments at render time.
+pub(crate) fn build_compiled_overrides(
+    compiled_with_vars: &[CompiledWithVarPair],
+    scope: &Scope<'_>,
+) -> Result<HashMap<String, Value>, TemplateError> {
+    let mut overrides = HashMap::with_capacity(compiled_with_vars.len());
+    for (key, operand) in compiled_with_vars {
+        let value = operand.resolve(scope)?.into_owned();
+        overrides.insert(key.to_string(), value);
+    }
+    Ok(overrides)
+}
+
+#[cfg(feature = "std")]
 pub(crate) fn build_overrides(
     directive: &IncludeDirective<'_>,
     scope: &Scope<'_>,
 ) -> Result<HashMap<String, Value>, TemplateError> {
-    let mut overrides = HashMap::new();
+    let mut overrides = HashMap::with_capacity(directive.with_vars.len());
     for &(key, val_expr) in &directive.with_vars {
-        let value = if let Some(inner) = crate::consts::strip_string_literal(val_expr) {
-            let inner = crate::consts::unescape_string_literal(inner);
-            if inner.contains(crate::consts::EXPR_START) {
-                // Interpolated string: compile {{ expr }} references and render.
-                let segments = crate::compiled::compile_body(&inner)?;
-                let rendered = crate::compiled::render_interpolated_str(&segments, scope)?;
-                Value::Str(rendered)
-            } else {
-                Value::Str(inner)
-            }
-        } else {
-            // Evaluate as a full expression — supports paths, functions, filters.
-            crate::parser::eval_expr(val_expr, scope)?
-        };
+        let operand = crate::scope::ConditionOperand::compile(val_expr)?;
+        let value = operand.resolve(scope)?.into_owned();
         overrides.insert(key.to_string(), value);
     }
     Ok(overrides)

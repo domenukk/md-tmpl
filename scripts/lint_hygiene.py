@@ -17,11 +17,13 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+sys.dont_write_bytecode = True
+
 # ── Configuration ────────────────────────────────────────────────────────────
 
 MAX_FILE_LINES = 1200
 
-RUST_DIRS = ["crates/"]
+RUST_DIRS = ["crates/", "benchmarks/"]
 TS_DIRS = ["crates/md-tmpl-typescript/src/", "crates/md-tmpl-wasm/"]
 RUST_EXTS = {".rs"}
 TS_EXTS = {".ts", ".tsx"}
@@ -58,6 +60,8 @@ class Check:
     # When True, NOLINT comments are ignored — the check always fires.
     # Use for structural issues where suppression is never acceptable.
     no_nolint: bool = False
+    # When True, skip lines inside #[cfg(test)] items/modules and line comments.
+    prod_rust_only: bool = False
     hits: list[str] = field(default_factory=list)
     suppressed: list[str] = field(default_factory=list)
 
@@ -66,7 +70,7 @@ CHECKS: list[Check] = [
     # ── Rust: lint suppression ────────────────────────────────────────────
     Check(
         name="Rust: #[allow(...)]",
-        pattern=re.compile(r"#\[allow\("),
+        pattern=re.compile(r"#\s*!?\s*\[\s*allow\s*\("),
         dirs=RUST_DIRS,
         exts=RUST_EXTS,
         message="Fix the underlying issue instead of suppressing the lint.",
@@ -74,7 +78,7 @@ CHECKS: list[Check] = [
     ),
     Check(
         name="Rust: #[expect(...)]",
-        pattern=re.compile(r"#\[expect\("),
+        pattern=re.compile(r"#\s*!?\s*\[\s*expect\s*\("),
         dirs=RUST_DIRS,
         exts=RUST_EXTS,
         message="Fix the underlying issue instead of suppressing the lint.",
@@ -83,7 +87,7 @@ CHECKS: list[Check] = [
     ),
     Check(
         name="Rust: too_many_lines suppression",
-        pattern=re.compile(r"#\[(allow|expect)\(.*too_many_lines"),
+        pattern=re.compile(r"#\s*!?\s*\[\s*(allow|expect)\s*\(.*too_many_lines"),
         dirs=RUST_DIRS,
         exts=RUST_EXTS,
         message="NEVER suppress too_many_lines — split the function instead.",
@@ -91,7 +95,7 @@ CHECKS: list[Check] = [
     ),
     Check(
         name="Rust: type_complexity suppression",
-        pattern=re.compile(r"#\[(allow|expect)\(.*type_complexity"),
+        pattern=re.compile(r"#\s*!?\s*\[\s*(allow|expect)\s*\(.*type_complexity"),
         dirs=RUST_DIRS,
         exts=RUST_EXTS,
         message="NEVER suppress type_complexity — introduce a type alias instead.",
@@ -99,11 +103,31 @@ CHECKS: list[Check] = [
     ),
     Check(
         name="Rust: cognitive_complexity suppression",
-        pattern=re.compile(r"#\[(allow|expect)\(.*cognitive_complexity"),
+        pattern=re.compile(r"#\s*!?\s*\[\s*(allow|expect)\s*\(.*cognitive_complexity"),
         dirs=RUST_DIRS,
         exts=RUST_EXTS,
         message="NEVER suppress cognitive_complexity — extract sub-functions.",
         no_nolint=True,
+    ),
+    Check(
+        name="Rust: #[path = ...] module override",
+        pattern=re.compile(r"#!?\s*\[\s*path\s*="),
+        dirs=RUST_DIRS,
+        exts=RUST_EXTS,
+        message="Always use standard Rust <module>/mod.rs directory hierarchy instead of #[path = ...] overrides.",
+        no_nolint=True,
+    ),
+    Check(
+        name="Rust: json!() in production crate source",
+        pattern=re.compile(r"\b(?:serde_json::)?json!\s*[\(\[\{]"),
+        dirs=["crates/"],
+        exts=RUST_EXTS,
+        message="Define #[derive(Serialize, Deserialize)] structs instead of untyped json!() in production crates/*/src/.",
+        exclude_path=re.compile(
+            r"(?:^|/)crates/[^/]+/(?!src/)|/tests?/|(?:/|^)tests\.rs$|_tests?\.rs$"
+        ),
+        no_nolint=True,
+        prod_rust_only=True,
     ),
     # ── Rust: silently discarded values ───────────────────────────────────
     Check(
@@ -151,7 +175,7 @@ CHECKS: list[Check] = [
         # Legitimate in assertions, conditions, and boolean expressions.
         exclude=re.compile(r"assert|if |while |\|\||&&|return .*\.is_"),
         # Very common in test assertions; only flag production code.
-        exclude_path=re.compile(r"tests/|_tests?\.rs$|validation\.rs$|include_core\.rs$|types\.rs$"),
+        exclude_path=re.compile(r"tests/|_tests?\.rs$|validation\.rs$|include_core\.rs$"),
     ),
     Check(
         name="Rust: discarded closure arg |_|",
@@ -315,6 +339,51 @@ def source_files(dirs: list[str], exts: set[str]) -> list[Path]:
     return sorted(files)
 
 
+RUST_CFG_TEST_RE = re.compile(
+    r"#\s*\[\s*cfg\s*\(\s*(?:test\b|all\s*\([^)]*\btest\b)"
+)
+
+
+def compute_rust_cfg_test_mask(lines: list[str]) -> list[bool]:
+    """Return a 0-indexed mask marking lines inside `#[cfg(test)]` items/modules."""
+    code_lines = [ln.split("//", 1)[0] for ln in lines]
+    total = len(code_lines)
+    in_test = [False] * total
+    idx = 0
+    while idx < total:
+        if not RUST_CFG_TEST_RE.search(code_lines[idx]):
+            idx += 1
+            continue
+        start = idx
+        cursor = idx
+        while cursor < total:
+            stripped = code_lines[cursor].strip()
+            if not stripped or stripped.startswith("#"):
+                in_test[cursor] = True
+                cursor += 1
+                continue
+            break
+        depth = 0
+        opened = False
+        while cursor < total:
+            in_test[cursor] = True
+            line_code = code_lines[cursor]
+            if not opened and ";" in line_code and "{" not in line_code:
+                cursor += 1
+                break
+            for ch in line_code:
+                if ch == "{":
+                    depth += 1
+                    opened = True
+                elif ch == "}":
+                    depth -= 1
+            cursor += 1
+            if opened and depth <= 0:
+                break
+        idx = max(cursor, start + 1)
+    return in_test
+
+
 def is_nolinted(lines: list[str], lineno: int) -> bool:
     """Check if the line above `lineno` (1-indexed) has a valid NOLINT: reason."""
     if lineno < 2:
@@ -367,14 +436,20 @@ def run_pattern_checks() -> bool:
         print(f"=== {check.name} ===")
         files = source_files(check.dirs, check.exts)
         for path in files:
-            if check.exclude_path and check.exclude_path.search(str(path)):
+            if check.exclude_path and check.exclude_path.search(path.as_posix()):
                 continue
             try:
                 lines = path.read_text(errors="replace").splitlines()
             except OSError:
                 continue
+            cfg_test_mask = (
+                compute_rust_cfg_test_mask(lines) if check.prod_rust_only else None
+            )
             for lineno, line in enumerate(lines, start=1):
-                if not check.pattern.search(line):
+                if cfg_test_mask is not None and cfg_test_mask[lineno - 1]:
+                    continue
+                target_line = line.split("//", 1)[0] if check.prod_rust_only else line
+                if not check.pattern.search(target_line):
                     continue
                 if check.exclude and check.exclude.search(line):
                     continue
@@ -566,13 +641,30 @@ def run_packaging_invariant_check() -> bool:
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 
+def check_workspace(
+    root_dir: Path, *, check_packaging: bool = True
+) -> bool:
+    """Run hygiene checks rooted at `root_dir`. Returns True if any check failed."""
+    prev_cwd = Path.cwd()
+    os.chdir(root_dir)
+    try:
+        for check in CHECKS:
+            check.hits.clear()
+            check.suppressed.clear()
+        failed = run_pattern_checks()
+        failed = run_bare_nolint_check() or failed
+        failed = run_empty_catch_check() or failed
+        if check_packaging:
+            failed = run_packaging_invariant_check() or failed
+        failed = run_long_file_check() or failed
+        return failed
+    finally:
+        os.chdir(prev_cwd)
+
+
 def main() -> int:
-    os.chdir(Path(__file__).resolve().parent.parent)
-    failed = run_pattern_checks()
-    failed = run_bare_nolint_check() or failed
-    failed = run_empty_catch_check() or failed
-    failed = run_packaging_invariant_check() or failed
-    failed = run_long_file_check() or failed
+    repo_root = Path(__file__).resolve().parent.parent
+    failed = check_workspace(repo_root, check_packaging=True)
 
     print()
     if failed:

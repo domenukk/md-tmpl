@@ -10,7 +10,6 @@ import {
 } from "./ast.js";
 import { TemplateSyntaxError } from "./errors.js";
 import {
-  COMMA,
   EQUALS,
   PIPE,
   QUOTE_DOUBLE,
@@ -278,6 +277,78 @@ function handleIf(
   return [[{ kind: NODE_IF, branches, elseBody, pos: tagStart, lineMap }], pos];
 }
 
+function splitCaseClause(caseStr: string): {
+  variants: string[];
+  guard: string | undefined;
+} {
+  let inQuote: string | undefined;
+  let escaped = false;
+  let guardIdx = -1;
+  for (let i = 0; i < caseStr.length; i++) {
+    const ch = caseStr[i];
+    if (inQuote !== undefined) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (ch === inQuote) {
+        inQuote = undefined;
+      }
+      continue;
+    }
+    if (ch === QUOTE_DOUBLE || ch === QUOTE_SINGLE) {
+      inQuote = ch;
+      continue;
+    }
+    if (ch === "&" && caseStr[i + 1] === "&") {
+      guardIdx = i;
+      break;
+    }
+  }
+  const variantPart =
+    guardIdx !== -1 ? caseStr.slice(0, guardIdx).trim() : caseStr;
+  const guard =
+    guardIdx !== -1 ? caseStr.slice(guardIdx + 2).trim() : undefined;
+
+  const variants: string[] = [];
+  let start = 0;
+  inQuote = undefined;
+  escaped = false;
+  for (let i = 0; i < variantPart.length; i++) {
+    const ch = variantPart[i];
+    if (inQuote !== undefined) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (ch === inQuote) {
+        inQuote = undefined;
+      }
+      continue;
+    }
+    if (ch === QUOTE_DOUBLE || ch === QUOTE_SINGLE) {
+      inQuote = ch;
+      continue;
+    }
+    if (ch === PIPE) {
+      const part = variantPart.slice(start, i).trim();
+      if (part.length > 0) variants.push(part);
+      start = i + 1;
+    }
+  }
+  const tail = variantPart.slice(start).trim();
+  if (tail.length > 0) variants.push(tail);
+  return { variants, guard };
+}
+
 function handleMatch(
   tag: string,
   input: string,
@@ -293,24 +364,9 @@ function handleMatch(
   // Check for inline match: `match expr case Variant [| Variant] [&& guard]`
   const inlineMatch = /^(\S+)\s+case\s+(.+)$/.exec(tagContent);
   if (inlineMatch?.[1] && inlineMatch[2]) {
-    const caseContent = inlineMatch[2].trim();
-
-    // Split on && to separate variant(s) from guard condition
-    let variantPart: string;
-    let guardExpr: string | undefined;
-    const guardIdx = caseContent.indexOf("&&");
-    if (guardIdx !== -1) {
-      variantPart = caseContent.slice(0, guardIdx).trim();
-      guardExpr = caseContent.slice(guardIdx + 2).trim();
-    } else {
-      variantPart = caseContent;
-    }
-
-    // Parse variant name(s) (separated by |), preserving quotes
-    const variants = variantPart
-      .split(PIPE)
-      .map((v) => v.trim())
-      .filter((v) => v.length > 0);
+    const { variants, guard: guardExpr } = splitCaseClause(
+      inlineMatch[2].trim(),
+    );
     const firstVariant = variants[0];
     if (firstVariant === undefined) {
       throw new TemplateSyntaxError(
@@ -429,20 +485,9 @@ function handleMatch(
         }
       }
       // Parse the case variants and optional guard
-      const caseStr = (closingContent ?? "").trim();
-      let casePart: string;
-      let caseGuard: string | undefined;
-      const caseGuardIdx = caseStr.indexOf("&&");
-      if (caseGuardIdx !== -1) {
-        casePart = caseStr.slice(0, caseGuardIdx).trim();
-        caseGuard = caseStr.slice(caseGuardIdx + 2).trim();
-      } else {
-        casePart = caseStr;
-      }
-      const variants = casePart
-        .split(PIPE)
-        .map((v) => v.trim())
-        .filter((v) => v.length > 0);
+      const { variants, guard: caseGuard } = splitCaseClause(
+        (closingContent ?? "").trim(),
+      );
       if (variants.length === 0) {
         throw new TemplateSyntaxError(
           "match: empty variant name in {% case %}",
@@ -528,6 +573,35 @@ function handleRaw(
   return [[{ kind: NODE_RAW, text: rawText }], finalEnd];
 }
 
+function parseIncludeMarkdownLink(
+  rest: string,
+): [string, string, string] | undefined {
+  if (!rest.startsWith(BRACKET_OPEN)) return undefined;
+  const closeBracket = rest.indexOf("]", 1);
+  if (closeBracket <= 1) return undefined;
+  const name = rest.slice(1, closeBracket);
+  const afterClose = rest.slice(closeBracket + 1).trimStart();
+  if (!afterClose.startsWith(PAREN_OPEN)) return undefined;
+  let depth = 1;
+  let closeParen = -1;
+  for (let i = 1; i < afterClose.length; i++) {
+    const ch = afterClose.charAt(i);
+    if (ch === PAREN_OPEN) {
+      depth++;
+    } else if (ch === PAREN_CLOSE) {
+      depth--;
+      if (depth === 0) {
+        closeParen = i;
+        break;
+      }
+    }
+  }
+  if (closeParen <= 1) return undefined;
+  const path = afterClose.slice(1, closeParen).trim();
+  const remaining = afterClose.slice(closeParen + 1).trim();
+  return [name, path, remaining];
+}
+
 function handleInclude(
   tag: string,
   afterTag: number,
@@ -537,20 +611,18 @@ function handleInclude(
   const rest = tag.slice(8).trim();
 
   // Parse: [name](path) with ... / for ...
-  const linkMatch = /^\[([^\]]+)\]\(([^)]+)\)(.*)$/.exec(rest);
+  const linkMatch = parseIncludeMarkdownLink(rest);
   let name: string;
   let path: string | undefined;
   let remaining: string;
 
-  if (linkMatch?.[1] && linkMatch[2]) {
-    name = linkMatch[1];
-    path = linkMatch[2].trim();
+  if (linkMatch !== undefined) {
+    [name, path, remaining] = linkMatch;
     if (!isValidPathPrefix(path)) {
       throw new TemplateSyntaxError(
         `include path must begin with './', '../', or '/': '${path}'`,
       );
     }
-    remaining = (linkMatch[3] ?? "").trim();
   } else {
     // Bare name include (inline template)
     if (rest.startsWith(BRACKET_OPEN)) {
@@ -567,27 +639,45 @@ function handleInclude(
   let forBinding: string | undefined;
   let forExpr: string | undefined;
 
-  // Parse `for binding in expr`
-  const forMatch = /^for\s+(\w+)\s+in\s+(\S+)(.*)$/.exec(remaining);
+  // Parse `for binding in expr [with ...]`
+  const forMatch = /^for\s+([A-Za-z_][A-Za-z0-9_-]*)\s+in\s+([\s\S]+)$/.exec(
+    remaining,
+  );
   if (forMatch?.[1] && forMatch[2]) {
     forBinding = forMatch[1];
-    forExpr = forMatch[2];
-    remaining = (forMatch[3] ?? "").trim();
+    const afterIn = forMatch[2];
+    const withIdx = findTopLevelWithKeyword(afterIn);
+    if (withIdx >= 0) {
+      forExpr = afterIn.slice(0, withIdx).trim();
+      remaining = afterIn.slice(withIdx).trim();
+    } else {
+      forExpr = afterIn.trim();
+      remaining = "";
+    }
   }
 
-  // Parse `with key=val, key=val`
+  // Parse `with key=val, key=val` (quote- and paren-aware comma splitting)
   if (remaining.startsWith(TAG_WITH_PREFIX)) {
     remaining = remaining.slice(5).trim();
   }
   if (remaining.length > 0) {
-    const pairs = remaining.split(COMMA);
+    const pairs = splitTopLevelComma(remaining);
     for (const pair of pairs) {
-      const eqIdx = pair.indexOf(EQUALS);
-      if (eqIdx !== -1) {
-        const key = pair.slice(0, eqIdx).trim();
-        const val = pair.slice(eqIdx + 1).trim();
-        withMappings.set(key, val);
+      const trimmedPair = pair.trim();
+      if (trimmedPair.length === 0) continue;
+      const eqIdx = trimmedPair.indexOf(EQUALS);
+      if (eqIdx === -1) {
+        const loc = getLoc(tagStart, lineMap);
+        throw new TemplateSyntaxError(
+          `invalid with: got '${trimmedPair}'`,
+          loc?.line,
+          loc?.column,
+          loc?.snippet,
+        );
       }
+      const key = trimmedPair.slice(0, eqIdx).trim();
+      const val = trimmedPair.slice(eqIdx + 1).trim();
+      withMappings.set(key, val);
     }
   }
 
@@ -606,6 +696,78 @@ function handleInclude(
     ],
     afterTag,
   ];
+}
+
+/** Find top-level `" with "` outside quotes and parentheses. */
+function findTopLevelWithKeyword(input: string): number {
+  let depth = 0;
+  let inQuote = 0;
+  let escaped = false;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input.charCodeAt(i);
+    if (inQuote !== 0) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === 92 /* \ */) {
+        escaped = true;
+        continue;
+      }
+      if (ch === inQuote) {
+        inQuote = 0;
+      }
+      continue;
+    }
+    if (ch === 34 /* " */ || ch === 39 /* ' */) {
+      inQuote = ch;
+    } else if (ch === 40 /* ( */) {
+      depth++;
+    } else if (ch === 41 /* ) */ && depth > 0) {
+      depth--;
+    } else if (depth === 0 && input.startsWith(" with ", i)) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/** Split `with` assignments at top-level `,` outside quotes and parentheses. */
+function splitTopLevelComma(input: string): string[] {
+  const result: string[] = [];
+  let start = 0;
+  let depth = 0;
+  let inQuote = 0;
+  let escaped = false;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input.charCodeAt(i);
+    if (inQuote !== 0) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === 92 /* \ */) {
+        escaped = true;
+        continue;
+      }
+      if (ch === inQuote) {
+        inQuote = 0;
+      }
+      continue;
+    }
+    if (ch === 34 /* " */ || ch === 39 /* ' */) {
+      inQuote = ch;
+    } else if (ch === 40 /* ( */) {
+      depth++;
+    } else if (ch === 41 /* ) */ && depth > 0) {
+      depth--;
+    } else if (ch === 44 /* , */ && depth === 0) {
+      result.push(input.slice(start, i));
+      start = i + 1;
+    }
+  }
+  result.push(input.slice(start));
+  return result;
 }
 
 function handleTmpl(

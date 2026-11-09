@@ -44,6 +44,12 @@ export type SanitizeSpec =
       readonly notice?: string;
     };
 
+/** Declared sanitization per type alias: alias name → field path within the alias → spec. */
+export type TypeAliasSanitize = ReadonlyMap<
+  string,
+  ReadonlyMap<string, SanitizeSpec>
+>;
+
 export interface SanitizeFilterArgs {
   readonly tagSpec: string;
   readonly notice?: string;
@@ -289,5 +295,100 @@ export function applySanitizeFilterStr(
   if (parsed === undefined) {
     return sanitizeTokensString(s);
   }
-  return sanitizeBlockString(s, parsed.tagSpec, parsed.notice);
+  return sanitizeBlockIdempotentString(s, parsed.tagSpec, parsed.notice);
+}
+
+const ENVELOPE_NEWLINE = "\n";
+
+/** Remove at most one leading and one trailing envelope newline. */
+export function stripEnvelopeNewlines(body: string): string {
+  const withoutLeading = body.startsWith(ENVELOPE_NEWLINE)
+    ? body.slice(ENVELOPE_NEWLINE.length)
+    : body;
+  return withoutLeading.endsWith(ENVELOPE_NEWLINE)
+    ? withoutLeading.slice(0, -ENVELOPE_NEWLINE.length)
+    : withoutLeading;
+}
+
+/** Return the raw body between `<tag>` and `</tag>`, or `undefined` if `s` is not wrapped. */
+export function envelopeBody(s: string, tagName: string): string | undefined {
+  const open = `<${tagName}>`;
+  const close = `</${tagName}>`;
+  if (
+    s.length < open.length + close.length ||
+    !s.startsWith(open) ||
+    !s.endsWith(close)
+  ) {
+    return undefined;
+  }
+  return s.slice(open.length, s.length - close.length);
+}
+
+/**
+ * Strip outer `<tagName>` and `</tagName>` tags if present, along with at most
+ * one leading and one trailing `\n` of envelope framing.
+ */
+export function stripOuterQuarantineTag(
+  s: string,
+  tagName: string,
+): string | undefined {
+  const body = envelopeBody(s, tagName);
+  return body === undefined ? undefined : stripEnvelopeNewlines(body);
+}
+
+/**
+ * Idempotently sanitize and wrap `s` in `<primary_tag>\n{notice}\n{sanitized}\n</primary_tag>`:
+ * an already valid block is returned unchanged, and a dirty block is unwrapped
+ * once (dropping a leading notice line) and re-wrapped cleanly. Template `sanitize("tag")`
+ * filters use it, so sanitizing twice is the same as sanitizing once.
+ */
+export function sanitizeBlockIdempotentString(
+  s: string,
+  tagArg?: string,
+  customNotice?: string,
+): string {
+  const rawSpec =
+    tagArg !== undefined ? stripQuotes(tagArg) : DEFAULT_SANITIZE_TAG;
+  const [primaryTag, validSpec] = validateSanitizeTagSpec(rawSpec);
+  const notice = formatSanitizeNotice(primaryTag, customNotice).replace(
+    /\n+$/,
+    "",
+  );
+  const trimmed = s.trim();
+  let inner = s;
+  if (trimmed.startsWith("<")) {
+    if (s.startsWith("<")) {
+      const exactStripped = stripOuterQuarantineTag(s, primaryTag);
+      if (exactStripped !== undefined) {
+        let payload: string | undefined;
+        if (notice.length === 0) {
+          payload = exactStripped;
+        } else if (exactStripped.startsWith(notice)) {
+          const after = exactStripped.slice(notice.length);
+          payload = after.startsWith(ENVELOPE_NEWLINE)
+            ? after.slice(ENVELOPE_NEWLINE.length)
+            : after;
+        }
+        if (
+          payload !== undefined &&
+          !hasUntrustedBreakout(payload, validSpec)
+        ) {
+          return s;
+        }
+      }
+    }
+    inner = stripOuterQuarantineTag(trimmed, primaryTag) ?? s;
+    if (notice.length > 0 && inner.startsWith(notice)) {
+      const afterNotice = inner.slice(notice.length);
+      inner = afterNotice.startsWith(ENVELOPE_NEWLINE)
+        ? afterNotice.slice(ENVELOPE_NEWLINE.length)
+        : afterNotice;
+    }
+  }
+  const sanitized = sanitizeUntrustedString(inner, validSpec);
+  const trailingNl = sanitized.endsWith(ENVELOPE_NEWLINE)
+    ? ""
+    : ENVELOPE_NEWLINE;
+  const noticeLine = notice.length > 0 ? `${notice}${ENVELOPE_NEWLINE}` : "";
+  return `<${primaryTag}>${ENVELOPE_NEWLINE}${noticeLine}${sanitized}${trailingNl}</${primaryTag}>`;
 }

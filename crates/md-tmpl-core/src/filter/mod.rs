@@ -1,5 +1,6 @@
 //! Built-in expression filters.
 
+mod invisible;
 mod security;
 mod security_ext;
 mod truncate;
@@ -11,6 +12,7 @@ use alloc::{
     vec::Vec,
 };
 
+pub use invisible::{has_invisible_chars, is_unconditional_invisible_char, strip_invisible_str};
 pub use security::{
     DEFAULT_QUARANTINE_TAG, ROLE_TOKEN_DELIMITERS, TOKEN_DELIMITERS, escape_json_str,
     escape_xml_str, fence_str, has_control_tokens, has_quarantine_tag_breakout,
@@ -32,8 +34,9 @@ pub use security_ext::{
     UNTRUSTED_QUARANTINE_CLOSE_TAG, UNTRUSTED_QUARANTINE_OPEN_TAG, UNTRUSTED_TOOL_OUTPUT_TAG,
     XML_DECODE_PAIRS, decode_xml_str, escape_xml_attr_str, escape_xml_body_str,
     format_sanitize_notice, is_sanitized_block_str, quarantine_untrusted_idempotent_str,
-    sanitize_block_idempotent_str, sanitize_block_into, sanitize_block_str, sanitize_str,
-    strip_outer_quarantine_tag, unquarantine_str, unsanitize_block_str,
+    sanitize_block_idempotent_into, sanitize_block_idempotent_str, sanitize_block_into,
+    sanitize_block_str, sanitize_inline_into, sanitize_str, strip_outer_quarantine_tag,
+    unquarantine_str, unsanitize_block_str,
 };
 use security_ext::{apply_sanitize_with_mode, sanitize_cow_with_mode, sanitize_into_with_mode};
 pub(crate) use security_ext::{parse_sanitize_filter_args, parse_sanitize_filter_mode};
@@ -100,6 +103,7 @@ pub(crate) fn apply_filter_typed(
         FilterKind::Fence => apply_fence(value, args),
         FilterKind::Quarantine => apply_quarantine(value, args),
         FilterKind::Sanitize => apply_sanitize_with_mode(value, None, args),
+        FilterKind::UnsafeTrust => apply_unsafe_trust(value, args),
         FilterKind::Truncate => apply_truncate(value, args),
     }
 }
@@ -467,6 +471,19 @@ fn escape_json_into(s: &str, out: &mut String) {
     }
 }
 
+/// Pass a string value through unchanged, explicitly opting out of default sanitization.
+fn apply_unsafe_trust(value: &Value, args: Option<&str>) -> Result<Value, TemplateError> {
+    if args.is_some() {
+        return Err(TemplateError::syntax(
+            "'unsafe_trust' does not take arguments",
+        ));
+    }
+    match value {
+        Value::Str(_) => Ok(value.clone()),
+        _ => Err(TemplateError::syntax("'unsafe_trust' requires a string")),
+    }
+}
+
 const fn is_str_filter_kind(kind: FilterKind) -> bool {
     matches!(
         kind,
@@ -479,6 +496,7 @@ const fn is_str_filter_kind(kind: FilterKind) -> bool {
             | FilterKind::Fence
             | FilterKind::Quarantine
             | FilterKind::Sanitize
+            | FilterKind::UnsafeTrust
             | FilterKind::Truncate
     )
 }
@@ -544,6 +562,14 @@ fn apply_str_filter_cow<'a>(
         FilterKind::Fence => Ok(Cow::Owned(fence_str(&input, args)?)),
         FilterKind::Quarantine => Ok(Cow::Owned(quarantine_str(&input, args)?)),
         FilterKind::Sanitize => sanitize_cow_with_mode(input, filter.sanitize_mode.as_ref(), args),
+        FilterKind::UnsafeTrust => {
+            if args.is_some() {
+                return Err(TemplateError::syntax(
+                    "'unsafe_trust' does not take arguments",
+                ));
+            }
+            Ok(input)
+        }
         FilterKind::Truncate => {
             let args_str = args
                 .map(str::trim)

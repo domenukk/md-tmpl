@@ -18,6 +18,10 @@ import {
 } from "./sanitize_pass.js";
 import { collectInlineTemplateMap } from "./template/inline_templates.js";
 import {
+  type DeclaredSanitize,
+  EMPTY_DECLARED_SANITIZE,
+} from "./include_sanitize.js";
+import {
   type Value,
   type TmplRef,
   display,
@@ -138,13 +142,9 @@ function armLabelMatches(
     const inner = stripQuotes(label);
     if (inner.includes(EXPR_START)) {
       // Contains {{ expr }} — parse and render the interpolated string.
-      try {
-        const nodes = parseBody(inner, false, 0);
-        const rendered = renderNodes(nodes, scope);
-        return rendered === variant;
-      } catch {
-        return false;
-      }
+      const nodes = parseBody(inner, false, 0);
+      const rendered = renderNodes(nodes, scope);
+      return rendered === variant;
     }
     return inner === variant;
   }
@@ -166,6 +166,7 @@ export interface RenderOptions {
       body: string;
       nodes?: readonly Node[];
       consts: Map<string, Value>;
+      declared?: DeclaredSanitize;
     }
   >;
   /** Loader for file inclusions `{% include "path" %}`. */
@@ -185,8 +186,10 @@ export interface RenderOptions {
             body: string;
             nodes?: readonly Node[];
             consts: Map<string, Value>;
+            declared?: DeclaredSanitize;
           }
         >?,
+        DeclaredSanitize?,
       ]
     | undefined;
   /** Current base directory path for resolving relative includes. */
@@ -426,10 +429,12 @@ export function renderNodes(
             loadedDecls,
             loadedBasePath,
             loadedInline,
+            loadedDeclared,
           ] = loaded;
           includedNodes = contextualizeIncludeNodes(
             loadedNodes,
             node.sanitizeCtx,
+            loadedDeclared ?? EMPTY_DECLARED_SANITIZE,
           );
           decls = loadedDecls;
           consts = loadedConsts;
@@ -521,6 +526,7 @@ export function renderNodes(
             contextualizeIncludeNodes(
               inline.nodes ?? parseBody(inline.body, true),
               node.sanitizeCtx,
+              inline.declared ?? EMPTY_DECLARED_SANITIZE,
             );
           decls = inline.declarations;
           consts = inline.consts;

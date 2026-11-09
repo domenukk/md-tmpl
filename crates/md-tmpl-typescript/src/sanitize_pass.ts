@@ -14,6 +14,8 @@ import {
   FILTER_SANITIZE,
   FILTER_SANITIZE_ENCLOSED,
   FILTER_SANITIZE_TOKENS,
+  FILTER_UNSAFE_TRUST,
+  FN_UNSAFE_TRUST,
   NODE_EXPR,
   NODE_FOR,
   NODE_IF,
@@ -28,8 +30,11 @@ import {
 } from "./consts.js";
 import { splitPipes } from "./evaluator.js";
 import {
+  type DeclaredSanitize,
+  PLAIN_PATH_RE,
   checkUntrustedIncludePaths,
   computeIncludeTaint,
+  effectiveUntrustedMap,
   resolveCanonicalPath,
   updateIncludeContext,
 } from "./include_sanitize.js";
@@ -52,6 +57,9 @@ export {
   checkUntrustedIncludePath,
   checkUntrustedIncludePaths,
 } from "./include_sanitize.js";
+
+/** Declared sanitization of an include target without a parameter policy. */
+const EMPTY_DECLARED: DeclaredSanitize = new Map();
 
 const CHAR_TAB = 9;
 const CHAR_SPACE = 32;
@@ -145,10 +153,13 @@ function rewriteExprForSanitize(
   const filterStrings = parts.slice(1).map((p) => p.trim());
 
   // 1. Check if baseExpr is a plain variable/field path that matches paramSanitize
+  const isUnsafeTrustFn =
+    baseExpr.startsWith(`${FN_UNSAFE_TRUST}(`) && baseExpr.endsWith(")");
   if (
+    !isUnsafeTrustFn &&
     paramSanitize &&
     paramSanitize.size > 0 &&
-    /^[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*$/.test(baseExpr)
+    PLAIN_PATH_RE.test(baseExpr)
   ) {
     const canonical = resolveCanonicalPath(baseExpr, loopAliases);
     const spec = paramSanitize.get(canonical);
@@ -158,7 +169,8 @@ function rewriteExprForSanitize(
         return (
           fName === FILTER_SANITIZE ||
           fName === FILTER_SANITIZE_ENCLOSED ||
-          fName === FILTER_SANITIZE_TOKENS
+          fName === FILTER_SANITIZE_TOKENS ||
+          fName === FILTER_UNSAFE_TRUST
         );
       });
       const qIdx = filterStrings.findIndex(
@@ -549,7 +561,7 @@ function applySanitizeNodesInner(
         const iterBase = (splitPipes(node.iterExpr)[0] ?? "").trim();
         let prevAlias: string | undefined;
         let hadAlias = false;
-        if (/^[a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)*$/.test(iterBase)) {
+        if (PLAIN_PATH_RE.test(iterBase)) {
           hadAlias = true;
           prevAlias = loopAliases.get(node.binding);
           loopAliases.set(
@@ -690,7 +702,10 @@ function applySanitizeNodesInner(
           applySanitizeNodesInner(
             node.inlineNodes,
             taint !== undefined && taint.entries.length > 0
-              ? new Map(taint.entries)
+              ? effectiveUntrustedMap(
+                  taint.entries,
+                  node.inlineDeclared ?? EMPTY_DECLARED,
+                )
               : undefined,
             undefined,
             closingTags,
@@ -823,14 +838,18 @@ export function applySanitizeAstPass(
 
 /**
  * Apply a call-site sanitization context to freshly parsed child `nodes` in place.
+ *
+ * `nodes` must be parsed without the child's own parameter policy; `declared` is the
+ * child's declared sanitization, used to choose the style for untrusted caller values.
  */
 export function applyIncludeContext(
   nodes: Node[],
   ctx: IncludeSanitizeContext,
+  declared: DeclaredSanitize,
 ): void {
   const untrusted =
     ctx.untrusted.length > 0
-      ? new Map<string, SanitizeSpec>(ctx.untrusted)
+      ? effectiveUntrustedMap(ctx.untrusted, declared)
       : undefined;
   if (untrusted === undefined && !nodesNeedEnclosingPass(nodes)) {
     return;
@@ -858,16 +877,18 @@ const contextualizedMemo = new WeakMap<
 /**
  * Return the child nodes to render for an include call site carrying `ctx`.
  *
- * The child is cloned and re-run through the sanitize pass with the call-site context
- * (untrusted taint, enclosing XML tags, heading state). Results are memoized per
- * `(ctx, nodes)` pair via weak maps, so repeated renders reuse the same clone and
- * nothing is retained once the template or child is dropped.
+ * `nodes` is the include target parsed without its own parameter policy and `declared`
+ * its declared sanitization. The child is cloned and re-run through the sanitize pass
+ * with the call-site context (untrusted taint, enclosing XML tags, heading state).
+ * Results are memoized per `(ctx, nodes)` pair via weak maps, so repeated renders reuse
+ * the same clone and nothing is retained once the template or child is dropped.
  *
  * @throws {TemplateSyntaxError} if a nested include path interpolates an untrusted value.
  */
 export function contextualizeIncludeNodes(
   nodes: readonly Node[],
   ctx: IncludeSanitizeContext | undefined,
+  declared: DeclaredSanitize,
 ): readonly Node[] {
   if (ctx === undefined) {
     return nodes;
@@ -887,7 +908,7 @@ export function contextualizeIncludeNodes(
     derived = nodes;
   } else {
     const cloned = cloneNodes(nodes);
-    applyIncludeContext(cloned, ctx);
+    applyIncludeContext(cloned, ctx, declared);
     checkUntrustedIncludePaths(cloned);
     derived = cloned;
   }

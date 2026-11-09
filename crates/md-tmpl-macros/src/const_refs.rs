@@ -8,7 +8,9 @@
 
 use std::collections::HashSet;
 
-use md_tmpl_core::compiled::{CompiledExpr, CompiledPath, Condition, ConditionOperand, Segment};
+use md_tmpl_core::compiled::{
+    CompiledCaseLabel, CompiledExpr, CompiledPath, Condition, ConditionOperand, Segment,
+};
 
 /// Collect all root variable names (`p0`) and 2-part dotted keys (`p0.p1`)
 /// referenced anywhere in `segments` (including nested includes and `with`/`for` clauses).
@@ -101,6 +103,7 @@ fn collect_keys_from_operand(op: &ConditionOperand, keys: &mut HashSet<String>) 
         | ConditionOperand::Kinds(path)
         | ConditionOperand::Has(path) => record_path_keys(path, keys),
         ConditionOperand::InterpolatedStr(segs) => collect_keys_from_segments(segs, keys),
+        ConditionOperand::Filtered { base, .. } => collect_keys_from_operand(base, keys),
         ConditionOperand::Literal(_) | ConditionOperand::Idx(_) => {}
     }
 }
@@ -154,8 +157,26 @@ pub(crate) fn collect_keys_from_segments(segments: &[Segment], keys: &mut HashSe
             Segment::Match { expr, arms, .. } => {
                 record_path_keys(expr, keys);
                 for arm in arms {
-                    for v in &arm.variants {
-                        record_raw_expr_keys(v, keys);
+                    for cv in &arm.compiled_variants {
+                        match cv {
+                            CompiledCaseLabel::Default | CompiledCaseLabel::LiteralStr(_) => {}
+                            CompiledCaseLabel::InterpolatedStr(segs) => {
+                                collect_keys_from_segments(segs, keys);
+                            }
+                            CompiledCaseLabel::Unquoted {
+                                raw,
+                                dotted_path: Some(p),
+                            } => {
+                                keys.insert(raw.to_string());
+                                record_path_keys(p, keys);
+                            }
+                            CompiledCaseLabel::Unquoted {
+                                raw,
+                                dotted_path: None,
+                            } => {
+                                keys.insert(raw.to_string());
+                            }
+                        }
                     }
                     if let Some(ref g) = arm.guard {
                         collect_keys_from_condition(g, keys);
@@ -166,11 +187,11 @@ pub(crate) fn collect_keys_from_segments(segments: &[Segment], keys: &mut HashSe
             Segment::Panic(segs) => collect_keys_from_segments(segs, keys),
             Segment::Include(inc) => {
                 record_raw_expr_keys(inc.path.as_ref(), keys);
-                for (_, val_expr) in &inc.with_vars {
-                    record_raw_expr_keys(val_expr, keys);
+                for (_, op) in &inc.compiled_with_vars {
+                    collect_keys_from_operand(op, keys);
                 }
-                if let Some((_, list_expr)) = &inc.for_each {
-                    record_raw_expr_keys(list_expr, keys);
+                if let Some((_, op)) = &inc.compiled_for_each {
+                    collect_keys_from_operand(op, keys);
                 }
                 if let Some(ref ic) = inc.inline_compiled {
                     collect_keys_from_segments(&ic.segments, keys);

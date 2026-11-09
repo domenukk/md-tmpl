@@ -31,6 +31,7 @@ export interface VarDecl {
   readonly varType: VarType;
   readonly defaultValue?: Value;
   readonly loc?: { line: number; column: number; snippet: string };
+  readonly trustedPaths?: ReadonlySet<string>;
 }
 
 /** The type of a template variable. */

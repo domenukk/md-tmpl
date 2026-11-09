@@ -11,7 +11,7 @@ mod match_codegen;
 use hashbrown::HashMap;
 use md_tmpl_core::{
     Frontmatter, Value, VarDecl, VarType, VariantDecl,
-    compiled::{CompiledExpr, CompiledPath, FilterKind, ParsedFilter, Segment},
+    compiled::{CompiledExpr, CompiledPath, FilterKind, ParsedFilter, SanitizeFilterMode, Segment},
 };
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -677,34 +677,113 @@ pub(super) fn codegen_expr(
 
     // 3. String expression with filters.
     if let Some(str_expr) = try_extract_str_expr(expr, scope) {
-        if filters.len() == 1 {
-            match filters[0].kind {
-                FilterKind::Upper => {
-                    return Some(quote! { #cp::__private::write_upper(#str_expr, __out); });
-                }
-                FilterKind::Lower => {
-                    return Some(quote! { #cp::__private::write_lower(#str_expr, __out); });
-                }
-                FilterKind::Trim => {
-                    return Some(quote! { __out.push_str((#str_expr).trim()); });
-                }
-                FilterKind::EscapeXml => {
-                    return Some(quote! { __out.push_str(&#cp::escape_xml_str(#str_expr)); });
-                }
-                FilterKind::EscapeJson => {
-                    return Some(quote! { __out.push_str(&#cp::escape_json_str(#str_expr)); });
-                }
-                _ => {}
-            }
-        }
-        let filter_tokens: Vec<TokenStream> = filters.iter().map(codegen_parsed_filter).collect();
-        return Some(quote! {
-            #cp::__private::render_str_filters(#str_expr, &[#(#filter_tokens),*], __out)?;
-        });
+        return Some(codegen_str_expr_filters(&str_expr, filters));
     }
 
     // 4. List expression with optional `limit(n)` followed by `join(sep)`.
     codegen_list_join_expr(expr, filters, scope)
+}
+
+pub(super) fn codegen_str_expr_filters(
+    str_expr: &TokenStream,
+    filters: &[ParsedFilter],
+) -> TokenStream {
+    let cp = crate_path();
+    if filters.len() == 1 {
+        match filters[0].kind {
+            FilterKind::Upper => {
+                return quote! { #cp::__private::write_upper(#str_expr, __out); };
+            }
+            FilterKind::Lower => {
+                return quote! { #cp::__private::write_lower(#str_expr, __out); };
+            }
+            FilterKind::Trim => {
+                return quote! { __out.push_str((#str_expr).trim()); };
+            }
+            FilterKind::EscapeXml => {
+                return quote! { __out.push_str(&#cp::escape_xml_str(#str_expr)); };
+            }
+            FilterKind::EscapeJson => {
+                return quote! { __out.push_str(&#cp::escape_json_str(#str_expr)); };
+            }
+            FilterKind::SanitizeTokens if filters[0].args.is_none() => {
+                return quote! { __out.push_str(&#cp::sanitize_tokens_str(#str_expr)); };
+            }
+            FilterKind::UnsafeTrust => {
+                return quote! { __out.push_str(#str_expr); };
+            }
+            FilterKind::Sanitize => match &filters[0].sanitize_mode {
+                Some(SanitizeFilterMode::Inline {
+                    enclosing_tags: None,
+                }) => {
+                    return quote! { __out.push_str(&#cp::sanitize_tokens_str(#str_expr)); };
+                }
+                Some(SanitizeFilterMode::Inline {
+                    enclosing_tags: Some(tags),
+                }) => {
+                    let tags_lit = tags.as_ref();
+                    return quote! {
+                        #cp::__private::sanitize_inline_into(
+                            #str_expr,
+                            ::core::option::Option::Some(#tags_lit),
+                            __out,
+                        );
+                    };
+                }
+                Some(SanitizeFilterMode::Block { tag_spec, notice }) => {
+                    let tag_lit = tag_spec.as_ref();
+                    let notice_tok = if let Some(n) = notice {
+                        let n_lit = n.as_ref();
+                        quote! { ::core::option::Option::Some(#n_lit) }
+                    } else {
+                        quote! { ::core::option::Option::None }
+                    };
+                    return quote! {
+                        #cp::sanitize_block_idempotent_into(
+                            #str_expr,
+                            ::core::option::Option::Some(#tag_lit),
+                            #notice_tok,
+                            __out,
+                        )?;
+                    };
+                }
+                None => {}
+            },
+            _ => {}
+        }
+    } else if let [f0, f1] = filters {
+        if (f0.kind == FilterKind::Trim && f1.kind == FilterKind::UnsafeTrust)
+            || (f0.kind == FilterKind::UnsafeTrust && f1.kind == FilterKind::Trim)
+        {
+            return quote! { __out.push_str((#str_expr).trim()); };
+        }
+        if f0.kind == FilterKind::Trim && f1.kind == FilterKind::Sanitize {
+            match &f1.sanitize_mode {
+                Some(SanitizeFilterMode::Inline {
+                    enclosing_tags: None,
+                }) => {
+                    return quote! { __out.push_str(&#cp::sanitize_tokens_str((#str_expr).trim())); };
+                }
+                Some(SanitizeFilterMode::Inline {
+                    enclosing_tags: Some(tags),
+                }) => {
+                    let tags_lit = tags.as_ref();
+                    return quote! {
+                        #cp::__private::sanitize_inline_into(
+                            (#str_expr).trim(),
+                            ::core::option::Option::Some(#tags_lit),
+                            __out,
+                        );
+                    };
+                }
+                _ => {}
+            }
+        }
+    }
+    let filter_tokens: Vec<TokenStream> = filters.iter().map(codegen_parsed_filter).collect();
+    quote! {
+        #cp::__private::render_str_filters(#str_expr, &[#(#filter_tokens),*], __out)?;
+    }
 }
 
 /// Unquote and unescape a filter string argument at compile time.
@@ -715,19 +794,93 @@ fn unquote_filter_arg(raw: &str) -> String {
     }
 }
 
+enum PostJoinSanitize<'a> {
+    None,
+    Inline(Option<&'a str>),
+}
+
+struct ListJoinPlan<'a> {
+    limit_n: Option<usize>,
+    join_filter: &'a ParsedFilter,
+    post_sanitize: PostJoinSanitize<'a>,
+}
+
+fn extract_list_join_filters(filters: &[ParsedFilter]) -> Option<ListJoinPlan<'_>> {
+    match filters {
+        [j] if j.kind == FilterKind::Join => Some(ListJoinPlan {
+            limit_n: None,
+            join_filter: j,
+            post_sanitize: PostJoinSanitize::None,
+        }),
+        [j, u] if j.kind == FilterKind::Join && u.kind == FilterKind::UnsafeTrust => {
+            Some(ListJoinPlan {
+                limit_n: None,
+                join_filter: j,
+                post_sanitize: PostJoinSanitize::None,
+            })
+        }
+        [j, s]
+            if j.kind == FilterKind::Join
+                && s.kind == FilterKind::Sanitize
+                && matches!(s.sanitize_mode, Some(SanitizeFilterMode::Inline { .. })) =>
+        {
+            let tags = match &s.sanitize_mode {
+                Some(SanitizeFilterMode::Inline { enclosing_tags }) => enclosing_tags.as_deref(),
+                _ => None,
+            };
+            Some(ListJoinPlan {
+                limit_n: None,
+                join_filter: j,
+                post_sanitize: PostJoinSanitize::Inline(tags),
+            })
+        }
+        [l, j] if l.kind == FilterKind::Limit && j.kind == FilterKind::Join => Some(ListJoinPlan {
+            limit_n: Some(l.parsed_num?),
+            join_filter: j,
+            post_sanitize: PostJoinSanitize::None,
+        }),
+        [l, j, u]
+            if l.kind == FilterKind::Limit
+                && j.kind == FilterKind::Join
+                && u.kind == FilterKind::UnsafeTrust =>
+        {
+            Some(ListJoinPlan {
+                limit_n: Some(l.parsed_num?),
+                join_filter: j,
+                post_sanitize: PostJoinSanitize::None,
+            })
+        }
+        [l, j, s]
+            if l.kind == FilterKind::Limit
+                && j.kind == FilterKind::Join
+                && s.kind == FilterKind::Sanitize
+                && matches!(s.sanitize_mode, Some(SanitizeFilterMode::Inline { .. })) =>
+        {
+            let tags = match &s.sanitize_mode {
+                Some(SanitizeFilterMode::Inline { enclosing_tags }) => enclosing_tags.as_deref(),
+                _ => None,
+            };
+            Some(ListJoinPlan {
+                limit_n: Some(l.parsed_num?),
+                join_filter: j,
+                post_sanitize: PostJoinSanitize::Inline(tags),
+            })
+        }
+        _ => None,
+    }
+}
+
 fn codegen_list_join_expr(
     expr: &CompiledExpr,
     filters: &[ParsedFilter],
     scope: &NativeScope,
 ) -> Option<TokenStream> {
     let cp = crate_path();
-    let (limit_n, join_filter) = match filters {
-        [j] if j.kind == FilterKind::Join => (None, j),
-        [l, j] if l.kind == FilterKind::Limit && j.kind == FilterKind::Join => {
-            (Some(l.parsed_num?), j)
-        }
-        _ => return None,
-    };
+    let ListJoinPlan {
+        limit_n,
+        join_filter,
+        post_sanitize,
+    } = extract_list_join_filters(filters)?;
     let sep = unquote_filter_arg(join_filter.args.as_deref().unwrap_or(""));
 
     match expr {
@@ -743,8 +896,22 @@ fn codegen_list_join_expr(
             }
             let elem_vt = &fields[0].var_type;
             let write_item = match elem_vt {
-                VarType::Str => quote! {
-                    __out.push_str(::core::convert::AsRef::<str>::as_ref(__join_item));
+                VarType::Str => match post_sanitize {
+                    PostJoinSanitize::None => quote! {
+                        __out.push_str(::core::convert::AsRef::<str>::as_ref(__join_item));
+                    },
+                    PostJoinSanitize::Inline(None) => quote! {
+                        __out.push_str(&#cp::sanitize_tokens_str(
+                            ::core::convert::AsRef::<str>::as_ref(__join_item),
+                        ));
+                    },
+                    PostJoinSanitize::Inline(Some(tags_lit)) => quote! {
+                        #cp::__private::sanitize_inline_into(
+                            ::core::convert::AsRef::<str>::as_ref(__join_item),
+                            ::core::option::Option::Some(#tags_lit),
+                            __out,
+                        );
+                    },
                 },
                 VarType::Int => quote! { #cp::__private::write_int(*__join_item, __out); },
                 VarType::Float => quote! { #cp::__private::write_float(*__join_item, __out); },
@@ -759,10 +926,26 @@ fn codegen_list_join_expr(
             } else {
                 quote! { (#list_e).iter() }
             };
+            let write_sep = match post_sanitize {
+                PostJoinSanitize::Inline(Some(tags_lit)) => {
+                    let mut sanitized_sep = String::new();
+                    md_tmpl_core::__private::sanitize_inline_into(
+                        &sep,
+                        Some(tags_lit),
+                        &mut sanitized_sep,
+                    );
+                    quote! { __out.push_str(#sanitized_sep); }
+                }
+                PostJoinSanitize::Inline(None) => {
+                    let sanitized_sep = md_tmpl_core::sanitize_tokens_str(&sep).into_owned();
+                    quote! { __out.push_str(#sanitized_sep); }
+                }
+                PostJoinSanitize::None => quote! { __out.push_str(#sep); },
+            };
             Some(quote! {
                 for (__join_idx, __join_item) in #iter_expr.enumerate() {
                     if __join_idx > 0 {
-                        __out.push_str(#sep);
+                        #write_sep
                     }
                     #write_item
                 }

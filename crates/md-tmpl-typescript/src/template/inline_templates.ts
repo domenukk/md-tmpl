@@ -22,6 +22,11 @@ import {
 } from "../frontmatter.js";
 import { cloneNodes, getLoc, nodeLoc } from "../ast.js";
 import { type Node, parseBody } from "../parser.js";
+import {
+  type DeclaredSanitize,
+  EMPTY_DECLARED_SANITIZE,
+  declaredSanitize,
+} from "../include_sanitize.js";
 import { applySanitizeAstPass, type SanitizeSpec } from "../sanitize_pass.js";
 import { validateFrontmatter } from "../validation.js";
 import { type Value, valueToJs } from "../value.js";
@@ -31,14 +36,20 @@ import { resolveAliasesInDecls } from "./resolve.js";
 export interface InlineTemplateEntry {
   readonly declarations: readonly VarDecl[];
   readonly body: string;
+  /** Body nodes parsed without the template's own parameter policy (include target). */
   readonly nodes: readonly Node[];
   readonly consts: Map<string, Value>;
   readonly constsJs: Map<string, unknown>;
+  /** Declared parameter sanitization; only chooses the style for untrusted caller values. */
+  readonly declared: DeclaredSanitize;
 }
 
 function bindInlineIncludes(
   nodes: readonly Node[],
-  inlineTmpls: ReadonlyMap<string, { nodes: Node[] }>,
+  inlineTmpls: ReadonlyMap<
+    string,
+    { nodes: Node[]; declared: DeclaredSanitize }
+  >,
   activeStack: Set<string>,
 ): void {
   for (const node of nodes) {
@@ -80,6 +91,7 @@ function bindInlineIncludes(
             bindInlineIncludes(cloned, inlineTmpls, activeStack);
             activeStack.delete(node.name);
             node.inlineNodes = cloned;
+            node.inlineDeclared = inline.declared;
           }
         }
         break;
@@ -166,7 +178,7 @@ export function collectInlineTemplateMap(
       nodes: Node[];
       consts: Map<string, Value>;
       constsJs: Map<string, unknown>;
-      paramSanitize?: ReadonlyMap<string, SanitizeSpec>;
+      declared: DeclaredSanitize;
       sanitizeNotice?: string;
     }
   >();
@@ -202,11 +214,10 @@ export function collectInlineTemplateMap(
         inlineBody,
         inlineFm.bodyStartLine ?? 1,
       );
-      applySanitizeAstPass(
-        inlineNodes,
-        inlineFm.paramSanitize,
-        inlineFm.sanitizeNotice ?? parentSanitizeNotice,
-      );
+      const inlineNotice = inlineFm.sanitizeNotice ?? parentSanitizeNotice;
+      // Inline templates are include targets: parameter values take the caller's trust,
+      // so only the notice and enclosing-tag passes run here.
+      applySanitizeAstPass(inlineNodes, undefined, inlineNotice);
       rawEntries.set(n.name, {
         declarations: resolveAliasesInDecls(
           inlineFm.params,
@@ -216,8 +227,8 @@ export function collectInlineTemplateMap(
         nodes: inlineNodes,
         consts: inlineConsts,
         constsJs: inlineConstsJs,
-        paramSanitize: inlineFm.paramSanitize,
-        sanitizeNotice: inlineFm.sanitizeNotice ?? parentSanitizeNotice,
+        declared: declaredSanitize(inlineFm.paramSanitize, inlineNotice),
+        sanitizeNotice: inlineNotice,
       });
     } else {
       const inlineNodes = parseInlineBody(n, n.source, 1);
@@ -228,6 +239,7 @@ export function collectInlineTemplateMap(
         nodes: inlineNodes,
         consts: new Map(),
         constsJs: new Map(),
+        declared: EMPTY_DECLARED_SANITIZE,
         sanitizeNotice: parentSanitizeNotice,
       });
     }
@@ -254,6 +266,7 @@ export function collectInlineTemplateMap(
       nodes: entry.nodes,
       consts: entry.consts,
       constsJs: entry.constsJs,
+      declared: entry.declared,
     });
   }
   return inlineTmpls;

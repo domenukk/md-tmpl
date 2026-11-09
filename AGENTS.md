@@ -61,14 +61,14 @@ Before finishing any task, run the full formatting, lint, hygiene, documentation
 just fmt-check
 
 # 2. Hygiene & lint gates (Clippy -D warnings, tsc --noEmit, ruff, mypy, go vet, lint_hygiene.py)
-flock /tmp/jetski-build.lock just lint
+flock /tmp/md-tmpl-build.lock just lint
 
 # 3. Rustdoc warnings gate
-flock /tmp/jetski-build.lock just doc
+flock /tmp/md-tmpl-build.lock just doc
 
 # 4. Full cross-language test suite (Rust + no_std + TypeScript + WASM + Python + Go)
-flock /tmp/jetski-build.lock just test
+flock /tmp/md-tmpl-build.lock just test
 
 # 5. Feature matrix check (no_std / alloc / serde / macros combinations)
-flock /tmp/jetski-build.lock ./ci/check_feature_matrix.sh
+flock /tmp/md-tmpl-build.lock ./ci/check_feature_matrix.sh
 ```

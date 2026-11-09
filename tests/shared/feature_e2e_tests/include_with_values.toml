@@ -283,3 +283,55 @@ expected_output = "\nR: y\n"
 n = 3
 s = "ab"
 items = ["a", "b"]
+
+[[tests]]
+name = "include_with_interpolated_comma_strings_and_filtered_for"
+description = "Pre-compiled `with` arguments handle embedded commas in interpolated strings and filter calls alongside filtered `for ... in items | limit(2)`"
+template = '''
+---
+params:
+  - prefix = str
+  - tags = list(str)
+  - items = list(str)
+---
+> {% tmpl row %}
+---
+params:
+  - my-item = str
+  - greeting = str
+  - csv = str
+---
+[{{ my-item }}] {{ greeting }} ({{ csv }})
+
+> {% /tmpl %}
+
+> {% include row for my-item in items | limit(2) with greeting = "Hi, {{ prefix | upper }}!", csv = tags | join(", ") %}'''
+expected_output = "[one] Hi, WORLD! (alpha, beta)\n[two] Hi, WORLD! (alpha, beta)\n"
+
+[tests.params]
+prefix = "world"
+tags = ["alpha", "beta"]
+items = ["one", "two", "three"]
+
+[[tests]]
+name = "include_with_malformed_interpolation_rejected"
+description = "Unclosed `{{` inside a `with` string literal is rejected at compile time"
+template = '''
+---
+params:
+  - s = str
+---
+> {% tmpl row %}
+---
+params:
+  - v = str
+---
+{{ v }}
+
+> {% /tmpl %}
+
+> {% include row with v = "unclosed {{ s" %}'''
+expected_error = "unclosed"
+
+[tests.params]
+s = "x"

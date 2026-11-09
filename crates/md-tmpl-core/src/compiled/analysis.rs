@@ -58,6 +58,11 @@ fn collect_labels_inner(segments: &[Segment], labels: &mut HashSet<String>) {
                     for variant in &arm.variants {
                         if crate::consts::strip_string_literal(variant.as_ref()).is_none() {
                             labels.insert(variant.to_string());
+                            if let Some(root) =
+                                extract_root_variable(variant.as_ref(), &HashSet::new())
+                            {
+                                labels.insert(root);
+                            }
                         }
                     }
                     collect_labels_inner(&arm.body, labels);
@@ -133,44 +138,7 @@ fn collect_refs_inner(
                 collect_refs_inner(else_body, vars, loop_bindings);
             }
             Segment::Include(inc) => {
-                if inc.path.contains(crate::consts::EXPR_START) {
-                    let mut s: &str = inc.path.as_ref();
-                    while let Some(start) = s.find(crate::consts::EXPR_START) {
-                        s = &s[start + crate::consts::EXPR_START.len()..];
-                        if let Some(end) = s.find(crate::consts::EXPR_END) {
-                            let expr = &s[..end];
-                            if let Some(root) = extract_root_variable(expr, loop_bindings) {
-                                vars.insert(root);
-                            }
-                            s = &s[end + crate::consts::EXPR_END.len()..];
-                        } else {
-                            break;
-                        }
-                    }
-                } else if !inc.path.ends_with(".tmpl.md") && !inc.path.ends_with(".md") {
-                    if let Some(root) = extract_root_variable(inc.path.as_ref(), loop_bindings) {
-                        vars.insert(root);
-                    }
-                }
-
-                for (_, val_expr) in &inc.with_vars {
-                    // A quoted `with` value is a string literal that may embed
-                    // `{{ expr }}` interpolation (see `include_core::build_overrides`);
-                    // collect those references the same way body expressions are.
-                    // An unquoted value is a plain expression (path/function/filter).
-                    if let Some(inner) = crate::consts::strip_string_literal(val_expr.as_ref()) {
-                        extract_interpolation_refs(inner, vars, loop_bindings);
-                    } else if let Some(root) =
-                        extract_root_variable(val_expr.as_ref(), loop_bindings)
-                    {
-                        vars.insert(root);
-                    }
-                }
-                if let Some((_, list_expr)) = &inc.for_each
-                    && let Some(root) = extract_root_variable(list_expr.as_ref(), loop_bindings)
-                {
-                    vars.insert(root);
-                }
+                collect_include_refs(inc, vars, loop_bindings);
             }
             Segment::Match { expr, arms, .. } => {
                 // Use extract_root_variable to handle kind(x) and other function calls.
@@ -186,6 +154,11 @@ fn collect_refs_inner(
                     for variant in &arm.variants {
                         if let Some(inner) = crate::consts::strip_string_literal(variant.as_ref()) {
                             extract_interpolation_refs(inner, vars, loop_bindings);
+                        } else if variant.contains(crate::consts::PATH_SEP)
+                            && let Some(root) =
+                                extract_root_variable(variant.as_ref(), loop_bindings)
+                        {
+                            vars.insert(root);
                         }
                     }
                     if let Some(ref guard) = arm.guard {
@@ -198,6 +171,57 @@ fn collect_refs_inner(
                 collect_refs_inner(segments, vars, loop_bindings);
             }
         }
+    }
+}
+
+fn collect_include_refs(
+    inc: &super::CompiledInclude,
+    vars: &mut HashSet<String>,
+    loop_bindings: &HashSet<String>,
+) {
+    if inc.path.contains(crate::consts::EXPR_START) {
+        let mut s: &str = inc.path.as_ref();
+        while let Some(start) = s.find(crate::consts::EXPR_START) {
+            s = &s[start + crate::consts::EXPR_START.len()..];
+            if let Some(end) = s.find(crate::consts::EXPR_END) {
+                let expr = &s[..end];
+                if let Some(root) = extract_root_variable(expr, loop_bindings) {
+                    vars.insert(root);
+                }
+                s = &s[end + crate::consts::EXPR_END.len()..];
+            } else {
+                break;
+            }
+        }
+    } else if !inc.path.ends_with(".tmpl.md")
+        && !inc.path.ends_with(".md")
+        && let Some(root) = extract_root_variable(inc.path.as_ref(), loop_bindings)
+    {
+        vars.insert(root);
+    }
+
+    for (_, val_expr) in &inc.with_vars {
+        // A quoted `with` value (with or without trailing filters or an outer
+        // `unsafe_trust(...)` wrapper) is a string literal that may embed
+        // `{{ expr }}` interpolation; collect those references the same way
+        // body expressions are.
+        let (base, _) = crate::parser::split_pipe_aware(val_expr.as_ref());
+        let mut unwrapped = base.trim();
+        while let Some((crate::consts::FN_UNSAFE_TRUST, inner_arg)) =
+            crate::scope::parse_function_call(unwrapped)
+        {
+            unwrapped = inner_arg;
+        }
+        if let Some(inner) = crate::consts::strip_string_literal(unwrapped) {
+            extract_interpolation_refs(inner, vars, loop_bindings);
+        } else if let Some(root) = extract_root_variable(val_expr.as_ref(), loop_bindings) {
+            vars.insert(root);
+        }
+    }
+    if let Some((_, list_expr)) = &inc.for_each
+        && let Some(root) = extract_root_variable(list_expr.as_ref(), loop_bindings)
+    {
+        vars.insert(root);
     }
 }
 
@@ -216,13 +240,17 @@ fn extract_root_variable(expr: &str, loop_bindings: &HashSet<String>) -> Option<
         return None;
     }
 
+    // Handle pipe expressions: take the part before the first top-level `|`.
+    let (base, _) = crate::parser::split_pipe_aware(expr);
+    let base = base.trim();
+
     // Handle function calls: func(arg)
-    if let Some(open) = expr.find(crate::consts::PAREN_OPEN)
-        && expr.ends_with(crate::consts::PAREN_CLOSE)
+    if let Some(open) = base.find(crate::consts::PAREN_OPEN)
+        && base.ends_with(crate::consts::PAREN_CLOSE)
     {
-        let func_name = expr[..open].trim();
+        let func_name = base[..open].trim();
         if BUILTIN_FUNCTIONS.contains(&func_name) {
-            let mut arg = expr[open + 1..expr.len() - 1].trim();
+            let mut arg = base[open + 1..base.len() - 1].trim();
             if let Some(s) = arg.strip_prefix(crate::consts::PREFIX_CONSTS_DOT) {
                 arg = s.trim();
             } else if let Some(s) = arg.strip_prefix(crate::consts::PREFIX_OPTS_DOT) {
@@ -243,13 +271,6 @@ fn extract_root_variable(expr: &str, loop_bindings: &HashSet<String>) -> Option<
             return None;
         }
     }
-
-    // Handle pipe expressions: take the part before the first `|`.
-    let base = expr
-        .split(crate::consts::PIPE)
-        .next()
-        .unwrap_or(expr)
-        .trim();
     let base = if let Some(s) = base.strip_prefix(crate::consts::PREFIX_CONSTS_DOT) {
         s.trim()
     } else if let Some(s) = base.strip_prefix(crate::consts::PREFIX_OPTS_DOT) {
@@ -285,7 +306,7 @@ fn is_literal(token: &str) -> bool {
 }
 
 /// Returns `true` if `token` is a syntactically valid identifier
-/// (`[A-Za-z_][A-Za-z0-9_]*`).
+/// (`[A-Za-z_][A-Za-z0-9_-]*`).
 ///
 /// Mirrors the TypeScript reference implementation so both engines agree on
 /// which tokens can name a variable. This rejects malformed roots such as a
@@ -297,7 +318,7 @@ fn is_valid_identifier(token: &str) -> bool {
         Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
         _ => return false,
     }
-    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 /// Extract variable references from `{{ expr }}` interpolations inside a string.
@@ -668,6 +689,9 @@ fn extract_operand_variables(
             let mut loop_bindings_clone = loop_bindings.clone();
             collect_refs_inner(segments, vars, &mut loop_bindings_clone);
         }
+        ConditionOperand::Filtered { base, .. } => {
+            extract_operand_variables(base, vars, loop_bindings);
+        }
         ConditionOperand::Path { path, .. }
         | ConditionOperand::Len(path)
         | ConditionOperand::Kind(path)
@@ -725,12 +749,14 @@ mod tests {
         assert!(is_valid_identifier("_private"));
         assert!(is_valid_identifier("item2"));
         assert!(is_valid_identifier("CamelCase"));
+        assert!(is_valid_identifier("kebab-name"));
     }
 
     #[test]
     fn invalid_identifiers_rejected() {
         assert!(!is_valid_identifier(""));
         assert!(!is_valid_identifier("2cool"));
+        assert!(!is_valid_identifier("-leading"));
         assert!(!is_valid_identifier("has space"));
         assert!(!is_valid_identifier("a.b"));
         assert!(!is_valid_identifier("web/about"));

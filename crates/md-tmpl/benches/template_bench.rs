@@ -10,7 +10,7 @@
 
 use std::hint::black_box;
 
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group};
 use md_tmpl::{Template, ctx};
 
 // ---------------------------------------------------------------------------
@@ -636,4 +636,34 @@ criterion_group!(
     bench_flexbuffers,
     bench_env_compile,
 );
-criterion_main!(benches);
+
+fn main() {
+    let raw_args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let has_test_threads = raw_args.iter().skip(1).any(|arg| {
+        let s = arg.to_string_lossy();
+        s == "--test-threads" || s.starts_with("--test-threads=")
+    });
+    if has_test_threads {
+        let exe = std::env::current_exe().expect("benchmark executable path must resolve");
+        let mut filtered = Vec::with_capacity(raw_args.len());
+        let mut iter = raw_args.into_iter().skip(1);
+        while let Some(arg) = iter.next() {
+            let s = arg.to_string_lossy();
+            if s == "--test-threads" {
+                iter.next().expect("--test-threads flag requires a value");
+            } else if !s.starts_with("--test-threads=") {
+                filtered.push(arg);
+            }
+        }
+        let status = std::process::Command::new(exe)
+            .args(filtered)
+            .status()
+            .expect("re-invoking Criterion benchmark without libtest --test-threads must succeed");
+        match status.code() {
+            Some(code) => std::process::exit(code),
+            None => std::process::exit(1),
+        }
+    }
+    benches();
+    Criterion::default().configure_from_args().final_summary();
+}

@@ -48,6 +48,21 @@ pub(super) fn make_include(
     segments: Vec<Segment>,
 ) -> CompiledInclude {
     use std::sync::Arc;
+    let compiled_with_vars = with_vars
+        .iter()
+        .map(|&(k, v)| {
+            (
+                std::borrow::Cow::Owned(k.to_string()),
+                crate::scope::ConditionOperand::compile(v).expect("valid test with operand"),
+            )
+        })
+        .collect();
+    let compiled_for_each = for_each.map(|(b, l)| {
+        (
+            std::borrow::Cow::Owned(b.to_string()),
+            crate::scope::ConditionOperand::compile(l).expect("valid test for operand"),
+        )
+    });
     CompiledInclude {
         path: std::borrow::Cow::Owned(path.to_string()),
         with_vars: with_vars
@@ -59,17 +74,20 @@ pub(super) fn make_include(
                 )
             })
             .collect(),
+        compiled_with_vars,
         for_each: for_each.map(|(b, l)| {
             (
                 std::borrow::Cow::Owned(b.to_string()),
                 std::borrow::Cow::Owned(l.to_string()),
             )
         }),
+        compiled_for_each,
         inline_compiled: Some(CompiledInlineTemplate {
             segments: Arc::from(segments),
             declarations: Arc::from(declarations),
             consts: std::sync::Arc::new(crate::compat::HashMap::new()),
             imported_consts: std::sync::Arc::new(crate::compat::HashMap::new()),
+            declared_sanitize: std::sync::Arc::new(crate::compat::HashMap::new()),
         }),
         sanitize_ctx: None,
         memo: crate::compiled::IncludeContextMemo::default(),

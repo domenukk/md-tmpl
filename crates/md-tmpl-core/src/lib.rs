@@ -54,7 +54,7 @@ pub mod __private {
             cmp_int_float, render_str_filters, write_fixed_float, write_fixed_int, write_float,
             write_int, write_lower, write_upper,
         },
-        filter::i64_to_f64,
+        filter::{i64_to_f64, sanitize_inline_into},
         template::analysis::inject_enum_type_constants,
     };
 
@@ -185,13 +185,14 @@ pub use filter::{
     UNTRUSTED_QUARANTINE_OPEN_TAG, UNTRUSTED_TOOL_OUTPUT_TAG, XML_DECODE_PAIRS, ceil_char_boundary,
     decode_xml_str, escape_json_str, escape_xml_attr_str, escape_xml_body_str, escape_xml_str,
     fence_str, floor_char_boundary, format_sanitize_notice, has_control_tokens,
-    has_quarantine_tag_breakout, has_role_control_tokens, has_untrusted_breakout,
-    is_quarantined_str, is_sanitized_block_str, next_char_boundary, prev_char_boundary,
-    quarantine_str, quarantine_untrusted_idempotent_str, quarantine_untrusted_str,
+    has_invisible_chars, has_quarantine_tag_breakout, has_role_control_tokens,
+    has_untrusted_breakout, is_quarantined_str, is_sanitized_block_str,
+    is_unconditional_invisible_char, next_char_boundary, prev_char_boundary, quarantine_str,
+    quarantine_untrusted_idempotent_str, quarantine_untrusted_str, sanitize_block_idempotent_into,
     sanitize_block_idempotent_str, sanitize_block_into, sanitize_block_str,
     sanitize_quarantine_payload, sanitize_role_tokens_str, sanitize_str, sanitize_tokens_str,
-    sanitize_untrusted_str, strip_outer_quarantine_tag, truncate_middle_list, truncate_middle_str,
-    unquarantine_str, unsanitize_block_str,
+    sanitize_untrusted_str, strip_invisible_str, strip_outer_quarantine_tag, truncate_middle_list,
+    truncate_middle_str, unquarantine_str, unsanitize_block_str,
 };
 #[doc(hidden)]
 #[cfg(feature = "std")]
@@ -202,6 +203,8 @@ pub use frontmatter::{
 };
 #[cfg(feature = "std")]
 pub use frontmatter::{resolve_imports, resolve_imports_with_consts};
+#[doc(hidden)]
+pub use parser::{split_filters_aware, split_pipe_aware};
 #[cfg(feature = "serde")]
 pub use sanitize_serde::{
     StringSanitizeMode, TransformingCompound, TransformingSerializer, serialize_with_sanitization,

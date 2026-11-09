@@ -270,6 +270,8 @@ export function resolveImportedConsts(
         mergedTypeAliasSanitize,
         relSpecs,
         mergedTypeAliases,
+        new Set(),
+        decl.trustedPaths,
       );
       if (relSpecs.size > 0) {
         registerDeclSanitizeSpecs(

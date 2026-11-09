@@ -68,6 +68,7 @@ from md_tmpl._md_tmpl import (
     fence,
     generate_python_source_for_template as _generate_python_source,
     has_control_tokens,
+    has_invisible_chars,
     has_quarantine_tag_breakout,
     has_role_control_tokens,
     has_untrusted_breakout,
@@ -81,6 +82,7 @@ from md_tmpl._md_tmpl import (
     sanitize_role_tokens,
     sanitize_tokens,
     sanitize_untrusted,
+    strip_invisible,
     unsanitize_block,
 )
 from md_tmpl._exceptions import (
@@ -195,6 +197,7 @@ __all__ = [
     "fence",
     "generate_types_source",
     "has_control_tokens",
+    "has_invisible_chars",
     "has_quarantine_tag_breakout",
     "has_role_control_tokens",
     "has_untrusted_breakout",
@@ -211,6 +214,7 @@ __all__ = [
     "sanitize_role_tokens",
     "sanitize_tokens",
     "sanitize_untrusted",
+    "strip_invisible",
     "template",
     "unsanitize_block",
     "variant",

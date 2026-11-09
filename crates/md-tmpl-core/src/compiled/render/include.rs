@@ -102,6 +102,7 @@ fn render_include_no_std_inner(
             &compiled.segments,
             &compiled.declarations,
             &directive,
+            inc,
             scope,
             output,
         );
@@ -111,13 +112,17 @@ fn render_include_no_std_inner(
 
     // 1. Inline templates from the current scope.
     if let Some(compiled) = scope.get_inline_template(directive.path).cloned() {
-        let segments =
-            crate::compiled::include_sanitize::contextualized_segments(inc, &compiled.segments)?;
+        let segments = crate::compiled::include_sanitize::contextualized_segments(
+            inc,
+            &compiled.segments,
+            &compiled.declared_sanitize,
+        )?;
         scope.push_consts_arc(&compiled.consts, &compiled.imported_consts);
         let result = validate_and_render_no_std(
             &segments,
             &compiled.declarations,
             &directive,
+            inc,
             scope,
             output,
         );
@@ -133,13 +138,22 @@ fn render_include_no_std_inner(
         )));
     };
     let tmpl = tmpl.clone();
-    let segments =
-        crate::compiled::include_sanitize::contextualized_segments(inc, tmpl.segments_arc())?;
+    let segments = crate::compiled::include_sanitize::handle_segments(
+        Some(inc),
+        tmpl.segments_arc(),
+        tmpl.declared_sanitize(),
+    )?;
     scope.push_inline_templates(tmpl.inline_templates().clone());
     scope.push_consts_arc(&tmpl.consts(), &tmpl.imported_consts());
 
-    let result =
-        validate_and_render_no_std(&segments, tmpl.declarations(), &directive, scope, output);
+    let result = validate_and_render_no_std(
+        &segments,
+        tmpl.declarations(),
+        &directive,
+        inc,
+        scope,
+        output,
+    );
 
     scope.pop_consts();
     scope.pop_inline_templates();
@@ -152,26 +166,32 @@ fn validate_and_render_no_std(
     segments: &[crate::compiled::Segment],
     declarations: &[crate::types::VarDecl],
     directive: &parser::IncludeDirective<'_>,
+    inc: &CompiledInclude,
     scope: &mut Scope<'_>,
     output: &mut String,
 ) -> Result<(), TemplateError> {
     use crate::{
         include_core::{
-            build_overrides, inject_defaults_into_layer, validate_include_contract,
+            build_compiled_overrides, inject_defaults_into_layer, validate_include_contract,
             validate_include_types,
         },
         value::Value,
     };
 
     validate_include_contract(declarations, directive)?;
-    let overrides = build_overrides(directive, scope)?;
+    let overrides = build_compiled_overrides(&inc.compiled_with_vars, scope)?;
     validate_include_types(declarations, &overrides, directive)?;
 
     scope.push_declarations(declarations);
 
     let res = if let Some((binding, list_expr)) = &directive.for_each {
         // Iterated include.
-        let list_value = crate::parser::eval_expr(list_expr.trim(), scope)?;
+        let list_value = match &inc.compiled_for_each {
+            Some((_, op)) => op.resolve(scope)?.into_owned(),
+            None => crate::scope::ConditionOperand::compile(list_expr)?
+                .resolve(scope)?
+                .into_owned(),
+        };
         let Value::List(items) = list_value else {
             scope.pop_declarations(declarations);
             return Err(TemplateError::syntax(alloc::format!(

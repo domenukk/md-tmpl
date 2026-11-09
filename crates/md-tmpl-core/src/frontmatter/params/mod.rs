@@ -292,16 +292,23 @@ fn is_flat_field_type(vt: &VarType) -> bool {
     }
 }
 
-/// Strip surrounding quotes and any leading `untrusted` modifier from a type string.
+/// Strip surrounding quotes and any leading `trusted` / `untrusted` modifier from a type string.
 fn strip_untrusted_and_quotes(s: &str) -> &str {
     let mut cur = crate::consts::strip_string_literal(s.trim())
         .unwrap_or(s.trim())
         .trim();
-    while let Some(rest) = cur.strip_prefix(crate::consts::TYPE_UNTRUSTED) {
-        if rest.starts_with(' ') || rest.starts_with('\t') {
-            cur = rest.trim_start();
-            cur = crate::consts::strip_string_literal(cur)
-                .unwrap_or(cur)
+    loop {
+        if let Some(inner) =
+            super::sanitize_decl::strip_single_trust_keyword(cur, crate::consts::TYPE_UNTRUSTED)
+        {
+            cur = crate::consts::strip_string_literal(inner)
+                .unwrap_or(inner)
+                .trim();
+        } else if let Some(inner) =
+            super::sanitize_decl::strip_single_trust_keyword(cur, crate::consts::TYPE_TRUSTED)
+        {
+            cur = crate::consts::strip_string_literal(inner)
+                .unwrap_or(inner)
                 .trim();
         } else {
             break;
@@ -711,10 +718,20 @@ pub fn parse_type_annotation(
         }
     }
 
-    if let Some(rest) = s.strip_prefix(crate::consts::TYPE_UNTRUSTED) {
-        if rest.starts_with(' ') || rest.starts_with('\t') {
-            return parse_type_annotation(rest.trim_start(), type_aliases, resolved_imports);
-        }
+    if let Some(inner) =
+        super::sanitize_decl::strip_single_trust_keyword(s, crate::consts::TYPE_UNTRUSTED)
+    {
+        return parse_type_annotation(inner, type_aliases, resolved_imports);
+    }
+    if let Some(inner) =
+        super::sanitize_decl::strip_single_trust_keyword(s, crate::consts::TYPE_TRUSTED)
+    {
+        return parse_type_annotation(inner, type_aliases, resolved_imports);
+    }
+    if super::sanitize_decl::strip_single_trust_keyword(s, crate::consts::TYPE_UNSAFE_TRUST)
+        .is_some()
+    {
+        return Err(crate::consts::ERR_UNSAFE_TRUST_DECLARATION.to_string());
     }
 
     if s == TYPE_STR {
@@ -939,19 +956,14 @@ fn parse_field_declarations(
     Ok(decls)
 }
 
-#[path = "param_defaults.rs"]
 mod param_defaults;
 pub(crate) use param_defaults::*;
 
 #[cfg(test)]
-#[path = "params_tests_decls.rs"]
 mod tests_decls;
 #[cfg(test)]
-#[path = "params_tests_defaults.rs"]
 mod tests_defaults;
 #[cfg(test)]
-#[path = "params_tests_lexing.rs"]
 mod tests_lexing;
 #[cfg(test)]
-#[path = "params_tests_types.rs"]
 mod tests_types;

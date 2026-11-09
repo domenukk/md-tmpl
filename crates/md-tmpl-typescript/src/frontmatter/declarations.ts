@@ -34,6 +34,7 @@ import { parseLiteralOrConst, splitDefault } from "./literals.js";
 import {
   extractDeclarationSanitize,
   type SanitizeSpec,
+  type TypeAliasSanitize,
 } from "../sanitize_pass.js";
 
 /**
@@ -91,7 +92,7 @@ export function parseParamDecl(
   raw: string,
   constValues?: ReadonlyMap<string, Value>,
   isConstant = false,
-  typeAliasSanitize?: ReadonlyMap<string, ReadonlyMap<string, SanitizeSpec>>,
+  typeAliasSanitize?: TypeAliasSanitize,
   loc?: VarDecl["loc"],
 ): VarDecl {
   return parseParamDeclDeferred(
@@ -107,7 +108,7 @@ export function parseParamDeclDeferred(
   raw: string,
   constValues?: ReadonlyMap<string, Value>,
   isConstant = false,
-  typeAliasSanitize?: ReadonlyMap<string, ReadonlyMap<string, SanitizeSpec>>,
+  typeAliasSanitize?: TypeAliasSanitize,
   loc?: VarDecl["loc"],
 ): [
   VarDecl,
@@ -139,17 +140,19 @@ export function parseParamDeclDeferred(
   const name = stripStringLiteral(nameType.slice(0, eqIdx).trim());
   const typeStr = nameType.slice(eqIdx + 1).trim();
 
-  const [cleanedType, cleanedDefaultLit, relSpecs] = extractDeclarationSanitize(
-    name,
-    typeStr,
-    defaultLiteral,
-    isConstant,
-    typeAliasSanitize,
-  );
+  const [cleanedType, cleanedDefaultLit, relSpecs, trustedSet] =
+    extractDeclarationSanitize(
+      name,
+      typeStr,
+      defaultLiteral,
+      isConstant,
+      typeAliasSanitize,
+    );
 
   const varType = parseVarType(cleanedType);
+  const trustedPaths = trustedSet.size > 0 ? trustedSet : undefined;
   if (cleanedDefaultLit === undefined) {
-    return [{ name, varType, loc }, undefined, relSpecs];
+    return [{ name, varType, loc, trustedPaths }, undefined, relSpecs];
   }
   const trimmedDefault = cleanedDefaultLit.trim();
 
@@ -179,14 +182,18 @@ export function parseParamDeclDeferred(
         varType,
         constValues,
       );
-      return [{ name, varType, defaultValue, loc }, undefined, relSpecs];
+      return [
+        { name, varType, defaultValue, loc, trustedPaths },
+        undefined,
+        relSpecs,
+      ];
     } catch (err: unknown) {
       if (!(err instanceof TemplateSyntaxError)) {
         throw err;
       }
       // Defer to imported const resolution
       return [
-        { name, varType, loc },
+        { name, varType, loc, trustedPaths },
         { text: trimmedDefault, varType },
         relSpecs,
       ];
@@ -199,7 +206,11 @@ export function parseParamDeclDeferred(
     varType,
     constValues,
   );
-  return [{ name, varType, defaultValue, loc }, undefined, relSpecs];
+  return [
+    { name, varType, defaultValue, loc, trustedPaths },
+    undefined,
+    relSpecs,
+  ];
 }
 
 /**
@@ -254,7 +265,7 @@ export function assertKnownTypeRefs(
 /** Parse `Name = type` for type aliases. */
 export function parseTypeAlias(
   raw: string,
-  typeAliasSanitize?: ReadonlyMap<string, ReadonlyMap<string, SanitizeSpec>>,
+  typeAliasSanitize?: TypeAliasSanitize,
 ): [string, VarType, Map<string, SanitizeSpec>] {
   const cleaned = stripStringLiteral(raw);
   const eqIdx = cleaned.indexOf(EQUALS);

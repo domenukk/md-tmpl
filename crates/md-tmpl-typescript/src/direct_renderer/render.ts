@@ -18,6 +18,7 @@ import {
   checkUntrustedIncludePath,
   contextualizeIncludeNodes,
 } from "../sanitize_pass.js";
+import { EMPTY_DECLARED_SANITIZE } from "../include_sanitize.js";
 import {
   EXPR_START,
   KW_RAW,
@@ -39,23 +40,81 @@ import { directDisplay } from "./display.js";
 import { formatFixedFloat, formatFixedInt } from "../numeric_format.js";
 import {
   type CompiledDirectExpr,
+  type CompiledInterpolatedPart,
   compileDirectExpr,
+  compileInterpolatedParts,
   evalCompiledDirectExpr,
-  evaluateDirectExpr,
+  evalInterpolatedParts,
+  resolveDirectPath,
 } from "./expr.js";
 import {
   type CompiledDirectCondition,
   compileDirectCondition,
   evalCompiledDirectCondition,
   getDirectVariantName,
-  interpolateDirectString,
   isOptionMatch,
 } from "./condition.js";
+
+export type CompiledDirectCaseLabel =
+  | { readonly kind: "default" }
+  | { readonly kind: "lit_str"; readonly value: string }
+  | {
+      readonly kind: "interp_str";
+      readonly parts: readonly CompiledInterpolatedPart[];
+    }
+  | {
+      readonly kind: "unquoted";
+      readonly raw: string;
+      readonly cleanPath: string;
+      readonly dotIdx: number;
+      readonly root: string;
+    };
+
+export function compileDirectCaseLabel(label: string): CompiledDirectCaseLabel {
+  if (label === MATCH_DEFAULT) {
+    return { kind: "default" };
+  }
+  if (
+    label.length >= 2 &&
+    ((label.startsWith('"') && label.endsWith('"')) ||
+      (label.startsWith("'") && label.endsWith("'")))
+  ) {
+    const inner = unescapeStringLiteral(label.slice(1, -1));
+    if (inner.includes(EXPR_START)) {
+      return { kind: "interp_str", parts: compileInterpolatedParts(inner) };
+    }
+    return { kind: "lit_str", value: inner };
+  }
+  const cleanPath = label.startsWith("consts.")
+    ? label.slice(7)
+    : label.startsWith("params.")
+      ? label.slice(7)
+      : label;
+  const dotIdx = cleanPath.indexOf(".");
+  const root = dotIdx === -1 ? cleanPath : cleanPath.slice(0, dotIdx);
+  return {
+    kind: "unquoted",
+    raw: label,
+    cleanPath,
+    dotIdx,
+    root,
+  };
+}
+
+function compileIncludeWithEntries(
+  withMappings: ReadonlyMap<string, string>,
+): readonly (readonly [string, CompiledDirectExpr])[] {
+  const entries: [string, CompiledDirectExpr][] = [];
+  for (const [targetKey, sourceExpr] of withMappings) {
+    entries.push([targetKey, compileDirectExpr(sourceExpr)]);
+  }
+  return entries;
+}
 
 /**
  * Compile-time AST pass that:
  * 1. Applies `trimBefore` and `trimAfter` against adjacent static `NODE_TEXT` nodes.
- * 2. Pre-compiles `_compiled` expression, filter, and condition plans onto each AST node.
+ * 2. Pre-compiles `_compiled` expression, filter, condition, case-label, and include `with`/`for` plans onto each AST node.
  */
 export function precompileDirectNodes(nodes: Node[]): void {
   for (let i = 0; i < nodes.length; i++) {
@@ -102,6 +161,7 @@ export function precompileDirectNodes(nodes: Node[]): void {
       case NODE_MATCH:
         node._compiled = compileDirectExpr(node.expr);
         for (const arm of node.arms) {
+          arm._compiledVariants = arm.variants.map(compileDirectCaseLabel);
           if (arm.guard) {
             arm._compiled = compileDirectCondition(arm.guard);
           }
@@ -111,7 +171,19 @@ export function precompileDirectNodes(nodes: Node[]): void {
           precompileDirectNodes(node.elseArm);
         }
         if (node.inlineGuard) {
+          node.inlineGuard._compiledVariant = compileDirectCaseLabel(
+            node.inlineGuard.variant,
+          );
           precompileDirectNodes(node.inlineGuard.body);
+        }
+        break;
+      case NODE_INCLUDE:
+        node._compiledWith = compileIncludeWithEntries(node.withMappings);
+        if (node.forExpr) {
+          node._compiledFor = compileDirectExpr(node.forExpr);
+        }
+        if (node.inlineNodes) {
+          precompileDirectNodes(node.inlineNodes);
         }
         break;
       case NODE_PANIC:
@@ -172,6 +244,37 @@ function evalArmGuard(
   return evalCompiledDirectCondition(compiled, scope);
 }
 
+export function evalCompiledDirectCaseLabel(
+  compiled: CompiledDirectCaseLabel,
+  variantName: string,
+  scope: DirectScope,
+): boolean {
+  switch (compiled.kind) {
+    case "default":
+      return true;
+    case "lit_str":
+      return compiled.value === variantName;
+    case "interp_str":
+      return evalInterpolatedParts(compiled.parts, scope) === variantName;
+    case "unquoted": {
+      if (compiled.raw === variantName) return true;
+      let resolved: unknown;
+      if (compiled.dotIdx === -1) {
+        resolved = scope.tryResolve(compiled.cleanPath);
+      } else {
+        resolved =
+          scope.resolveConst(compiled.cleanPath) ??
+          resolveDirectPath(
+            scope.tryResolve(compiled.root),
+            compiled.cleanPath,
+            compiled.dotIdx + 1,
+          );
+      }
+      return typeof resolved === "string" && resolved === variantName;
+    }
+  }
+}
+
 /**
  * Check if a case arm label matches the active variant (direct renderer).
  * Supports quoted strings with {{ expr }} interpolation.
@@ -181,26 +284,11 @@ export function directLabelMatches(
   variantName: string,
   scope: DirectScope,
 ): boolean {
-  if (label === MATCH_DEFAULT || label === variantName) return true;
-  // Quoted string literal: strip quotes and compare (with interpolation).
-  if (
-    label.length >= 2 &&
-    ((label.startsWith('"') && label.endsWith('"')) ||
-      (label.startsWith("'") && label.endsWith("'")))
-  ) {
-    const inner = unescapeStringLiteral(label.slice(1, -1));
-    if (inner.includes(EXPR_START)) {
-      try {
-        return interpolateDirectString(inner, scope) === variantName;
-      } catch {
-        return false;
-      }
-    }
-    return inner === variantName;
-  }
-  // Param-ref: resolve label as a variable and compare.
-  const resolved = scope.tryResolve(label);
-  return typeof resolved === "string" && resolved === variantName;
+  return evalCompiledDirectCaseLabel(
+    compileDirectCaseLabel(label),
+    variantName,
+    scope,
+  );
 }
 
 /**
@@ -383,8 +471,16 @@ export function renderDirectNodes(
         if (node.inlineGuard) {
           const val = evalNodeExpr(node, scope);
           const variantName = getDirectVariantName(val, optMatch);
-          const label = node.inlineGuard.variant;
-          if (directLabelMatches(label, variantName, scope)) {
+          let compiledGuardLabel = node.inlineGuard._compiledVariant;
+          if (compiledGuardLabel === undefined) {
+            compiledGuardLabel = compileDirectCaseLabel(
+              node.inlineGuard.variant,
+            );
+            node.inlineGuard._compiledVariant = compiledGuardLabel;
+          }
+          if (
+            evalCompiledDirectCaseLabel(compiledGuardLabel, variantName, scope)
+          ) {
             out += renderDirectNodes(node.inlineGuard.body, scope, options);
           } else if (node.elseArm) {
             out += renderDirectNodes(node.elseArm, scope, options);
@@ -395,9 +491,14 @@ export function renderDirectNodes(
 
           let matched = false;
           for (const arm of node.arms) {
+            let compiledVariants = arm._compiledVariants;
+            if (compiledVariants === undefined) {
+              compiledVariants = arm.variants.map(compileDirectCaseLabel);
+              arm._compiledVariants = compiledVariants;
+            }
             let armMatches = false;
-            for (const variantLabel of arm.variants) {
-              if (directLabelMatches(variantLabel, variantName, scope)) {
+            for (const cv of compiledVariants) {
+              if (evalCompiledDirectCaseLabel(cv, variantName, scope)) {
                 armMatches = true;
                 break;
               }
@@ -453,8 +554,12 @@ export function renderDirectNodes(
           if (!loaded) {
             throw new IncludeNotFoundError(node.path);
           }
-          const [lNodes, lConsts, lDecls, lBase, lInline] = loaded;
-          includedNodes = contextualizeIncludeNodes(lNodes, node.sanitizeCtx);
+          const [lNodes, lConsts, lDecls, lBase, lInline, lDeclared] = loaded;
+          includedNodes = contextualizeIncludeNodes(
+            lNodes,
+            node.sanitizeCtx,
+            lDeclared ?? EMPTY_DECLARED_SANITIZE,
+          );
           decls = lDecls;
           for (const [k, v] of lConsts) {
             loadedConsts.set(k, v);
@@ -474,7 +579,11 @@ export function renderDirectNodes(
           }
           includedNodes =
             node.inlineNodes ??
-            contextualizeIncludeNodes(inline.nodes, node.sanitizeCtx);
+            contextualizeIncludeNodes(
+              inline.nodes,
+              node.sanitizeCtx,
+              inline.declared ?? EMPTY_DECLARED_SANITIZE,
+            );
           decls = inline.declarations;
           const inlineConsts = inline.constsJs ?? inline.consts;
           if (inlineConsts) {
@@ -488,8 +597,19 @@ export function renderDirectNodes(
           };
         }
 
+        let compiledWith = node._compiledWith;
+        if (compiledWith === undefined) {
+          compiledWith = compileIncludeWithEntries(node.withMappings);
+          node._compiledWith = compiledWith;
+        }
+
         if (node.forBinding && node.forExpr) {
-          const listVal = evaluateDirectExpr(node.forExpr, scope);
+          let compiledFor = node._compiledFor;
+          if (compiledFor === undefined) {
+            compiledFor = compileDirectExpr(node.forExpr);
+            node._compiledFor = compiledFor;
+          }
+          const listVal = evalCompiledDirectExpr(compiledFor, scope);
           if (!Array.isArray(listVal)) {
             throw new TemplateSyntaxError(
               `include ... for ... in requires list, got ${typeof listVal}`,
@@ -498,8 +618,11 @@ export function renderDirectNodes(
           for (const item of listVal) {
             const iterMap = new Map<string, unknown>();
             iterMap.set(node.forBinding, item);
-            for (const [targetKey, sourceExpr] of node.withMappings) {
-              iterMap.set(targetKey, evaluateDirectExpr(sourceExpr, scope));
+            for (const [targetKey, compiledVal] of compiledWith) {
+              iterMap.set(
+                targetKey,
+                evalCompiledDirectExpr(compiledVal, scope),
+              );
             }
             for (const decl of decls) {
               if (!iterMap.has(decl.name) && decl.defaultValue !== undefined) {
@@ -517,8 +640,8 @@ export function renderDirectNodes(
         }
 
         const childMap = new Map<string, unknown>();
-        for (const [targetKey, sourceExpr] of node.withMappings) {
-          childMap.set(targetKey, evaluateDirectExpr(sourceExpr, scope));
+        for (const [targetKey, compiledVal] of compiledWith) {
+          childMap.set(targetKey, evalCompiledDirectExpr(compiledVal, scope));
         }
         for (const decl of decls) {
           if (!childMap.has(decl.name) && decl.defaultValue !== undefined) {

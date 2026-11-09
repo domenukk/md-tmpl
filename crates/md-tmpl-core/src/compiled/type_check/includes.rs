@@ -95,6 +95,10 @@ pub(super) fn validate_include(
 fn validate_with_operand(expr: &str, env: &TypeEnv<'_>, errors: &mut Vec<String>) {
     let (base, _) = crate::parser::split_pipe_aware(expr.trim());
     let base = base.trim();
+    let base = match crate::scope::parse_function_call(base) {
+        Some((crate::consts::FN_UNSAFE_TRUST, arg)) => arg.trim(),
+        _ => base,
+    };
     if crate::parser::parse_scalar_literal(base).is_some() {
         return;
     }
@@ -175,15 +179,20 @@ fn validate_include_type_match(
         // filtered expressions (the filter may change the type).
         let val = val_expr.trim();
         let (base, filters) = crate::parser::split_pipe_aware(val);
+        let base_trimmed = base.trim();
+        let unwrapped_base = match crate::scope::parse_function_call(base_trimmed) {
+            Some((crate::consts::FN_UNSAFE_TRUST, arg)) => arg.trim(),
+            _ => base_trimmed,
+        };
         if !filters.trim().is_empty()
-            || crate::parser::parse_scalar_literal(base.trim()).is_some()
+            || crate::parser::parse_scalar_literal(unwrapped_base).is_some()
             || val.starts_with(crate::consts::ANGLE_OPEN)
         {
             continue;
         }
 
         // Resolve the type of the expression in the parent env.
-        if let Some(parent_type) = resolve_path_type(val, parent_env) {
+        if let Some(parent_type) = resolve_path_type(unwrapped_base, parent_env) {
             if !types_compatible(parent_type, &included_decl.var_type) {
                 errors.push(format!(
                     "include '{}': type mismatch for '{}': \

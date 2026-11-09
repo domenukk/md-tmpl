@@ -100,8 +100,17 @@ pub(crate) fn typed_list_codegen(
         );
         let inner_builder_attrs = builder_field_attrs(&inner_decl.var_type);
         let inner_rename_attr = crate::serde_rename_attr(&inner_decl.name);
-        item_fields
-            .push(quote! { #inner_rename_attr #inner_builder_attrs pub #inner_field: #inner_type });
+        let inner_vis = crate::field_vis(&inner_decl.name);
+        let inner_doc = format!(
+            "List item field `{}` (`{}`).",
+            inner_decl.name, inner_decl.var_type
+        );
+        item_fields.push(quote! {
+            #[doc = #inner_doc]
+            #inner_rename_attr
+            #inner_builder_attrs
+            #inner_vis #inner_field: #inner_type
+        });
         item_set_stmts.push(inner_set(quote! { item.#inner_field }, inner_name_str));
     }
 
@@ -176,8 +185,17 @@ pub(crate) fn typed_dict_codegen(
         );
         let inner_builder_attrs = builder_field_attrs(&inner_decl.var_type);
         let inner_rename_attr = crate::serde_rename_attr(&inner_decl.name);
-        dict_fields
-            .push(quote! { #inner_rename_attr #inner_builder_attrs pub #inner_field: #inner_type });
+        let inner_vis = crate::field_vis(&inner_decl.name);
+        let inner_doc = format!(
+            "Struct field `{}` (`{}`).",
+            inner_decl.name, inner_decl.var_type
+        );
+        dict_fields.push(quote! {
+            #[doc = #inner_doc]
+            #inner_rename_attr
+            #inner_builder_attrs
+            #inner_vis #inner_field: #inner_type
+        });
         dict_set_stmts.push(inner_set(quote! { val.#inner_field }, inner_name_str));
     }
 
@@ -314,7 +332,8 @@ pub(crate) fn generate_toplevel_list_item(
     if fields.is_empty() || (fields.len() == 1 && fields[0].name.is_empty()) {
         return quote! {};
     }
-    let item_ident = format_ident!("{}Item", name);
+    let clean_name = name.replace('-', "_");
+    let item_ident = format_ident!("{}Item", clean_name);
     let mut sub_types = Vec::new();
     let mut item_fields = Vec::new();
 
@@ -322,13 +341,19 @@ pub(crate) fn generate_toplevel_list_item(
         let field_ident = crate::make_ident(&decl.name);
         let (field_type, _) = var_type_to_rust(
             &decl.var_type,
-            &format!("{name}Item"),
+            &format!("{clean_name}Item"),
             &decl.name,
             &mut sub_types,
         );
         let builder_attrs = builder_field_attrs(&decl.var_type);
         let rename_attr = crate::serde_rename_attr(&decl.name);
-        item_fields.push(quote! { #rename_attr #builder_attrs pub #field_ident: #field_type });
+        let field_doc = format!("List item field `{}` (`{}`).", decl.name, decl.var_type);
+        item_fields.push(quote! {
+            #[doc = #field_doc]
+            #rename_attr
+            #builder_attrs
+            pub #field_ident: #field_type
+        });
     }
 
     let derive_attrs =
@@ -354,16 +379,25 @@ pub(crate) fn generate_toplevel_dict(
     if fields.is_empty() {
         return quote! {};
     }
-    let dict_ident = format_ident!("{}", name);
+    let clean_name = name.replace('-', "_");
+    let dict_ident = crate::make_ident(name);
     let mut sub_types = Vec::new();
     let mut dict_fields = Vec::new();
 
     for decl in fields {
         let field_ident = crate::make_ident(&decl.name);
-        let (field_type, _) = var_type_to_rust(&decl.var_type, name, &decl.name, &mut sub_types);
+        let (field_type, _) =
+            var_type_to_rust(&decl.var_type, &clean_name, &decl.name, &mut sub_types);
         let builder_attrs = builder_field_attrs(&decl.var_type);
         let rename_attr = crate::serde_rename_attr(&decl.name);
-        dict_fields.push(quote! { #rename_attr #builder_attrs pub #field_ident: #field_type });
+        let vis = crate::field_vis(&decl.name);
+        let field_doc = format!("Struct field `{}` (`{}`).", decl.name, decl.var_type);
+        dict_fields.push(quote! {
+            #[doc = #field_doc]
+            #rename_attr
+            #builder_attrs
+            #vis #field_ident: #field_type
+        });
     }
 
     let derive_attrs =
@@ -390,9 +424,10 @@ pub(crate) fn generate_toplevel_option_alias(
         .option_inner_type()
         .expect("generate_toplevel_option_alias called on non-option type");
 
-    let alias_ident = format_ident!("{}", name);
+    let clean_name = name.replace('-', "_");
+    let alias_ident = crate::make_ident(name);
     let mut sub_types = Vec::new();
-    let (inner_type, _) = var_type_to_rust(inner_vt, name, "inner", &mut sub_types);
+    let (inner_type, _) = var_type_to_rust(inner_vt, &clean_name, "inner", &mut sub_types);
     let doc = format!("Type alias `{name}` (option) from template `types:` block.");
 
     quote! {

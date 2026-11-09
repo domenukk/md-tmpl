@@ -51,55 +51,9 @@ fn walk_segment(
             }
         }
 
-        Segment::Expr { expr, filters, .. } => match expr {
-            CompiledExpr::Path(path) => {
-                validate_compiled_path(path, env, errors);
-                if filters.is_empty()
-                    || filters.iter().all(|f| {
-                        matches!(
-                            f.kind,
-                            crate::compiled::FilterKind::Sanitize
-                                | crate::compiled::FilterKind::SanitizeTokens
-                                | crate::compiled::FilterKind::Quarantine
-                                | crate::compiled::FilterKind::Limit
-                                | crate::compiled::FilterKind::Truncate
-                        )
-                    })
-                {
-                    if let Some(resolved) = resolve_compiled_path_type(path, env) {
-                        if !resolved.is_displayable() {
-                            let hint = match resolved {
-                                VarType::List(_) => "use {% for %} to iterate, or | join()",
-                                VarType::Struct(_) => {
-                                    "access fields with dot notation, e.g. {{ x.field }}"
-                                }
-                                VarType::Enum(_) => {
-                                    "use kind(x) for the variant name, or {% match %}"
-                                }
-                                VarType::Tmpl(_) => "use {% include %} to render a template",
-                                VarType::Option(_) => {
-                                    "use {% if has(x) %} to unwrap, or {% match %}"
-                                }
-                                _ => "only str, int, float, bool can be displayed",
-                            };
-                            errors.push(format!(
-                                "'{}': cannot display value of type {resolved} — {hint}",
-                                path.as_str()
-                            ));
-                        }
-                    }
-                }
-            }
-            CompiledExpr::Len(_)
-            | CompiledExpr::Kind(_)
-            | CompiledExpr::Has(_)
-            | CompiledExpr::Kinds(_) => {
-                resolve_compiled_expr_type(expr, env, errors);
-            }
-            // Literals are always displayable scalars and loop indices are
-            // always ints — neither needs validation.
-            CompiledExpr::Literal(_) | CompiledExpr::Idx(_) => {}
-        },
+        Segment::Expr { expr, filters, .. } => {
+            validate_expr_segment(expr, filters, env, errors);
+        }
 
         Segment::ForLoop {
             binding,
@@ -135,6 +89,75 @@ fn walk_segment(
 
         Segment::Include(inc) => {
             validate_include(inc, env, errors, visited);
+        }
+    }
+}
+
+fn validate_expr_segment(
+    expr: &CompiledExpr,
+    filters: &[crate::compiled::ParsedFilter],
+    env: &mut TypeEnv<'_>,
+    errors: &mut Vec<String>,
+) {
+    let starts_with_unsafe_trust = filters
+        .first()
+        .is_some_and(|f| f.kind == crate::compiled::FilterKind::UnsafeTrust);
+    match expr {
+        CompiledExpr::Path(path) => {
+            validate_compiled_path(path, env, errors);
+            if let Some(resolved) = resolve_compiled_path_type(path, env) {
+                if starts_with_unsafe_trust && *resolved != VarType::Str {
+                    errors.push(format!(
+                        "'{}': 'unsafe_trust' requires a string, got {resolved}",
+                        path.as_str()
+                    ));
+                } else if (filters.is_empty()
+                    || filters.iter().all(|f| {
+                        matches!(
+                            f.kind,
+                            crate::compiled::FilterKind::Sanitize
+                                | crate::compiled::FilterKind::SanitizeTokens
+                                | crate::compiled::FilterKind::Quarantine
+                                | crate::compiled::FilterKind::UnsafeTrust
+                                | crate::compiled::FilterKind::Limit
+                                | crate::compiled::FilterKind::Truncate
+                        )
+                    }))
+                    && !resolved.is_displayable()
+                {
+                    let hint = match resolved {
+                        VarType::List(_) => "use {% for %} to iterate, or | join()",
+                        VarType::Struct(_) => "access fields with dot notation, e.g. {{ x.field }}",
+                        VarType::Enum(_) => "use kind(x) for the variant name, or {% match %}",
+                        VarType::Tmpl(_) => "use {% include %} to render a template",
+                        VarType::Option(_) => "use {% if has(x) %} to unwrap, or {% match %}",
+                        _ => "only str, int, float, bool can be displayed",
+                    };
+                    errors.push(format!(
+                        "'{}': cannot display value of type {resolved} — {hint}",
+                        path.as_str()
+                    ));
+                }
+            }
+        }
+        CompiledExpr::Len(_)
+        | CompiledExpr::Kind(_)
+        | CompiledExpr::Has(_)
+        | CompiledExpr::Kinds(_) => {
+            let resolved = resolve_compiled_expr_type(expr, env, errors);
+            if starts_with_unsafe_trust && resolved.is_some_and(|ty| ty != VarType::Str) {
+                errors.push("'unsafe_trust' requires a string".to_string());
+            }
+        }
+        CompiledExpr::Literal(val) => {
+            if starts_with_unsafe_trust && !matches!(val, crate::value::Value::Str(_)) {
+                errors.push("'unsafe_trust' requires a string".to_string());
+            }
+        }
+        CompiledExpr::Idx(_) => {
+            if starts_with_unsafe_trust {
+                errors.push("'unsafe_trust' requires a string".to_string());
+            }
         }
     }
 }
