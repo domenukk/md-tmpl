@@ -681,7 +681,7 @@ mod tests {
     fn parse_include_simple() {
         let d = parse_include_tag("include [header](./header.tmpl.md)").unwrap();
         assert_eq!(d.path, "./header.tmpl.md");
-        assert!(d.with_vars.is_empty());
+        assert_eq!(d.with_vars, []);
         assert!(d.for_each.is_none());
     }
 
@@ -711,7 +711,7 @@ mod tests {
         let d = parse_include_tag("include [collaboration_rules](./collaboration_rules.tmpl.md)")
             .unwrap();
         assert_eq!(d.path, "./collaboration_rules.tmpl.md");
-        assert!(d.with_vars.is_empty());
+        assert_eq!(d.with_vars, []);
         assert!(d.for_each.is_none());
     }
 

@@ -33,6 +33,7 @@ import {
   applySanitizeAstPass,
   checkUntrustedIncludePaths,
   contextualizeIncludeNodes,
+  formatVarTypeWithSanitize,
 } from "../sanitize_pass.js";
 import type { IncludeSanitizeContext } from "../ast.js";
 import {
@@ -476,18 +477,7 @@ export class Template implements ITemplate, TmplRef {
    * Parse a template with a base directory for include resolution.
    */
   static fromSourceWithBaseDir(source: string, baseDir: string): Template {
-    const [fm, body] = parseFrontmatter(source);
-    validateFrontmatter(fm);
-    const resolvedFm = resolveImportedConsts(fm, baseDir);
-    const nodes = parseBody(body, false, resolvedFm.bodyStartLine ?? 1);
-    walkNodesForConditionSyntax(nodes);
-    return new Template(
-      resolvedFm,
-      body,
-      nodes,
-      source,
-      baseDir,
-    ).finalizeCompile(body);
+    return Template.fromSourceWithOptions(source, { baseDir });
   }
 
   /**
@@ -647,6 +637,9 @@ params:
     if (missing.length > 0) {
       throw new MissingParamsError(missing);
     }
+    if (!this.canDirectValidateRender) {
+      return this.renderWithContext(new Context());
+    }
     // All params have defaults — use direct renderer with just defaults + consts
     return renderDirect(
       this.nodes,
@@ -663,7 +656,16 @@ params:
    */
   declarations(): [string, string][] {
     this._compiledDeclarations ??= this.fm.params.map(
-      (d) => [d.name, varTypeToString(d.varType)] as const,
+      (d) =>
+        [
+          d.name,
+          formatVarTypeWithSanitize(
+            d.name,
+            d.varType,
+            this.declaredSanitize,
+            this.fm.typeAliases,
+          ),
+        ] as const,
     );
     return this._compiledDeclarations as [string, string][];
   }
@@ -841,25 +843,63 @@ params:
   }
 
   /**
-   * Validate that this template's declarations match an expected set.
+   * Validate that this template's declarations match an expected set (order-independent).
    *
    * @throws {DeclarationsMutatedError} If the declarations don't match.
    */
   validateDeclarationsAgainst(expected: [string, string][]): void {
     const current = this.declarations();
-    if (current.length !== expected.length) {
-      throw new DeclarationsMutatedError(
-        `expected ${JSON.stringify(expected)}, got ${JSON.stringify(current)}`,
-      );
-    }
-    for (const [i, cur] of current.entries()) {
-      const exp = expected[i];
-      if (cur[0] !== exp?.[0] || cur[1] !== exp[1]) {
-        throw new DeclarationsMutatedError(
-          `expected ${JSON.stringify(expected)}, got ${JSON.stringify(current)}`,
-        );
+    const curMap = new Map<string, string>(current);
+    const expMap = new Map<string, string>(expected);
+    const missing: string[] = [];
+    const extra: string[] = [];
+    const retyped: string[] = [];
+
+    for (const name of expMap.keys()) {
+      if (!curMap.has(name)) {
+        missing.push(name);
       }
     }
+    for (const name of curMap.keys()) {
+      if (!expMap.has(name)) {
+        extra.push(name);
+      }
+    }
+    for (const [name, expTy] of expMap) {
+      const curTy = curMap.get(name);
+      if (curTy !== undefined && curTy !== expTy) {
+        retyped.push(`${name}: ${expTy} → ${curTy}`);
+      }
+    }
+    if (
+      missing.length === 0 &&
+      extra.length === 0 &&
+      retyped.length === 0 &&
+      current.length === expected.length
+    ) {
+      return;
+    }
+    missing.sort();
+    extra.sort();
+    retyped.sort();
+    const parts: string[] = [];
+    if (missing.length > 0) parts.push(`removed: ${missing.join(", ")}`);
+    if (extra.length > 0) parts.push(`added: ${extra.join(", ")}`);
+    if (retyped.length > 0) parts.push(`retyped: ${retyped.join(", ")}`);
+    const detail =
+      parts.length > 0
+        ? parts.join("; ")
+        : `expected ${JSON.stringify(expected)}, got ${JSON.stringify(current)}`;
+    throw new DeclarationsMutatedError(detail);
+  }
+
+  /**
+   * Validate that this template's declarations and sanitization contracts match `expected`.
+   *
+   * @throws {DeclarationsMutatedError} If the declarations or sanitization policies differ.
+   */
+  validateAgainstTemplate(expected: Template): void {
+    this.validateDeclarationsAgainst(expected.declarations());
   }
 
   /** String representation. */

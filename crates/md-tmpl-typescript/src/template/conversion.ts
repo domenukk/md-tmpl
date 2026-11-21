@@ -114,7 +114,7 @@ export function jsToValue(
           const innerObj = inner as Record<string, unknown>;
           const entries: [string, Value][] = [[ENUM_TAG_KEY, str(variantName)]];
           for (const field of variant.fields) {
-            if (field.name in innerObj) {
+            if (Object.hasOwn(innerObj, field.name)) {
               entries.push([
                 field.name,
                 jsToValue(
@@ -145,7 +145,7 @@ export function jsToValue(
       const obj = value as Record<string, unknown>;
       const entries: [string, Value][] = [];
       for (const field of varType.fields) {
-        if (field.name in obj) {
+        if (Object.hasOwn(obj, field.name)) {
           entries.push([
             field.name,
             jsToValue(
@@ -183,7 +183,7 @@ export function jsToValue(
           const obj = item as Record<string, unknown>;
           const entries: [string, Value][] = [];
           for (const field of varType.fields) {
-            if (field.name in obj) {
+            if (Object.hasOwn(obj, field.name)) {
               entries.push([
                 field.name,
                 jsToValue(

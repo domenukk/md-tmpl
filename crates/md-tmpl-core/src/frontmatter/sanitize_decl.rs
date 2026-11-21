@@ -1,4 +1,4 @@
-//! Declarative `| sanitize` and `trusted` / `untrusted` parsing and validation for frontmatter `params:` and `types:`.
+//! Declarative `| sanitize` and `trusted` / `untrusted` parsing and validation for frontmatter `params:`, `env:`, and `types:`.
 
 use alloc::{
     format,
@@ -8,7 +8,7 @@ use alloc::{
 
 use super::params::{find_char_at_depth_zero, split_at_depth_zero, strip_type_brackets};
 use crate::{
-    compat::HashMap,
+    compat::{HashMap, HashSet},
     consts::{
         EQUALS, ERR_UNSAFE_TRUST_DECLARATION, FILTER_SANITIZE, FILTER_UNSAFE_TRUST, PAREN_CLOSE,
         PAREN_OPEN, PATH_SEP, QUOTE_DOUBLE, QUOTE_SINGLE, TYPE_BOOL, TYPE_ENUM, TYPE_FLOAT,
@@ -21,8 +21,19 @@ use crate::{
     types::{SanitizeSpec, VarDecl, VarType},
 };
 
+/// Which frontmatter declaration block is being parsed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeclSection {
+    /// `params:` — `SafeByDefault` (`str` is sanitized unless marked `trusted`).
+    Param,
+    /// `env:` — `Trusted` by default, honoring explicit `untrusted` or `| sanitize(...)`.
+    Env,
+    /// `consts:` — `Trusted`, rejecting `| sanitize(...)` and `untrusted`.
+    Const,
+}
+
 /// Default trust state while walking a type expression (`SafeByDefault` for `params:` and `types:`,
-/// `Trusted` for `consts:`, `tmpl(...)` signatures, and inside `trusted ...` subtrees).
+/// `Trusted` for `consts:`, `env:`, `tmpl(...)` signatures, and inside `trusted ...` subtrees).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TrustMode {
     /// `str` fields automatically receive [`SanitizeSpec::Inline`] unless marked `trusted`.
@@ -84,16 +95,18 @@ pub(crate) fn parse_decl_sanitize_chain(chain: &str) -> Result<SanitizeSpec, Str
     result.ok_or_else(|| "empty filter after '|' in declaration".to_string())
 }
 
+pub(crate) type ExtractedTypeSanitize = (String, HashMap<String, SanitizeSpec>, HashSet<String>);
+
 /// Strip any `| sanitize(...)`, `trusted`, and `untrusted` annotations from a type expression
 /// (including inside compound `struct(...)`, `list(...)`, `option(...)`, and `enum(...)`
-/// definitions), returning the cleaned type expression and a map of relative dotted field paths
-/// (`""` for the root type, `"field"` or `"field.sub"` for nested fields) to their [`SanitizeSpec`].
+/// definitions), returning `(cleaned_type, relative_specs, explicit_untrusted_alias_paths)`.
 pub(crate) fn extract_type_sanitize_specs_with_aliases(
     raw_type: &str,
     initial_mode: TrustMode,
     type_alias_sanitize: &HashMap<String, HashMap<String, SanitizeSpec>>,
-) -> Result<(String, HashMap<String, SanitizeSpec>), String> {
+) -> Result<ExtractedTypeSanitize, String> {
     let mut specs = HashMap::new();
+    let mut explicit_untrusted_paths = HashSet::new();
     let cleaned = extract_type_sanitize_inner(
         raw_type.trim(),
         "",
@@ -101,8 +114,9 @@ pub(crate) fn extract_type_sanitize_specs_with_aliases(
         false,
         type_alias_sanitize,
         &mut specs,
+        &mut explicit_untrusted_paths,
     )?;
-    Ok((cleaned, specs))
+    Ok((cleaned, specs, explicit_untrusted_paths))
 }
 
 fn insert_spec(
@@ -130,7 +144,7 @@ fn insert_spec(
     Ok(())
 }
 
-fn join_prefix(prefix: &str, field: &str) -> String {
+pub(crate) fn join_prefix(prefix: &str, field: &str) -> String {
     if prefix.is_empty() {
         field.to_string()
     } else if field.is_empty() {
@@ -172,6 +186,7 @@ fn extract_type_sanitize_inner(
     inherited_explicit_untrusted: bool,
     type_alias_sanitize: &HashMap<String, HashMap<String, SanitizeSpec>>,
     specs: &mut HashMap<String, SanitizeSpec>,
+    explicit_untrusted_paths: &mut HashSet<String>,
 ) -> Result<String, String> {
     let (base_part, filter_chain) = split_pipe_aware(raw);
     if !filter_chain.trim().is_empty() {
@@ -190,6 +205,7 @@ fn extract_type_sanitize_inner(
                 explicit_untrusted,
                 type_alias_sanitize,
                 specs,
+                explicit_untrusted_paths,
             )?;
             return Ok(format!(
                 "{TYPE_OPTION}{PAREN_OPEN}{cleaned_inner}{PAREN_CLOSE}"
@@ -213,6 +229,7 @@ fn extract_type_sanitize_inner(
                     explicit_untrusted && compound_kw == TYPE_LIST,
                     type_alias_sanitize,
                     specs,
+                    explicit_untrusted_paths,
                 )?;
                 return Ok(format!(
                     "{compound_kw}{PAREN_OPEN}{cleaned_fields}{PAREN_CLOSE}"
@@ -224,8 +241,14 @@ fn extract_type_sanitize_inner(
     if let Some(rest) = base.strip_prefix(TYPE_ENUM) {
         let rest_trimmed = rest.trim();
         if let Some(inner) = strip_type_brackets(rest_trimmed) {
-            let cleaned_variants =
-                extract_enum_variants_sanitize(inner, prefix, mode, type_alias_sanitize, specs)?;
+            let cleaned_variants = extract_enum_variants_sanitize(
+                inner,
+                prefix,
+                mode,
+                type_alias_sanitize,
+                specs,
+                explicit_untrusted_paths,
+            )?;
             return Ok(format!(
                 "{TYPE_ENUM}{PAREN_OPEN}{cleaned_variants}{PAREN_CLOSE}"
             ));
@@ -238,13 +261,21 @@ fn extract_type_sanitize_inner(
         }
     } else if mode == TrustMode::SafeByDefault {
         let is_builtin_scalar = matches!(base, TYPE_BOOL | TYPE_INT | TYPE_FLOAT);
-        if !is_builtin_scalar && let Some(alias_specs) = type_alias_sanitize.get(base) {
-            for (rel, spec) in alias_specs {
-                let key = join_prefix(prefix, rel);
-                specs.entry(key).or_insert_with(|| spec.clone());
+        if is_builtin_scalar {
+            if explicit_untrusted {
+                // Record on scalar so `validate_sanitize_specs_on_type` rejects `untrusted int` cleanly.
+                insert_spec(specs, prefix, SanitizeSpec::Inline)?;
             }
-        } else if explicit_untrusted {
-            insert_spec(specs, prefix, SanitizeSpec::Inline)?;
+        } else {
+            if let Some(alias_specs) = type_alias_sanitize.get(base) {
+                for (rel, spec) in alias_specs {
+                    let key = join_prefix(prefix, rel);
+                    specs.entry(key).or_insert_with(|| spec.clone());
+                }
+            }
+            if explicit_untrusted {
+                explicit_untrusted_paths.insert(prefix.to_string());
+            }
         }
     }
 
@@ -258,6 +289,7 @@ fn extract_fields_sanitize(
     explicit_untrusted_elem: bool,
     type_alias_sanitize: &HashMap<String, HashMap<String, SanitizeSpec>>,
     specs: &mut HashMap<String, SanitizeSpec>,
+    explicit_untrusted_paths: &mut HashSet<String>,
 ) -> Result<String, String> {
     let entries = split_at_depth_zero(inner);
     let mut cleaned_entries = Vec::with_capacity(entries.len());
@@ -277,6 +309,7 @@ fn extract_fields_sanitize(
                 false,
                 type_alias_sanitize,
                 specs,
+                explicit_untrusted_paths,
             )?;
             cleaned_entries.push(format!("{field_name} = {cleaned_field_type}"));
         } else {
@@ -287,6 +320,7 @@ fn extract_fields_sanitize(
                 explicit_untrusted_elem,
                 type_alias_sanitize,
                 specs,
+                explicit_untrusted_paths,
             )?;
             cleaned_entries.push(cleaned_elem);
         }
@@ -300,6 +334,7 @@ fn extract_enum_variants_sanitize(
     mode: TrustMode,
     type_alias_sanitize: &HashMap<String, HashMap<String, SanitizeSpec>>,
     specs: &mut HashMap<String, SanitizeSpec>,
+    explicit_untrusted_paths: &mut HashSet<String>,
 ) -> Result<String, String> {
     let entries = split_at_depth_zero(inner);
     let mut cleaned_variants = Vec::with_capacity(entries.len());
@@ -320,6 +355,7 @@ fn extract_enum_variants_sanitize(
                 false,
                 type_alias_sanitize,
                 specs,
+                explicit_untrusted_paths,
             )?;
             cleaned_variants.push(format!(
                 "{var_name}{PAREN_OPEN}{cleaned_fields}{PAREN_CLOSE}"
@@ -329,6 +365,88 @@ fn extract_enum_variants_sanitize(
         }
     }
     Ok(cleaned_variants.join(", "))
+}
+
+/// Populate `out` with [`SanitizeSpec::Inline`] for every `str` leaf path inside `var_type`
+/// (excluding `tmpl(...)` signatures), preserving any existing entry in `out`.
+pub(crate) fn collect_all_str_leaf_paths(
+    var_type: &VarType,
+    prefix: &str,
+    out: &mut HashMap<String, SanitizeSpec>,
+) {
+    match var_type {
+        VarType::Str => {
+            out.entry(prefix.to_string())
+                .or_insert(SanitizeSpec::Inline);
+        }
+        VarType::Option(inner) => {
+            collect_all_str_leaf_paths(inner, prefix, out);
+        }
+        VarType::List(fields) | VarType::Struct(fields) => {
+            if fields.len() == 1 && fields[0].name.is_empty() {
+                collect_all_str_leaf_paths(&fields[0].var_type, prefix, out);
+            } else {
+                for field in fields {
+                    let sub = join_prefix(prefix, &field.name);
+                    collect_all_str_leaf_paths(&field.var_type, &sub, out);
+                }
+            }
+        }
+        VarType::Enum(variants) => {
+            for v in variants {
+                for field in &v.fields {
+                    let sub = join_prefix(prefix, &field.name);
+                    collect_all_str_leaf_paths(&field.var_type, &sub, out);
+                }
+            }
+        }
+        VarType::Tmpl(_) | VarType::Bool | VarType::Int | VarType::Float => {}
+    }
+}
+
+/// Expand explicit `untrusted Alias` annotations across all `str` leaves of the resolved `var_type`.
+/// If the target type has no `str` leaves at all (e.g. `untrusted IntAlias`), inserts at `ep` so
+/// [`validate_sanitize_specs_on_type`] rejects non-string scalar aliases consistently.
+pub(crate) fn expand_explicit_untrusted_on_type(
+    var_type: &VarType,
+    explicit_untrusted_paths: &HashSet<String>,
+    specs: &mut HashMap<String, SanitizeSpec>,
+) {
+    for ep in explicit_untrusted_paths {
+        let Some(sub_vt) = resolve_relative_type(var_type, ep) else {
+            continue;
+        };
+        let mut leaves = HashMap::new();
+        collect_all_str_leaf_paths(sub_vt, ep, &mut leaves);
+        if leaves.is_empty() {
+            if matches!(sub_vt, VarType::Bool | VarType::Int | VarType::Float) {
+                specs.entry(ep.clone()).or_insert(SanitizeSpec::Inline);
+            }
+        } else {
+            for (k, spec) in leaves {
+                specs.entry(k).or_insert(spec);
+            }
+        }
+    }
+}
+
+/// Extract relative sanitize specs (`""` for root, `"field"` for `"{decl_name}.field"`) for `decl_name`.
+#[must_use]
+pub(crate) fn extract_decl_relative_sanitize(
+    decl_name: &str,
+    param_sanitize: &HashMap<String, SanitizeSpec>,
+) -> HashMap<String, SanitizeSpec> {
+    let mut rel = HashMap::new();
+    for (k, spec) in param_sanitize {
+        if k == decl_name {
+            rel.insert(String::new(), spec.clone());
+        } else if let Some(rest) = k.strip_prefix(decl_name)
+            && let Some(sub) = rest.strip_prefix(PATH_SEP)
+        {
+            rel.insert(sub.to_string(), spec.clone());
+        }
+    }
+    rel
 }
 
 /// Resolve a relative field path (`""` for root, `"a.b"` for nested field) against `var_type`
@@ -383,8 +501,12 @@ fn resolve_relative_type<'a>(var_type: &'a VarType, rel_path: &str) -> Option<&'
     }
 }
 
-pub(crate) type ExtractedDeclarationSanitize =
-    (String, Option<String>, HashMap<String, SanitizeSpec>);
+pub(crate) type ExtractedDeclarationSanitize = (
+    String,
+    Option<String>,
+    HashMap<String, SanitizeSpec>,
+    HashSet<String>,
+);
 
 /// Extract `| sanitize(...)`, `trusted`, and `untrusted` annotations from a single declaration's
 /// `type_str` and optional `default_part` (supporting both `name = str | sanitize := "val"` and
@@ -393,21 +515,19 @@ pub(crate) fn extract_declaration_sanitize(
     name: &str,
     type_str: &str,
     default_part: Option<&str>,
-    is_constant: bool,
+    section: DeclSection,
     type_alias_sanitize: &HashMap<String, HashMap<String, SanitizeSpec>>,
 ) -> Result<ExtractedDeclarationSanitize, TemplateError> {
-    let initial_mode = if is_constant {
-        TrustMode::Trusted
-    } else {
-        TrustMode::SafeByDefault
+    let initial_mode = match section {
+        DeclSection::Param => TrustMode::SafeByDefault,
+        DeclSection::Env | DeclSection::Const => TrustMode::Trusted,
     };
     let empty_aliases = HashMap::new();
-    let alias_map = if is_constant {
-        &empty_aliases
-    } else {
-        type_alias_sanitize
+    let alias_map = match section {
+        DeclSection::Const => &empty_aliases,
+        DeclSection::Param | DeclSection::Env => type_alias_sanitize,
     };
-    let (cleaned_type, mut rel_specs) =
+    let (cleaned_type, mut rel_specs, explicit_untrusted_paths) =
         extract_type_sanitize_specs_with_aliases(type_str, initial_mode, alias_map)
             .map_err(|e| TemplateError::syntax(format!("declaration '{name}': {e}")))?;
 
@@ -426,13 +546,20 @@ pub(crate) fn extract_declaration_sanitize(
         None
     };
 
-    if is_constant && !rel_specs.is_empty() {
+    if section == DeclSection::Const
+        && (!rel_specs.is_empty() || !explicit_untrusted_paths.is_empty())
+    {
         return Err(TemplateError::syntax(format!(
             "constant '{name}': '| sanitize' is only supported on 'params' and 'types', not 'consts'"
         )));
     }
 
-    Ok((cleaned_type, cleaned_default, rel_specs))
+    Ok((
+        cleaned_type,
+        cleaned_default,
+        rel_specs,
+        explicit_untrusted_paths,
+    ))
 }
 
 /// Merge a single declaration's relative sanitize specs into the template's `param_sanitize` map.

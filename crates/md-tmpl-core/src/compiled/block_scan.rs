@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn raw_body_ranges_ignore_raw_word_in_other_statements() {
         let ranges = raw_body_ranges(r#"{% if mode == "a raw b" %}x{% /if %}"#).unwrap();
-        assert!(ranges.is_empty());
+        assert_eq!(ranges, []);
     }
 
     #[test]

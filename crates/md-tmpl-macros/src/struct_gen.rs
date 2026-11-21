@@ -213,7 +213,7 @@ pub(crate) fn generate_struct_tokens(
                         ),
                     });
                 }
-                ::core::result::Result::Ok(())
+                tmpl.validate_against_template(template())
             }
 
             /// Convert this struct into a [`Context`](::md_tmpl::Context).

@@ -417,7 +417,7 @@ Criterion benchmarks comparing pre-parsed render time as well as full end-to-end
 | **mega (e2e)** |  **4.48 µs** 🏆 | 25.06 µs | 26.83 µs |    35.12 µs |  129.75 µs |
 
 - **md-tmpl (macro)** (`include_template!` / `template!`) compiles the template body directly into native Rust statements on the generated `Params` struct — zero `Context` construction, zero `HashMap` lookups, and zero runtime AST interpretation. In the `_e2e` table, `md-tmpl (macro)` also includes constructing `Params` (`String` and `Vec` allocations) from the domain model inside the hot loop.
-- **md-tmpl** uses `Template::render_ctx` (with full runtime frontmatter schema validation on every call) in the pre-built `Context` table and `Template::render(&struct)` (which validates the `Serialize` struct against the frontmatter schema on first use and caches `TypeId::of::<T>()`) in the `_e2e` table.
+- **md-tmpl** uses `Template::render_ctx` in the pre-built `Context` table and `Template::render(&struct)` in the `_e2e` table, performing full runtime frontmatter schema validation on every call.
 
 ```bash
 just bench-rust          # run Criterion benchmarks

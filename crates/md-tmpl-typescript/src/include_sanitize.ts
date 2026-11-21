@@ -16,6 +16,9 @@ import type { IncludeSanitizeContext, Node } from "./ast.js";
 import {
   DOT,
   EXPR_START,
+  FILTER_JSON,
+  FILTER_TOJSON,
+  FILTER_TO_JSON,
   FILTER_UNSAFE_TRUST,
   FN_HAS,
   FN_IDX,
@@ -30,35 +33,32 @@ import {
   NODE_INCLUDE,
   NODE_MATCH,
   NODE_PANIC,
-  PREFIX_PARAMS_DOT,
+  PLAIN_PATH_RE,
   SANITIZE_KIND_BLOCK,
   SANITIZE_KIND_INLINE,
+  normalizeVariablePath,
 } from "./consts.js";
 import { TemplateSyntaxError } from "./errors.js";
 import { splitPipes } from "./evaluator.js";
 import { parseFilter } from "./filters.js";
 import type { SanitizeSpec } from "./sanitize_runtime.js";
 
-/** Canonical (loop-alias resolved, `params.`-stripped) dot path for `rawPath`. */
+export { PLAIN_PATH_RE };
+
+/** Canonical (loop-alias resolved, namespace-prefix stripped) dot path for `rawPath`. */
 export function resolveCanonicalPath(
   rawPath: string,
   loopAliases: ReadonlyMap<string, string>,
 ): string {
-  const trimmed = rawPath.trim();
-  const withoutParams = trimmed.startsWith(PREFIX_PARAMS_DOT)
-    ? trimmed.slice(PREFIX_PARAMS_DOT.length).trim()
-    : trimmed;
-  const dotIdx = withoutParams.indexOf(DOT);
-  const root = dotIdx === -1 ? withoutParams : withoutParams.slice(0, dotIdx);
+  const withoutPrefix = normalizeVariablePath(rawPath);
+  const dotIdx = withoutPrefix.indexOf(DOT);
+  const root = dotIdx === -1 ? withoutPrefix : withoutPrefix.slice(0, dotIdx);
   const resolvedRoot = loopAliases.get(root) ?? root;
   if (dotIdx === -1) {
     return resolvedRoot;
   }
-  return `${resolvedRoot}${withoutParams.slice(dotIdx)}`;
+  return `${resolvedRoot}${withoutPrefix.slice(dotIdx)}`;
 }
-
-export const PLAIN_PATH_RE =
-  /^[A-Za-z_][A-Za-z0-9_-]*(?:\.[A-Za-z_][A-Za-z0-9_-]*)*$/;
 
 export interface IncludeTaint {
   /** Child parameter paths receiving untrusted values, sorted and deduplicated. */
@@ -196,6 +196,22 @@ function classifyBase(base: string): BaseTrust {
  * exact match → `target`; nested field `K == C.rest` → `target.rest`;
  * sub-path of an untrusted value `C == K.rest` → `target`.
  */
+const SORTED_PARAM_SANITIZE_KEYS = new WeakMap<
+  ReadonlyMap<string, SanitizeSpec>,
+  readonly string[]
+>();
+
+function getSortedSanitizeKeys(
+  paramSanitize: ReadonlyMap<string, SanitizeSpec>,
+): readonly string[] {
+  let keys = SORTED_PARAM_SANITIZE_KEYS.get(paramSanitize);
+  if (keys === undefined) {
+    keys = [...paramSanitize.keys()].sort();
+    SORTED_PARAM_SANITIZE_KEYS.set(paramSanitize, keys);
+  }
+  return keys;
+}
+
 function mapUntrustedPath(
   target: string,
   pathExpr: string,
@@ -205,7 +221,7 @@ function mapUntrustedPath(
   out: [string, SanitizeSpec][],
 ): void {
   const canonical = resolveCanonicalPath(pathExpr, loopAliases);
-  const keys = [...paramSanitize.keys()].sort();
+  const keys = getSortedSanitizeKeys(paramSanitize);
   for (const key of keys) {
     const spec = paramSanitize.get(key);
     if (spec === undefined) continue;
@@ -244,14 +260,14 @@ function firstUntrustedInterpolation(
   paramSanitize: ReadonlyMap<string, SanitizeSpec>,
   loopAliases: ReadonlyMap<string, string>,
 ): string | undefined {
-  let search = text;
+  let cursor = 0;
   for (;;) {
-    const start = search.indexOf("{{");
+    const start = text.indexOf(EXPR_START, cursor);
     if (start === -1) return undefined;
-    const rest = search.slice(start + 2);
-    const end = rest.indexOf("}}");
+    const exprStart = start + EXPR_START.length;
+    const end = text.indexOf("}}", exprStart);
     if (end === -1) return undefined;
-    const inner = rest.slice(0, end).trim();
+    const inner = text.slice(exprStart, end).trim();
     if (!hasUnsafeTrustOptOut(inner)) {
       const base = (splitPipes(inner)[0] ?? "").trim();
       switch (classifyBase(base)) {
@@ -274,8 +290,22 @@ function firstUntrustedInterpolation(
           return base;
       }
     }
-    search = rest.slice(end + 2);
+    cursor = end + 2;
   }
+}
+
+function partsHaveToJson(parts: readonly string[]): boolean {
+  for (let i = 1; i < parts.length; i++) {
+    const [fName] = parseFilter((parts[i] ?? "").trim());
+    if (
+      fName === FILTER_TOJSON ||
+      fName === FILTER_TO_JSON ||
+      fName === FILTER_JSON
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Append the untrusted child entries for argument `rawExpr` passed to child path `target`. */
@@ -291,7 +321,8 @@ function pushArgumentTaint(
   if (hasUnsafeTrustOptOut(expr)) {
     return;
   }
-  const base = (splitPipes(expr)[0] ?? "").trim();
+  const parts = splitPipes(expr);
+  const base = (parts[0] ?? "").trim();
   const lit = stripStringLiteral(base);
   if (lit !== undefined) {
     if (
@@ -303,14 +334,29 @@ function pushArgumentTaint(
   }
   switch (classifyBase(base)) {
     case BaseTrust.Path:
-      mapUntrustedPath(
-        target,
-        base,
-        paramSanitize,
-        hostNotice,
-        loopAliases,
-        entries,
-      );
+      if (partsHaveToJson(parts)) {
+        const probe: [string, SanitizeSpec][] = [];
+        mapUntrustedPath(
+          "",
+          base,
+          paramSanitize,
+          undefined,
+          loopAliases,
+          probe,
+        );
+        if (probe.length > 0) {
+          entries.push([target, { kind: SANITIZE_KIND_INLINE }]);
+        }
+      } else {
+        mapUntrustedPath(
+          target,
+          base,
+          paramSanitize,
+          hostNotice,
+          loopAliases,
+          entries,
+        );
+      }
       break;
     case BaseTrust.Trusted:
       break;
@@ -381,7 +427,10 @@ export function updateIncludeContext(
   const hasTaint =
     taint !== undefined &&
     (taint.entries.length > 0 || taint.pathRef !== undefined);
-  const hasEnclosing = openTags.length > 0 || headingState.inAtxHeading;
+  const hasEnclosing =
+    openTags.length > 0 ||
+    headingState.inAtxHeading ||
+    pendingTag !== undefined;
   if (!hasTaint && !hasEnclosing) {
     return existing;
   }

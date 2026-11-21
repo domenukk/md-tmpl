@@ -6,7 +6,12 @@
  * @module
  */
 
+import { ENUM_TAG_KEY } from "./consts.js";
+import { TemplateSyntaxError } from "./errors.js";
 import { type Value, fromJs } from "./value.js";
+
+const ERR_RESERVED_ENUM_TAG_KEY =
+  "cannot set reserved internal key '__kind__' directly in Context — use enum types in the template frontmatter instead";
 
 /**
  * Template rendering context.
@@ -32,11 +37,17 @@ export class Context {
 
   /** Insert a value into the context. Plain JS values are auto-converted. */
   set(key: string, value: unknown): void {
+    if (key === ENUM_TAG_KEY) {
+      throw new TemplateSyntaxError(ERR_RESERVED_ENUM_TAG_KEY);
+    }
     this.values.set(key, fromJs(value));
   }
 
   /** Insert a pre-converted Value directly into the context. */
   setRaw(key: string, value: Value): void {
+    if (key === ENUM_TAG_KEY) {
+      throw new TemplateSyntaxError(ERR_RESERVED_ENUM_TAG_KEY);
+    }
     this.values.set(key, value);
   }
 

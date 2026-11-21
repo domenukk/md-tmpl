@@ -50,6 +50,29 @@ pub(crate) fn generate_types_for_template(py: Python<'_>, path: &str) -> PyResul
     Ok(result.into_any().unbind())
 }
 
+pub(super) fn scalar_list_elem(fields: &[VarDecl]) -> Option<&VarType> {
+    if fields.len() == 1 && fields[0].name.is_empty() {
+        Some(&fields[0].var_type)
+    } else {
+        None
+    }
+}
+
+pub(super) fn to_py_ident(name: &str) -> String {
+    const PY_KEYWORDS: &[&str] = &[
+        "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class",
+        "continue", "def", "del", "elif", "else", "except", "finally", "for", "from", "global",
+        "if", "import", "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return",
+        "try", "while", "with", "yield",
+    ];
+    let normalized = name.replace('-', "_");
+    if PY_KEYWORDS.contains(&normalized.as_str()) {
+        format!("{normalized}_")
+    } else {
+        normalized
+    }
+}
+
 /// Recursively generate Python types for a single declaration.
 fn generate_types_for_decl(
     py: Python<'_>,
@@ -62,6 +85,15 @@ fn generate_types_for_decl(
             let enum_name = to_pascal_case(&decl.name);
             let cls = build_enum_class(py, &enum_name, variants)?;
             out.push((enum_name, cls));
+        }
+        VarType::List(fields) if scalar_list_elem(fields).is_some() => {
+            let elem_vt = scalar_list_elem(fields).expect("checked Some");
+            let inner_decl = VarDecl {
+                name: decl.name.clone(),
+                var_type: elem_vt.clone(),
+                default_value: None,
+            };
+            generate_types_for_decl(py, parent_name, &inner_decl, out)?;
         }
         VarType::List(fields) if !fields.is_empty() => {
             let item_name = format!("{parent_name}{}Item", to_pascal_case(&decl.name));
@@ -210,7 +242,8 @@ fn build_struct_variant_def(name: &str, fields: &[VarDecl]) -> PyClassDef {
     let typed_fields: Vec<Field> = fields
         .iter()
         .map(|f| {
-            Field::new(
+            Field::with_wire_name(
+                to_py_ident(&f.name),
                 &f.name,
                 vartype_to_python_annotation(&f.var_type, name, &f.name),
             )
@@ -244,7 +277,8 @@ fn build_model_class(py: Python<'_>, name: &str, fields: &[VarDecl]) -> PyResult
     let typed_fields: Vec<Field> = fields
         .iter()
         .map(|f| {
-            Field::new(
+            Field::with_wire_name(
+                to_py_ident(&f.name),
                 &f.name,
                 vartype_to_python_annotation(&f.var_type, name, &f.name),
             )
@@ -281,7 +315,8 @@ fn build_params_class(
     let typed_fields: Vec<Field> = decls
         .iter()
         .map(|d| {
-            Field::new(
+            Field::with_wire_name(
+                to_py_ident(&d.name),
                 &d.name,
                 vartype_to_python_annotation(&d.var_type, name, &d.name),
             )
@@ -294,9 +329,9 @@ fn build_params_class(
     }
 
     // Build render() method body.
-    let kwarg_items: Vec<String> = decls
+    let kwarg_items: Vec<String> = typed_fields
         .iter()
-        .map(|d| format!("'{n}': self.{n}", n = d.name))
+        .map(|f| format!("'{}': self.{}", f.wire_name, f.name))
         .collect();
     let render_body = vec![
         "from md_tmpl._md_tmpl import Template as _NativeTemplate".into(),
@@ -307,24 +342,18 @@ fn build_params_class(
     ];
 
     // Build init body with default handling.
-    let init_body: Vec<String> = decls
+    let init_body: Vec<String> = typed_fields
         .iter()
-        .map(|d| format!("self.{n} = {n}", n = d.name))
+        .map(|f| format!("self.{n} = {n}", n = f.name))
         .collect();
 
     // Custom init with optional defaults.
-    let init_params: Vec<Field> = decls
-        .iter()
-        .map(|d| {
-            let annotation = vartype_to_python_annotation(&d.var_type, name, &d.name);
-            Field::new(&d.name, annotation)
-        })
-        .collect();
+    let init_params: Vec<Field> = typed_fields.clone();
 
     // __repr__
-    let repr_parts: Vec<String> = decls
+    let repr_parts: Vec<String> = typed_fields
         .iter()
-        .map(|d| format!("{}={{self.{}!r}}", d.name, d.name))
+        .map(|f| format!("{}={{self.{}!r}}", f.name, f.name))
         .collect();
 
     let cls = PyClassDef::build(name)
@@ -381,6 +410,13 @@ pub(super) fn vartype_to_python_annotation(
         VarType::Int => "int".into(),
         VarType::Float => "float".into(),
         VarType::List(fields) if fields.is_empty() => "list".into(),
+        VarType::List(fields) if scalar_list_elem(fields).is_some() => {
+            let elem = scalar_list_elem(fields).expect("checked Some");
+            format!(
+                "list[{}]",
+                vartype_to_python_annotation(elem, parent_name, field_name)
+            )
+        }
         VarType::List(_) => format!("list[{}{}Item]", parent_name, to_pascal_case(field_name)),
         VarType::Struct(fields) if fields.is_empty() => "dict".into(),
         VarType::Struct(_) | VarType::Enum(_) => to_pascal_case(field_name),

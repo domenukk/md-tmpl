@@ -417,7 +417,11 @@ func (b *flexBuilder) marshalValue(val reflect.Value) error {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		b.addInt(val.Int())
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		b.addUInt(val.Uint())
+		u := val.Uint()
+		if u > math.MaxInt64 {
+			return fmt.Errorf("uint64 value %d overflows int64", u)
+		}
+		b.addUInt(u)
 	case reflect.Float32, reflect.Float64:
 		b.addFloat(val.Float())
 	case reflect.String:

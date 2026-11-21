@@ -353,16 +353,17 @@ fn unquarantine_and_idempotent_quarantine_and_xml_ext_helpers() {
     ));
 
     assert_eq!(
-        decode_xml_str("&lt;a attr=&quot;x&amp;y&quot;&gt;&#39;&apos;&lt;/a&gt;").as_ref(),
-        "<a attr=\"x&y\">''</a>"
+        decode_xml_str("&lt;a attr=&quot;x&amp;y&#10;z&#13;&quot;&gt;&#39;&apos;&lt;/a&gt;")
+            .as_ref(),
+        "<a attr=\"x&y\nz\r\">''</a>"
     );
     assert_eq!(
-        escape_xml_attr_str("a&b<c>\"d\"'e'\n\r\0\x07f").as_ref(),
-        "a&amp;b&lt;c&gt;&quot;d&quot;&apos;e&apos;\\n\\r\\0 f"
+        escape_xml_attr_str("a&b<c>\"d\"'e'\n\r\0\x07\u{fffe}f").as_ref(),
+        "a&amp;b&lt;c&gt;&quot;d&quot;&apos;e&apos;&#10;&#13;f"
     );
     assert_eq!(
-        escape_xml_body_str("a&b<c>\0\"ok\"").as_ref(),
-        "a&amp;b&lt;c&gt;\\0\"ok\""
+        escape_xml_body_str("a&b<c>\0\x07\u{ffff}\"ok\"").as_ref(),
+        "a&amp;b&lt;c&gt;\"ok\""
     );
 }
 

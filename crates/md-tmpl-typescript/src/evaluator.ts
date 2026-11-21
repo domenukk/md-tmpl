@@ -318,13 +318,29 @@ export function getVariantName(val: Value, isOption: boolean): string {
   );
 }
 
+const CONDITION_TOKENS_CACHE = new Map<string, readonly Token[]>();
+const CONDITION_TOKENS_CACHE_MAX = 512;
+
+function getConditionTokens(trimmed: string): readonly Token[] {
+  const cached = CONDITION_TOKENS_CACHE.get(trimmed);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const tokens = tokenizeCondition(trimmed);
+  if (CONDITION_TOKENS_CACHE.size >= CONDITION_TOKENS_CACHE_MAX) {
+    CONDITION_TOKENS_CACHE.clear();
+  }
+  CONDITION_TOKENS_CACHE.set(trimmed, tokens);
+  return tokens;
+}
+
 /** Evaluate a condition expression for `{% if %}`. */
 export function evaluateCondition(condition: string, scope: Scope): boolean {
   const trimmed = condition.trim();
   if (trimmed.length === 0) {
     throw new TemplateSyntaxError("empty condition expression");
   }
-  const tokens = tokenizeCondition(trimmed);
+  const tokens = getConditionTokens(trimmed);
   const ctx: ParseCtx = { tokens, pos: 0, scope };
   const result = parseOrExpr(ctx);
   if (ctx.pos < ctx.tokens.length) {
@@ -346,7 +362,7 @@ export { validateConditionSyntax } from "./condition_validate.js";
 // ---------------------------------------------------------------------------
 
 interface ParseCtx {
-  tokens: Token[];
+  tokens: readonly Token[];
   pos: number;
   scope: Scope;
 }
@@ -561,18 +577,20 @@ function evaluateOperandValue(operand: OperandToken, scope: Scope): Value {
  */
 function interpolateString(input: string, scope: Scope): string {
   let result = "";
-  let remaining = input;
-  let startIdx = remaining.indexOf(EXPR_START);
+  let cursor = 0;
+  let startIdx = input.indexOf(EXPR_START, cursor);
   while (startIdx !== -1) {
-    result += remaining.slice(0, startIdx);
-    const afterStart = remaining.slice(startIdx + EXPR_START.length);
-    const endIdx = afterStart.indexOf(EXPR_END);
+    if (startIdx > cursor) {
+      result += input.slice(cursor, startIdx);
+    }
+    const exprStart = startIdx + EXPR_START.length;
+    const endIdx = input.indexOf(EXPR_END, exprStart);
     if (endIdx === -1) {
       throw new TemplateSyntaxError(
         `unclosed '${EXPR_START}' in interpolated string`,
       );
     }
-    const expr = afterStart.slice(0, endIdx).trim();
+    const expr = input.slice(exprStart, endIdx).trim();
     if (expr === "") {
       throw new TemplateSyntaxError(
         `empty expression '${EXPR_START}${EXPR_END}' in interpolated string`,
@@ -580,10 +598,12 @@ function interpolateString(input: string, scope: Scope): string {
     }
     const val = evaluateExpression(expr, scope);
     result += display(val);
-    remaining = afterStart.slice(endIdx + EXPR_END.length);
-    startIdx = remaining.indexOf(EXPR_START);
+    cursor = endIdx + EXPR_END.length;
+    startIdx = input.indexOf(EXPR_START, cursor);
   }
-  result += remaining;
+  if (cursor < input.length) {
+    result += input.slice(cursor);
+  }
   return result;
 }
 

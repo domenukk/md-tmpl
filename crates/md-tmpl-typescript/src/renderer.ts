@@ -21,15 +21,7 @@ import {
   type DeclaredSanitize,
   EMPTY_DECLARED_SANITIZE,
 } from "./include_sanitize.js";
-import {
-  type Value,
-  type TmplRef,
-  display,
-  TYPE_TMPL,
-  structVal,
-  bool,
-  int,
-} from "./value.js";
+import { type Value, type TmplRef, display, TYPE_TMPL } from "./value.js";
 import {
   TemplateError,
   TemplateSyntaxError,
@@ -63,10 +55,6 @@ import {
   EXPR_START,
   EXPR_END,
   isValidResolvedPath,
-  PREFIX_CONSTS_DOT,
-  PREFIX_OPTS_DOT,
-  PREFIX_OPTIONS_DOT,
-  PREFIX_PARAMS_DOT,
   unescapeStringLiteral,
 } from "./consts.js";
 
@@ -275,17 +263,6 @@ export function renderNodes(
                 first: idx === 0,
                 last: idx === len - 1,
               });
-              layer.set(
-                "loop",
-                structVal([
-                  ["first", bool(idx === 0)],
-                  ["last", bool(idx === len - 1)],
-                  ["index0", int(idx)],
-                  ["index", int(idx + 1)],
-                  ["length", int(len)],
-                  ["len", int(len)],
-                ]),
-              );
               parts.push(renderNodes(node.body, scope, options));
             }
           } finally {
@@ -672,18 +649,20 @@ function collectChildInlineTemplates(nodes: readonly Node[]): Map<
 function interpolateIncludePath(path: string, scope: Scope): string {
   if (!path.includes(EXPR_START)) return path;
   let result = "";
-  let remaining = path;
-  let startIdx = remaining.indexOf(EXPR_START);
+  let cursor = 0;
+  let startIdx = path.indexOf(EXPR_START, cursor);
   while (startIdx !== -1) {
-    result += remaining.slice(0, startIdx);
-    const afterStart = remaining.slice(startIdx + EXPR_START.length);
-    const endIdx = afterStart.indexOf(EXPR_END);
+    if (startIdx > cursor) {
+      result += path.slice(cursor, startIdx);
+    }
+    const exprStart = startIdx + EXPR_START.length;
+    const endIdx = path.indexOf(EXPR_END, exprStart);
     if (endIdx === -1) {
       throw new TemplateSyntaxError(
         `unclosed '${EXPR_START}' in include path '${path}'`,
       );
     }
-    const expr = afterStart.slice(0, endIdx).trim();
+    const expr = path.slice(exprStart, endIdx).trim();
     if (expr === "") {
       throw new TemplateSyntaxError(
         `empty expression '${EXPR_START}${EXPR_END}' in include path '${path}'`,
@@ -695,33 +674,7 @@ function interpolateIncludePath(path: string, scope: Scope): string {
       valStr = lit;
     } else {
       try {
-        let val: Value;
-        try {
-          val = evaluateExpression(expr, scope);
-        } catch (err: unknown) {
-          if (isUndefinedVariableError(err)) {
-            let stripped = expr;
-            if (stripped.startsWith(PREFIX_CONSTS_DOT))
-              stripped = stripped.slice(PREFIX_CONSTS_DOT.length).trim();
-            else if (stripped.startsWith(PREFIX_OPTS_DOT))
-              stripped = stripped.slice(PREFIX_OPTS_DOT.length).trim();
-            else if (stripped.startsWith(PREFIX_OPTIONS_DOT))
-              stripped = stripped.slice(PREFIX_OPTIONS_DOT.length).trim();
-            else if (stripped.startsWith(PREFIX_PARAMS_DOT))
-              stripped = stripped.slice(PREFIX_PARAMS_DOT.length).trim();
-            if (stripped !== expr) {
-              try {
-                val = evaluateExpression(stripped, scope);
-              } catch {
-                throw err;
-              }
-            } else {
-              throw err;
-            }
-          } else {
-            throw err;
-          }
-        }
+        const val = evaluateExpression(expr, scope);
         valStr = display(val);
       } catch (err: unknown) {
         if (isUndefinedVariableError(err)) {
@@ -735,10 +688,12 @@ function interpolateIncludePath(path: string, scope: Scope): string {
       }
     }
     result += valStr;
-    remaining = afterStart.slice(endIdx + EXPR_END.length);
-    startIdx = remaining.indexOf(EXPR_START);
+    cursor = endIdx + EXPR_END.length;
+    startIdx = path.indexOf(EXPR_START, cursor);
   }
-  result += remaining;
+  if (cursor < path.length) {
+    result += path.slice(cursor);
+  }
   if (!isValidResolvedPath(result) || result.includes(EXPR_START)) {
     throw new TemplateSyntaxError(
       `include path '${result}' must start with './', '../', or '/'`,

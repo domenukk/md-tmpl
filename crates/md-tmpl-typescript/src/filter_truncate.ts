@@ -10,7 +10,7 @@
 
 import { type Value, str, list } from "./value.js";
 import { TemplateSyntaxError } from "./errors.js";
-import { FILTER_TRUNCATE, unescapeStringLiteral } from "./consts.js";
+import { FILTER_TRUNCATE, stripQuotes } from "./consts.js";
 import { TRUNCATE_ARG_LABEL, parseUsizeFilterArg } from "./filter_args.js";
 
 /** Default multi-line string truncation marker. */
@@ -34,18 +34,15 @@ export const TRUNCATE_PLACEHOLDER_COUNT = "{count}";
 const UTF8_ENCODER = new TextEncoder();
 const UTF8_DECODER = new TextDecoder();
 const NEWLINE_BYTE = 0x0a;
+const MAX_UTF8_BYTES_PER_UTF16_UNIT = 3;
 
-/** Strip surrounding quotes from a filter argument and unescape its content. */
-function stripQuotesLocal(s: string): string {
-  if (s.length >= 2) {
-    if (
-      (s.startsWith('"') && s.endsWith('"')) ||
-      (s.startsWith("'") && s.endsWith("'"))
-    ) {
-      return unescapeStringLiteral(s.slice(1, -1));
+function isPureAscii(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    if (s.charCodeAt(i) >= 0x80) {
+      return false;
     }
   }
-  return s;
+  return true;
 }
 
 function substituteMarker(template: string, count: number): string {
@@ -111,6 +108,12 @@ export function truncateMiddleString(
   markerTemplate?: string,
 ): string {
   if (limit <= 0) return "";
+  if (input.length * MAX_UTF8_BYTES_PER_UTF16_UNIT <= limit) {
+    return input;
+  }
+  if (input.length <= limit && isPureAscii(input)) {
+    return input;
+  }
   const inputBytes = UTF8_ENCODER.encode(input);
   const totalLen = inputBytes.length;
   if (totalLen <= limit) return input;
@@ -249,9 +252,7 @@ export function applyTruncate(value: Value, args: string | undefined): Value {
   const commaIdx = args.indexOf(",");
   const limitStr = (commaIdx !== -1 ? args.slice(0, commaIdx) : args).trim();
   const markerArg =
-    commaIdx !== -1
-      ? stripQuotesLocal(args.slice(commaIdx + 1).trim())
-      : undefined;
+    commaIdx !== -1 ? stripQuotes(args.slice(commaIdx + 1).trim()) : undefined;
 
   const limit = parseUsizeFilterArg(
     limitStr,

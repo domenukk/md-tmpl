@@ -18,11 +18,17 @@ import {
   EXPR_END,
   EXPR_START,
   FILTER_ADD,
+  FILTER_FENCE,
   FILTER_FIXED,
+  FILTER_JSON,
   FILTER_LIMIT,
+  FILTER_QUARANTINE,
   FILTER_SANITIZE,
   FILTER_SANITIZE_ENCLOSED,
+  FILTER_SANITIZE_TOKENS,
   FILTER_SUB,
+  FILTER_TOJSON,
+  FILTER_TO_JSON,
   FILTER_TRUNCATE,
   FILTER_UNSAFE_TRUST,
   FN_UNSAFE_TRUST,
@@ -33,31 +39,40 @@ import {
   LIT_TRUE,
   OPTION_NONE,
   OPTION_SOME,
-  PREFIX_CONSTS_DOT,
-  PREFIX_OPTIONS_DOT,
-  PREFIX_OPTS_DOT,
-  PREFIX_PARAMS_DOT,
+  normalizeVariablePath,
   unescapeStringLiteral,
 } from "../consts.js";
 import { ENUM_VARIANTS_KEY, fromJs } from "../value.js";
 import {
+  type CompiledQuarantineSpec,
   type ParsedTagSpec,
   escapeXmlString,
   escapeJsonString,
   compileEnclosedSpec,
+  compileFenceLang,
+  compileQuarantineSpec,
+  compileSanitizeTokensTags,
+  fencePreparsed,
+  quarantinePreparsed,
+  quarantineUntrustedPreparsed,
   sanitizeEnclosedPreparsed,
   sanitizeEnclosedString,
   sanitizeTokensString,
   sanitizeTokensWithArgs,
+  sanitizeUntrustedPreparsed,
   fenceString,
   quarantineString,
-  quarantineUntrustedString,
   truncateMiddleString,
   applyFilter,
   parseFilter,
   stripQuotes,
 } from "../filters.js";
 import { applySanitizeFilterStr } from "../sanitize_pass.js";
+import {
+  type CompiledSanitizeBlockSpec,
+  compileSanitizeBlockSpec,
+  sanitizeBlockIdempotentPreparsed,
+} from "../sanitize_runtime.js";
 import {
   FIXED_ARG_LABEL,
   LIMIT_ARG_LABEL,
@@ -70,7 +85,10 @@ import {
 } from "../filter_args.js";
 import { formatFixedFloat, formatFixedInt } from "../numeric_format.js";
 import { truncateMiddleItems } from "../filter_truncate.js";
-import { parseJsonIndent, serializeJson } from "../filter_json.js";
+import { parseJsonIndent } from "../filter_json.js";
+import { directToJson } from "./json.js";
+
+export { directToJson };
 import { splitPipes } from "../evaluator.js";
 import { validateFilters } from "../parser_utils.js";
 import { DirectScope } from "./scope.js";
@@ -132,10 +150,29 @@ export type CompiledFilterStep =
   | { readonly kind: "join"; readonly sep: string }
   | { readonly kind: "limit"; readonly limit: number }
   | {
+      readonly kind: "truncate";
+      readonly limit: number;
+      readonly markerArg: string | undefined;
+    }
+  | { readonly kind: "tojson"; readonly indent: number | undefined }
+  | { readonly kind: "fence"; readonly lang: string }
+  | {
+      readonly kind: "quarantine";
+      readonly spec: CompiledQuarantineSpec;
+    }
+  | {
       readonly kind: "quarantine_untrusted";
-      readonly rawArg: string | undefined;
+      readonly spec: CompiledQuarantineSpec;
     }
   | { readonly kind: "sanitize_inline" }
+  | {
+      readonly kind: "sanitize_block";
+      readonly spec: CompiledSanitizeBlockSpec;
+    }
+  | {
+      readonly kind: "sanitize_tokens_tags";
+      readonly parsedTags: ParsedTagSpec;
+    }
   | {
       readonly kind: "sanitize_enclosed";
       readonly parsedTags: ParsedTagSpec | undefined;
@@ -205,11 +242,63 @@ function compileFilterStep(
       return { kind: "escape_xml" };
     case "escape_json":
       return { kind: "escape_json" };
-    case FILTER_SANITIZE:
+    case FILTER_SANITIZE: {
       if (rawArg === undefined) {
         return { kind: "sanitize_inline" };
       }
+      const spec = compileSanitizeBlockSpec(rawArg);
+      return spec !== undefined
+        ? { kind: "sanitize_block", spec }
+        : { kind: "generic", filterName, rawArg };
+    }
+    case FILTER_SANITIZE_TOKENS: {
+      if (rawArg === undefined) {
+        return { kind: "sanitize_inline" };
+      }
+      const parsedTags = compileSanitizeTokensTags(rawArg);
+      return parsedTags !== undefined
+        ? { kind: "sanitize_tokens_tags", parsedTags }
+        : { kind: "generic", filterName, rawArg };
+    }
+    case FILTER_QUARANTINE: {
+      const spec = compileQuarantineSpec(rawArg);
+      return spec !== undefined
+        ? { kind: "quarantine", spec }
+        : { kind: "generic", filterName, rawArg };
+    }
+    case FILTER_FENCE: {
+      const lang = compileFenceLang(rawArg);
+      return lang !== undefined
+        ? { kind: "fence", lang }
+        : { kind: "generic", filterName, rawArg };
+    }
+    case FILTER_TOJSON:
+    case FILTER_TO_JSON:
+    case FILTER_JSON: {
+      try {
+        return { kind: "tojson", indent: parseJsonIndent(rawArg) };
+      } catch {
+        return { kind: "generic", filterName, rawArg };
+      }
+    }
+    case FILTER_TRUNCATE:
+    case "truncate_middle": {
+      if (rawArg !== undefined && rawArg.trim().length > 0) {
+        const commaIdx = rawArg.indexOf(",");
+        const limitStr = (
+          commaIdx !== -1 ? rawArg.slice(0, commaIdx) : rawArg
+        ).trim();
+        const parsed = parseUsize(limitStr);
+        if (parsed.ok) {
+          const markerArg =
+            commaIdx !== -1
+              ? stripQuotes(rawArg.slice(commaIdx + 1).trim())
+              : undefined;
+          return { kind: "truncate", limit: parsed.value, markerArg };
+        }
+      }
       return { kind: "generic", filterName, rawArg };
+    }
     case FILTER_SANITIZE_ENCLOSED: {
       const spec = compileEnclosedSpec(rawArg);
       return {
@@ -279,20 +368,20 @@ export function compileInterpolatedParts(
   input: string,
 ): readonly CompiledInterpolatedPart[] {
   const parts: CompiledInterpolatedPart[] = [];
-  let remaining = input;
-  let startIdx = remaining.indexOf(EXPR_START);
+  let cursor = 0;
+  let startIdx = input.indexOf(EXPR_START, cursor);
   while (startIdx !== -1) {
-    if (startIdx > 0) {
-      parts.push(remaining.slice(0, startIdx));
+    if (startIdx > cursor) {
+      parts.push(input.slice(cursor, startIdx));
     }
-    const afterStart = remaining.slice(startIdx + EXPR_START.length);
-    const endIdx = afterStart.indexOf(EXPR_END);
+    const exprStart = startIdx + EXPR_START.length;
+    const endIdx = input.indexOf(EXPR_END, exprStart);
     if (endIdx === -1) {
       throw new TemplateSyntaxError(
         `unclosed '${EXPR_START}' in interpolated string`,
       );
     }
-    const expr = afterStart.slice(0, endIdx).trim();
+    const expr = input.slice(exprStart, endIdx).trim();
     if (expr === "") {
       throw new TemplateSyntaxError(
         `empty expression '${EXPR_START}${EXPR_END}' in interpolated string`,
@@ -300,11 +389,11 @@ export function compileInterpolatedParts(
     }
     validateFilters(expr);
     parts.push(compileDirectExpr(expr));
-    remaining = afterStart.slice(endIdx + EXPR_END.length);
-    startIdx = remaining.indexOf(EXPR_START);
+    cursor = endIdx + EXPR_END.length;
+    startIdx = input.indexOf(EXPR_START, cursor);
   }
-  if (remaining.length > 0) {
-    parts.push(remaining);
+  if (cursor < input.length) {
+    parts.push(input.slice(cursor));
   }
   return parts;
 }
@@ -375,16 +464,7 @@ function compileBaseDirectExpr(trimmed: string): CompiledDirectExpr {
     }
   }
 
-  let path = trimmed;
-  if (path.startsWith(PREFIX_CONSTS_DOT)) {
-    path = path.slice(PREFIX_CONSTS_DOT.length).trim();
-  } else if (path.startsWith(PREFIX_OPTS_DOT)) {
-    path = path.slice(PREFIX_OPTS_DOT.length).trim();
-  } else if (path.startsWith(PREFIX_OPTIONS_DOT)) {
-    path = path.slice(PREFIX_OPTIONS_DOT.length).trim();
-  } else if (path.startsWith(PREFIX_PARAMS_DOT)) {
-    path = path.slice(PREFIX_PARAMS_DOT.length).trim();
-  }
+  const path = normalizeVariablePath(trimmed);
 
   if (path.startsWith("loop.")) {
     return { kind: "loop_prop", prop: path.slice(5).trim() };
@@ -450,10 +530,13 @@ export function compileDirectExpr(expr: string): CompiledDirectExpr {
       const nextPart = parts[i + 1];
       if (nextPart !== undefined) {
         const [nextName, nextArg] = parseFilter(nextPart.trim());
-        if (nextName === "quarantine") {
-          steps.push({ kind: "quarantine_untrusted", rawArg: nextArg });
-          i++;
-          continue;
+        if (nextName === FILTER_QUARANTINE) {
+          const spec = compileQuarantineSpec(nextArg);
+          if (spec !== undefined) {
+            steps.push({ kind: "quarantine_untrusted", spec });
+            i++;
+            continue;
+          }
         }
       }
     }
@@ -474,7 +557,8 @@ function evalSegments(root: unknown, segments: readonly string[]): unknown {
       current === undefined ||
       typeof current !== "object" ||
       Array.isArray(current) ||
-      key === ENUM_TAG_KEY
+      key === ENUM_TAG_KEY ||
+      !Object.hasOwn(current, key)
     ) {
       return undefined;
     }
@@ -523,6 +607,31 @@ export function evalCompiledFilterStep(
         throw new TemplateSyntaxError("'limit' requires a list");
       }
       return value.slice(0, step.limit);
+    case "truncate":
+      if (typeof value === "string") {
+        return truncateMiddleString(value, step.limit, step.markerArg);
+      }
+      if (Array.isArray(value)) {
+        return truncateMiddleItems(
+          value as unknown[],
+          step.limit,
+          step.markerArg,
+          (text): unknown => text,
+        );
+      }
+      throw new TemplateSyntaxError("'truncate' requires a string or a list");
+    case "tojson":
+      return directToJson(value, step.indent);
+    case "fence":
+      if (typeof value !== "string") {
+        throw new TemplateSyntaxError("'fence' requires a string");
+      }
+      return fencePreparsed(value, step.lang);
+    case "quarantine":
+      if (typeof value !== "string") {
+        throw new TemplateSyntaxError("'quarantine' requires a string");
+      }
+      return quarantinePreparsed(value, step.spec);
     case "fixed":
       if (typeof value !== "number") {
         throw new TemplateSyntaxError("'fixed' requires a number");
@@ -569,19 +678,27 @@ export function evalCompiledFilterStep(
       }
       return value - step.delta;
     case "quarantine_untrusted":
-      if (typeof value === "string") {
-        return quarantineUntrustedString(value, step.rawArg);
+      if (typeof value !== "string") {
+        throw new TemplateSyntaxError("'sanitize_tokens' requires a string");
       }
-      return applyDirectFilter(
-        applyDirectFilter(value, "sanitize_tokens", undefined),
-        "quarantine",
-        step.rawArg,
-      );
+      return quarantineUntrustedPreparsed(value, step.spec);
     case "sanitize_inline":
       if (typeof value !== "string") {
         throw new TemplateSyntaxError(`'${FILTER_SANITIZE}' requires a string`);
       }
       return sanitizeTokensString(value);
+    case "sanitize_block":
+      if (typeof value !== "string") {
+        throw new TemplateSyntaxError(`'${FILTER_SANITIZE}' requires a string`);
+      }
+      return sanitizeBlockIdempotentPreparsed(value, step.spec);
+    case "sanitize_tokens_tags":
+      if (typeof value !== "string") {
+        throw new TemplateSyntaxError(
+          `'${FILTER_SANITIZE_TOKENS}' requires a string`,
+        );
+      }
+      return sanitizeUntrustedPreparsed(value, step.parsedTags);
     case "sanitize_enclosed":
       if (typeof value !== "string") {
         throw new TemplateSyntaxError(`'${FILTER_SANITIZE}' requires a string`);
@@ -1020,11 +1137,4 @@ export function splitDirectPipes(expr: string): string[] {
 /** Evaluate an expression with filters, returning a JS value. */
 export function evaluateDirectExpr(expr: string, scope: DirectScope): unknown {
   return evalCompiledDirectExpr(compileDirectExpr(expr), scope);
-}
-
-export function directToJson(value: unknown, indent?: number): string {
-  if (typeof value === "function") {
-    throw new TemplateSyntaxError("cannot serialize template to JSON");
-  }
-  return serializeJson(fromJs(value), indent);
 }

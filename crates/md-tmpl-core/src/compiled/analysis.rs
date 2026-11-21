@@ -250,16 +250,7 @@ fn extract_root_variable(expr: &str, loop_bindings: &HashSet<String>) -> Option<
     {
         let func_name = base[..open].trim();
         if BUILTIN_FUNCTIONS.contains(&func_name) {
-            let mut arg = base[open + 1..base.len() - 1].trim();
-            if let Some(s) = arg.strip_prefix(crate::consts::PREFIX_CONSTS_DOT) {
-                arg = s.trim();
-            } else if let Some(s) = arg.strip_prefix(crate::consts::PREFIX_OPTS_DOT) {
-                arg = s.trim();
-            } else if let Some(s) = arg.strip_prefix(crate::consts::PREFIX_OPTIONS_DOT) {
-                arg = s.trim();
-            } else if let Some(s) = arg.strip_prefix(crate::consts::PREFIX_PARAMS_DOT) {
-                arg = s.trim();
-            }
+            let arg = crate::consts::strip_namespace_prefix(base[open + 1..base.len() - 1].trim());
             let root = arg
                 .split(crate::consts::PATH_SEP)
                 .next()
@@ -271,17 +262,7 @@ fn extract_root_variable(expr: &str, loop_bindings: &HashSet<String>) -> Option<
             return None;
         }
     }
-    let base = if let Some(s) = base.strip_prefix(crate::consts::PREFIX_CONSTS_DOT) {
-        s.trim()
-    } else if let Some(s) = base.strip_prefix(crate::consts::PREFIX_OPTS_DOT) {
-        s.trim()
-    } else if let Some(s) = base.strip_prefix(crate::consts::PREFIX_OPTIONS_DOT) {
-        s.trim()
-    } else if let Some(s) = base.strip_prefix(crate::consts::PREFIX_PARAMS_DOT) {
-        s.trim()
-    } else {
-        base
-    };
+    let base = crate::consts::strip_namespace_prefix(base);
 
     let root = base
         .split(crate::consts::PATH_SEP)
@@ -643,14 +624,7 @@ fn find_top_level_op(s: &str, op: &str) -> Option<usize> {
 }
 
 fn extract_path_variable(path: &CompiledPath, loop_bindings: &HashSet<String>) -> Option<String> {
-    let mut root = path.parts()[0].as_str();
-    if root == "consts" || root == "opts" || root == "options" || root == "params" {
-        if path.parts().len() > 1 {
-            root = path.parts()[1].as_str();
-        } else {
-            return None;
-        }
-    }
+    let root = path.parts().first()?.as_str();
     if loop_bindings.contains(root) {
         None
     } else {

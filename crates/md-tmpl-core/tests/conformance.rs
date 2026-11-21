@@ -27,6 +27,7 @@ const CORPUS_FILES: &[&str] = &[
     "escapes.toml",
     "comments.toml",
     "literals.toml",
+    "security.toml",
 ];
 
 #[derive(Deserialize)]

@@ -32,6 +32,7 @@ import { isValidPathPrefix, stripStringLiteral } from "./paths.js";
 import { parseVarType } from "./var_type.js";
 import { parseLiteralOrConst, splitDefault } from "./literals.js";
 import {
+  type DeclSection,
   extractDeclarationSanitize,
   type SanitizeSpec,
   type TypeAliasSanitize,
@@ -91,14 +92,14 @@ function isQualifiedEnumVariantContext(
 export function parseParamDecl(
   raw: string,
   constValues?: ReadonlyMap<string, Value>,
-  isConstant = false,
+  sectionOrIsConstant: DeclSection | boolean = false,
   typeAliasSanitize?: TypeAliasSanitize,
   loc?: VarDecl["loc"],
 ): VarDecl {
   return parseParamDeclDeferred(
     raw,
     constValues,
-    isConstant,
+    sectionOrIsConstant,
     typeAliasSanitize,
     loc,
   )[0];
@@ -107,7 +108,7 @@ export function parseParamDecl(
 export function parseParamDeclDeferred(
   raw: string,
   constValues?: ReadonlyMap<string, Value>,
-  isConstant = false,
+  sectionOrIsConstant: DeclSection | boolean = false,
   typeAliasSanitize?: TypeAliasSanitize,
   loc?: VarDecl["loc"],
 ): [
@@ -115,6 +116,13 @@ export function parseParamDeclDeferred(
   { text: string; varType: VarType } | undefined,
   Map<string, SanitizeSpec>,
 ] {
+  const section: DeclSection =
+    typeof sectionOrIsConstant === "boolean"
+      ? sectionOrIsConstant
+        ? "const"
+        : "param"
+      : sectionOrIsConstant;
+  const isConstant = section === "const";
   const cleaned = stripOuterQuotedDecl(raw);
   const defaultSplit = splitDefault(cleaned);
   const [nameType, defaultLiteral] = defaultSplit;
@@ -122,9 +130,6 @@ export function parseParamDeclDeferred(
   const label = isConstant ? "constant" : "param";
   const eqIdx = nameType.indexOf(EQUALS);
   if (eqIdx === -1) {
-    // A `:=` default supplied without an explicit type (e.g. `x := "hi"`) is a
-    // distinct diagnostic from a bare name with no type at all (e.g.
-    // `untyped_param`). Mirror the Rust core's two separate messages exactly.
     if (defaultLiteral !== undefined) {
       throw new TemplateSyntaxError(
         `${label} '${nameType.trim()}' must have an explicit type ` +
@@ -140,32 +145,35 @@ export function parseParamDeclDeferred(
   const name = stripStringLiteral(nameType.slice(0, eqIdx).trim());
   const typeStr = nameType.slice(eqIdx + 1).trim();
 
-  const [cleanedType, cleanedDefaultLit, relSpecs, trustedSet] =
-    extractDeclarationSanitize(
-      name,
-      typeStr,
-      defaultLiteral,
-      isConstant,
-      typeAliasSanitize,
-    );
+  const [
+    cleanedType,
+    cleanedDefaultLit,
+    relSpecs,
+    trustedSet,
+    explicitUntrustedSet,
+  ] = extractDeclarationSanitize(
+    name,
+    typeStr,
+    defaultLiteral,
+    section,
+    typeAliasSanitize,
+  );
 
   const varType = parseVarType(cleanedType);
   const trustedPaths = trustedSet.size > 0 ? trustedSet : undefined;
+  const explicitUntrustedPaths =
+    explicitUntrustedSet.size > 0 ? explicitUntrustedSet : undefined;
   if (cleanedDefaultLit === undefined) {
-    return [{ name, varType, loc, trustedPaths }, undefined, relSpecs];
+    return [
+      { name, varType, loc, trustedPaths, explicitUntrustedPaths },
+      undefined,
+      relSpecs,
+    ];
   }
   const trimmedDefault = cleanedDefaultLit.trim();
 
-  // Check first: if it looks like a dotted reference (stem.NAME), and it's
-  // not resolvable as a local const, defer resolution for imported consts.
   if (/^[a-zA-Z_]\w*\.[A-Z_]\w*$/.test(trimmedDefault)) {
-    // A qualified `Type.Variant` default (e.g. `Stage.Build`) is never valid
-    // for an enum-typed parameter — the canonical form is the bare variant
-    // name. Reject it here, before the imported-const defer logic, so the
-    // error is not misattributed to a missing import. Mirrors the Rust core.
     if (isQualifiedEnumVariantContext(varType, trimmedDefault)) {
-      // Rust uses the suffix after the LAST separator; mirror it exactly so the
-      // shared "invalid enum default" message is byte-for-byte identical.
       const suffix = trimmedDefault
         .slice(trimmedDefault.lastIndexOf(DOT) + 1)
         .trim();
@@ -175,7 +183,6 @@ export function parseParamDeclDeferred(
           `(a qualified 'Type.Variant' is only valid in expressions)`,
       );
     }
-    // Try to resolve as literal or local const first
     try {
       const defaultValue = parseLiteralOrConst(
         trimmedDefault,
@@ -183,7 +190,14 @@ export function parseParamDeclDeferred(
         constValues,
       );
       return [
-        { name, varType, defaultValue, loc, trustedPaths },
+        {
+          name,
+          varType,
+          defaultValue,
+          loc,
+          trustedPaths,
+          explicitUntrustedPaths,
+        },
         undefined,
         relSpecs,
       ];
@@ -191,23 +205,28 @@ export function parseParamDeclDeferred(
       if (!(err instanceof TemplateSyntaxError)) {
         throw err;
       }
-      // Defer to imported const resolution
       return [
-        { name, varType, loc, trustedPaths },
+        { name, varType, loc, trustedPaths, explicitUntrustedPaths },
         { text: trimmedDefault, varType },
         relSpecs,
       ];
     }
   }
 
-  // Not a dotted reference — parse normally, let errors propagate as-is
   const defaultValue = parseLiteralOrConst(
     trimmedDefault,
     varType,
     constValues,
   );
   return [
-    { name, varType, defaultValue, loc, trustedPaths },
+    {
+      name,
+      varType,
+      defaultValue,
+      loc,
+      trustedPaths,
+      explicitUntrustedPaths,
+    },
     undefined,
     relSpecs,
   ];
@@ -266,7 +285,7 @@ export function assertKnownTypeRefs(
 export function parseTypeAlias(
   raw: string,
   typeAliasSanitize?: TypeAliasSanitize,
-): [string, VarType, Map<string, SanitizeSpec>] {
+): [string, VarType, Map<string, SanitizeSpec>, Set<string>] {
   const cleaned = stripStringLiteral(raw);
   const eqIdx = cleaned.indexOf(EQUALS);
   if (eqIdx === -1) {
@@ -276,14 +295,15 @@ export function parseTypeAlias(
   }
   const name = stripStringLiteral(cleaned.slice(0, eqIdx).trim());
   const typeStr = cleaned.slice(eqIdx + 1).trim();
-  const [cleanedType, , relSpecs] = extractDeclarationSanitize(
-    name,
-    typeStr,
-    undefined,
-    false,
-    typeAliasSanitize,
-  );
-  return [name, parseVarType(cleanedType), relSpecs];
+  const [cleanedType, , relSpecs, , explicitUntrustedPaths] =
+    extractDeclarationSanitize(
+      name,
+      typeStr,
+      undefined,
+      "param",
+      typeAliasSanitize,
+    );
+  return [name, parseVarType(cleanedType), relSpecs, explicitUntrustedPaths];
 }
 
 /** Parse `NAME = type := value` for constants. */
@@ -292,7 +312,24 @@ export function parseConstDecl(
   constValues?: ReadonlyMap<string, Value>,
   loc?: VarDecl["loc"],
 ): VarDecl {
-  return parseParamDecl(raw, constValues, true, undefined, loc);
+  return parseParamDecl(raw, constValues, "const", undefined, loc);
+}
+
+/** Parse `NAME = type [:= value]` for `env:` declarations (trusted by default, honoring explicit `untrusted` / `| sanitize`). */
+export function parseEnvDeclDeferred(
+  raw: string,
+  constValues?: ReadonlyMap<string, Value>,
+  typeAliasSanitize?: TypeAliasSanitize,
+  loc?: VarDecl["loc"],
+): [VarDecl, Map<string, SanitizeSpec>] {
+  const [decl, , relSpecs] = parseParamDeclDeferred(
+    raw,
+    constValues,
+    "env",
+    typeAliasSanitize,
+    loc,
+  );
+  return [decl, relSpecs];
 }
 
 /** Parse `"[stem](path.tmpl.md)"` for imports. */

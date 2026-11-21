@@ -16,7 +16,7 @@ This document defines the architectural, coding, specification, and testing stan
   2. **Rust (`crates/md-tmpl-core`, `crates/md-tmpl-macros`, `crates/md-tmpl`, `crates/md-tmpl-ffi`, `crates/md-tmpl-compile-tests`):** Runtime rendering, `no_std` + `alloc` compatibility, compile-time proc-macro (`include_template!`, `template!`) codegen, and C FFI (`pt_*`).
   3. **TypeScript (`crates/md-tmpl-typescript`):** Pure-TypeScript parser, validator, AST compiler, direct renderer, and type generator (`generateTypes`).
   4. **WebAssembly (`crates/md-tmpl-wasm`):** `wasm-bindgen` bindings and `ITemplate` parity with pure TypeScript.
-  5. **Python (`crates/md-tmpl-python`):** PyO3 native extension (`_native`), Python package (`md_tmpl`), `.pyi` type stubs, and `pytest` suite.
+  5. **Python (`crates/md-tmpl-python`):** PyO3 native extension (`_md_tmpl`), Python package (`md_tmpl`), `.pyi` type stubs, and `pytest` suite.
   6. **Go (`go/md_tmpl`, `go/cmd/pt-gen-go`):** cgo bindings over `md-tmpl-ffi` and `go test` suite.
 
 ---
@@ -60,7 +60,7 @@ Before finishing any task, run the full formatting, lint, hygiene, documentation
 # 1. Code formatting (Rust, TypeScript, Python, Go, Markdown)
 just fmt-check
 
-# 2. Hygiene & lint gates (Clippy -D warnings, tsc --noEmit, ruff, mypy, go vet, lint_hygiene.py)
+# 2. Hygiene & lint gates (Clippy -D warnings, tsc --noEmit --strict, eslint, black, mypy, go vet, lint_codegen.py, lint_hygiene.py)
 flock /tmp/md-tmpl-build.lock just lint
 
 # 3. Rustdoc warnings gate

@@ -659,6 +659,111 @@ impl VarType {
         }
     }
 
+    /// Format this type as a canonical declaration string, rendering `str` leaves absent
+    /// from `sanitize` (outside `tmpl(...)` signatures) as `"trusted str"`.
+    #[must_use]
+    pub(crate) fn format_with_sanitize(
+        &self,
+        prefix: &str,
+        sanitize: &crate::compat::HashMap<String, SanitizeSpec>,
+    ) -> String {
+        fn join_path(prefix: &str, name: &str) -> String {
+            if prefix.is_empty() {
+                name.to_string()
+            } else if name.is_empty() {
+                prefix.to_string()
+            } else {
+                alloc::format!("{prefix}.{name}")
+            }
+        }
+        fn fmt_decls(
+            fields: &[VarDecl],
+            prefix: &str,
+            sanitize: &crate::compat::HashMap<String, SanitizeSpec>,
+        ) -> String {
+            fields
+                .iter()
+                .map(|decl| {
+                    let sub = join_path(prefix, &decl.name);
+                    let ty = decl.var_type.format_with_sanitize(&sub, sanitize);
+                    if decl.name.is_empty() {
+                        ty
+                    } else {
+                        alloc::format!("{} = {ty}", decl.name)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+
+        fn escape_string_lit(s: &str) -> String {
+            s.replace('\\', "\\\\").replace('"', "\\\"")
+        }
+        fn format_str_spec(spec: Option<&SanitizeSpec>) -> String {
+            match spec {
+                None => alloc::format!(
+                    "{} {}",
+                    crate::consts::TYPE_TRUSTED,
+                    crate::consts::TYPE_STR
+                ),
+                Some(SanitizeSpec::Inline) => crate::consts::TYPE_STR.to_string(),
+                Some(SanitizeSpec::Block { tag, notice: None }) => {
+                    alloc::format!(
+                        "{} | sanitize(\"{}\")",
+                        crate::consts::TYPE_STR,
+                        escape_string_lit(tag)
+                    )
+                }
+                Some(SanitizeSpec::Block {
+                    tag,
+                    notice: Some(n),
+                }) => alloc::format!(
+                    "{} | sanitize(\"{}\", \"{}\")",
+                    crate::consts::TYPE_STR,
+                    escape_string_lit(tag),
+                    escape_string_lit(n)
+                ),
+            }
+        }
+
+        match self {
+            Self::Str => format_str_spec(sanitize.get(prefix)),
+            Self::Bool | Self::Int | Self::Float | Self::Tmpl(_) => self.to_string(),
+            Self::List(fields) => alloc::format!(
+                "{}{})",
+                crate::consts::TYPE_LIST_PREFIX,
+                fmt_decls(fields, prefix, sanitize)
+            ),
+            Self::Struct(fields) => alloc::format!(
+                "{}{})",
+                crate::consts::TYPE_STRUCT_PREFIX,
+                fmt_decls(fields, prefix, sanitize)
+            ),
+            Self::Enum(variants) => {
+                let parts: Vec<String> = variants
+                    .iter()
+                    .map(|var| {
+                        if var.fields.is_empty() {
+                            var.name.clone()
+                        } else {
+                            alloc::format!(
+                                "{}({})",
+                                var.name,
+                                fmt_decls(&var.fields, prefix, sanitize)
+                            )
+                        }
+                    })
+                    .collect();
+                alloc::format!("{}{})", crate::consts::TYPE_ENUM_PREFIX, parts.join(", "))
+            }
+            Self::Option(inner) => alloc::format!(
+                "{}{})",
+                crate::consts::TYPE_OPTION_PREFIX,
+                inner.format_with_sanitize(prefix, sanitize)
+            ),
+        }
+    }
+
     /// If this type is `option(T)`, returns the inner `T` type.
     #[must_use]
     pub fn option_inner_type(&self) -> Option<&VarType> {
@@ -705,7 +810,7 @@ pub const BUILTIN_TYPE_NAMES: &[&str] = &[
 /// ```
 #[must_use]
 pub fn to_pascal_case(s: &str) -> String {
-    s.split(['_', '-'])
+    s.split(['_', '-', '.'])
         .filter(|part| !part.is_empty())
         .map(|part| {
             let mut chars = part.chars();

@@ -407,13 +407,10 @@ pub(super) fn codegen_include(
 
     for decl in compiled.declarations.iter() {
         if !provided_keys.contains(&decl.name) {
-            if let Some(ref def_val) = decl.default_value {
-                child_scope
-                    .static_values
-                    .insert(decl.name.clone(), def_val.clone());
-            } else {
-                return None;
-            }
+            let def_val = decl.default_value.as_ref()?;
+            child_scope
+                .static_values
+                .insert(decl.name.clone(), def_val.clone());
         }
     }
 

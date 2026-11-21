@@ -143,7 +143,6 @@ impl ser::Serializer for ValueSerializer {
     }
 
     fn serialize_none(self) -> Result<Value, SerError> {
-        // Map to the template engine's `Value::None` for `option(T)`.
         Ok(Value::None)
     }
     fn serialize_some<T: ?Sized + Serialize>(self, value: &T) -> Result<Value, SerError> {
@@ -187,17 +186,23 @@ impl ser::Serializer for ValueSerializer {
     }
 
     fn serialize_seq(self, len: Option<usize>) -> Result<SeqBuilder, SerError> {
-        Ok(SeqBuilder(Vec::with_capacity(len.unwrap_or(0))))
+        Ok(SeqBuilder {
+            items: Vec::with_capacity(len.unwrap_or(0)),
+        })
     }
     fn serialize_tuple(self, len: usize) -> Result<SeqBuilder, SerError> {
-        Ok(SeqBuilder(Vec::with_capacity(len)))
+        Ok(SeqBuilder {
+            items: Vec::with_capacity(len),
+        })
     }
     fn serialize_tuple_struct(
         self,
         _name: &'static str,
         len: usize,
     ) -> Result<SeqBuilder, SerError> {
-        Ok(SeqBuilder(Vec::with_capacity(len)))
+        Ok(SeqBuilder {
+            items: Vec::with_capacity(len),
+        })
     }
     fn serialize_tuple_variant(
         self,
@@ -206,7 +211,9 @@ impl ser::Serializer for ValueSerializer {
         _variant: &'static str,
         len: usize,
     ) -> Result<SeqBuilder, SerError> {
-        Ok(SeqBuilder(Vec::with_capacity(len)))
+        Ok(SeqBuilder {
+            items: Vec::with_capacity(len),
+        })
     }
 
     fn serialize_map(self, len: Option<usize>) -> Result<MapBuilder, SerError> {
@@ -227,7 +234,7 @@ impl ser::Serializer for ValueSerializer {
         variant: &'static str,
         len: usize,
     ) -> Result<StructVariantBuilder, SerError> {
-        let mut map = HashMap::with_capacity(len + 1); // +1 for the tag key
+        let mut map = HashMap::with_capacity(len + 1);
         map.insert(
             crate::consts::ENUM_TAG_KEY.to_owned(),
             Value::Str(variant.to_owned()),
@@ -240,17 +247,19 @@ impl ser::Serializer for ValueSerializer {
 // Sequence builder
 // ---------------------------------------------------------------------------
 
-struct SeqBuilder(Vec<Value>);
+struct SeqBuilder {
+    items: Vec<Value>,
+}
 
 impl ser::SerializeSeq for SeqBuilder {
     type Ok = Value;
     type Error = SerError;
     fn serialize_element<T: ?Sized + Serialize>(&mut self, value: &T) -> Result<(), SerError> {
-        self.0.push(value.serialize(ValueSerializer)?);
+        self.items.push(value.serialize(ValueSerializer)?);
         Ok(())
     }
     fn end(self) -> Result<Value, SerError> {
-        Ok(Value::List(Arc::new(self.0)))
+        Ok(Value::List(Arc::new(self.items)))
     }
 }
 
@@ -550,6 +559,9 @@ impl ser::SerializeStruct for ContextStructBuilder {
         key: &'static str,
         value: &T,
     ) -> Result<(), SerError> {
+        if key == crate::consts::ENUM_TAG_KEY {
+            return Err(SerError(crate::consts::ERR_RESERVED_ENUM_TAG_KEY.into()));
+        }
         self.map
             .insert(key.to_owned(), value.serialize(ValueSerializer)?);
         Ok(())
@@ -598,6 +610,9 @@ impl ser::SerializeMap for ContextMapBuilder {
         let key_val = key.serialize(ValueSerializer)?;
         match key_val {
             Value::Str(s) => {
+                if s == crate::consts::ENUM_TAG_KEY {
+                    return Err(SerError(crate::consts::ERR_RESERVED_ENUM_TAG_KEY.into()));
+                }
                 self.pending_key = Some(s);
                 Ok(())
             }

@@ -3,15 +3,9 @@
  */
 
 import type { LoopMeta } from "./ast.js";
-import { type Value, getField } from "./value.js";
+import { type Value, bool, getField, int, structVal } from "./value.js";
 import { TemplateSyntaxError, UndefinedVariableError } from "./errors.js";
-import {
-  DOT,
-  PREFIX_CONSTS_DOT,
-  PREFIX_OPTS_DOT,
-  PREFIX_OPTIONS_DOT,
-  PREFIX_PARAMS_DOT,
-} from "./consts.js";
+import { DOT, LOOP, normalizeVariablePath } from "./consts.js";
 
 /**
  * Layered scope for variable resolution during rendering.
@@ -22,6 +16,7 @@ export class Scope {
   private readonly ctx: ReadonlyMap<string, Value>;
   private readonly layers: Map<string, Value>[] = [];
   private readonly loopMetas = new Map<string, LoopMeta>();
+  private readonly activeLoopStack: (LoopMeta | undefined)[] = [];
   /** Option params that have been narrowed to Some (unwrapped) in an enclosing
    *  match/if-has arm. One set per layer so narrowing is properly scoped. */
   private readonly narrowedOptions: Set<string>[] = [];
@@ -97,20 +92,54 @@ export class Scope {
     const layer = new Map<string, Value>();
     this.layers.push(layer);
     this.narrowedOptions.push(new Set());
+    this.activeLoopStack.push(undefined);
     return layer;
   }
 
   popLayer(): void {
     this.layers.pop();
     this.narrowedOptions.pop();
+    this.activeLoopStack.pop();
   }
 
   setLoopMeta(binding: string, meta: LoopMeta): void {
     this.loopMetas.set(binding, meta);
+    if (this.activeLoopStack.length > 0) {
+      this.activeLoopStack[this.activeLoopStack.length - 1] = meta;
+    }
   }
 
   getLoopMeta(binding: string): LoopMeta | undefined {
     return this.loopMetas.get(binding);
+  }
+
+  private topLoopMeta(): LoopMeta | undefined {
+    for (let i = this.activeLoopStack.length - 1; i >= 0; i--) {
+      const meta = this.activeLoopStack[i];
+      if (meta !== undefined) return meta;
+    }
+    return undefined;
+  }
+
+  private resolveLoopProp(prop: string): Value | undefined {
+    const meta = this.topLoopMeta();
+    if (meta === undefined) return undefined;
+    const len = meta.len;
+    switch (prop) {
+      case "first":
+        return bool(meta.first ?? meta.index === 0);
+      case "last":
+        return bool(meta.last ?? (len > 0 && meta.index + 1 === len));
+      case "index0":
+        return int(meta.index);
+      case "index":
+        return int(meta.index + 1);
+      case "length":
+      case "len":
+        return int(len);
+      default:
+        return undefined;
+    }
   }
 
   resolve(key: string): Value | undefined {
@@ -126,6 +155,21 @@ export class Scope {
       if (v !== undefined) return v;
     }
 
+    if (key === LOOP) {
+      const meta = this.topLoopMeta();
+      if (meta !== undefined) {
+        const len = meta.len;
+        return structVal([
+          ["first", bool(meta.first ?? meta.index === 0)],
+          ["last", bool(meta.last ?? (len > 0 && meta.index + 1 === len))],
+          ["index0", int(meta.index)],
+          ["index", int(meta.index + 1)],
+          ["length", int(len)],
+          ["len", int(len)],
+        ]);
+      }
+    }
+
     // 3. Context
     return this.ctx.get(key);
   }
@@ -137,16 +181,7 @@ export class Scope {
    * allocate Error stack traces).
    */
   tryResolvePath(pathStr: string): Value | undefined {
-    let path = pathStr.trim();
-    if (path.startsWith(PREFIX_CONSTS_DOT))
-      path = path.slice(PREFIX_CONSTS_DOT.length).trim();
-    else if (path.startsWith(PREFIX_OPTS_DOT))
-      path = path.slice(PREFIX_OPTS_DOT.length).trim();
-    else if (path.startsWith(PREFIX_OPTIONS_DOT))
-      path = path.slice(PREFIX_OPTIONS_DOT.length).trim();
-    else if (path.startsWith(PREFIX_PARAMS_DOT))
-      path = path.slice(PREFIX_PARAMS_DOT.length).trim();
-    pathStr = path;
+    pathStr = normalizeVariablePath(pathStr);
 
     const firstDot = pathStr.indexOf(DOT);
     if (firstDot === -1) {
@@ -155,7 +190,9 @@ export class Scope {
 
     if (pathStr.startsWith("loop.")) {
       const prop = pathStr.slice(5).trim();
-      const loopVal = this.resolve("loop");
+      const fastProp = this.resolveLoopProp(prop);
+      if (fastProp !== undefined) return fastProp;
+      const loopVal = this.resolve(LOOP);
       return loopVal !== undefined ? getField(loopVal, prop) : undefined;
     }
 
@@ -205,16 +242,7 @@ export class Scope {
   }
 
   resolvePath(pathStr: string): Value {
-    let path = pathStr.trim();
-    if (path.startsWith(PREFIX_CONSTS_DOT))
-      path = path.slice(PREFIX_CONSTS_DOT.length).trim();
-    else if (path.startsWith(PREFIX_OPTS_DOT))
-      path = path.slice(PREFIX_OPTS_DOT.length).trim();
-    else if (path.startsWith(PREFIX_OPTIONS_DOT))
-      path = path.slice(PREFIX_OPTIONS_DOT.length).trim();
-    else if (path.startsWith(PREFIX_PARAMS_DOT))
-      path = path.slice(PREFIX_PARAMS_DOT.length).trim();
-    pathStr = path;
+    pathStr = normalizeVariablePath(pathStr);
 
     // Fast path: no dot means simple variable lookup (very common)
     const firstDot = pathStr.indexOf(DOT);
@@ -228,7 +256,12 @@ export class Scope {
 
     if (pathStr.startsWith("loop.")) {
       const prop = pathStr.slice(5).trim();
-      const loopVal = this.resolve("loop");
+      const fastProp = this.resolveLoopProp(prop);
+      if (fastProp !== undefined) return fastProp;
+      if (this.topLoopMeta() !== undefined) {
+        throw new UndefinedVariableError(`field '${prop}' not found on loop`);
+      }
+      const loopVal = this.resolve(LOOP);
       if (loopVal !== undefined) {
         const field = getField(loopVal, prop);
         if (field !== undefined) return field;

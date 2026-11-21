@@ -12,7 +12,7 @@ use alloc::{
 
 use super::{
     security::{
-        DEFAULT_QUARANTINE_TAG, has_untrusted_breakout, is_quarantined_str,
+        DEFAULT_QUARANTINE_TAG, has_untrusted_breakout, is_illegal_xml_char, is_quarantined_str,
         quarantine_untrusted_str, sanitize_tokens_str, sanitize_untrusted_str,
         validate_quarantine_tag_spec, validate_sanitize_tag_spec,
     },
@@ -61,6 +61,8 @@ pub const XML_DECODE_PAIRS: &[(&str, &str)] = &[
     ("&apos;", "'"),
     ("&lt;", "<"),
     ("&gt;", ">"),
+    ("&#10;", "\n"),
+    ("&#13;", "\r"),
     ("&amp;", "&"),
 ];
 
@@ -415,22 +417,56 @@ fn collapse_heading_line_breaks(cow: Cow<'_, str>) -> Cow<'_, str> {
     )
 }
 
+fn strip_heading_sentinel_from_spec(tags: &str) -> (Cow<'_, str>, bool) {
+    if tags == crate::compiled::sanitize_pass::INLINE_HEADING_SENTINEL {
+        return (Cow::Borrowed(""), true);
+    }
+    let mut heading = false;
+    let mut xml_tags: Vec<&str> = Vec::new();
+    for part in tags.split(',') {
+        let trimmed = part.trim();
+        if trimmed == crate::compiled::sanitize_pass::INLINE_HEADING_SENTINEL {
+            heading = true;
+        } else if !trimmed.is_empty() {
+            xml_tags.push(trimmed);
+        }
+    }
+    if !heading {
+        (Cow::Borrowed(tags), false)
+    } else if xml_tags.is_empty() {
+        (Cow::Borrowed(""), true)
+    } else {
+        (Cow::Owned(xml_tags.join(",")), true)
+    }
+}
+
 /// Fast-path inline sanitization into `buf` for native proc-macro codegen and compiled renderers.
 pub fn sanitize_inline_into(s: &str, enclosing_tags: Option<&str>, buf: &mut String) {
     let cow = match enclosing_tags {
         None | Some("") => sanitize_tokens_str(s),
-        Some(tags) if tags == crate::compiled::sanitize_pass::INLINE_HEADING_SENTINEL => {
-            collapse_heading_line_breaks(sanitize_tokens_str(s))
-        }
         Some(tags) => {
-            let sanitized = sanitize_untrusted_str(s, tags);
-            if tags
-                .split(',')
-                .any(|t| t.trim() == crate::compiled::sanitize_pass::INLINE_HEADING_SENTINEL)
-            {
-                collapse_heading_line_breaks(sanitized)
+            let (xml_tags, heading) = strip_heading_sentinel_from_spec(tags);
+            let pre = if heading {
+                collapse_heading_line_breaks(Cow::Borrowed(s))
             } else {
-                sanitized
+                Cow::Borrowed(s)
+            };
+            if xml_tags.is_empty() {
+                match pre {
+                    Cow::Borrowed(b) => sanitize_tokens_str(b),
+                    Cow::Owned(o) => match sanitize_tokens_str(&o) {
+                        Cow::Borrowed(_) => Cow::Owned(o),
+                        Cow::Owned(san) => Cow::Owned(san),
+                    },
+                }
+            } else {
+                match pre {
+                    Cow::Borrowed(b) => sanitize_untrusted_str(b, &xml_tags),
+                    Cow::Owned(o) => match sanitize_untrusted_str(&o, &xml_tags) {
+                        Cow::Borrowed(_) => Cow::Owned(o),
+                        Cow::Owned(san) => Cow::Owned(san),
+                    },
+                }
             }
         }
     };
@@ -458,31 +494,29 @@ pub(super) fn sanitize_cow_with_mode<'a>(
                     Cow::Owned(s) => Cow::Owned(s),
                 },
             }),
-            Some(tags) if tags == crate::compiled::sanitize_pass::INLINE_HEADING_SENTINEL => {
-                let tok = match input {
-                    Cow::Borrowed(b) => sanitize_tokens_str(b),
-                    Cow::Owned(o) => match sanitize_tokens_str(&o) {
-                        Cow::Borrowed(_) => Cow::Owned(o),
-                        Cow::Owned(s) => Cow::Owned(s),
-                    },
-                };
-                Ok(collapse_heading_line_breaks(tok))
-            }
             Some(tags) => {
-                let sanitized = match input {
-                    Cow::Borrowed(b) => sanitize_untrusted_str(b, tags),
-                    Cow::Owned(o) => match sanitize_untrusted_str(&o, tags) {
-                        Cow::Borrowed(_) => Cow::Owned(o),
-                        Cow::Owned(s) => Cow::Owned(s),
-                    },
-                };
-                if tags
-                    .split(',')
-                    .any(|t| t.trim() == crate::compiled::sanitize_pass::INLINE_HEADING_SENTINEL)
-                {
-                    Ok(collapse_heading_line_breaks(sanitized))
+                let (xml_tags, heading) = strip_heading_sentinel_from_spec(tags);
+                let pre = if heading {
+                    collapse_heading_line_breaks(input)
                 } else {
-                    Ok(sanitized)
+                    input
+                };
+                if xml_tags.is_empty() {
+                    Ok(match pre {
+                        Cow::Borrowed(b) => sanitize_tokens_str(b),
+                        Cow::Owned(o) => match sanitize_tokens_str(&o) {
+                            Cow::Borrowed(_) => Cow::Owned(o),
+                            Cow::Owned(s) => Cow::Owned(s),
+                        },
+                    })
+                } else {
+                    Ok(match pre {
+                        Cow::Borrowed(b) => sanitize_untrusted_str(b, &xml_tags),
+                        Cow::Owned(o) => match sanitize_untrusted_str(&o, &xml_tags) {
+                            Cow::Borrowed(_) => Cow::Owned(o),
+                            Cow::Owned(s) => Cow::Owned(s),
+                        },
+                    })
                 }
             }
         },
@@ -638,7 +672,7 @@ pub fn decode_xml_str(s: &str) -> Cow<'_, str> {
 }
 
 /// Escape a string for safe inclusion inside an XML attribute value (`&`, `<`, `>`, `"`, `'`,
-/// `\n` -> `\n`, `\r` -> `\r`, `\0` -> `\0`, and other control characters -> `' '`),
+/// `\n` -> `&#10;`, `\r` -> `&#13;`, and illegal XML 1.0 controls/noncharacters stripped),
 /// returning [`Cow::Borrowed`] when clean.
 #[must_use]
 pub fn escape_xml_attr_str(s: &str) -> Cow<'_, str> {
@@ -651,10 +685,9 @@ pub fn escape_xml_attr_str(s: &str) -> Cow<'_, str> {
             '>' => Some("&gt;"),
             '"' => Some("&quot;"),
             '\'' => Some("&apos;"),
-            '\n' => Some("\\n"),
-            '\r' => Some("\\r"),
-            '\0' => Some("\\0"),
-            c if c.is_control() => Some(" "),
+            '\n' => Some("&#10;"),
+            '\r' => Some("&#13;"),
+            c if is_illegal_xml_char(c) => Some(""),
             _ => None,
         };
         if let Some(rep) = replacement {
@@ -673,8 +706,8 @@ pub fn escape_xml_attr_str(s: &str) -> Cow<'_, str> {
     }
 }
 
-/// Escape an XML element body value (`&` -> `&amp;`, `<` -> `&lt;`, `>` -> `&gt;`, `\0` -> `\0`),
-/// returning [`Cow::Borrowed`] when clean.
+/// Escape an XML element body value (`&` -> `&amp;`, `<` -> `&lt;`, `>` -> `&gt;`, and illegal
+/// XML 1.0 controls/noncharacters stripped), returning [`Cow::Borrowed`] when clean.
 #[must_use]
 pub fn escape_xml_body_str(s: &str) -> Cow<'_, str> {
     let mut out: Option<String> = None;
@@ -684,7 +717,7 @@ pub fn escape_xml_body_str(s: &str) -> Cow<'_, str> {
             '&' => Some("&amp;"),
             '<' => Some("&lt;"),
             '>' => Some("&gt;"),
-            '\0' => Some("\\0"),
+            c if is_illegal_xml_char(c) => Some(""),
             _ => None,
         };
         if let Some(rep) = replacement {

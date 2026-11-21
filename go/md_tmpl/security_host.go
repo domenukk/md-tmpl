@@ -24,6 +24,7 @@ import "C"
 
 import (
 	"encoding/json"
+	"runtime"
 	"sync"
 	"unsafe"
 )
@@ -51,6 +52,10 @@ const (
 	DefaultTruncateMarkerCompact = " [TRUNCATED: {skipped} bytes omitted] "
 	// DefaultListTruncateMarker is the default marker item inserted by TruncateMiddleList.
 	DefaultListTruncateMarker = "[TRUNCATED: {skipped} items omitted]"
+	// TruncatePlaceholderSkipped is the `{skipped}` placeholder substituted by TruncateMiddle.
+	TruncatePlaceholderSkipped = "{skipped}"
+	// TruncatePlaceholderCount is the `{count}` alias placeholder substituted by TruncateMiddle.
+	TruncatePlaceholderCount = "{count}"
 )
 
 // xmlDecodePairsKey is the SecurityConstants entry holding the XML decode pairs.
@@ -120,7 +125,9 @@ func takeOptional(res *C.char) (string, bool) {
 // Plane 14 Tag, or C0/DEL/C1 control character.
 func HasInvisibleChars(s string) bool {
 	ptr, n := strPtrAndLen(s)
-	return bool(C.pt_has_invisible_chars(ptr, n))
+	ok := bool(C.pt_has_invisible_chars(ptr, n))
+	runtime.KeepAlive(s)
+	return ok
 }
 
 // StripInvisible strips invisible Unicode smuggling characters, Bidi overrides/isolates,
@@ -128,7 +135,9 @@ func HasInvisibleChars(s string) bool {
 func StripInvisible(s string) string {
 	ptr, n := strPtrAndLen(s)
 	var errPtr *C.char
-	out, err := takeString(C.pt_strip_invisible(ptr, n, &errPtr), errPtr)
+	res := C.pt_strip_invisible(ptr, n, &errPtr)
+	runtime.KeepAlive(s)
+	out, err := takeString(res, errPtr)
 	if err != nil {
 		panic(err)
 	}
@@ -139,7 +148,9 @@ func StripInvisible(s string) string {
 func DecodeXML(s string) string {
 	ptr, n := strPtrAndLen(s)
 	var errPtr *C.char
-	out, err := takeString(C.pt_decode_xml(ptr, n, &errPtr), errPtr)
+	res := C.pt_decode_xml(ptr, n, &errPtr)
+	runtime.KeepAlive(s)
+	out, err := takeString(res, errPtr)
 	if err != nil {
 		panic(err)
 	}
@@ -150,18 +161,22 @@ func DecodeXML(s string) string {
 func EscapeXMLAttr(s string) string {
 	ptr, n := strPtrAndLen(s)
 	var errPtr *C.char
-	out, err := takeString(C.pt_escape_xml_attr(ptr, n, &errPtr), errPtr)
+	res := C.pt_escape_xml_attr(ptr, n, &errPtr)
+	runtime.KeepAlive(s)
+	out, err := takeString(res, errPtr)
 	if err != nil {
 		panic(err)
 	}
 	return out
 }
 
-// EscapeXMLBody escapes s for an XML element body (`&`, `<`, `>`, and NUL).
+// EscapeXMLBody escapes s for an XML element body (`&`, `<`, `>`, stripping illegal XML 1.0 chars).
 func EscapeXMLBody(s string) string {
 	ptr, n := strPtrAndLen(s)
 	var errPtr *C.char
-	out, err := takeString(C.pt_escape_xml_body(ptr, n, &errPtr), errPtr)
+	res := C.pt_escape_xml_body(ptr, n, &errPtr)
+	runtime.KeepAlive(s)
+	out, err := takeString(res, errPtr)
 	if err != nil {
 		panic(err)
 	}
@@ -193,7 +208,9 @@ func StripOuterQuarantineTag(s string, tagName string) (string, bool) {
 	ptr, n := strPtrAndLen(s)
 	cTag := C.CString(tagName)
 	defer C.free(unsafe.Pointer(cTag))
-	return takeOptional(C.pt_strip_outer_quarantine_tag(ptr, n, cTag))
+	res := C.pt_strip_outer_quarantine_tag(ptr, n, cTag)
+	runtime.KeepAlive(s)
+	return takeOptional(res)
 }
 
 // Unquarantine extracts the payload of a verified quarantine envelope; ok is false if invalid.
@@ -202,7 +219,9 @@ func Unquarantine(s string, tagSpec string) (string, bool) {
 	ptr, n := strPtrAndLen(s)
 	cSpec, freeSpec := optCString(tagSpec)
 	defer freeSpec()
-	return takeOptional(C.pt_unquarantine(ptr, n, cSpec))
+	res := C.pt_unquarantine(ptr, n, cSpec)
+	runtime.KeepAlive(s)
+	return takeOptional(res)
 }
 
 // QuarantineUntrustedIdempotent sanitizes and wraps s in a quarantine envelope unless it is
@@ -212,7 +231,9 @@ func QuarantineUntrustedIdempotent(s string, tagSpec string) (string, error) {
 	cSpec, freeSpec := optCString(tagSpec)
 	defer freeSpec()
 	var errPtr *C.char
-	return takeString(C.pt_quarantine_untrusted_idempotent(ptr, n, cSpec, &errPtr), errPtr)
+	res := C.pt_quarantine_untrusted_idempotent(ptr, n, cSpec, &errPtr)
+	runtime.KeepAlive(s)
+	return takeString(res, errPtr)
 }
 
 // SanitizeBlockIdempotent sanitizes and wraps s in a SanitizeBlock envelope unless it is
@@ -222,7 +243,9 @@ func SanitizeBlockIdempotent(s string, tagSpec string) (string, error) {
 	cSpec, freeSpec := optCString(tagSpec)
 	defer freeSpec()
 	var errPtr *C.char
-	return takeString(C.pt_sanitize_block_idempotent(ptr, n, cSpec, nil, &errPtr), errPtr)
+	res := C.pt_sanitize_block_idempotent(ptr, n, cSpec, nil, &errPtr)
+	runtime.KeepAlive(s)
+	return takeString(res, errPtr)
 }
 
 // SanitizeBlockIdempotentWithNotice is SanitizeBlockIdempotent with a custom notice
@@ -234,14 +257,18 @@ func SanitizeBlockIdempotentWithNotice(s string, tagSpec string, customNotice st
 	cNotice := C.CString(customNotice)
 	defer C.free(unsafe.Pointer(cNotice))
 	var errPtr *C.char
-	return takeString(C.pt_sanitize_block_idempotent(ptr, n, cSpec, cNotice, &errPtr), errPtr)
+	res := C.pt_sanitize_block_idempotent(ptr, n, cSpec, cNotice, &errPtr)
+	runtime.KeepAlive(s)
+	return takeString(res, errPtr)
 }
 
 // TruncateMiddle keeps at most limit UTF-8 bytes of s, replacing the middle with the default marker.
 func TruncateMiddle(s string, limit uint) (string, error) {
 	ptr, n := strPtrAndLen(s)
 	var errPtr *C.char
-	return takeString(C.pt_truncate_middle(ptr, n, C.size_t(limit), nil, &errPtr), errPtr)
+	res := C.pt_truncate_middle(ptr, n, C.size_t(limit), nil, &errPtr)
+	runtime.KeepAlive(s)
+	return takeString(res, errPtr)
 }
 
 // TruncateMiddleWithMarker is TruncateMiddle with a custom marker (may use `{skipped}`).
@@ -250,7 +277,9 @@ func TruncateMiddleWithMarker(s string, limit uint, marker string) (string, erro
 	cMarker := C.CString(marker)
 	defer C.free(unsafe.Pointer(cMarker))
 	var errPtr *C.char
-	return takeString(C.pt_truncate_middle(ptr, n, C.size_t(limit), cMarker, &errPtr), errPtr)
+	res := C.pt_truncate_middle(ptr, n, C.size_t(limit), cMarker, &errPtr)
+	runtime.KeepAlive(s)
+	return takeString(res, errPtr)
 }
 
 func truncateMiddleList(items []any, limit uint, cMarker *C.char) ([]any, error) {

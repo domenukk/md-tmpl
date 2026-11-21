@@ -378,10 +378,14 @@ export function isValidFastParams(
   if (Object.getPrototypeOf(params) !== Object.prototype) {
     return false;
   }
+  if (Object.hasOwn(params, ENUM_TAG_KEY)) {
+    return false;
+  }
   let presentDeclaredCount = 0;
   for (const check of paramChecks) {
-    const val = params[check.name];
-    if (val === undefined && !Object.hasOwn(params, check.name)) {
+    const hasOwn = Object.hasOwn(params, check.name);
+    const val = hasOwn ? params[check.name] : undefined;
+    if (val === undefined && !hasOwn) {
       if (!check.hasDefault) {
         return false;
       }
@@ -412,8 +416,10 @@ export function isValidFastParams(
 
   if (!allowExtra) {
     let totalKeys = 0;
-    for (const _key in params) {
-      totalKeys++;
+    for (const key in params) {
+      if (Object.hasOwn(params, key)) {
+        totalKeys++;
+      }
     }
     if (totalKeys !== presentDeclaredCount) {
       return false;

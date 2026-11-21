@@ -30,6 +30,7 @@ const CORPUS_FILES = [
   "escapes.toml",
   "comments.toml",
   "literals.toml",
+  "security.toml",
 ] as const;
 
 interface Expect {

@@ -376,18 +376,6 @@ export const VALID_FILTERS = new Set([
   "truncate_middle",
 ]);
 
-/** Filters that sanitize their input (control tokens / boundary tags). */
-const SANITIZING_FILTERS: ReadonlySet<string> = new Set([
-  "sanitize",
-  "sanitize_tokens",
-  "quarantine",
-]);
-
-/**
- * Filters that must not follow a sanitizing filter: case mapping can re-create
- * control tokens that only exist in one case (e.g. `<TOOL_CALL>` → `<tool_call>`),
- * and truncation can cut the closing boundary tag of a sanitized block.
- */
 const POST_SANITIZE_FORBIDDEN: ReadonlySet<string> = new Set([
   "upper",
   "lower",
@@ -402,20 +390,45 @@ const POST_SANITIZE_FORBIDDEN: ReadonlySet<string> = new Set([
  * @throws {TemplateSyntaxError} describing the required reordering.
  */
 export function checkPostSanitizeFilter(
-  sanitizer: string | undefined,
+  sanitizer: readonly [string, boolean] | undefined,
   filterName: string,
 ): void {
-  if (sanitizer !== undefined && POST_SANITIZE_FORBIDDEN.has(filterName)) {
+  if (sanitizer === undefined) return;
+  const [sanitizerName, isInline] = sanitizer;
+  if (POST_SANITIZE_FORBIDDEN.has(filterName)) {
     throw new TemplateSyntaxError(
-      `filter '${filterName}' cannot follow '${sanitizer}': case mapping or truncation after sanitization can re-create control tokens or cut boundary tags; apply '${filterName}' before '${sanitizer}'`,
+      `filter '${filterName}' cannot follow '${sanitizerName}': case mapping or truncation after sanitization can re-create control tokens or cut boundary tags; apply '${filterName}' before '${sanitizerName}'`,
+    );
+  }
+  if (isInline && filterName === "trim") {
+    throw new TemplateSyntaxError(
+      `filter '${filterName}' cannot follow '${sanitizerName}': trimming whitespace after inline sanitization can expose turn headers at line start; apply '${filterName}' before '${sanitizerName}'`,
     );
   }
 }
 
 export function validateFilters(expr: string): void {
-  if (expr.includes(PIPE)) {
-    const parts = splitPipes(expr);
-    let sanitizer: string | undefined;
+  const parts = expr.includes(PIPE) ? splitPipes(expr) : [expr];
+  const base = (parts[0] ?? "").trim();
+  if (
+    base.length >= 2 &&
+    ((base.startsWith('"') && base.endsWith('"')) ||
+      (base.startsWith("'") && base.endsWith("'"))) &&
+    base.includes("{{")
+  ) {
+    const inner = base.slice(1, -1);
+    let cursor = 0;
+    while (cursor < inner.length) {
+      const openIdx = inner.indexOf("{{", cursor);
+      if (openIdx === -1) break;
+      const closeIdx = inner.indexOf("}}", openIdx + 2);
+      if (closeIdx === -1) break;
+      validateFilters(inner.slice(openIdx + 2, closeIdx).trim());
+      cursor = closeIdx + 2;
+    }
+  }
+  if (parts.length > 1) {
+    let sanitizer: readonly [string, boolean] | undefined;
     for (let i = 1; i < parts.length; i++) {
       const part = parts[i];
       if (part === undefined) continue;
@@ -426,8 +439,12 @@ export function validateFilters(expr: string): void {
         throw new UnknownFilterError(filterName);
       }
       checkPostSanitizeFilter(sanitizer, filterName);
-      if (SANITIZING_FILTERS.has(filterName)) {
-        sanitizer = filterName;
+      if (filterName === "sanitize_tokens") {
+        sanitizer = [filterName, true];
+      } else if (filterName === "sanitize") {
+        sanitizer = [filterName, rawArg === undefined];
+      } else if (filterName === "quarantine") {
+        sanitizer = [filterName, false];
       }
       if (filterName === "sanitize") {
         parseSanitizeFilterArgs(rawArg);
@@ -488,19 +505,29 @@ export function tryMatchClosingTag(
   pos: number,
   closingTags: string[],
 ): string | null {
-  // Look ahead for {%
-  const trimmedFromPos = input.slice(pos).trimStart();
-  if (!trimmedFromPos.startsWith("{%")) return null;
+  let wsEnd = pos;
+  while (wsEnd < input.length) {
+    const code = input.charCodeAt(wsEnd);
+    if (
+      code !== 32 &&
+      code !== 9 &&
+      code !== 10 &&
+      code !== 13 &&
+      code !== 11 &&
+      code !== 12
+    ) {
+      break;
+    }
+    wsEnd++;
+  }
+  if (!input.startsWith(STMT_START, wsEnd)) return null;
 
-  const endIdx = trimmedFromPos.indexOf("%}");
+  const endIdx = input.indexOf(STMT_END, wsEnd + STMT_START.length);
   if (endIdx === -1) return null;
 
-  const tagContent = trimmedFromPos
-    .slice(2, endIdx)
-    .trim()
-    .replace(/^-/, "")
-    .replace(/-$/, "")
-    .trim();
+  const tagContent = cleanStatement(
+    input.slice(wsEnd + STMT_START.length, endIdx).trim(),
+  );
 
   for (const ct of closingTags) {
     if (tagContent === ct || tagContent.startsWith(`${ct} `)) {
@@ -732,16 +759,17 @@ export function findRawClose(
   }
   // Fall back to a close tag on its own (optionally blockquoted) line.
   const standaloneClose = `${STMT_START} ${closeKeyword} ${STMT_END}`;
-  let offset = afterTag;
-  for (const line of input.slice(afterTag).split("\n")) {
-    const trimmed = line.trim();
-    if (
-      trimmed === standaloneClose ||
-      trimmed === `${BLOCKQUOTE_PREFIX_SPACED}${standaloneClose}`
-    ) {
-      return offset;
+  const bqClose = `${BLOCKQUOTE_PREFIX_SPACED}${standaloneClose}`;
+  let lineStart = afterTag;
+  while (lineStart <= input.length) {
+    const nl = input.indexOf("\n", lineStart);
+    const lineEnd = nl === -1 ? input.length : nl;
+    const trimmed = input.slice(lineStart, lineEnd).trim();
+    if (trimmed === standaloneClose || trimmed === bqClose) {
+      return lineStart;
     }
-    offset += line.length + 1;
+    if (nl === -1) break;
+    lineStart = nl + 1;
   }
   return -1;
 }
@@ -754,9 +782,21 @@ function cleanStatement(tagContent: string): string {
   return stmt.trim();
 }
 
-/** Number of lines before `offset` in `input`. */
-function lineIndexAt(input: string, offset: number): number {
-  return input.slice(0, offset).split("\n").length - 1;
+/** Number of lines before `offset` in `input` and the slice of the line containing `offset`. */
+function lineInfoAt(
+  input: string,
+  offset: number,
+): { readonly lineIdx: number; readonly line: string } {
+  let lineIdx = 0;
+  let lineStart = 0;
+  let nl = input.indexOf("\n");
+  while (nl !== -1 && nl < offset) {
+    lineIdx++;
+    lineStart = nl + 1;
+    nl = input.indexOf("\n", lineStart);
+  }
+  const lineEnd = nl === -1 ? input.length : nl;
+  return { lineIdx, line: input.slice(lineStart, lineEnd) };
 }
 
 /**
@@ -783,10 +823,10 @@ export function rawBodyRanges(
     }
     const closeStart = findRawClose(input, tagEnd, closeKeyword);
     if (closeStart === -1) {
-      const line = input.split("\n")[lineIndexAt(input, tagStart)];
+      const { lineIdx, line } = lineInfoAt(input, tagStart);
       throw new TemplateSyntaxError(
         `unclosed '{% ${stmt} %}' block`,
-        startLineNo + lineIndexAt(input, tagStart),
+        startLineNo + lineIdx,
         1,
         line,
       );

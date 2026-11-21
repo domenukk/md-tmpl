@@ -68,8 +68,8 @@ console.log(tmpl.render({ name: "Alice" }));
 ```ts
 Template.fromSource(source: string): Template
 Template.fromSourceWithBaseDir(source: string, baseDir: string): Template
-Template.fromSourceWithEnv(source: string, env: Record<string, string>): Template
-Template.fromSourceWithOptions(source: string, options: object): Template
+Template.fromSourceWithEnv(source: string, env: Record<string, unknown>): Template
+Template.fromSourceWithOptions(source: string, options?: CompileOptions): Template
 ```
 
 ### Rendering
@@ -87,12 +87,16 @@ tmpl.renderAllowingExtraFlexbuffers(buffer: Uint8Array): string
 ### Metadata
 
 ```ts
+tmpl.name(): string | undefined
+tmpl.description(): string | undefined
 tmpl.body(): string
 tmpl.defaults(): object
 tmpl.consts(): object
 tmpl.importedConsts(): object
 tmpl.declarations(): [string, string][]
 tmpl.sourceHash(): number
+tmpl.validateDeclarationsAgainst(expected: [string, string][]): void
+tmpl.validateAgainstTemplate(expected: Template): void
 ```
 
 ### Host Sanitization Primitives

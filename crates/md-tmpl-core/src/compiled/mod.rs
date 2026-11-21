@@ -7,6 +7,7 @@
 pub(crate) mod analysis;
 mod block_scan;
 mod blockquote;
+pub(crate) mod heading_check;
 pub(crate) mod include_sanitize;
 mod inline;
 mod match_compile;
@@ -360,14 +361,35 @@ pub fn compile_with_parent_scope(
     parent_type_aliases: &HashMap<String, crate::types::VarType>,
     parent_type_alias_sanitize: &HashMap<String, HashMap<String, crate::types::SanitizeSpec>>,
 ) -> Result<(Vec<Segment>, HashMap<String, CompiledInlineTemplate>), TemplateError> {
+    compile_with_parent_scope_and_notice(
+        input,
+        parent_type_aliases,
+        parent_type_alias_sanitize,
+        None,
+    )
+}
+
+/// Like [`compile_with_parent_scope`], additionally propagating `parent_sanitize_notice`
+/// into extracted inline `{% tmpl %}` blocks.
+///
+/// # Errors
+///
+/// Returns [`TemplateError::Syntax`] on malformed tags or blocks.
+pub fn compile_with_parent_scope_and_notice(
+    input: &str,
+    parent_type_aliases: &HashMap<String, crate::types::VarType>,
+    parent_type_alias_sanitize: &HashMap<String, HashMap<String, crate::types::SanitizeSpec>>,
+    parent_sanitize_notice: Option<&str>,
+) -> Result<(Vec<Segment>, HashMap<String, CompiledInlineTemplate>), TemplateError> {
     // Validate that line-start statement tags carry the `>` blockquote prefix,
     // then strip that prefix from statement-tag lines.
     let processed = blockquote::preprocess_blockquotes(input)?;
     // Extract inline template definitions before compiling the body.
-    let (cleaned, inline_templates) = inline::extract_inline_templates_with_sanitize(
+    let (cleaned, inline_templates) = inline::extract_inline_templates_with_notice(
         &processed,
         parent_type_aliases,
         parent_type_alias_sanitize,
+        parent_sanitize_notice,
     )?;
     let mut segments = compile_body(&cleaned)?;
     inline::bind_inline_includes(
@@ -417,8 +439,35 @@ pub fn compile_source_body(
     parent_type_aliases: &HashMap<String, crate::types::VarType>,
     parent_type_alias_sanitize: &HashMap<String, HashMap<String, crate::types::SanitizeSpec>>,
 ) -> Result<(Vec<Segment>, HashMap<String, CompiledInlineTemplate>), TemplateError> {
-    compile_with_parent_scope(body, parent_type_aliases, parent_type_alias_sanitize)
-        .map_err(|e| locate_error_in_source(e, source, body))
+    compile_source_body_with_notice(
+        source,
+        body,
+        parent_type_aliases,
+        parent_type_alias_sanitize,
+        None,
+    )
+}
+
+/// Like [`compile_source_body`], additionally propagating `parent_sanitize_notice`
+/// into extracted inline `{% tmpl %}` blocks.
+///
+/// # Errors
+///
+/// Returns [`TemplateError::Syntax`] on malformed tags or blocks.
+pub fn compile_source_body_with_notice(
+    source: &str,
+    body: &str,
+    parent_type_aliases: &HashMap<String, crate::types::VarType>,
+    parent_type_alias_sanitize: &HashMap<String, HashMap<String, crate::types::SanitizeSpec>>,
+    parent_sanitize_notice: Option<&str>,
+) -> Result<(Vec<Segment>, HashMap<String, CompiledInlineTemplate>), TemplateError> {
+    compile_with_parent_scope_and_notice(
+        body,
+        parent_type_aliases,
+        parent_type_alias_sanitize,
+        parent_sanitize_notice,
+    )
+    .map_err(|e| locate_error_in_source(e, source, body))
 }
 
 /// Compute 1-based line number for a byte offset into `source`.
@@ -686,10 +735,10 @@ fn extract_comment_variable_refs(content: &str) -> Vec<Cow<'static, str>> {
 /// Returns [`TemplateError::UnknownFilter`] for unknown filter names, and
 /// [`TemplateError::Syntax`] when a case-mapping or truncating filter follows a
 /// sanitizing filter (see [`check_post_sanitize_filter`]).
-fn parse_filter_chain(filter_chain: &str) -> Result<Vec<ParsedFilter>, TemplateError> {
+pub(crate) fn parse_filter_chain(filter_chain: &str) -> Result<Vec<ParsedFilter>, TemplateError> {
     let mut filters = Vec::new();
     if !filter_chain.is_empty() {
-        let mut sanitizer: Option<&str> = None;
+        let mut sanitizer: Option<(&str, bool)> = None;
         for filter_str in crate::parser::split_filters_aware(filter_chain) {
             let filter_str = filter_str.trim();
             if filter_str.is_empty() {
@@ -698,11 +747,11 @@ fn parse_filter_chain(filter_chain: &str) -> Result<Vec<ParsedFilter>, TemplateE
             let (name, args) = crate::filter::parse_filter(filter_str);
             let kind = parse_filter_kind(name)?;
             check_post_sanitize_filter(sanitizer, kind, name)?;
-            if matches!(
-                kind,
-                FilterKind::Sanitize | FilterKind::SanitizeTokens | FilterKind::Quarantine
-            ) {
-                sanitizer = Some(name);
+            match kind {
+                FilterKind::SanitizeTokens => sanitizer = Some((name, true)),
+                FilterKind::Sanitize => sanitizer = Some((name, args.is_none())),
+                FilterKind::Quarantine => sanitizer = Some((name, false)),
+                _ => {}
             }
             filters.push(ParsedFilter::parse(kind, args)?);
         }
@@ -710,29 +759,30 @@ fn parse_filter_chain(filter_chain: &str) -> Result<Vec<ParsedFilter>, TemplateE
     Ok(filters)
 }
 
-/// Reject `upper` / `lower` / `truncate` after a sanitizing filter
-/// (`sanitize`, `sanitize_tokens`, `quarantine`).
-///
-/// Case mapping can re-create control tokens that only exist in one case
-/// (e.g. `<TOOL_CALL>` → `<tool_call>`), and truncation can cut the closing
-/// boundary tag of a sanitized block, so these must run *before* sanitization.
+/// Reject `upper` / `lower` / `truncate` after any sanitizing filter, and reject
+/// `trim` after inline `sanitize` / `sanitize_tokens`.
 ///
 /// # Errors
 /// Returns [`TemplateError::Syntax`] describing the required reordering.
 pub(crate) fn check_post_sanitize_filter(
-    sanitizer: Option<&str>,
+    sanitizer: Option<(&str, bool)>,
     kind: FilterKind,
     name: &str,
 ) -> Result<(), TemplateError> {
-    if let Some(sanitizer) = sanitizer
-        && matches!(
+    if let Some((sanitizer_name, is_inline)) = sanitizer {
+        if matches!(
             kind,
             FilterKind::Upper | FilterKind::Lower | FilterKind::Truncate
-        )
-    {
-        return Err(TemplateError::syntax(format!(
-            "filter '{name}' cannot follow '{sanitizer}': case mapping or truncation after sanitization can re-create control tokens or cut boundary tags; apply '{name}' before '{sanitizer}'"
-        )));
+        ) {
+            return Err(TemplateError::syntax(format!(
+                "filter '{name}' cannot follow '{sanitizer_name}': case mapping or truncation after sanitization can re-create control tokens or cut boundary tags; apply '{name}' before '{sanitizer_name}'"
+            )));
+        }
+        if is_inline && kind == FilterKind::Trim {
+            return Err(TemplateError::syntax(format!(
+                "filter '{name}' cannot follow '{sanitizer_name}': trimming whitespace after inline sanitization can expose turn headers at line start; apply '{name}' before '{sanitizer_name}'"
+            )));
+        }
     }
     Ok(())
 }

@@ -5,20 +5,29 @@ use std::{ffi::c_char, ptr};
 use md_tmpl::{Context, Value};
 
 use crate::{
-    ERR_NULL_CONTEXT, ERR_NULL_TEMPLATE, PtContext, PtTemplate, cstr_to_str, err_to_cstring,
-    json::json_to_value, terr_to_cstring,
+    ERR_NULL_CONTEXT, ERR_NULL_TEMPLATE, PtContext, PtTemplate, catch_ffi_err, catch_ffi_val,
+    cstr_to_str, err_to_cstring, json::json_to_value, raw_bytes_slice, terr_to_cstring,
 };
 
 const ERR_MERGE_JSON_NOT_OBJECT: &str = "pt_context_merge_json: JSON must be an object";
 const ERR_SET_FLEXBUFFERS_NULL: &str = "pt_context_set_flexbuffers: null pointer passed";
 const ERR_MERGE_FLEXBUFFERS_NULL: &str = "pt_context_merge_flexbuffers: null pointer passed";
 
+fn set_ctx_val(ctx: &mut PtContext, key: &str, value: impl Into<Value>) -> *mut c_char {
+    match ctx.inner.try_set(key, value) {
+        Ok(()) => ptr::null_mut(),
+        Err(e) => terr_to_cstring(&e),
+    }
+}
+
 /// Create a new empty rendering context.
 #[unsafe(no_mangle)]
 pub extern "C" fn pt_context_new() -> *mut PtContext {
-    Box::into_raw(Box::new(PtContext {
-        inner: Context::new(),
-    }))
+    catch_ffi_val(ptr::null_mut(), || {
+        Box::into_raw(Box::new(PtContext {
+            inner: Context::new(),
+        }))
+    })
 }
 
 /// Free a context handle.
@@ -29,9 +38,11 @@ pub extern "C" fn pt_context_new() -> *mut PtContext {
 /// twice.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pt_context_free(ctx: *mut PtContext) {
-    if !ctx.is_null() {
-        drop(unsafe { Box::from_raw(ctx) });
-    }
+    catch_ffi_val((), || {
+        if !ctx.is_null() {
+            drop(unsafe { Box::from_raw(ctx) });
+        }
+    });
 }
 
 /// Set a string value in the context.
@@ -46,19 +57,20 @@ pub unsafe extern "C" fn pt_context_set_str(
     key: *const c_char,
     value: *const c_char,
 ) -> *mut c_char {
-    let Some(ctx) = (unsafe { ctx.as_mut() }) else {
-        return err_to_cstring(ERR_NULL_CONTEXT);
-    };
-    let key = match unsafe { cstr_to_str(key) } {
-        Ok(s) => s,
-        Err(e) => return err_to_cstring(&e),
-    };
-    let value = match unsafe { cstr_to_str(value) } {
-        Ok(s) => s,
-        Err(e) => return err_to_cstring(&e),
-    };
-    ctx.inner.set(key, value);
-    ptr::null_mut()
+    catch_ffi_err(|| {
+        let Some(ctx) = (unsafe { ctx.as_mut() }) else {
+            return err_to_cstring(ERR_NULL_CONTEXT);
+        };
+        let key = match unsafe { cstr_to_str(key) } {
+            Ok(s) => s,
+            Err(e) => return err_to_cstring(&e),
+        };
+        let value = match unsafe { cstr_to_str(value) } {
+            Ok(s) => s,
+            Err(e) => return err_to_cstring(&e),
+        };
+        set_ctx_val(ctx, key, value)
+    })
 }
 
 /// Set an integer value in the context.
@@ -72,15 +84,16 @@ pub unsafe extern "C" fn pt_context_set_int(
     key: *const c_char,
     value: i64,
 ) -> *mut c_char {
-    let Some(ctx) = (unsafe { ctx.as_mut() }) else {
-        return err_to_cstring(ERR_NULL_CONTEXT);
-    };
-    let key = match unsafe { cstr_to_str(key) } {
-        Ok(s) => s,
-        Err(e) => return err_to_cstring(&e),
-    };
-    ctx.inner.set(key, value);
-    ptr::null_mut()
+    catch_ffi_err(|| {
+        let Some(ctx) = (unsafe { ctx.as_mut() }) else {
+            return err_to_cstring(ERR_NULL_CONTEXT);
+        };
+        let key = match unsafe { cstr_to_str(key) } {
+            Ok(s) => s,
+            Err(e) => return err_to_cstring(&e),
+        };
+        set_ctx_val(ctx, key, value)
+    })
 }
 
 /// Set a float value in the context.
@@ -94,15 +107,16 @@ pub unsafe extern "C" fn pt_context_set_float(
     key: *const c_char,
     value: f64,
 ) -> *mut c_char {
-    let Some(ctx) = (unsafe { ctx.as_mut() }) else {
-        return err_to_cstring(ERR_NULL_CONTEXT);
-    };
-    let key = match unsafe { cstr_to_str(key) } {
-        Ok(s) => s,
-        Err(e) => return err_to_cstring(&e),
-    };
-    ctx.inner.set(key, value);
-    ptr::null_mut()
+    catch_ffi_err(|| {
+        let Some(ctx) = (unsafe { ctx.as_mut() }) else {
+            return err_to_cstring(ERR_NULL_CONTEXT);
+        };
+        let key = match unsafe { cstr_to_str(key) } {
+            Ok(s) => s,
+            Err(e) => return err_to_cstring(&e),
+        };
+        set_ctx_val(ctx, key, value)
+    })
 }
 
 /// Set a bool value in the context.
@@ -116,15 +130,16 @@ pub unsafe extern "C" fn pt_context_set_bool(
     key: *const c_char,
     value: bool,
 ) -> *mut c_char {
-    let Some(ctx) = (unsafe { ctx.as_mut() }) else {
-        return err_to_cstring(ERR_NULL_CONTEXT);
-    };
-    let key = match unsafe { cstr_to_str(key) } {
-        Ok(s) => s,
-        Err(e) => return err_to_cstring(&e),
-    };
-    ctx.inner.set(key, value);
-    ptr::null_mut()
+    catch_ffi_err(|| {
+        let Some(ctx) = (unsafe { ctx.as_mut() }) else {
+            return err_to_cstring(ERR_NULL_CONTEXT);
+        };
+        let key = match unsafe { cstr_to_str(key) } {
+            Ok(s) => s,
+            Err(e) => return err_to_cstring(&e),
+        };
+        set_ctx_val(ctx, key, value)
+    })
 }
 
 /// Set a None (absent/null) value in the context.
@@ -139,20 +154,19 @@ pub unsafe extern "C" fn pt_context_set_none(
     ctx: *mut PtContext,
     key: *const c_char,
 ) -> *mut c_char {
-    let Some(ctx) = (unsafe { ctx.as_mut() }) else {
-        return err_to_cstring(ERR_NULL_CONTEXT);
-    };
-    let key = match unsafe { cstr_to_str(key) } {
-        Ok(s) => s,
-        Err(e) => return err_to_cstring(&e),
-    };
-    ctx.inner.set(key, Value::None);
-    ptr::null_mut()
+    catch_ffi_err(|| {
+        let Some(ctx) = (unsafe { ctx.as_mut() }) else {
+            return err_to_cstring(ERR_NULL_CONTEXT);
+        };
+        let key = match unsafe { cstr_to_str(key) } {
+            Ok(s) => s,
+            Err(e) => return err_to_cstring(&e),
+        };
+        set_ctx_val(ctx, key, Value::None)
+    })
 }
 
 /// Set a JSON value in the context (for complex types: lists, dicts, enums).
-///
-/// The JSON string is deserialized into a template `Value` using serde.
 ///
 /// # Safety
 ///
@@ -164,31 +178,26 @@ pub unsafe extern "C" fn pt_context_set_json(
     key: *const c_char,
     json: *const c_char,
 ) -> *mut c_char {
-    let Some(ctx) = (unsafe { ctx.as_mut() }) else {
-        return err_to_cstring(ERR_NULL_CONTEXT);
-    };
-    let key = match unsafe { cstr_to_str(key) } {
-        Ok(s) => s,
-        Err(e) => return err_to_cstring(&e),
-    };
-    let json_str = match unsafe { cstr_to_str(json) } {
-        Ok(s) => s,
-        Err(e) => return err_to_cstring(&e),
-    };
-    // Parse JSON into serde_json::Value, then convert to template Value.
-    match json_to_value(json_str) {
-        Ok(val) => {
-            ctx.inner.set(key, val);
-            ptr::null_mut()
+    catch_ffi_err(|| {
+        let Some(ctx) = (unsafe { ctx.as_mut() }) else {
+            return err_to_cstring(ERR_NULL_CONTEXT);
+        };
+        let key = match unsafe { cstr_to_str(key) } {
+            Ok(s) => s,
+            Err(e) => return err_to_cstring(&e),
+        };
+        let json_str = match unsafe { cstr_to_str(json) } {
+            Ok(s) => s,
+            Err(e) => return err_to_cstring(&e),
+        };
+        match json_to_value(json_str) {
+            Ok(val) => set_ctx_val(ctx, key, val),
+            Err(e) => err_to_cstring(&e),
         }
-        Err(e) => err_to_cstring(&e),
-    }
+    })
 }
 
 /// Set a template-typed parameter in the context.
-///
-/// The template is cloned (`Arc`-shared) into the context — the caller retains
-/// ownership of the original.
 ///
 /// # Safety
 ///
@@ -201,27 +210,22 @@ pub unsafe extern "C" fn pt_context_set_tmpl(
     key: *const c_char,
     tmpl: *const PtTemplate,
 ) -> *mut c_char {
-    let Some(ctx) = (unsafe { ctx.as_mut() }) else {
-        return err_to_cstring(ERR_NULL_CONTEXT);
-    };
-    let key = match unsafe { cstr_to_str(key) } {
-        Ok(s) => s,
-        Err(e) => return err_to_cstring(&e),
-    };
-    let Some(tmpl) = (unsafe { tmpl.as_ref() }) else {
-        return err_to_cstring(ERR_NULL_TEMPLATE);
-    };
-    ctx.inner.set(key, Value::from(&tmpl.inner));
-    ptr::null_mut()
+    catch_ffi_err(|| {
+        let Some(ctx) = (unsafe { ctx.as_mut() }) else {
+            return err_to_cstring(ERR_NULL_CONTEXT);
+        };
+        let key = match unsafe { cstr_to_str(key) } {
+            Ok(s) => s,
+            Err(e) => return err_to_cstring(&e),
+        };
+        let Some(tmpl) = (unsafe { tmpl.as_ref() }) else {
+            return err_to_cstring(ERR_NULL_TEMPLATE);
+        };
+        set_ctx_val(ctx, key, Value::from(&tmpl.inner))
+    })
 }
 
 /// Merge all top-level keys from a JSON object into a context.
-///
-/// The JSON string must be a JSON object (`{}`). Each key becomes a
-/// context variable set to the corresponding JSON value.
-///
-/// Returns 0 on success, -1 on error (sets the error string retrievable
-/// via the return value pattern used by other `pt_context_set_*` functions).
 ///
 /// # Safety
 ///
@@ -232,24 +236,28 @@ pub unsafe extern "C" fn pt_context_merge_json(
     ctx: *mut PtContext,
     json: *const c_char,
 ) -> *mut c_char {
-    let Some(ctx) = (unsafe { ctx.as_mut() }) else {
-        return err_to_cstring(ERR_NULL_CONTEXT);
-    };
-    let json_str = match unsafe { cstr_to_str(json) } {
-        Ok(s) => s,
-        Err(e) => return err_to_cstring(&e),
-    };
-    let obj = match json_to_value(json_str) {
-        Ok(val) => val,
-        Err(e) => return err_to_cstring(&e),
-    };
-    let Value::Struct(map) = obj else {
-        return err_to_cstring(ERR_MERGE_JSON_NOT_OBJECT);
-    };
-    for (key, val) in map.iter() {
-        ctx.inner.set(key, val.clone());
-    }
-    ptr::null_mut()
+    catch_ffi_err(|| {
+        let Some(ctx) = (unsafe { ctx.as_mut() }) else {
+            return err_to_cstring(ERR_NULL_CONTEXT);
+        };
+        let json_str = match unsafe { cstr_to_str(json) } {
+            Ok(s) => s,
+            Err(e) => return err_to_cstring(&e),
+        };
+        let obj = match json_to_value(json_str) {
+            Ok(val) => val,
+            Err(e) => return err_to_cstring(&e),
+        };
+        let Value::Struct(map) = obj else {
+            return err_to_cstring(ERR_MERGE_JSON_NOT_OBJECT);
+        };
+        for (key, val) in map.iter() {
+            if let Err(e) = ctx.inner.try_set(key, val.clone()) {
+                return terr_to_cstring(&e);
+            }
+        }
+        ptr::null_mut()
+    })
 }
 
 /// Set a `FlexBuffers` value in the context (for complex types: lists, dicts, enums, etc.).
@@ -266,24 +274,23 @@ pub unsafe extern "C" fn pt_context_set_flexbuffers(
     data: *const u8,
     len: usize,
 ) -> *mut c_char {
-    let Some(ctx) = (unsafe { ctx.as_mut() }) else {
-        return err_to_cstring(ERR_NULL_CONTEXT);
-    };
-    let key = match unsafe { cstr_to_str(key) } {
-        Ok(s) => s,
-        Err(e) => return err_to_cstring(&e),
-    };
-    if data.is_null() {
-        return err_to_cstring(ERR_SET_FLEXBUFFERS_NULL);
-    }
-    let slice = unsafe { std::slice::from_raw_parts(data, len) };
-    match Value::from_flexbuffers(slice) {
-        Ok(val) => {
-            ctx.inner.set(key, val);
-            ptr::null_mut()
+    catch_ffi_err(|| {
+        let Some(ctx) = (unsafe { ctx.as_mut() }) else {
+            return err_to_cstring(ERR_NULL_CONTEXT);
+        };
+        let key = match unsafe { cstr_to_str(key) } {
+            Ok(s) => s,
+            Err(e) => return err_to_cstring(&e),
+        };
+        let slice = match unsafe { raw_bytes_slice(data, len, ERR_SET_FLEXBUFFERS_NULL) } {
+            Ok(s) => s,
+            Err(e) => return err_to_cstring(&e),
+        };
+        match Value::from_flexbuffers(slice) {
+            Ok(val) => set_ctx_val(ctx, key, val),
+            Err(e) => terr_to_cstring(&e),
         }
-        Err(e) => terr_to_cstring(&e),
-    }
+    })
 }
 
 /// Merge all top-level keys from a `FlexBuffers` map into a context.
@@ -298,19 +305,23 @@ pub unsafe extern "C" fn pt_context_merge_flexbuffers(
     data: *const u8,
     len: usize,
 ) -> *mut c_char {
-    let Some(ctx) = (unsafe { ctx.as_mut() }) else {
-        return err_to_cstring(ERR_NULL_CONTEXT);
-    };
-    if data.is_null() {
-        return err_to_cstring(ERR_MERGE_FLEXBUFFERS_NULL);
-    }
-    let slice = unsafe { std::slice::from_raw_parts(data, len) };
-    let new_ctx = match Context::from_flexbuffers(slice) {
-        Ok(c) => c,
-        Err(e) => return terr_to_cstring(&e),
-    };
-    for (k, v) in new_ctx.into_inner() {
-        ctx.inner.set(&k, v);
-    }
-    ptr::null_mut()
+    catch_ffi_err(|| {
+        let Some(ctx) = (unsafe { ctx.as_mut() }) else {
+            return err_to_cstring(ERR_NULL_CONTEXT);
+        };
+        let slice = match unsafe { raw_bytes_slice(data, len, ERR_MERGE_FLEXBUFFERS_NULL) } {
+            Ok(s) => s,
+            Err(e) => return err_to_cstring(&e),
+        };
+        let new_ctx = match Context::from_flexbuffers(slice) {
+            Ok(c) => c,
+            Err(e) => return terr_to_cstring(&e),
+        };
+        for (k, v) in new_ctx.into_inner() {
+            if let Err(e) = ctx.inner.try_set(&k, v) {
+                return terr_to_cstring(&e);
+            }
+        }
+        ptr::null_mut()
+    })
 }

@@ -14,7 +14,8 @@ use alloc::{
 use super::{
     params::{find_char_at_depth_zero, parse_type_annotation, split_at_depth_zero},
     sanitize_decl::{
-        TrustMode, extract_type_sanitize_specs_with_aliases, validate_sanitize_specs_on_type,
+        TrustMode, expand_explicit_untrusted_on_type, extract_type_sanitize_specs_with_aliases,
+        validate_sanitize_specs_on_type,
     },
 };
 use crate::{
@@ -99,16 +100,21 @@ pub(crate) fn parse_types_value_with_sanitize(
             )));
         }
 
-        let (cleaned_expr, rel_specs) = extract_type_sanitize_specs_with_aliases(
-            type_expr,
-            TrustMode::SafeByDefault,
-            &alias_sanitize,
-        )
-        .map_err(|err| TemplateError::syntax(format!("type '{type_name}': {err}")))?;
+        let (cleaned_expr, mut rel_specs, explicit_untrusted) =
+            extract_type_sanitize_specs_with_aliases(
+                type_expr,
+                TrustMode::SafeByDefault,
+                &alias_sanitize,
+            )
+            .map_err(|err| TemplateError::syntax(format!("type '{type_name}': {err}")))?;
 
         // Parse the type expression using already-defined aliases for chained refs.
         let var_type = parse_type_annotation(&cleaned_expr, &aliases, &empty_imports)
             .map_err(|e| TemplateError::syntax(format!("type '{type_name}': {e}")))?;
+
+        if !explicit_untrusted.is_empty() {
+            expand_explicit_untrusted_on_type(&var_type, &explicit_untrusted, &mut rel_specs);
+        }
 
         if !rel_specs.is_empty() {
             validate_sanitize_specs_on_type(&type_name, &var_type, &rel_specs)?;

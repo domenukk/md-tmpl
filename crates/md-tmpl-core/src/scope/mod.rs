@@ -588,11 +588,8 @@ impl<'a> Scope<'a> {
         for part in arg.split(crate::consts::PATH_SEP).skip(1) {
             match current_type {
                 crate::types::VarType::Struct(fields) | crate::types::VarType::List(fields) => {
-                    if let Some(f) = fields.iter().find(|d| d.name == part) {
-                        current_type = &f.var_type;
-                    } else {
-                        return None;
-                    }
+                    let f = fields.iter().find(|d| d.name == part)?;
+                    current_type = &f.var_type;
                 }
                 crate::types::VarType::Option(inner) => {
                     current_type = inner;
@@ -828,14 +825,7 @@ impl<'a> Scope<'a> {
     #[inline]
     #[must_use]
     pub fn try_resolve_path_str(&self, raw: &str) -> Option<&Value> {
-        let stripped = raw
-            .trim()
-            .strip_prefix(crate::consts::PREFIX_CONSTS_DOT)
-            .or_else(|| raw.trim().strip_prefix(crate::consts::PREFIX_OPTS_DOT))
-            .or_else(|| raw.trim().strip_prefix(crate::consts::PREFIX_OPTIONS_DOT))
-            .or_else(|| raw.trim().strip_prefix(crate::consts::PREFIX_PARAMS_DOT))
-            .unwrap_or_else(|| raw.trim())
-            .trim();
+        let stripped = crate::consts::strip_namespace_prefix(raw);
         let Some((p0, rest_after_p0)) = stripped.split_once(crate::consts::PATH_SEP) else {
             return self.resolve(stripped);
         };
@@ -969,20 +959,7 @@ impl<'a> Scope<'a> {
     ///
     /// Returns [`TemplateError::UndefinedVariable`] if the key is not found.
     pub(crate) fn resolve_path_str(&self, path: &str) -> Result<&Value, TemplateError> {
-        let path = path.trim();
-
-        // Strip common prefixes: consts., opts., options., params.
-        let path = if let Some(s) = path.strip_prefix(crate::consts::PREFIX_CONSTS_DOT) {
-            s.trim()
-        } else if let Some(s) = path.strip_prefix(crate::consts::PREFIX_OPTS_DOT) {
-            s.trim()
-        } else if let Some(s) = path.strip_prefix(crate::consts::PREFIX_OPTIONS_DOT) {
-            s.trim()
-        } else if let Some(s) = path.strip_prefix(crate::consts::PREFIX_PARAMS_DOT) {
-            s.trim()
-        } else {
-            path
-        };
+        let path = crate::consts::strip_namespace_prefix(path);
 
         // Fast path for simple variables (no dots).
         if !path.contains(crate::consts::PATH_SEP) {

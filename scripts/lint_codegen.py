@@ -21,6 +21,7 @@ TEMPLATES = [
     ("greeting", REPO_ROOT / "crates/md-tmpl/prompts/greeting.tmpl.md"),
     ("code_review", REPO_ROOT / "crates/md-tmpl/prompts/code_review.tmpl.md"),
     ("task_report", REPO_ROOT / "crates/md-tmpl/prompts/task_report.tmpl.md"),
+    ("advanced_codegen", REPO_ROOT / "tests/golden_stubs/fixtures/advanced_codegen.tmpl.md"),
 ]
 
 GOLDEN_DIR = REPO_ROOT / "tests" / "golden_stubs"

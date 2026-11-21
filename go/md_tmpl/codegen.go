@@ -94,7 +94,7 @@ func GenerateTypesFromFile(path string, opts ...GenOption) (string, error) {
 		return "", fmt.Errorf("reading template file: %w", err)
 	}
 
-	tmpl, err := FromSource(string(source), WithAllowUnused())
+	tmpl, err := FromSource(string(source), WithBaseDir(filepath.Dir(path)), WithAllowUnused())
 	if err != nil {
 		return "", fmt.Errorf("parsing template file: %w", err)
 	}
@@ -641,7 +641,7 @@ type variantNode struct {
 // parseTypeSpec parses a TypeSpec string like "str", "list(x = str, y = int)",
 // "enum(A, B(x = str))", etc.
 func parseTypeSpec(spec string) (typeNode, error) {
-	spec = strings.TrimSpace(spec)
+	spec = stripTopLevelPipe(strings.TrimSpace(spec))
 	p := &typeParser{input: spec}
 	node, err := p.parseType()
 	if err != nil {
@@ -656,7 +656,80 @@ type typeParser struct {
 	pos   int
 }
 
+// stripTopLevelPipe removes any top-level `| sanitize(...)` filter suffix outside parentheses.
+func stripTopLevelPipe(spec string) string {
+	depth := 0
+	inQuote := byte(0)
+	for i := 0; i < len(spec); i++ {
+		ch := spec[i]
+		if inQuote != 0 {
+			if ch == '\\' && i+1 < len(spec) {
+				i++
+				continue
+			}
+			if ch == inQuote {
+				inQuote = 0
+			}
+			continue
+		}
+		switch ch {
+		case '"', '\'':
+			inQuote = ch
+		case '(':
+			depth++
+		case ')':
+			if depth > 0 {
+				depth--
+			}
+		case '|':
+			if depth == 0 {
+				return strings.TrimSpace(spec[:i])
+			}
+		}
+	}
+	return spec
+}
+
 func (p *typeParser) parseType() (typeNode, error) {
+	p.skipWhitespace()
+	node, err := p.parseBaseType()
+	if err != nil {
+		return typeNode{}, err
+	}
+	p.skipWhitespace()
+	if p.consume('|') {
+		// Skip declarative `| sanitize(...)` annotation inside nested fields if present.
+		p.skipWhitespace()
+		_ = p.readIdent()
+		p.skipWhitespace()
+		if p.consume('(') {
+			depth := 1
+			inQuote := byte(0)
+			for p.pos < len(p.input) && depth > 0 {
+				ch := p.input[p.pos]
+				p.pos++
+				if inQuote != 0 {
+					if ch == '\\' && p.pos < len(p.input) {
+						p.pos++
+					} else if ch == inQuote {
+						inQuote = 0
+					}
+					continue
+				}
+				if ch == '"' || ch == '\'' {
+					inQuote = ch
+				} else if ch == '(' {
+					depth++
+				} else if ch == ')' {
+					depth--
+				}
+			}
+		}
+	}
+	return node, nil
+}
+
+func (p *typeParser) parseBaseType() (typeNode, error) {
 	p.skipWhitespace()
 	ident := p.readIdent()
 	if ident == "" {
@@ -664,6 +737,20 @@ func (p *typeParser) parseType() (typeNode, error) {
 	}
 
 	switch ident {
+	case "trusted", "untrusted":
+		p.skipWhitespace()
+		if p.consume('(') {
+			inner, err := p.parseType()
+			if err != nil {
+				return typeNode{}, err
+			}
+			p.skipWhitespace()
+			if !p.consume(')') {
+				return typeNode{}, fmt.Errorf("expected ')' after '%s(' at position %d in %q", ident, p.pos, p.input)
+			}
+			return inner, nil
+		}
+		return p.parseType()
 	case "str":
 		return typeNode{kind: kindStr}, nil
 	case "int":
@@ -719,22 +806,19 @@ func (p *typeParser) parseCompound(kind typeKind) (typeNode, error) {
 		return typeNode{kind: kind}, nil
 	}
 
-	// For list types, check if this is a scalar list (e.g., list(str))
-	// by peeking ahead: if the first token is a type keyword not followed
-	// by '=', it's a scalar list.
+	// For list types, check if this is a scalar list (e.g., list(str), list(trusted str))
+	// by peeking ahead: if the first token is not followed by '=', try parsing a single inner type.
 	if kind == kindList {
 		saved := p.pos
 		p.skipWhitespace()
 		ident := p.readIdent()
 		p.skipWhitespace()
-		if ident != "" && p.peek() == ')' {
-			// It's a scalar list like list(str).
-			p.pos++ // consume ')'
-			innerNode, err := parseTypeSpec(ident)
-			if err != nil {
-				return typeNode{}, fmt.Errorf("parsing scalar list element type: %w", err)
+		if ident != "" && p.peek() != '=' && p.peek() != ',' && p.peek() != 0 {
+			p.pos = saved
+			innerNode, err := p.parseType()
+			if err == nil && p.consume(')') {
+				return typeNode{kind: kindScalarList, innerType: &innerNode}, nil
 			}
-			return typeNode{kind: kindScalarList, innerType: &innerNode}, nil
 		}
 		// Not a scalar list — restore position and parse as normal fields.
 		p.pos = saved
@@ -834,7 +918,7 @@ func (p *typeParser) readIdent() string {
 	start := p.pos
 	for p.pos < len(p.input) {
 		ch := p.input[p.pos]
-		if ch == '_' || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9' && p.pos > start) {
+		if ch == '_' || (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ((ch >= '0' && ch <= '9' || ch == '-') && p.pos > start) {
 			p.pos++
 		} else {
 			break

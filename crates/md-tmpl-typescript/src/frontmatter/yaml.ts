@@ -33,13 +33,16 @@ import {
   assertKnownTypeRefs,
   parseTypeAlias,
   parseConstDecl,
+  parseEnvDeclDeferred,
   parseImportDecl,
   parseParamDeclDeferred,
 } from "./declarations.js";
 import { parseInlineList } from "./var_type.js";
 import {
+  expandExplicitUntrustedOnType,
   parseSanitizeNoticeValue,
   registerDeclSanitizeSpecs,
+  validateSanitizeSpecsOnType,
   type SanitizeSpec,
   type TypeAliasSanitize,
 } from "../sanitize_pass.js";
@@ -438,10 +441,8 @@ export function parseFrontmatterYaml(
         if (rest.startsWith("[")) {
           const items = parseInlineList(rest);
           for (const item of items) {
-            const [aliasName, aliasType, relSpecs] = parseTypeAlias(
-              item,
-              typeAliasSanitize,
-            );
+            const [aliasName, aliasType, relSpecs, explicitUntrusted] =
+              parseTypeAlias(item, typeAliasSanitize);
             if (localTypeAliasNames.has(aliasName)) {
               throw new TemplateSyntaxError(
                 `duplicate type alias '${aliasName}'`,
@@ -453,6 +454,20 @@ export function parseFrontmatterYaml(
               typeAliases,
               NO_IMPORT_STEMS,
             );
+            expandExplicitUntrustedOnType(
+              aliasType,
+              explicitUntrusted,
+              relSpecs,
+              typeAliases,
+            );
+            if (relSpecs.size > 0) {
+              validateSanitizeSpecsOnType(
+                aliasName,
+                aliasType,
+                relSpecs,
+                typeAliases,
+              );
+            }
             localTypeAliasNames.add(aliasName);
             typeAliases.set(aliasName, aliasType);
             if (relSpecs.size > 0) {
@@ -510,10 +525,8 @@ export function parseFrontmatterYaml(
             rawParams.push({ raw: item, loc });
             break;
           case "types": {
-            const [aliasName, aliasType, relSpecs] = parseTypeAlias(
-              item,
-              typeAliasSanitize,
-            );
+            const [aliasName, aliasType, relSpecs, explicitUntrusted] =
+              parseTypeAlias(item, typeAliasSanitize);
             if (localTypeAliasNames.has(aliasName)) {
               throw new TemplateSyntaxError(
                 `duplicate type alias '${aliasName}'`,
@@ -525,6 +538,20 @@ export function parseFrontmatterYaml(
               typeAliases,
               NO_IMPORT_STEMS,
             );
+            expandExplicitUntrustedOnType(
+              aliasType,
+              explicitUntrusted,
+              relSpecs,
+              typeAliases,
+            );
+            if (relSpecs.size > 0) {
+              validateSanitizeSpecsOnType(
+                aliasName,
+                aliasType,
+                relSpecs,
+                typeAliases,
+              );
+            }
             localTypeAliasNames.add(aliasName);
             typeAliases.set(aliasName, aliasType);
             if (relSpecs.size > 0) {
@@ -594,17 +621,30 @@ export function parseFrontmatterYaml(
     }
   }
 
-  // Phase 1b: Parse env declarations (same syntax as consts)
+  // Phase 1b: Parse env declarations (trusted by default, honoring explicit untrusted / | sanitize)
+  const paramSanitize = new Map<string, SanitizeSpec>();
   const env: VarDecl[] = [];
   for (const item of rawEnv) {
     try {
-      const decl = parseConstDecl(item.raw, constValues, item.loc);
+      const [decl, relSpecs] = parseEnvDeclDeferred(
+        item.raw,
+        constValues,
+        typeAliasSanitize,
+        item.loc,
+      );
       assertKnownTypeRefs(
         declarationLabel(decl.name),
         decl.varType,
         typeAliases,
         importStems,
       );
+      expandExplicitUntrustedOnType(
+        decl.varType,
+        decl.explicitUntrustedPaths,
+        relSpecs,
+        typeAliases,
+      );
+      registerDeclSanitizeSpecs(decl, relSpecs, paramSanitize, typeAliases);
       env.push(decl);
     } catch (err) {
       if (err instanceof TemplateSyntaxError && err.line === undefined) {
@@ -627,7 +667,6 @@ export function parseFrontmatterYaml(
   // For imported consts (dotted names like stem.NAME), the default is
   // deferred — stored in unresolvedDefaults for later resolution.
   const params: VarDecl[] = [];
-  const paramSanitize = new Map<string, SanitizeSpec>();
   const unresolvedDefaults = new Map<
     string,
     { text: string; varType: VarType }
@@ -638,7 +677,7 @@ export function parseFrontmatterYaml(
       const [decl, unresolved, relSpecs] = parseParamDeclDeferred(
         item.raw,
         constValues,
-        false,
+        "param",
         typeAliasSanitize,
         item.loc,
       );
@@ -652,6 +691,12 @@ export function parseFrontmatterYaml(
       if (unresolved !== undefined) {
         unresolvedDefaults.set(decl.name, unresolved);
       }
+      expandExplicitUntrustedOnType(
+        decl.varType,
+        decl.explicitUntrustedPaths,
+        relSpecs,
+        typeAliases,
+      );
       registerDeclSanitizeSpecs(decl, relSpecs, paramSanitize, typeAliases);
     } catch (err) {
       if (err instanceof TemplateSyntaxError && err.line === undefined) {

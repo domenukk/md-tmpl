@@ -25,13 +25,13 @@ fn decls_inline_basic() {
 #[test]
 fn decls_empty_string() {
     let decls = parse_decls("").unwrap();
-    assert!(decls.is_empty());
+    assert_eq!(decls, []);
 }
 
 #[test]
 fn decls_empty_brackets() {
     let decls = parse_decls("[]").unwrap();
-    assert!(decls.is_empty());
+    assert_eq!(decls, []);
 }
 
 #[test]

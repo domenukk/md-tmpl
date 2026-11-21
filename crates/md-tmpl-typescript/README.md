@@ -53,13 +53,15 @@ const Outcome = defineVariants({
   Rejected: null,
 });
 
+const outcome = Outcome.Confirmed({ evidence: "All edge cases covered" });
+
 const result = tmpl.render({
   role: "a code review agent",
   tasks: [
     { title: "Check error handling", priority: "High" },
     { title: "Verify test coverage", priority: "Medium" },
   ],
-  outcome: Outcome.Confirmed({ evidence: "All edge cases covered" }),
+  outcome,
 });
 
 // Pattern-match the outcome later
@@ -153,7 +155,7 @@ Output includes `Params`, item interfaces, enum unions, `CONSTANTS`, and `DEFAUL
 | `struct(field = type, ...)` | `GeneratedInterface`                                                                                                              |
 | `enum(Variant, ...)`        | Union type (`Variant1 \| Variant2_Struct`)                                                                                        |
 | `option(type)`              | `T \| null` (`T \| undefined` is also accepted)                                                                                   |
-| `tmpl(...)`                 | `ITemplate` (or callable template reference)                                                                                      |
+| `tmpl(...)`                 | `ITemplate \| TmplValue` (callable template reference)                                                                            |
 
 ## Enum Dispatch
 
@@ -234,7 +236,7 @@ declarations. Env vars are resolved once when the template is compiled and
 behave like constants at render time.
 
 ```ts
-const tmpl = Template.fromSourceWithEnv(
+const tmpl = Template.fromSourceWithOptions(
   `---
 params:
   - name = str
@@ -356,9 +358,11 @@ Template.fromFileWithEnv(path, options?: CompileOptions): Template
 tmpl.render(params, options?)        // type-validated
 tmpl.renderEmpty()                   // render with defaults only (no params)
 tmpl.renderDict(params, options?)    // from Map or Record
-// options: { allowExtra?: boolean, allowUnused?: boolean }
+// options: { allowExtra?: boolean }
 
-// Metadata
+// Metadata & Hot-Reload Contract Validation
+tmpl.name()                          // frontmatter name (if declared)
+tmpl.description()                   // frontmatter description (if declared)
 tmpl.declarations()                  // → [["name", "str"], ["count", "int"]]
 tmpl.sourceHash()                    // content hash
 tmpl.body()                          // template body after frontmatter
@@ -367,6 +371,7 @@ tmpl.consts()                        // → { MAX_RETRIES: 3 }
 tmpl.frontmatter                     // parsed frontmatter
 tmpl.setMaxIncludeDepth(depth)
 tmpl.validateDeclarationsAgainst(expected)
+tmpl.validateAgainstTemplate(expected)
 ```
 
 ### TypedTemplate\<P\>

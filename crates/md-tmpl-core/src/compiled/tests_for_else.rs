@@ -116,7 +116,7 @@ fn compile_for_else_parses_else_body() {
         } => {
             assert_eq!(binding, "item");
             assert!(matches!(list_expr, CompiledExpr::Path(p) if p.as_str() == "items"));
-            assert!(filters.is_empty());
+            assert_eq!(filters.len(), 0);
             assert_eq!(body.len(), 1, "body should have expr segment");
             assert_eq!(else_body.len(), 1, "else_body should have static segment");
             assert!(

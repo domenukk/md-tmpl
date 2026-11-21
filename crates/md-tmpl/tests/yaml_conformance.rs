@@ -654,10 +654,10 @@ fn empty_params_block() {
     let yaml = "params: []";
     let doc = assert_valid_yaml(yaml);
     let params = doc["params"].as_sequence().expect("sequence");
-    assert!(params.is_empty());
+    assert_eq!(params.len(), 0);
     let source = source_from_yaml(yaml);
     let (fm, _) = parse_frontmatter(&source).expect("our parser failed");
-    assert!(fm.declarations.is_empty());
+    assert_eq!(fm.declarations, []);
 }
 
 #[test]

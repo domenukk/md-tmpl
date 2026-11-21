@@ -24,18 +24,7 @@ impl CompiledPath {
     /// Compile a raw path string into a `CompiledPath`.
     #[must_use]
     pub fn compile(raw: &str) -> Self {
-        let trimmed = raw.trim();
-        let stripped = if let Some(s) = trimmed.strip_prefix(crate::consts::PREFIX_CONSTS_DOT) {
-            s.trim()
-        } else if let Some(s) = trimmed.strip_prefix(crate::consts::PREFIX_OPTS_DOT) {
-            s.trim()
-        } else if let Some(s) = trimmed.strip_prefix(crate::consts::PREFIX_OPTIONS_DOT) {
-            s.trim()
-        } else if let Some(s) = trimmed.strip_prefix(crate::consts::PREFIX_PARAMS_DOT) {
-            s.trim()
-        } else {
-            trimmed
-        };
+        let stripped = crate::consts::strip_namespace_prefix(raw);
         let raw: Cow<'static, str> = Cow::Owned(stripped.to_string());
         let parts: Arc<[String]> = raw
             .split(crate::consts::PATH_SEP)
@@ -186,17 +175,7 @@ pub enum ConditionOperand {
 }
 
 fn parse_condition_filters(filter_chain: &str) -> Result<Vec<ParsedFilter>, TemplateError> {
-    let mut filters = Vec::new();
-    for filter_str in crate::parser::split_filters_aware(filter_chain) {
-        let filter_str = filter_str.trim();
-        if filter_str.is_empty() {
-            continue;
-        }
-        let (name, args) = crate::filter::parse_filter(filter_str);
-        let kind = crate::compiled::parse_filter_kind(name)?;
-        filters.push(ParsedFilter::parse(kind, args)?);
-    }
-    Ok(filters)
+    crate::compiled::parse_filter_chain(filter_chain)
 }
 
 impl ConditionOperand {

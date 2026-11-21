@@ -35,6 +35,7 @@ var corpusFiles = []string{
 	"escapes.toml",
 	"comments.toml",
 	"literals.toml",
+	"security.toml",
 }
 
 // denull decodes the corpus's `{ __none__ = true }` option-None sentinel back

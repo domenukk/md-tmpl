@@ -12,10 +12,6 @@ import {
   FN_UNSAFE_TRUST,
   PIPE,
   PATH_SEP,
-  PREFIX_CONSTS_DOT,
-  PREFIX_OPTS_DOT,
-  PREFIX_OPTIONS_DOT,
-  PREFIX_PARAMS_DOT,
   NODE_TEXT,
   NODE_EXPR,
   NODE_COMMENT,
@@ -26,6 +22,7 @@ import {
   NODE_INCLUDE,
   NODE_TMPL,
   NODE_PANIC,
+  normalizeVariablePath,
 } from "../consts.js";
 
 // ---------------------------------------------------------------------------
@@ -96,23 +93,11 @@ function extractRootVariable(
 }
 
 /**
- * Strip a leading namespace path prefix (`consts.`, `opts.`, `options.`,
- * `params.`) from a token, mirroring the Rust core's `extract_root_variable`.
+ * Strip any leading namespace prefix (`consts.`, `opts.`, `options.`,
+ * `params.`) and normalize dotted whitespace, mirroring Rust core.
  */
 function stripPathPrefix(token: string): string {
-  if (token.startsWith(PREFIX_CONSTS_DOT)) {
-    return token.slice(PREFIX_CONSTS_DOT.length).trim();
-  }
-  if (token.startsWith(PREFIX_OPTS_DOT)) {
-    return token.slice(PREFIX_OPTS_DOT.length).trim();
-  }
-  if (token.startsWith(PREFIX_OPTIONS_DOT)) {
-    return token.slice(PREFIX_OPTIONS_DOT.length).trim();
-  }
-  if (token.startsWith(PREFIX_PARAMS_DOT)) {
-    return token.slice(PREFIX_PARAMS_DOT.length).trim();
-  }
-  return token;
+  return normalizeVariablePath(token);
 }
 
 /**

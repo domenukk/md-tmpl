@@ -1,6 +1,10 @@
 //! Declaration validation, trait implementations, static analysis, and file loading for [`Template`].
 
-use alloc::{format, string::String, vec::Vec};
+use alloc::{
+    format,
+    string::{String, ToString},
+    vec::Vec,
+};
 #[cfg(feature = "std")]
 use std::path::Path;
 
@@ -52,19 +56,106 @@ impl Template {
         let missing: Vec<&str> = expected_names.difference(&current_names).copied().collect();
         let extra: Vec<&str> = current_names.difference(&expected_names).copied().collect();
 
-        // Check for type changes on variables that exist in both.
-        let retyped: Vec<String> = current_names
+        // Check for type changes (including `str` -> `trusted str` downgrades) on variables in both.
+        let mut retyped: Vec<String> = current_names
             .intersection(&expected_names)
             .filter_map(|name| {
                 let cur_type = current[name];
                 let exp_type = expected_map[name];
-                if cur_type == exp_type {
+                if cur_type != exp_type {
+                    return Some(format!("{name}: {exp_type} → {cur_type}"));
+                }
+                let cur_formatted = cur_type.format_with_sanitize(name, &self.declared_sanitize);
+                let exp_formatted = exp_type.to_string();
+                if cur_formatted == exp_formatted {
                     None
                 } else {
-                    Some(format!("{name}: {exp_type} → {cur_type}"))
+                    Some(format!("{name}: {exp_formatted} → {cur_formatted}"))
                 }
             })
             .collect();
+        retyped.sort_unstable();
+
+        if missing.is_empty() && extra.is_empty() && retyped.is_empty() {
+            return Ok(());
+        }
+
+        let mut parts = Vec::new();
+        if !missing.is_empty() {
+            parts.push(format!("removed: {}", missing.join(", ")));
+        }
+        if !extra.is_empty() {
+            parts.push(format!("added: {}", extra.join(", ")));
+        }
+        if !retyped.is_empty() {
+            parts.push(format!("retyped: {}", retyped.join(", ")));
+        }
+
+        Err(TemplateError::DeclarationsMutated {
+            details: parts.join("; "),
+        })
+    }
+
+    /// Validate that `self` matches the parameter declarations and sanitization contract
+    /// of `expected` (preserving legitimate `trusted str` fields while rejecting any
+    /// added/removed parameters, type changes, or sanitization downgrades).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TemplateError::DeclarationsMutated`] if the parameter contract changed.
+    pub fn validate_against_template(&self, expected: &Self) -> Result<(), TemplateError> {
+        let cur_pairs = self.declaration_pairs();
+        let exp_pairs = expected.declaration_pairs();
+        let current: HashMap<&str, &str> = cur_pairs
+            .iter()
+            .map(|(n, t)| (n.as_str(), t.as_str()))
+            .collect();
+        let expected_map: HashMap<&str, &str> = exp_pairs
+            .iter()
+            .map(|(n, t)| (n.as_str(), t.as_str()))
+            .collect();
+
+        let current_names: HashSet<&str> = current.keys().copied().collect();
+        let expected_names: HashSet<&str> = expected_map.keys().copied().collect();
+
+        let mut missing: Vec<&str> = expected_names.difference(&current_names).copied().collect();
+        missing.sort_unstable();
+        let mut extra: Vec<&str> = current_names.difference(&expected_names).copied().collect();
+        extra.sort_unstable();
+
+        let mut retyped: Vec<String> = current_names
+            .intersection(&expected_names)
+            .filter_map(|name| {
+                let cur_ty = current[name];
+                let exp_ty = expected_map[name];
+                if cur_ty == exp_ty {
+                    None
+                } else {
+                    Some(format!("{name}: {exp_ty} → {cur_ty}"))
+                }
+            })
+            .collect();
+
+        for (path, exp_spec) in expected.declared_sanitize.iter() {
+            match self.declared_sanitize.get(path) {
+                None => {
+                    let root = path.split('.').next().unwrap_or(path.as_str());
+                    if current_names.contains(root)
+                        && expected_names.contains(root)
+                        && current[root] == expected_map[root]
+                    {
+                        retyped.push(format!("{path}: sanitized → trusted"));
+                    }
+                }
+                Some(cur_spec) if cur_spec != exp_spec => {
+                    if matches!(exp_spec, crate::types::SanitizeSpec::Block { .. }) {
+                        retyped.push(format!("{path}: block sanitize policy changed"));
+                    }
+                }
+                Some(_) => {}
+            }
+        }
+        retyped.sort_unstable();
 
         if missing.is_empty() && extra.is_empty() && retyped.is_empty() {
             return Ok(());
@@ -135,7 +226,13 @@ impl<'de> serde::Deserialize<'de> for Template {
     }
 }
 
-pub(super) fn run_static_analysis(
+/// Runs the full compile-time static analysis suite on parsed template segments.
+///
+/// # Errors
+///
+/// Returns `TemplateError` if undeclared variables, unused parameters, name collisions,
+/// invalid enum accesses, internal key accesses, invalid match labels, or type errors are found.
+pub fn run_static_analysis(
     segments: &[Segment],
     fm: &Frontmatter,
     inline_templates: &HashMap<String, compiled::CompiledInlineTemplate>,

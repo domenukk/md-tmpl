@@ -188,12 +188,17 @@ pub(crate) fn parse_declarations(
     available_consts: &HashMap<String, Value>,
 ) -> Result<(Vec<VarDecl>, ImportedTypeRefs), TemplateError> {
     let empty_alias_sanitize = HashMap::new();
+    let section = if is_constant {
+        super::sanitize_decl::DeclSection::Const
+    } else {
+        super::sanitize_decl::DeclSection::Param
+    };
     let (decls, import_refs, _) = parse_declarations_with_sanitize(
         rest,
         type_aliases,
         &empty_alias_sanitize,
         resolved_imports,
-        is_constant,
+        section,
         available_consts,
     )?;
     Ok((decls, import_refs))
@@ -205,13 +210,13 @@ pub(crate) type ParsedDeclarationsWithSanitize = (
     HashMap<String, crate::types::SanitizeSpec>,
 );
 
-/// Parse `params:` or `consts:` along with declarative `| sanitize(...)` policies.
+/// Parse `params:`, `env:`, or `consts:` along with declarative `| sanitize(...)` policies.
 pub(crate) fn parse_declarations_with_sanitize(
     rest: &str,
     type_aliases: &HashMap<String, VarType>,
     type_alias_sanitize: &super::type_aliases::TypeAliasSanitizeMap,
     resolved_imports: &HashMap<String, ImportedNamespace>,
-    is_constant: bool,
+    section: super::sanitize_decl::DeclSection,
     available_consts: &HashMap<String, Value>,
 ) -> Result<ParsedDeclarationsWithSanitize, TemplateError> {
     let rest = rest.trim();
@@ -255,7 +260,7 @@ pub(crate) fn parse_declarations_with_sanitize(
             type_aliases,
             type_alias_sanitize,
             resolved_imports,
-            is_constant,
+            section,
             &mut current_consts,
             &mut seen_names,
         )? {
@@ -351,14 +356,13 @@ fn resolve_param_type_ref(
             let ns = resolved_imports.get(stem)?;
             if let Some(vt) = ns.type_aliases.get(type_name) {
                 (stem.to_string(), type_name.to_string(), vt)
-            } else if let Some(vt) = ns.param_types.get(type_name) {
+            } else {
+                let vt = ns.param_types.get(type_name)?;
                 (
                     stem.to_string(),
                     format!("Params{}", crate::to_pascal_case(type_name)),
                     vt,
                 )
-            } else {
-                return None;
             }
         } else {
             let vt = type_aliases.get(target_str)?;
@@ -448,13 +452,14 @@ fn parse_single_declaration(
     type_aliases: &HashMap<String, VarType>,
     type_alias_sanitize: &super::type_aliases::TypeAliasSanitizeMap,
     resolved_imports: &HashMap<String, ImportedNamespace>,
-    is_constant: bool,
+    section: super::sanitize_decl::DeclSection,
     current_consts: &mut HashMap<String, Value>,
     seen_names: &mut crate::compat::HashSet<String>,
 ) -> Result<Option<ParsedDeclaration>, TemplateError> {
     if trimmed.is_empty() {
         return Ok(None);
     }
+    let is_constant = section == super::sanitize_decl::DeclSection::Const;
 
     let Some(eq_pos) = find_char_at_depth_zero(trimmed, crate::consts::EQUALS) else {
         let label = if is_constant { "constant" } else { "param" };
@@ -500,18 +505,26 @@ fn parse_single_declaration(
             (type_and_default, None)
         };
 
-    let (cleaned_type_str, cleaned_default_part, rel_specs) =
+    let (cleaned_type_str, cleaned_default_part, mut rel_specs, explicit_untrusted) =
         super::sanitize_decl::extract_declaration_sanitize(
             &name,
             raw_type_str,
             raw_default_part,
-            is_constant,
+            section,
             type_alias_sanitize,
         )?;
     let type_str = cleaned_type_str.as_str();
 
     let var_type = parse_type_annotation(type_str, type_aliases, resolved_imports)
         .map_err(|e| TemplateError::syntax(format!("declaration '{name}': {e}")))?;
+
+    if !explicit_untrusted.is_empty() {
+        super::sanitize_decl::expand_explicit_untrusted_on_type(
+            &var_type,
+            &explicit_untrusted,
+            &mut rel_specs,
+        );
+    }
 
     let default_value = resolve_declaration_default(
         &name,
@@ -523,10 +536,10 @@ fn parse_single_declaration(
         resolved_imports,
     )?;
 
-    let import_ref = if is_constant {
-        None
-    } else {
+    let import_ref = if section == super::sanitize_decl::DeclSection::Param {
         resolve_param_type_ref(type_str, type_aliases, resolved_imports)
+    } else {
+        None
     };
 
     Ok(Some((

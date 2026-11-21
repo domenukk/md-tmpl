@@ -25,8 +25,8 @@ use security::{
     sanitize_tokens_with_args,
 };
 pub(crate) use security::{
-    fence_into, is_ncname_continue_byte, is_ncname_start_byte, quarantine_into,
-    quarantine_untrusted_into,
+    fence_into, is_ncname_continue_byte, is_ncname_start_byte, is_valid_ncname, quarantine_into,
+    quarantine_untrusted_into, skip_tag_whitespace,
 };
 pub use security_ext::{
     DEFAULT_SANITIZE_NOTICE, DEFAULT_SANITIZE_TAG, SANITIZE_NOTICE_TAG_PLACEHOLDER,
@@ -365,7 +365,7 @@ fn serialize_value_to_json(
     match val {
         Value::Str(s) => {
             out.push('"');
-            escape_json_into(s, out);
+            security::write_escaped_json_body(s, false, out);
             out.push('"');
         }
         Value::Bool(true) => out.push_str("true"),
@@ -425,7 +425,7 @@ fn serialize_value_to_json(
                     write_indent(out, sp, next_depth);
                 }
                 out.push('"');
-                escape_json_into(key, out);
+                security::write_escaped_json_body(key, false, out);
                 if indent.is_some() {
                     out.push_str("\": ");
                 } else {
@@ -448,27 +448,6 @@ fn serialize_value_to_json(
         }
     }
     Ok(())
-}
-
-fn escape_json_into(s: &str, out: &mut String) {
-    use core::fmt::Write;
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\x08' => out.push_str("\\b"),
-            '\x0C' => out.push_str("\\f"),
-            '\u{2028}' => out.push_str("\\u2028"),
-            '\u{2029}' => out.push_str("\\u2029"),
-            c if (c as u32) < 0x20 => {
-                write!(out, "\\u{:04x}", c as u32).expect("fmt to String is infallible");
-            }
-            c => out.push(c),
-        }
-    }
 }
 
 /// Pass a string value through unchanged, explicitly opting out of default sanitization.

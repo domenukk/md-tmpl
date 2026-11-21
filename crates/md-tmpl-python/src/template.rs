@@ -418,11 +418,7 @@ impl PyTemplate {
     /// # => [('reviewer', 'str'), ('status', 'enum(...)')]
     /// ```
     fn declarations(&self) -> Vec<(String, String)> {
-        self.inner
-            .declarations()
-            .iter()
-            .map(|d| (d.name.clone(), d.var_type.to_string()))
-            .collect()
+        self.inner.declaration_pairs()
     }
 
     /// Return the content hash of the template source.
@@ -494,19 +490,77 @@ impl PyTemplate {
     )]
     fn validate_declarations_against(&self, expected: Vec<(String, String)>) -> PyResult<()> {
         let current = self.declarations();
-        // Borrow `expected` for comparison so it remains available for the
-        // error's `details` payload below.
-        let matches =
-            current.len() == expected.len() && current.iter().zip(&expected).all(|(a, b)| a == b);
-        if matches {
-            Ok(())
-        } else {
-            Err(crate::errors::template_error_to_py(
-                &md_tmpl::TemplateError::DeclarationsMutated {
-                    details: format!("expected {expected:?}, got {current:?}"),
-                },
-            ))
+        let cur_map: std::collections::HashMap<&str, &str> = current
+            .iter()
+            .map(|(n, t)| (n.as_str(), t.as_str()))
+            .collect();
+        let exp_map: std::collections::HashMap<&str, &str> = expected
+            .iter()
+            .map(|(n, t)| (n.as_str(), t.as_str()))
+            .collect();
+        let mut missing: Vec<&str> = exp_map
+            .keys()
+            .filter(|k| !cur_map.contains_key(*k))
+            .copied()
+            .collect();
+        missing.sort_unstable();
+        let mut extra: Vec<&str> = cur_map
+            .keys()
+            .filter(|k| !exp_map.contains_key(*k))
+            .copied()
+            .collect();
+        extra.sort_unstable();
+        let mut common: Vec<&str> = exp_map
+            .keys()
+            .filter(|k| cur_map.contains_key(*k))
+            .copied()
+            .collect();
+        common.sort_unstable();
+        let retyped: Vec<String> = common
+            .into_iter()
+            .filter_map(|name| {
+                let cur_ty = cur_map[name];
+                let exp_ty = exp_map[name];
+                if cur_ty == exp_ty {
+                    None
+                } else {
+                    Some(format!("{name}: {exp_ty} → {cur_ty}"))
+                }
+            })
+            .collect();
+
+        if missing.is_empty()
+            && extra.is_empty()
+            && retyped.is_empty()
+            && current.len() == expected.len()
+        {
+            return Ok(());
         }
+        let mut parts = Vec::new();
+        if !missing.is_empty() {
+            parts.push(format!("removed: {}", missing.join(", ")));
+        }
+        if !extra.is_empty() {
+            parts.push(format!("added: {}", extra.join(", ")));
+        }
+        if !retyped.is_empty() {
+            parts.push(format!("retyped: {}", retyped.join(", ")));
+        }
+        let details = if parts.is_empty() {
+            format!("expected {expected:?}, got {current:?}")
+        } else {
+            parts.join("; ")
+        };
+        Err(crate::errors::template_error_to_py(
+            &md_tmpl::TemplateError::DeclarationsMutated { details },
+        ))
+    }
+
+    /// Validate that this template's declarations and sanitization contracts match `expected`.
+    fn validate_against_template(&self, expected: &Self) -> PyResult<()> {
+        self.inner
+            .validate_against_template(&expected.inner)
+            .map_err(|e| crate::errors::template_error_to_py(&e))
     }
 
     /// Parse a template from source with a base directory for include resolution.
@@ -833,7 +887,8 @@ fn build_context(kwargs: Option<&Bound<'_, PyDict>>) -> PyResult<Context> {
     for (key, value) in kwargs.iter() {
         let key_str: String = key.extract()?;
         let val = py_to_value(&value)?;
-        ctx.set(key_str, val);
+        ctx.try_set(key_str, val)
+            .map_err(|e| crate::errors::template_error_to_py(&e))?;
     }
     Ok(ctx)
 }

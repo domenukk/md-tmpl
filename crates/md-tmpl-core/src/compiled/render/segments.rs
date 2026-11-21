@@ -27,22 +27,29 @@ const ESTIMATED_EXPR_SIZE: usize = 32;
 /// Estimated iteration count for for-loop capacity estimation.
 const ESTIMATED_LOOP_ITERATIONS: usize = 4;
 
-/// Estimate the total static text size for `String::with_capacity`.
+/// Upper bound on pre-allocated `String::with_capacity` so deeply nested loops never
+/// overflow `usize` or pre-allocate excessive memory before rendering.
+const MAX_ESTIMATED_CAPACITY: usize = 65_536;
+
+/// Estimate the total static text size for `String::with_capacity` (saturating, capped at 64 KiB).
 #[must_use]
 pub fn estimate_output_capacity(segments: &[Segment]) -> usize {
     let mut size: usize = 0;
     for seg in segments {
         match seg {
-            Segment::Static(s) | Segment::Raw(s) => size += s.len(),
+            Segment::Static(s) | Segment::Raw(s) => size = size.saturating_add(s.len()),
             Segment::Expr { .. } | Segment::Include(_) | Segment::Panic(_) => {
-                size += ESTIMATED_EXPR_SIZE;
+                size = size.saturating_add(ESTIMATED_EXPR_SIZE);
             }
             Segment::Comment(_) => {} // No output.
             Segment::ForLoop {
                 body, else_body, ..
             } => {
-                size += estimate_output_capacity(body) * ESTIMATED_LOOP_ITERATIONS;
-                size += estimate_output_capacity(else_body);
+                let loop_est =
+                    estimate_output_capacity(body).saturating_mul(ESTIMATED_LOOP_ITERATIONS);
+                size = size
+                    .saturating_add(loop_est)
+                    .saturating_add(estimate_output_capacity(else_body));
             }
             Segment::If {
                 branches,
@@ -53,7 +60,7 @@ pub fn estimate_output_capacity(segments: &[Segment]) -> usize {
                 for (_, branch_body) in branches {
                     max_branch = max_branch.max(estimate_output_capacity(branch_body));
                 }
-                size += max_branch;
+                size = size.saturating_add(max_branch);
             }
             Segment::Match { arms, .. } => {
                 // At most one arm is rendered — use the max, not the sum.
@@ -61,11 +68,14 @@ pub fn estimate_output_capacity(segments: &[Segment]) -> usize {
                 for arm in arms {
                     max_arm = max_arm.max(estimate_output_capacity(&arm.body));
                 }
-                size += max_arm;
+                size = size.saturating_add(max_arm);
             }
         }
+        if size >= MAX_ESTIMATED_CAPACITY {
+            return MAX_ESTIMATED_CAPACITY;
+        }
     }
-    size
+    size.min(MAX_ESTIMATED_CAPACITY)
 }
 
 /// Render pre-compiled segments into a string.

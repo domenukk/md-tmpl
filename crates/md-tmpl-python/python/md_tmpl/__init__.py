@@ -22,9 +22,9 @@ Import hook (import types directly from template files)::
     md_tmpl_import_hook()
 
     # Now ``.tmpl.md`` files are importable as Python modules:
-    from prompts.code_review import CodeReviewParams, Status
+    from prompts.code_review import CodeReview, Status
 
-    output = CodeReviewParams(
+    output = CodeReview(
         reviewer="Alice",
         items=[...],
     ).render()
@@ -45,6 +45,8 @@ from md_tmpl._md_tmpl import (
     DEFAULT_TRUNCATE_MARKER,
     DEFAULT_TRUNCATE_MARKER_COMPACT,
     DEFAULT_LIST_TRUNCATE_MARKER,
+    TRUNCATE_PLACEHOLDER_SKIPPED,
+    TRUNCATE_PLACEHOLDER_COUNT,
     XML_DECODE_PAIRS,
     format_sanitize_notice,
     decode_xml,
@@ -123,7 +125,7 @@ def load_template(path: str | os.PathLike[str]) -> Template:
 
         tmpl = load_template("prompts/greeting.tmpl.md")
         types = load_types("prompts/greeting.tmpl.md")
-        params = types.Greeting(name="world")
+        params = types.Greeting(name="world", count=1, items=[])
         result = params.render(template=tmpl)
     """
     return Template.from_file(os.fspath(path))
@@ -164,6 +166,8 @@ __all__ = [
     "DEFAULT_TRUNCATE_MARKER",
     "DEFAULT_TRUNCATE_MARKER_COMPACT",
     "DEFAULT_LIST_TRUNCATE_MARKER",
+    "TRUNCATE_PLACEHOLDER_SKIPPED",
+    "TRUNCATE_PLACEHOLDER_COUNT",
     "XML_DECODE_PAIRS",
     "format_sanitize_notice",
     "decode_xml",

@@ -129,23 +129,25 @@ describe("WASM host envelope, XML codec, notice, and truncation primitives", () 
       wasm.untrustedQuarantineCloseTag(),
       "</untrusted_tool_output>",
     );
-    assert.strictEqual(wasm.xmlDecodePairs().length, 6);
+    assert.strictEqual(wasm.xmlDecodePairs().length, 8);
   });
 
   it("decodes and escapes XML like the Rust core", () => {
     assert.strictEqual(
       wasm.decodeXmlString(
-        "a &lt;b&gt; &amp;lt; &quot;q&quot; &#39;s&apos; &unknown; &",
+        "a &lt;b&gt; &amp;lt; &quot;q&quot; &#39;s&apos; &#10;x&#13; &unknown; &",
       ),
-      "a <b> &lt; \"q\" 's' &unknown; &",
+      "a <b> &lt; \"q\" 's' \nx\r &unknown; &",
     );
     assert.strictEqual(
-      wasm.escapeXmlAttrString("a&b<c>\"d'e\nf\rg\0h\u0001i\u007fj\u0085k"),
-      "a&amp;b&lt;c&gt;&quot;d&apos;e\\nf\\rg\\0h i j k",
+      wasm.escapeXmlAttrString(
+        "a&b<c>\"d'e\nf\rg\0h\u0001i\u007fj\u0085k\ufffel",
+      ),
+      "a&amp;b&lt;c&gt;&quot;d&apos;e&#10;f&#13;ghijkl",
     );
     assert.strictEqual(
-      wasm.escapeXmlBodyString("a&b<c>\"d'\n\0"),
-      "a&amp;b&lt;c&gt;\"d'\n\\0",
+      wasm.escapeXmlBodyString("a&b<c>\"d'\n\0\u0001\uffff"),
+      "a&amp;b&lt;c&gt;\"d'\n",
     );
   });
 
@@ -197,5 +199,68 @@ describe("WASM host envelope, XML codec, notice, and truncation primitives", () 
       ["a", "..2..", "d", "e"],
     );
     assert.strictEqual(wasm.truncateMiddleString("abcdef", 100), "abcdef");
+    assert.strictEqual(wasm.truncatePlaceholderSkipped(), "{skipped}");
+    assert.strictEqual(wasm.truncatePlaceholderCount(), "{count}");
+    assert.strictEqual(
+      wasm.defaultTruncateMarker(),
+      "\n[TRUNCATED: {skipped} bytes omitted]\n",
+    );
+    assert.strictEqual(
+      wasm.defaultTruncateMarkerCompact(),
+      " [TRUNCATED: {skipped} bytes omitted] ",
+    );
+    assert.strictEqual(
+      wasm.defaultListTruncateMarker(),
+      "[TRUNCATED: {skipped} items omitted]",
+    );
+    assert.strictEqual(wasm.stripInvisibleStr("a\u200Bb"), "ab");
+  });
+
+  it("supports WASM Template name, description, CompileOptions object, and declaration validation", () => {
+    const tmpl = wasm.Template.fromSourceWithOptions(
+      `---
+name: wasm_meta
+description: WASM parity template
+env:
+  - MODEL = str
+
+params:
+  - unused_param = str
+  - doc = str | sanitize("doc", "Notice A")
+---
+Model={{ MODEL }} {{ doc }}`,
+      { env: { MODEL: "fast" }, allowUnused: true },
+    );
+    assert.strictEqual(tmpl.name(), "wasm_meta");
+    assert.strictEqual(tmpl.description(), "WASM parity template");
+
+    const reordered = wasm.Template.fromSourceWithOptions(
+      `---
+env:
+  - MODEL = str
+
+params:
+  - doc = str | sanitize("doc", "Notice A")
+  - unused_param = str
+---
+Model={{ MODEL }} {{ doc }}`,
+      { env: { MODEL: "fast" }, allowUnused: true },
+    );
+    reordered.validateDeclarationsAgainst(tmpl.declarations());
+    reordered.validateAgainstTemplate(tmpl);
+
+    const downgraded = wasm.Template.fromSourceWithOptions(
+      `---
+env:
+  - MODEL = str
+
+params:
+  - unused_param = str
+  - doc = str
+---
+Model={{ MODEL }} {{ doc }}`,
+      { env: { MODEL: "fast" }, allowUnused: true },
+    );
+    assert.throws(() => downgraded.validateAgainstTemplate(tmpl));
   });
 });

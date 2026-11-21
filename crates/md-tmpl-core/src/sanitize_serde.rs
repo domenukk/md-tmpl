@@ -31,7 +31,7 @@ pub enum StringSanitizeMode {
     SanitizeTokens,
     /// Neutralize all known LLM control/turn/tool delimiters and any XML breakout tags
     /// matching `tag_spec` via [`sanitize_untrusted_str`] without wrapping in an outer
-    /// XML envelope (already-quarantined envelopes matching `tag_spec` are preserved unchanged).
+    /// XML envelope (embedded `<tag>` and `</tag>` tokens are always escaped).
     SanitizeUntrusted {
         /// Comma-separated XML `NCName` boundary tag specification (e.g. `"tool_output_quarantine"`).
         tag_spec: &'static str,
@@ -60,16 +60,8 @@ impl StringSanitizeMode {
     pub fn apply(self, s: &str) -> Cow<'_, str> {
         match self {
             Self::SanitizeTokens => sanitize_tokens_str(s),
-            Self::SanitizeUntrusted { tag_spec } => {
-                if is_quarantined_str(s, Some(tag_spec))
-                    || is_sanitized_block_str(s, Some(tag_spec), None)
-                {
-                    Cow::Borrowed(s)
-                } else {
-                    sanitize_str(s, Some(tag_spec))
-                        .unwrap_or_else(|_| sanitize_untrusted_str(s, DEFAULT_SANITIZE_TAG))
-                }
-            }
+            Self::SanitizeUntrusted { tag_spec } => sanitize_str(s, Some(tag_spec))
+                .unwrap_or_else(|_| sanitize_untrusted_str(s, DEFAULT_SANITIZE_TAG)),
             Self::Quarantine { tag_spec } => {
                 if is_quarantined_str(s, Some(tag_spec)) {
                     Cow::Borrowed(s)
@@ -245,7 +237,10 @@ impl<S: Serializer> Serializer for TransformingSerializer<S> {
     }
 
     fn serialize_char(self, v: char) -> Result<Self::Ok, Self::Error> {
-        self.inner.serialize_char(v)
+        let mut buf = [0u8; 4];
+        let s = v.encode_utf8(&mut buf);
+        let transformed = self.mode.apply(s);
+        self.inner.serialize_str(&transformed)
     }
 
     fn serialize_str(self, v: &str) -> Result<Self::Ok, Self::Error> {

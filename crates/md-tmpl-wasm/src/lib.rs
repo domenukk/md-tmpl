@@ -32,6 +32,12 @@ extern "C" {
     /// A JS object typed as `Record<string, unknown>` in TypeScript (for env vars).
     #[wasm_bindgen(typescript_type = "Record<string, unknown>")]
     pub type JsEnvRecord;
+
+    /// Either a `CompileOptions` object or a legacy `baseDir` string.
+    #[wasm_bindgen(
+        typescript_type = "{ readonly baseDir?: string; readonly env?: Record<string, unknown>; readonly allowUnused?: boolean } | string | null"
+    )]
+    pub type JsCompileOptionsOrBaseDir;
 }
 
 /// Set a property on a JS object, panicking on failure.
@@ -352,6 +358,18 @@ impl Template {
         self.inner.body().to_owned()
     }
 
+    /// Return the template name declared in frontmatter, or `undefined` if absent.
+    #[must_use]
+    pub fn name(&self) -> Option<String> {
+        self.inner.name().map(str::to_owned)
+    }
+
+    /// Return the template description declared in frontmatter, or `undefined` if absent.
+    #[must_use]
+    pub fn description(&self) -> Option<String> {
+        self.inner.description().map(str::to_owned)
+    }
+
     /// Return default values for all parameters that declare them.
     ///
     /// Returns a plain JS object. The result is cached after the first call.
@@ -396,12 +414,12 @@ impl Template {
     pub fn declarations(&self) -> JsDeclarations {
         self.cached_declarations
             .get_or_init(|| {
-                let decls = self.inner.declarations();
+                let decls = self.inner.declaration_pairs();
                 let arr = Array::new_with_length(u32_from_usize(decls.len()));
-                for (i, decl) in decls.iter().enumerate() {
+                for (i, (name, ty)) in decls.iter().enumerate() {
                     let tuple = Array::new_with_length(2);
-                    tuple.set(0, JsValue::from_str(&decl.name));
-                    tuple.set(1, JsValue::from_str(&decl.var_type.to_string()));
+                    tuple.set(0, JsValue::from_str(name));
+                    tuple.set(1, JsValue::from_str(ty));
                     arr.set(u32_from_usize(i), tuple.into());
                 }
                 JsValue::from(arr)
@@ -504,7 +522,9 @@ impl Template {
 
     /// Parse a template from source with full compile options.
     ///
-    /// Accepts optional `base_dir`, `env`, and `allow_unused` parameters.
+    /// Accepts either a `CompileOptions` object (`{ baseDir?, env?, allowUnused? }`) as the
+    /// second argument (matching pure-TS `Template.fromSourceWithOptions`) or legacy positional
+    /// `(source, baseDir?, env?, allowUnused?)` arguments.
     ///
     /// # Errors
     ///
@@ -517,12 +537,49 @@ impl Template {
     )]
     pub fn from_source_with_options(
         source: &str,
-        base_dir: Option<String>,
+        options_or_base_dir: Option<JsCompileOptionsOrBaseDir>,
         env: Option<JsEnvRecord>,
         allow_unused: Option<bool>,
     ) -> Result<Template, JsValue> {
-        let env_pairs = if let Some(ref env_val) = env {
-            js_env_to_values(env_val.as_ref())?
+        let mut resolved_base_dir: Option<String> = None;
+        let mut resolved_env: Option<JsValue> = env.map(JsValue::from);
+        let mut resolved_allow_unused: Option<bool> = allow_unused;
+
+        if let Some(ref first) = options_or_base_dir {
+            let js_val: &JsValue = first.as_ref();
+            if let Some(s) = js_val.as_string() {
+                resolved_base_dir = Some(s);
+            } else if js_val.is_object() && !js_val.is_null() {
+                let base_prop = Reflect::get(js_val, &JsValue::from_str("baseDir"))
+                    .map_err(|_| js_error_msg("failed to read options.baseDir"))?;
+                if let Some(s) = base_prop.as_string() {
+                    resolved_base_dir = Some(s);
+                } else if !base_prop.is_undefined() && !base_prop.is_null() {
+                    return Err(js_error_msg("options.baseDir must be a string"));
+                }
+
+                if resolved_env.is_none() {
+                    let env_prop = Reflect::get(js_val, &JsValue::from_str("env"))
+                        .map_err(|_| js_error_msg("failed to read options.env"))?;
+                    if !env_prop.is_undefined() && !env_prop.is_null() {
+                        resolved_env = Some(env_prop);
+                    }
+                }
+
+                if resolved_allow_unused.is_none() {
+                    let allow_prop = Reflect::get(js_val, &JsValue::from_str("allowUnused"))
+                        .map_err(|_| js_error_msg("failed to read options.allowUnused"))?;
+                    if let Some(b) = allow_prop.as_bool() {
+                        resolved_allow_unused = Some(b);
+                    } else if !allow_prop.is_undefined() && !allow_prop.is_null() {
+                        return Err(js_error_msg("options.allowUnused must be a boolean"));
+                    }
+                }
+            }
+        }
+
+        let env_pairs = if let Some(ref env_val) = resolved_env {
+            js_env_to_values(env_val)?
         } else {
             Vec::new()
         };
@@ -531,14 +588,127 @@ impl Template {
             .map(|(k, v)| (k.as_str(), v.clone()))
             .collect();
         let mut opts = md_tmpl::CompileOptions::default().env(&env_refs);
-        if let Some(allow) = allow_unused {
+        if let Some(allow) = resolved_allow_unused {
             opts = opts.allow_unused(allow);
         }
-        if let Some(ref dir) = base_dir {
+        if let Some(ref dir) = resolved_base_dir {
             opts = opts.base_dir(std::path::Path::new(dir));
         }
         let (inner, _fm) = md_tmpl::Template::compile(source, opts).map_err(|e| js_error(&e))?;
         Ok(Self::new(inner))
+    }
+
+    /// Validate that this template's declarations match an expected `[name, type][]` array
+    /// (order-independent, preserving `trusted str` and block `| sanitize(...)` policies).
+    ///
+    /// # Errors
+    ///
+    /// Returns a JS `Error` (`kind = "declarations_mutated"`) if any declaration differs.
+    #[wasm_bindgen(js_name = "validateDeclarationsAgainst")]
+    pub fn validate_declarations_against(&self, expected: &JsDeclarations) -> Result<(), JsValue> {
+        let arr: &Array = expected
+            .dyn_ref::<Array>()
+            .ok_or_else(|| js_error_msg("expected declarations must be an Array"))?;
+        let mut exp_pairs = Vec::with_capacity(arr.length() as usize);
+        for i in 0..arr.length() {
+            let item = arr.get(i);
+            let tuple = item.dyn_ref::<Array>().ok_or_else(|| {
+                js_error_msg("each declaration entry must be a [name, type] tuple")
+            })?;
+            if tuple.length() != 2 {
+                return Err(js_error_msg(
+                    "each declaration entry must be a [name, type] tuple",
+                ));
+            }
+            let name = tuple
+                .get(0)
+                .as_string()
+                .ok_or_else(|| js_error_msg("declaration name must be a string"))?;
+            let ty = tuple
+                .get(1)
+                .as_string()
+                .ok_or_else(|| js_error_msg("declaration type must be a string"))?;
+            exp_pairs.push((name, ty));
+        }
+
+        let current = self.inner.declaration_pairs();
+        let cur_map: std::collections::HashMap<&str, &str> = current
+            .iter()
+            .map(|(n, t)| (n.as_str(), t.as_str()))
+            .collect();
+        let exp_map: std::collections::HashMap<&str, &str> = exp_pairs
+            .iter()
+            .map(|(n, t)| (n.as_str(), t.as_str()))
+            .collect();
+
+        let mut missing: Vec<&str> = exp_map
+            .keys()
+            .filter(|k| !cur_map.contains_key(*k))
+            .copied()
+            .collect();
+        missing.sort_unstable();
+        let mut extra: Vec<&str> = cur_map
+            .keys()
+            .filter(|k| !exp_map.contains_key(*k))
+            .copied()
+            .collect();
+        extra.sort_unstable();
+        let mut common: Vec<&str> = exp_map
+            .keys()
+            .filter(|k| cur_map.contains_key(*k))
+            .copied()
+            .collect();
+        common.sort_unstable();
+        let retyped: Vec<String> = common
+            .into_iter()
+            .filter_map(|name| {
+                let cur_ty = cur_map[name];
+                let exp_ty = exp_map[name];
+                if cur_ty == exp_ty {
+                    None
+                } else {
+                    Some(format!("{name}: {exp_ty} → {cur_ty}"))
+                }
+            })
+            .collect();
+
+        if missing.is_empty()
+            && extra.is_empty()
+            && retyped.is_empty()
+            && current.len() == exp_pairs.len()
+        {
+            return Ok(());
+        }
+        let mut parts = Vec::new();
+        if !missing.is_empty() {
+            parts.push(format!("removed: {}", missing.join(", ")));
+        }
+        if !extra.is_empty() {
+            parts.push(format!("added: {}", extra.join(", ")));
+        }
+        if !retyped.is_empty() {
+            parts.push(format!("retyped: {}", retyped.join(", ")));
+        }
+        let details = if parts.is_empty() {
+            format!("expected {exp_pairs:?}, got {current:?}")
+        } else {
+            parts.join("; ")
+        };
+        Err(js_error(&md_tmpl::TemplateError::DeclarationsMutated {
+            details,
+        }))
+    }
+
+    /// Validate that this template's declarations and sanitization contracts match `expected`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a JS `Error` (`kind = "declarations_mutated"`) on any contract difference.
+    #[wasm_bindgen(js_name = "validateAgainstTemplate")]
+    pub fn validate_against_template(&self, expected: &Template) -> Result<(), JsValue> {
+        self.inner
+            .validate_against_template(&expected.inner)
+            .map_err(|e| js_error(&e))
     }
 
     /// Set the maximum include depth for rendering this template.

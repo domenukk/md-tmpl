@@ -4,12 +4,16 @@ import os
 from typing import Any
 
 from md_tmpl._exceptions import (
+    DeclarationsMutatedError as DeclarationsMutatedError,
     ExtraParamsError as ExtraParamsError,
+    IncludeNotFoundError as IncludeNotFoundError,
     MissingParamsError as MissingParamsError,
     TemplateError as TemplateError,
     TemplatePanicError as TemplatePanicError,
     TemplateSyntaxError as TemplateSyntaxError,
     TypeMismatchError as TypeMismatchError,
+    UndefinedVariableError as UndefinedVariableError,
+    UnknownFilterError as UnknownFilterError,
 )
 
 class Template:
@@ -74,6 +78,7 @@ class Template:
     def validate_declarations_against(
         self, expected: list[tuple[str, str]]
     ) -> None: ...
+    def validate_against_template(self, expected: "Template") -> None: ...
     def body(self) -> str: ...
     def name(self) -> str | None: ...
     def description(self) -> str | None: ...
@@ -173,6 +178,8 @@ UNTRUSTED_QUARANTINE_CLOSE_TAG: str
 DEFAULT_TRUNCATE_MARKER: str
 DEFAULT_TRUNCATE_MARKER_COMPACT: str
 DEFAULT_LIST_TRUNCATE_MARKER: str
+TRUNCATE_PLACEHOLDER_SKIPPED: str
+TRUNCATE_PLACEHOLDER_COUNT: str
 XML_DECODE_PAIRS: list[tuple[str, str]]
 
 def format_sanitize_notice(

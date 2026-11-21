@@ -26,13 +26,28 @@ use typed_builder::TypedBuilder;
 #[derive(Debug, Clone)]
 pub(crate) struct Field {
     pub name: String,
+    pub wire_name: String,
     pub annotation: String,
 }
 
 impl Field {
     pub fn new(name: impl Into<String>, annotation: impl Into<String>) -> Self {
+        let name = name.into();
+        Self {
+            wire_name: name.clone(),
+            name,
+            annotation: annotation.into(),
+        }
+    }
+
+    pub fn with_wire_name(
+        name: impl Into<String>,
+        wire_name: impl Into<String>,
+        annotation: impl Into<String>,
+    ) -> Self {
         Self {
             name: name.into(),
+            wire_name: wire_name.into(),
             annotation: annotation.into(),
         }
     }
@@ -423,7 +438,7 @@ impl PyClassDef {
     pub fn with_fields_property(self, fields: &[Field]) -> Self {
         let items: Vec<String> = fields
             .iter()
-            .map(|f| format!("'{}': self.{}", f.name, f.name))
+            .map(|f| format!("'{}': self.{}", f.wire_name, f.name))
             .collect();
         self.property(PyPropertyDef {
             name: "_md_tmpl_fields".into(),
@@ -436,7 +451,7 @@ impl PyClassDef {
     pub fn with_dict_property(self, fields: &[Field]) -> Self {
         let items: Vec<String> = fields
             .iter()
-            .map(|f| format!("'{}': self.{}", f.name, f.name))
+            .map(|f| format!("'{}': self.{}", f.wire_name, f.name))
             .collect();
         self.property(PyPropertyDef {
             name: "__dict__".into(),

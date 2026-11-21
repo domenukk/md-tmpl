@@ -453,6 +453,7 @@ tmpl.DefaultsContext() *Context
 tmpl.SourceHash() uint64
 tmpl.Body() string
 tmpl.ValidateDeclarations([]Declaration) error
+tmpl.ValidateAgainstTemplate(*Template) error
 tmpl.SetMaxIncludeDepth(depth int)
 tmpl.Close()
 ```

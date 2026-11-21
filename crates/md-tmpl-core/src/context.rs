@@ -2,7 +2,7 @@
 
 use alloc::string::String;
 
-use crate::{compat::HashMap, value::Value};
+use crate::{compat::HashMap, error::TemplateError, value::Value};
 
 /// Template rendering context — holds all variables available during rendering.
 ///
@@ -73,30 +73,42 @@ impl Context {
         self.values.contains_key(key)
     }
 
+    /// Fallibly insert a value into the context, rejecting reserved internal keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TemplateError::Syntax`] if `key` is the reserved internal enum
+    /// discriminant key (`__kind__`).
+    pub fn try_set(
+        &mut self,
+        key: impl Into<String>,
+        value: impl Into<Value>,
+    ) -> Result<(), TemplateError> {
+        let key = key.into();
+        if key == crate::consts::ENUM_TAG_KEY {
+            return Err(TemplateError::syntax(
+                crate::consts::ERR_RESERVED_ENUM_TAG_KEY,
+            ));
+        }
+        *self.validated_token.get_mut() = 0;
+        self.values.insert(key, value.into());
+        Ok(())
+    }
+
     /// Insert a value into the context.
     ///
     /// This is the **dynamic** API — the key is a plain string and type
-    /// mismatches are caught at [`render_ctx()`](crate::Template::render_ctx) time,
-    /// not here. For compile-time type safety, prefer one of:
+    /// mismatches (including reserved internal keys like `__kind__`) are caught at
+    /// [`render_ctx()`](crate::Template::render_ctx) time without panicking. For
+    /// immediate key validation, use [`try_set`](Self::try_set). For compile-time
+    /// type safety, prefer one of:
     ///
     /// - `include_template!` (from `md-tmpl-macros`)
     ///   — generates a strongly-typed parameter struct from your template.
     /// - [`Template::render`](crate::Template::render) (feature `serde`)
     ///   — renders directly from any `Serialize` struct.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `key` is the reserved internal key `__kind__` — this key
-    /// is used internally for enum variant tagging and must not be set
-    /// directly. Use enum types in the template frontmatter instead.
     pub fn set(&mut self, key: impl Into<String>, value: impl Into<Value>) {
         let key = key.into();
-        assert!(
-            key != crate::consts::ENUM_TAG_KEY,
-            "cannot set reserved internal key '{}' directly in Context — \
-             use enum types in the template frontmatter instead",
-            crate::consts::ENUM_TAG_KEY,
-        );
         *self.validated_token.get_mut() = 0;
         self.values.insert(key, value.into());
     }
@@ -142,12 +154,16 @@ impl Context {
     ///
     /// # Errors
     ///
-    /// Returns `TemplateError::Syntax` if the value is not a dict/map.
-    pub fn from_value(val: Value) -> Result<Self, crate::error::TemplateError> {
+    /// Returns `TemplateError::Syntax` if the value is not a dict/map or contains
+    /// the reserved internal `__kind__` key.
+    pub fn from_value(val: Value) -> Result<Self, TemplateError> {
         match val {
             Value::Struct(arc_map) => {
-                // Try to unwrap the Arc to avoid cloning — we're the sole owner
-                // if it was just deserialized or serialized.
+                if arc_map.contains_key(crate::consts::ENUM_TAG_KEY) {
+                    return Err(TemplateError::syntax(
+                        crate::consts::ERR_RESERVED_ENUM_TAG_KEY,
+                    ));
+                }
                 let values =
                     alloc::sync::Arc::try_unwrap(arc_map).unwrap_or_else(|arc| (*arc).clone());
                 Ok(Self {
@@ -155,7 +171,7 @@ impl Context {
                     validated_token: core::sync::atomic::AtomicUsize::new(0),
                 })
             }
-            other => Err(crate::error::TemplateError::syntax(format!(
+            other => Err(TemplateError::syntax(alloc::format!(
                 "expected struct/map, got {}",
                 other.type_name()
             ))),
@@ -167,12 +183,9 @@ impl Context {
     /// # Errors
     ///
     /// Returns `TemplateError::Syntax` if the serialized value is not a dict/map.
-    pub fn from_serialize<T: serde::Serialize>(
-        value: &T,
-    ) -> Result<Self, crate::error::TemplateError> {
-        crate::serde_support::to_context(value).map_err(|e| {
-            crate::error::TemplateError::syntax(format!("serde conversion failed: {e}"))
-        })
+    pub fn from_serialize<T: serde::Serialize>(value: &T) -> Result<Self, TemplateError> {
+        crate::serde_support::to_context(value)
+            .map_err(|e| TemplateError::syntax(alloc::format!("serde conversion failed: {e}")))
     }
 }
 
@@ -187,9 +200,9 @@ impl Context {
     /// # Errors
     ///
     /// Returns `TemplateError::Syntax` if the buffer is invalid or not a dict/map.
-    pub fn from_cbor(data: &[u8]) -> Result<Self, crate::error::TemplateError> {
+    pub fn from_cbor(data: &[u8]) -> Result<Self, TemplateError> {
         let val: Value = ciborium::from_reader(data).map_err(|e| {
-            crate::error::TemplateError::syntax(format!("cbor deserialization failed: {e}"))
+            TemplateError::syntax(alloc::format!("cbor deserialization failed: {e}"))
         })?;
         Self::from_value(val)
     }
@@ -204,12 +217,11 @@ impl Context {
     /// # Errors
     ///
     /// Returns `TemplateError::Syntax` if the buffer is invalid or not a dict/map.
-    pub fn from_flexbuffers(data: &[u8]) -> Result<Self, crate::error::TemplateError> {
-        let r = flexbuffers::Reader::get_root(data).map_err(|e| {
-            crate::error::TemplateError::syntax(format!("flexbuffers root error: {e}"))
-        })?;
+    pub fn from_flexbuffers(data: &[u8]) -> Result<Self, TemplateError> {
+        let r = flexbuffers::Reader::get_root(data)
+            .map_err(|e| TemplateError::syntax(alloc::format!("flexbuffers root error: {e}")))?;
         let val: Value = serde::Deserialize::deserialize(r).map_err(|e| {
-            crate::error::TemplateError::syntax(format!("flexbuffers deserialization failed: {e}"))
+            TemplateError::syntax(alloc::format!("flexbuffers deserialization failed: {e}"))
         })?;
         Self::from_value(val)
     }
@@ -273,15 +285,28 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "reserved internal key")]
-    fn set_rejects_internal_kind_key() {
+    fn set_rejects_internal_kind_key_without_panic() {
         let mut ctx = Context::new();
+        let err = ctx
+            .try_set(crate::consts::ENUM_TAG_KEY, "Variant")
+            .expect_err("try_set must reject reserved __kind__ key");
+        assert!(err.to_string().contains("reserved internal key"));
+
+        // Non-panicking `set` also causes both strict and allow_extra renders to return an error.
         ctx.set(crate::consts::ENUM_TAG_KEY, "Variant");
+        let tmpl = crate::Template::from_source(
+            r"---
+params: []
+---
+ok",
+        )
+        .unwrap();
+        assert!(tmpl.render_ctx(&ctx).is_err());
+        assert!(tmpl.render_ctx_allowing_extra(&ctx).is_err());
     }
 
     #[test]
     fn set_allows_similar_but_different_keys() {
-        // Keys that look similar but aren't ENUM_TAG_KEY should work fine.
         let mut ctx = Context::new();
         ctx.set("kind", "some_kind");
         ctx.set("__type__", "some_type");

@@ -33,12 +33,14 @@
  */
 
 import * as fs from "node:fs";
+import * as path from "node:path";
 import {
   type VarType,
   type VarDecl,
   type VariantDecl,
   parseFrontmatter,
 } from "./frontmatter.js";
+import { resolveImportedConsts } from "./template/resolve.js";
 import type { Value } from "./value.js";
 import {
   OPTION_SOME,
@@ -76,6 +78,8 @@ export interface GenerateTypesOptions {
   readonly includeRenderHelper?: boolean;
   /** Whether to generate JSDoc comments. @default true */
   readonly jsdoc?: boolean;
+  /** Base directory for resolving `imports:` declarations. */
+  readonly baseDir?: string;
 }
 
 /**
@@ -88,7 +92,10 @@ export function generateTypes(
   source: string,
   options?: GenerateTypesOptions,
 ): string {
-  const [fm] = parseFrontmatter(source);
+  let [fm] = parseFrontmatter(source);
+  if (options?.baseDir !== undefined && fm.imports.length > 0) {
+    fm = resolveImportedConsts(fm, options.baseDir);
+  }
   const opts = resolveOptions(options);
   const ctx = new CodegenContext(opts);
 
@@ -113,7 +120,10 @@ export function generateTypesFromFile(
   options?: GenerateTypesOptions,
 ): string {
   const source = fs.readFileSync(filePath, "utf-8");
-  return generateTypes(source, options);
+  return generateTypes(source, {
+    ...options,
+    baseDir: options?.baseDir ?? path.dirname(filePath),
+  });
 }
 
 /**
@@ -223,19 +233,20 @@ class CodegenContext {
 
   /** Resolve a type alias from the `types:` block. */
   resolveAlias(name: string, vt: VarType): void {
+    const ident = aliasIdent(name);
     // Generate the actual type definition using the alias name as the field name
     // This will emit interfaces/enums as needed
-    const tsType = this.varTypeToTs(name, vt);
+    const tsType = this.varTypeToTs(ident, vt);
 
     // If it's a simple primitive mapping, emit a type alias
-    if (!this.generatedNames.has(name)) {
-      this.generatedNames.add(name);
+    if (!this.generatedNames.has(ident)) {
+      this.generatedNames.add(ident);
       const exp = this.opts.exportTypes ? "export " : "";
       const lines: string[] = [];
       if (this.opts.jsdoc) {
         lines.push(`/** Type alias for \`${name}\`. */`);
       }
-      lines.push(`${exp}type ${name} = ${tsType};`);
+      lines.push(`${exp}type ${ident} = ${tsType};`);
       this.auxiliaryTypes.push(lines.join("\n"));
     }
   }
@@ -273,7 +284,7 @@ class CodegenContext {
           `  /** Type: \`${varTypeToLabel(param.varType)}\`${defaultComment} */`,
         );
       }
-      lines.push(`  readonly ${param.name}${optional}: ${tsType};`);
+      lines.push(`  readonly ${objectKey(param.name)}${optional}: ${tsType};`);
     }
     lines.push("}");
 
@@ -292,7 +303,7 @@ class CodegenContext {
           if (this.opts.jsdoc) {
             lines.push(`  /** Type: \`${varTypeToLabel(c.varType)}\` */`);
           }
-          lines.push(`  ${c.name}: ${jsVal},`);
+          lines.push(`  ${objectKey(c.name)}: ${jsVal},`);
         }
       }
       lines.push("} as const;");
@@ -311,7 +322,7 @@ class CodegenContext {
       for (const param of paramsWithDefaults) {
         if (param.defaultValue !== undefined) {
           const jsVal = valueToJsSource(param.defaultValue);
-          lines.push(`  ${param.name}: ${jsVal},`);
+          lines.push(`  ${objectKey(param.name)}: ${jsVal},`);
         }
       }
       lines.push("};");
@@ -329,7 +340,7 @@ class CodegenContext {
         lines.push(` * import { Template } from "md-tmpl";`);
         lines.push(` * const tmpl = Template.fromFile("my_template.tmpl.md");`);
         lines.push(
-          ` * const output = render(tmpl, { ${params[0] ? `${params[0].name}: ...` : ""} });`,
+          ` * const output = render(tmpl, { ${params[0] ? `${objectKey(params[0].name)}: ...` : ""} });`,
         );
         lines.push(` * \`\`\``);
         lines.push(" */");
@@ -368,6 +379,7 @@ class CodegenContext {
         return `readonly ${itemName}[]`;
       }
       case TYPE_TMPL:
+        return 'import("md-tmpl").ITemplate | import("md-tmpl").TmplValue';
       case TYPE_STRUCT: {
         if (vt.fields.length === 0) {
           return "Record<string, unknown>";
@@ -392,7 +404,7 @@ class CodegenContext {
         return enumName;
       }
       case TYPE_ALIAS:
-        return vt.name;
+        return aliasIdent(vt.name);
       case TYPE_UNTYPED_LIST:
         return "unknown[]";
       case TYPE_OPTION: {
@@ -415,7 +427,7 @@ class CodegenContext {
     lines.push(`${exp}interface ${name} {`);
     for (const field of fields) {
       const tsType = this.varTypeToTs(field.name, field.varType);
-      lines.push(`  readonly ${field.name}: ${tsType};`);
+      lines.push(`  readonly ${objectKey(field.name)}: ${tsType};`);
     }
     lines.push("}");
 
@@ -609,7 +621,7 @@ class CodegenContext {
     lines.push(`  readonly ${ENUM_TAG_KEY}: "${tag}";`);
     for (const field of fields) {
       const tsType = this.varTypeToTs(field.name, field.varType);
-      lines.push(`  readonly ${field.name}: ${tsType};`);
+      lines.push(`  readonly ${objectKey(field.name)}: ${tsType};`);
     }
     lines.push("}");
 
@@ -621,12 +633,17 @@ class CodegenContext {
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Convert a snake_case or lowercase name to PascalCase. */
+/** Convert a snake_case, kebab-case, or dotted name to PascalCase. */
 function pascalCase(s: string): string {
   return s
-    .split(/[_\s-]+/)
+    .split(/[_\s.-]+/)
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
     .join("");
+}
+
+/** Normalize a local or imported alias name (`shared.Stage`, `my-alias`) to a valid TS type identifier. */
+function aliasIdent(name: string): string {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name) ? name : pascalCase(name);
 }
 
 /**
@@ -667,6 +684,7 @@ function varTypeToLabel(vt: VarType): string {
     case TYPE_LIST:
       return "list(…)";
     case TYPE_TMPL:
+      return "tmpl(…)";
     case TYPE_STRUCT:
       return "struct(…)";
     case TYPE_ENUM:
@@ -707,11 +725,12 @@ function varTypeToTsType(
       return `${varTypeToTsType(_fieldName, vt.elementType, typeAliases)}[]`;
     case TYPE_LIST:
       if (vt.fields.length === 0) return "unknown[]";
-      return `Array<{ ${vt.fields.map((f) => `${f.name}: ${varTypeToTsType(f.name, f.varType, typeAliases)}`).join("; ")} }>`;
+      return `Array<{ ${vt.fields.map((f) => `${objectKey(f.name)}: ${varTypeToTsType(f.name, f.varType, typeAliases)}`).join("; ")} }>`;
     case TYPE_TMPL:
+      return 'import("md-tmpl").ITemplate | import("md-tmpl").TmplValue';
     case TYPE_STRUCT:
       if (vt.fields.length === 0) return "Record<string, unknown>";
-      return `{ ${vt.fields.map((f) => `${f.name}: ${varTypeToTsType(f.name, f.varType, typeAliases)}`).join("; ")} }`;
+      return `{ ${vt.fields.map((f) => `${objectKey(f.name)}: ${varTypeToTsType(f.name, f.varType, typeAliases)}`).join("; ")} }`;
     case TYPE_ENUM: {
       if (vt.isOption) {
         const someVariant = vt.variants.find((v) => v.name === OPTION_SOME);
@@ -727,7 +746,7 @@ function varTypeToTsType(
         const fields = v.fields
           .map(
             (f) =>
-              `${f.name}: ${varTypeToTsType(f.name, f.varType, typeAliases)}`,
+              `${objectKey(f.name)}: ${varTypeToTsType(f.name, f.varType, typeAliases)}`,
           )
           .join("; ");
         return `{ ${ENUM_TAG_KEY}: "${v.name}"; ${fields} }`;
@@ -788,7 +807,7 @@ function valueToJsSource(v: Value): string {
       }
       const entries: string[] = [];
       for (const [k, val] of v.fields) {
-        entries.push(`${k}: ${valueToJsSource(val)}`);
+        entries.push(`${objectKey(k)}: ${valueToJsSource(val)}`);
       }
       return `{ ${entries.join(", ")} }`;
     }

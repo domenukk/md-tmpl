@@ -33,8 +33,31 @@ pub(crate) const fn is_ncname_continue_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.'
 }
 
+/// Advance `pos` past all ASCII and Unicode whitespace / line-break characters
+/// (including `\v` `0x0B`, `\f` `0x0C`, `U+0085` NEL, `U+2028`, `U+2029`).
+#[inline]
+pub(crate) fn skip_tag_whitespace(s: &str, mut pos: usize) -> usize {
+    let bytes = s.as_bytes();
+    while pos < bytes.len() {
+        let b = bytes[pos];
+        if matches!(b, b' ' | b'\t' | b'\n' | 0x0B | 0x0C | b'\r') {
+            pos += 1;
+            continue;
+        }
+        if matches!(b, 0xC2 | 0xE1 | 0xE2 | 0xE3)
+            && let Some(ch) = s.get(pos..).and_then(|tail| tail.chars().next())
+            && (ch.is_whitespace() || ch == '\u{0085}')
+        {
+            pos += ch.len_utf8();
+            continue;
+        }
+        break;
+    }
+    pos
+}
+
 /// Validate whether an XML tag name is a valid ASCII XML `NCName`.
-fn is_valid_ncname(name: &str) -> bool {
+pub(crate) fn is_valid_ncname(name: &str) -> bool {
     let mut bytes = name.bytes();
     bytes.next().is_some_and(is_ncname_start_byte) && bytes.all(is_ncname_continue_byte)
 }
@@ -134,11 +157,12 @@ impl<'a> ParsedTagSpec<'a> {
     }
 
     #[inline]
-    fn match_at(&self, bytes: &[u8], i: usize) -> Option<usize> {
+    fn match_at(&self, s: &str, i: usize) -> Option<usize> {
         if self.first_char_mask == 0 {
             return None;
         }
-        let pos = quarantine_tag_name_start(bytes, i);
+        let bytes = s.as_bytes();
+        let pos = quarantine_tag_name_start(s, i);
         let &first_b = bytes.get(pos)?;
         if (self.first_char_mask & ncname_first_char_bit(first_b)) == 0 {
             return None;
@@ -166,19 +190,13 @@ impl<'a> ParsedTagSpec<'a> {
     }
 }
 
-/// Advance past `<`, optional ASCII whitespace, optional `/`, and optional ASCII whitespace,
+/// Advance past `<`, optional whitespace, optional `/`, and optional whitespace,
 /// returning the byte index where the XML tag name begins.
 #[inline]
-fn quarantine_tag_name_start(bytes: &[u8], i: usize) -> usize {
-    let mut pos = i + 1;
-    while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
-        pos += 1;
-    }
-    if pos < bytes.len() && bytes[pos] == b'/' {
-        pos += 1;
-        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
-            pos += 1;
-        }
+fn quarantine_tag_name_start(s: &str, i: usize) -> usize {
+    let mut pos = skip_tag_whitespace(s, i + 1);
+    if s.as_bytes().get(pos) == Some(&b'/') {
+        pos = skip_tag_whitespace(s, pos + 1);
     }
     pos
 }
@@ -199,17 +217,23 @@ fn match_quarantine_tag_tail_at(bytes: &[u8], pos: usize, tag_bytes: &[u8]) -> O
 }
 
 #[inline]
+const fn is_trigger_byte(b: u8, i: usize) -> bool {
+    matches!(b, b'<' | b'[' | b'\n' | b'\r') || (i == 0 && matches!(b, b'H' | b'A' | b' ' | b'\t'))
+}
+
+#[inline]
 fn has_breakout_clean(
-    bytes: &[u8],
+    s: &str,
     rules: &[(&'static str, &'static str)],
     parsed_tags: &ParsedTagSpec<'_>,
 ) -> bool {
+    let bytes = s.as_bytes();
     for (i, &b) in bytes.iter().enumerate() {
-        if b == b'<' || b == b'[' || b == b'\n' {
-            if !rules.is_empty() && match_control_token_at(bytes, i, rules).is_some() {
+        if is_trigger_byte(b, i) {
+            if !rules.is_empty() && match_control_token_at(s, i, rules).is_some() {
                 return true;
             }
-            if b == b'<' && parsed_tags.match_at(bytes, i).is_some() {
+            if b == b'<' && parsed_tags.match_at(s, i).is_some() {
                 return true;
             }
         }
@@ -227,18 +251,17 @@ fn has_breakout_with_rules(
     let parsed_tags = ParsedTagSpec::from_opt(tag_spec);
     let mut checked_invisible = false;
     for (i, &b) in bytes.iter().enumerate() {
-        if b == b'<' || b == b'[' || b == b'\n' {
-            if !rules.is_empty() && match_control_token_at(bytes, i, rules).is_some() {
+        if is_trigger_byte(b, i) {
+            if !rules.is_empty() && match_control_token_at(s, i, rules).is_some() {
                 return true;
             }
-            if b == b'<' && parsed_tags.match_at(bytes, i).is_some() {
+            if b == b'<' && parsed_tags.match_at(s, i).is_some() {
                 return true;
             }
         } else if !checked_invisible && crate::filter::invisible::is_invisible_lead_byte(b) {
             checked_invisible = true;
             if let Cow::Owned(stripped) = crate::filter::invisible::strip_invisible_str(s) {
-                return !rules.is_empty()
-                    || has_breakout_clean(stripped.as_bytes(), rules, &parsed_tags);
+                return !rules.is_empty() || has_breakout_clean(&stripped, rules, &parsed_tags);
             }
         }
     }
@@ -257,9 +280,9 @@ fn sanitize_with_rules_clean<'a>(
     let mut i = 0usize;
     while i < bytes.len() {
         let b = bytes[i];
-        if b == b'<' || b == b'[' || b == b'\n' {
+        if is_trigger_byte(b, i) {
             if b == b'<'
-                && let Some(after_tag) = parsed_tags.match_at(bytes, i)
+                && let Some(after_tag) = parsed_tags.match_at(s, i)
             {
                 let buf = out.get_or_insert_with(|| {
                     String::with_capacity(s.len() + SANITIZE_EXTRA_CAPACITY)
@@ -289,7 +312,7 @@ fn sanitize_with_rules_clean<'a>(
                 continue;
             }
             if !rules.is_empty()
-                && let Some(matched) = match_control_token_at(bytes, i, rules)
+                && let Some(matched) = match_control_token_at(s, i, rules)
             {
                 let buf = out.get_or_insert_with(|| {
                     String::with_capacity(s.len() + SANITIZE_EXTRA_CAPACITY)
@@ -300,7 +323,12 @@ fn sanitize_with_rules_clean<'a>(
                         buf.push_str(replacement);
                         i += len;
                     }
-                    ControlTokenMatch::GenericPipe { end_idx } => {
+                    ControlTokenMatch::TurnHeader { colon_idx } => {
+                        buf.push_str(&s[i..colon_idx]);
+                        buf.push_str("&#58;");
+                        i = colon_idx + 1;
+                    }
+                    ControlTokenMatch::AngleSpan { end_idx } => {
                         buf.push_str(ESCAPED_LT);
                         let empty_tags = ParsedTagSpec::from_opt(None);
                         buf.push_str(&sanitize_with_rules_clean(
@@ -341,9 +369,9 @@ fn sanitize_with_rules<'a>(
     let mut i = 0usize;
     while i < bytes.len() {
         let b = bytes[i];
-        if b == b'<' || b == b'[' || b == b'\n' {
+        if is_trigger_byte(b, i) {
             if b == b'<'
-                && let Some(after_tag) = parsed_tags.match_at(bytes, i)
+                && let Some(after_tag) = parsed_tags.match_at(s, i)
             {
                 let buf = out.get_or_insert_with(|| {
                     String::with_capacity(s.len() + SANITIZE_EXTRA_CAPACITY)
@@ -357,7 +385,7 @@ fn sanitize_with_rules<'a>(
                     buf.push_str(ESCAPED_LT);
                     let inner = &s[i + 1..j];
                     if rules.is_empty() {
-                        buf.push_str(inner);
+                        buf.push_str(&crate::filter::invisible::strip_invisible_str(inner));
                     } else {
                         buf.push_str(&sanitize_with_rules(inner, rules, None));
                     }
@@ -372,7 +400,7 @@ fn sanitize_with_rules<'a>(
                 continue;
             }
             if !rules.is_empty()
-                && let Some(matched) = match_control_token_at(bytes, i, rules)
+                && let Some(matched) = match_control_token_at(s, i, rules)
             {
                 let buf = out.get_or_insert_with(|| {
                     String::with_capacity(s.len() + SANITIZE_EXTRA_CAPACITY)
@@ -383,7 +411,12 @@ fn sanitize_with_rules<'a>(
                         buf.push_str(replacement);
                         i += len;
                     }
-                    ControlTokenMatch::GenericPipe { end_idx } => {
+                    ControlTokenMatch::TurnHeader { colon_idx } => {
+                        buf.push_str(&s[i..colon_idx]);
+                        buf.push_str("&#58;");
+                        i = colon_idx + 1;
+                    }
+                    ControlTokenMatch::AngleSpan { end_idx } => {
                         buf.push_str(ESCAPED_LT);
                         buf.push_str(&sanitize_with_rules(&s[i + 1..end_idx - 1], rules, None));
                         buf.push_str(ESCAPED_GT);
@@ -482,42 +515,60 @@ pub(in crate::filter) fn apply_sanitize_tokens(
     }
 }
 
-/// Append `s` wrapped in Markdown code fences with adaptive backtick counts directly into `buf`.
+/// Append `s` wrapped in Markdown code fences with adaptive backtick counts directly into `buf`,
+/// stripping interior NUL (`\0`) bytes and counting backtick runs across invisible characters so
+/// post-fence stripping cannot coalesce shorter runs into a closing fence.
 ///
 /// # Errors
-/// Returns [`TemplateError::Syntax`] if `lang` contains backticks or whitespace.
+/// Returns [`TemplateError::Syntax`] if `lang` contains backticks, whitespace, or control/invisible characters.
 pub(crate) fn fence_into(
     s: &str,
     lang: Option<&str>,
     buf: &mut String,
 ) -> Result<(), TemplateError> {
     let lang_cow = strip_quotes(lang.unwrap_or(""));
-    if lang_cow.chars().any(|c| c == '`' || c.is_whitespace()) {
+    if lang_cow.chars().any(|c| {
+        c == '`'
+            || c.is_whitespace()
+            || c.is_control()
+            || crate::filter::invisible::is_unconditional_invisible_char(c)
+    }) {
         return Err(TemplateError::syntax(alloc::format!(
             "'fence' language must not contain backticks or whitespace: '{lang_cow}'"
         )));
     }
+    let clean: Cow<'_, str> = if s.as_bytes().contains(&0) {
+        Cow::Owned(s.chars().filter(|&c| c != '\0').collect())
+    } else {
+        Cow::Borrowed(s)
+    };
     let mut max_backticks = 0usize;
     let mut current_backticks = 0usize;
-    for b in s.bytes() {
-        if b == b'`' {
+    for ch in clean.chars() {
+        if ch == '`' {
             current_backticks += 1;
             if current_backticks > max_backticks {
                 max_backticks = current_backticks;
             }
+        } else if crate::filter::invisible::is_unconditional_invisible_char(ch)
+            || ch == '\u{200D}'
+            || ch == '\u{FE0F}'
+        {
+            // Do not reset `current_backticks` on invisible characters so split backtick runs
+            // (` ``\u{200B}`` `) still widen the enclosing fence.
         } else {
             current_backticks = 0;
         }
     }
     let fence_len = core::cmp::max(MIN_FENCE_BACKTICKS, max_backticks + 1);
-    buf.reserve(s.len() + fence_len * 2 + lang_cow.len() + 2);
+    buf.reserve(clean.len() + fence_len * 2 + lang_cow.len() + 2);
     for _ in 0..fence_len {
         buf.push('`');
     }
     buf.push_str(&lang_cow);
     buf.push('\n');
-    buf.push_str(s);
-    if !s.ends_with('\n') {
+    buf.push_str(&clean);
+    if !clean.ends_with('\n') {
         buf.push('\n');
     }
     for _ in 0..fence_len {

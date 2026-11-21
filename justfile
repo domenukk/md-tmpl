@@ -121,8 +121,8 @@ test: test-rust test-no-std test-python test-go test-ts test-wasm
 
 # Run Rust tests (lib + doctests + integration + macros, zero ignored)
 test-rust:
-    cargo test --workspace --exclude md-tmpl-macros --all-features 2>&1 | tee /tmp/cargo-test-output.txt
-    cargo test -p md-tmpl-macros 2>&1 | tee -a /tmp/cargo-test-output.txt
+    bash -o pipefail -c 'cargo test --workspace --exclude md-tmpl-macros --all-features 2>&1 | tee /tmp/cargo-test-output.txt'
+    bash -o pipefail -c 'cargo test -p md-tmpl-macros 2>&1 | tee -a /tmp/cargo-test-output.txt'
     @echo "Verifying zero ignored tests..."
     @if grep 'test result:' /tmp/cargo-test-output.txt | grep -v '0 ignored'; then echo "ERROR: ignored tests found!" && exit 1; fi
     @echo "All tests pass, none ignored ✓"
@@ -241,11 +241,11 @@ build-go-ffi:
 
 # Build the TypeScript bindings
 build-ts:
-    cd crates/md-tmpl-typescript && npx tsc
+    cd crates/md-tmpl-typescript && rm -rf dist && npx tsc
 
 # Build the WASM package (via wasm-pack)
 build-wasm:
-    cd crates/md-tmpl-wasm && rm -rf pkg && wasm-pack build --target nodejs --out-dir pkg --release && npm run build
+    cd crates/md-tmpl-wasm && rm -rf pkg dist && wasm-pack build --target nodejs --out-dir pkg --release && npm run build
 
 # ── Other ─────────────────────────────────────────────────────────────
 

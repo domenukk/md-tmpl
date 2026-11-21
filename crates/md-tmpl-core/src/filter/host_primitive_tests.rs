@@ -6,14 +6,15 @@ use alloc::{string::ToString, vec, vec::Vec};
 use super::*;
 
 /// Input exercising every decodable entity, a double-escaped entity, and unknown entities.
-const DECODE_INPUT: &str = "a &lt;b&gt; &amp;lt; &quot;q&quot; &#39;s&apos; &unknown; &";
-const DECODE_EXPECTED: &str = "a <b> &lt; \"q\" 's' &unknown; &";
+const DECODE_INPUT: &str =
+    "a &lt;b&gt; &amp;lt; &quot;q&quot; &#39;s&apos; &#10;nl&#13;cr &unknown; &";
+const DECODE_EXPECTED: &str = "a <b> &lt; \"q\" 's' \nnl\rcr &unknown; &";
 
-const ATTR_INPUT: &str = "a&b<c>\"d'e\nf\rg\0h\u{1}i\u{7f}j\u{85}k";
-const ATTR_EXPECTED: &str = "a&amp;b&lt;c&gt;&quot;d&apos;e\\nf\\rg\\0h i j k";
+const ATTR_INPUT: &str = "a&b<c>\"d'e\nf\rg\0h\u{1}i\u{7f}j\u{85}k\u{fffe}l";
+const ATTR_EXPECTED: &str = "a&amp;b&lt;c&gt;&quot;d&apos;e&#10;f&#13;ghijkl";
 
-const BODY_INPUT: &str = "a&b<c>\"d'\n\0";
-const BODY_EXPECTED: &str = "a&amp;b&lt;c&gt;\"d'\n\\0";
+const BODY_INPUT: &str = "a&b<c>\"d'\n\0\u{1}\u{ffff}";
+const BODY_EXPECTED: &str = "a&amp;b&lt;c&gt;\"d'\n";
 
 #[test]
 fn decode_xml_str_single_pass() {

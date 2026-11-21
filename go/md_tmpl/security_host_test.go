@@ -8,12 +8,12 @@ import (
 
 // Expectations mirror crates/md-tmpl-core/src/filter/host_primitive_tests.rs verbatim.
 const (
-	hostDecodeInput    = "a &lt;b&gt; &amp;lt; &quot;q&quot; &#39;s&apos; &unknown; &"
-	hostDecodeExpected = "a <b> &lt; \"q\" 's' &unknown; &"
-	hostAttrInput      = "a&b<c>\"d'e\nf\rg\x00h\x01i\x7fj\u0085k"
-	hostAttrExpected   = "a&amp;b&lt;c&gt;&quot;d&apos;e\\nf\\rg\\0h i j k"
-	hostBodyInput      = "a&b<c>\"d'\n\x00"
-	hostBodyExpected   = "a&amp;b&lt;c&gt;\"d'\n\\0"
+	hostDecodeInput    = "a &lt;b&gt; &amp;lt; &quot;q&quot; &#39;s&apos; &#10;x&#13; &unknown; &"
+	hostDecodeExpected = "a <b> &lt; \"q\" 's' \nx\r &unknown; &"
+	hostAttrInput      = "a&b<c>\"d'e\nf\rg\x00h\x01i\x7fj\u0085k\ufffel"
+	hostAttrExpected   = "a&amp;b&lt;c&gt;&quot;d&apos;e&#10;f&#13;ghijkl"
+	hostBodyInput      = "a&b<c>\"d'\n\x00\x01\uffff"
+	hostBodyExpected   = "a&amp;b&lt;c&gt;\"d'\n"
 )
 
 func TestHostConstantsMatchCore(t *testing.T) {
@@ -32,13 +32,15 @@ func TestHostConstantsMatchCore(t *testing.T) {
 		"DEFAULT_LIST_TRUNCATE_MARKER":     DefaultListTruncateMarker,
 		"DEFAULT_TRUNCATE_MARKER":          DefaultTruncateMarker,
 		"DEFAULT_TRUNCATE_MARKER_COMPACT":  DefaultTruncateMarkerCompact,
+		"TRUNCATE_PLACEHOLDER_SKIPPED":     TruncatePlaceholderSkipped,
+		"TRUNCATE_PLACEHOLDER_COUNT":       TruncatePlaceholderCount,
 	}
 	for name, goValue := range want {
 		if core[name] != goValue {
 			t.Errorf("%s: Go constant %q != core %q", name, goValue, core[name])
 		}
 	}
-	if len(XMLDecodePairs()) != 6 {
+	if len(XMLDecodePairs()) != 8 {
 		t.Errorf("XMLDecodePairs: got %v", XMLDecodePairs())
 	}
 }

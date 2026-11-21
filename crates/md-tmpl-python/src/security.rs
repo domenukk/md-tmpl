@@ -49,6 +49,14 @@ const STRING_CONSTANTS: &[(&str, &str)] = &[
         "DEFAULT_LIST_TRUNCATE_MARKER",
         md_tmpl::DEFAULT_LIST_TRUNCATE_MARKER,
     ),
+    (
+        "TRUNCATE_PLACEHOLDER_SKIPPED",
+        md_tmpl::TRUNCATE_PLACEHOLDER_SKIPPED,
+    ),
+    (
+        "TRUNCATE_PLACEHOLDER_COUNT",
+        md_tmpl::TRUNCATE_PLACEHOLDER_COUNT,
+    ),
 ];
 
 /// Escape XML/HTML special characters and strip illegal XML 1.0 control characters.

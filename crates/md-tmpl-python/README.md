@@ -11,8 +11,8 @@ review = template("prompts/code_review.tmpl.md")
 output = review.render(
     reviewer="Alice",
     items=[
-        review.Item(file="main.py", status=review.Status.Approved),
-        review.Item(
+        review.CodeReviewItemsItem(file="main.py", status=review.Status.Approved),
+        review.CodeReviewItemsItem(
             file="lib.py",
             status=review.Status.NeedsChanges(reason="missing tests"),
         ),
@@ -97,8 +97,8 @@ output = tmpl.render(
 )
 ```
 
-Generated class names use PascalCase: param `tasks` → class `Tasks`,
-type alias `priority` → class `Priority`.
+Generated class names use PascalCase: list param `tasks` on `task_list` → class `TaskListTasksItem`,
+type alias `Priority` → class `Priority`.
 
 ### Type Mapping
 
@@ -147,8 +147,8 @@ Use the generated class like a normal dataclass:
 from greeting_types import Greeting
 
 # mypy / pyright catch missing or mistyped fields here:
-params = Greeting(name="world")
-output = params.render()   # → "Hello world!"
+params = Greeting(name="world", count=1, items=[])
+output = params.render()   # → "Hello world! Count: 1. Items: "
 ```
 
 ## Import Hook
@@ -363,10 +363,10 @@ from md_tmpl import TemplateCache
 
 cache = TemplateCache()
 tmpl = cache.load("prompts/greeting.tmpl.md")
-output = tmpl.render(name="cached")
+output = tmpl.render(name="cached", count=1, items=[])
 
 # Cache-aware rendering (resolves {% include %} through cache):
-output = tmpl.render_cached(cache, name="world")
+output = tmpl.render_cached(cache, name="world", count=1, items=[])
 
 cache.template_count()  # number of cached templates
 cache.clear()           # invalidate all entries
@@ -376,18 +376,19 @@ cache.clear()           # invalidate all entries
 
 ### `Template`
 
-| Method / Constructor                           | Description                                             |
-| ---------------------------------------------- | ------------------------------------------------------- |
-| `Template.from_file(path)`                     | Load and parse a `.tmpl.md` file                        |
-| `Template.from_source(source)`                 | Parse a template from an inline string                  |
-| `Template.from_source_with_env(source, env)`   | Parse with compile-time environment variables           |
-| `Template.from_source_with_options(source, …)` | Parse with `base_dir`, `env`, and `allow_unused`        |
-| `tmpl.render(**kwargs)`                        | Render with keyword arguments (type-checked)            |
-| `tmpl.render_dict(params, allow_extra=…)`      | Render from a dict; `allow_extra=True` skips extras     |
-| `tmpl.render_empty()`                          | Render a template with only defaults (no user args)     |
-| `tmpl.declarations()`                          | Return `[(name, type_str), …]` for all params           |
-| `tmpl.consts()`                                | Return `{name: value, …}` for constants                 |
-| `tmpl.validate_declarations_against(…)`        | Raise `ValueError` if declarations changed (hot-reload) |
+| Method / Constructor                           | Description                                                    |
+| ---------------------------------------------- | -------------------------------------------------------------- |
+| `Template.from_file(path)`                     | Load and parse a `.tmpl.md` file                               |
+| `Template.from_source(source)`                 | Parse a template from an inline string                         |
+| `Template.from_source_with_env(source, env)`   | Parse with compile-time environment variables                  |
+| `Template.from_source_with_options(source, …)` | Parse with `base_dir`, `env`, and `allow_unused`               |
+| `tmpl.render(**kwargs)`                        | Render with keyword arguments (type-checked)                   |
+| `tmpl.render_dict(params, allow_extra=…)`      | Render from a dict; `allow_extra=True` skips extras            |
+| `tmpl.render_empty()`                          | Render a template with only defaults (no user args)            |
+| `tmpl.declarations()`                          | Return `[(name, type_str), …]` for all params                  |
+| `tmpl.consts()`                                | Return `{name: value, …}` for constants                        |
+| `tmpl.validate_declarations_against(…)`        | Raise `DeclarationsMutatedError` if declarations changed       |
+| `tmpl.validate_against_template(expected)`     | Raise `DeclarationsMutatedError` if template contract diverged |
 
 ### Host Sanitization Primitives
 
@@ -415,11 +416,15 @@ See **[SPEC.md](../../SPEC.md#host-sanitization-primitives)** for the full host 
 
 ```python
 from md_tmpl import (
-    TemplateError,          # base class
-    TemplateSyntaxError,    # invalid template syntax
-    MissingParamsError,     # required parameters not provided
-    TypeMismatchError,      # value type doesn't match declaration
-    ExtraParamsError,       # undeclared parameters passed
+    TemplateError,             # base class
+    TemplateSyntaxError,       # invalid template syntax
+    MissingParamsError,        # required parameters not provided
+    TypeMismatchError,         # value type doesn't match declaration
+    ExtraParamsError,          # undeclared parameters passed
+    UndefinedVariableError,    # undeclared variable referenced
+    UnknownFilterError,        # unknown filter name
+    IncludeNotFoundError,      # missing included template file
+    DeclarationsMutatedError,  # hot-reload declaration/sanitization mismatch
 )
 ```
 

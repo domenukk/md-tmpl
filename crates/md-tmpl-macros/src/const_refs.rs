@@ -30,14 +30,7 @@ fn record_path_parts(parts: &[String], keys: &mut HashSet<String>) {
 }
 
 fn record_path_keys(path: &CompiledPath, keys: &mut HashSet<String>) {
-    let parts = path.parts();
-    record_path_parts(parts, keys);
-    // Also record stripped keys when the path uses `consts.` / `params.` / `opts.` / `options.`
-    if let Some(first) = parts.first().map(String::as_str)
-        && matches!(first, "consts" | "params" | "opts" | "options")
-    {
-        record_path_parts(&parts[1..], keys);
-    }
+    record_path_parts(path.parts(), keys);
 }
 
 fn record_head_path(trimmed: &str, keys: &mut HashSet<String>) {
@@ -58,7 +51,7 @@ fn record_raw_expr_keys(raw: &str, keys: &mut HashSet<String>) {
             match md_tmpl_core::compiled::compile_body(&unescaped) {
                 Ok(segs) => collect_keys_from_segments(&segs, keys),
                 Err(err) => {
-                    assert!(!err.to_string().is_empty());
+                    assert_ne!(err.to_string(), "");
                     record_head_path(&unescaped, keys);
                 }
             }
@@ -69,7 +62,7 @@ fn record_raw_expr_keys(raw: &str, keys: &mut HashSet<String>) {
         match md_tmpl_core::compiled::compile_body(trimmed) {
             Ok(segs) => collect_keys_from_segments(&segs, keys),
             Err(err) => {
-                assert!(!err.to_string().is_empty());
+                assert_ne!(err.to_string(), "");
                 record_head_path(trimmed, keys);
             }
         }
@@ -78,7 +71,7 @@ fn record_raw_expr_keys(raw: &str, keys: &mut HashSet<String>) {
     match ConditionOperand::compile(trimmed) {
         Ok(op) => collect_keys_from_operand(&op, keys),
         Err(err) => {
-            assert!(!err.to_string().is_empty());
+            assert_ne!(err.to_string(), "");
             record_head_path(trimmed, keys);
         }
     }

@@ -52,7 +52,7 @@ fn join_multiple_groups() {
 #[test]
 fn join_empty_block() {
     let result = join_continuation_lines("");
-    assert!(result.is_empty());
+    assert_eq!(result, Vec::<String>::new());
 }
 
 #[test]

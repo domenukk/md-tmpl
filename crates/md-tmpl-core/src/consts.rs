@@ -465,6 +465,8 @@ pub fn unescape_string_literal(inner: &str) -> alloc::string::String {
 
 // -- Error messages -----------------------------------------------------------
 
+/// Error when attempting to insert the reserved `__kind__` discriminant key into a root `Context`.
+pub(crate) const ERR_RESERVED_ENUM_TAG_KEY: &str = "cannot set reserved internal key '__kind__' directly in Context — use enum types in the template frontmatter instead";
 /// Error when frontmatter block is missing.
 /// Error for `unsafe_trust` used as a declaration modifier (`x = unsafe_trust str`,
 /// `x = str | unsafe_trust`): trust is declared with `trusted`, and `unsafe_trust`
@@ -555,6 +557,24 @@ pub(crate) const RESERVED_NAMES: &[&str] = &[
     "__super",
     "__crate",
 ];
+
+/// Strip an optional leading namespace prefix (`params.`, `opts.`, `options.`, or `consts.`,
+/// including whitespace around `.`) from `raw`, returning the trimmed remainder when non-empty.
+#[inline]
+#[must_use]
+pub(crate) fn strip_namespace_prefix(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    if let Some((head, rest)) = trimmed.split_once(PATH_SEP) {
+        let head_trimmed = head.trim();
+        let rest_trimmed = rest.trim();
+        if !rest_trimmed.is_empty()
+            && matches!(head_trimmed, "params" | "opts" | "options" | "consts")
+        {
+            return rest_trimmed;
+        }
+    }
+    trimmed
+}
 
 #[cfg(test)]
 mod tests {

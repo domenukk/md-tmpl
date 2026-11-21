@@ -202,18 +202,41 @@ fn var_type_references_alias(ty: &VarType, alias_type: &VarType) -> bool {
 }
 
 /// When a param or constant has a compound type (list, dict, enum), and there's no
-/// explicit type alias for it, generate one from the name in `PascalCase`.
-/// This allows imported templates to reference these types.
+/// explicit type alias for it, generate one from the name in `PascalCase` along with
+/// its relative declarative sanitization specs so imported templates preserve field trust.
 pub(crate) fn add_implicit_param_types(fm: &mut Frontmatter) {
-    for decl in fm.declarations.iter().chain(fm.consts.iter()) {
+    for decl in &fm.declarations {
         let pascal = crate::types::to_pascal_case(&decl.name);
-        match &decl.var_type {
-            VarType::List(_) | VarType::Struct(_) | VarType::Enum(_) => {
-                fm.type_aliases
-                    .entry(pascal)
-                    .or_insert_with(|| decl.var_type.clone());
+        if matches!(
+            decl.var_type,
+            VarType::List(_) | VarType::Struct(_) | VarType::Enum(_)
+        ) && !fm.type_aliases.contains_key(&pascal)
+        {
+            fm.type_aliases
+                .insert(pascal.clone(), decl.var_type.clone());
+            let rel_specs = super::sanitize_decl::extract_decl_relative_sanitize(
+                &decl.name,
+                &fm.param_sanitize,
+            );
+            if !rel_specs.is_empty() {
+                fm.type_alias_sanitize.insert(pascal, rel_specs);
             }
-            _ => {}
+        }
+    }
+    for decl in &fm.consts {
+        let pascal = crate::types::to_pascal_case(&decl.name);
+        if matches!(
+            decl.var_type,
+            VarType::List(_) | VarType::Struct(_) | VarType::Enum(_)
+        ) && !fm.type_aliases.contains_key(&pascal)
+        {
+            fm.type_aliases
+                .insert(pascal.clone(), decl.var_type.clone());
+            let mut rel_specs = crate::compat::HashMap::new();
+            super::sanitize_decl::collect_all_str_leaf_paths(&decl.var_type, "", &mut rel_specs);
+            if !rel_specs.is_empty() {
+                fm.type_alias_sanitize.insert(pascal, rel_specs);
+            }
         }
     }
 }

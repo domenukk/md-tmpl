@@ -20,8 +20,12 @@ import {
 } from "./consts.js";
 import { TemplateSyntaxError } from "./errors.js";
 import {
+  type ParsedTagSpec,
+  compileValidatedTagSpec,
   hasUntrustedBreakout,
+  hasUntrustedBreakoutPreparsed,
   sanitizeTokensString,
+  sanitizeUntrustedPreparsed,
   sanitizeUntrustedString,
   stripQuotes,
   validateTagSpecForFilter,
@@ -55,38 +59,19 @@ export interface SanitizeFilterArgs {
   readonly notice?: string;
 }
 
-const ASCII_CASE_BIT = 32;
-const CHAR_TAB = 9;
-const CHAR_LF = 10;
-const CHAR_CR = 13;
-const CHAR_SPACE = 32;
-const CHAR_HYPHEN = 45;
-const CHAR_DOT = 46;
-const CHAR_DIGIT_0 = 48;
-const CHAR_DIGIT_9 = 57;
-const CHAR_UNDERSCORE = 95;
-const CHAR_LOWER_A = 97;
-const CHAR_LOWER_Z = 122;
+import {
+  isAsciiWhitespaceCode,
+  isNcnameContinueCode,
+  isNcnameStartCode,
+  skipTagWhitespace,
+} from "./token_delimiters.js";
 
-export function isNcnameStartCode(c: number): boolean {
-  const lower = c | ASCII_CASE_BIT;
-  return (
-    (lower >= CHAR_LOWER_A && lower <= CHAR_LOWER_Z) || c === CHAR_UNDERSCORE
-  );
-}
-
-export function isNcnameContinueCode(c: number): boolean {
-  return (
-    isNcnameStartCode(c) ||
-    (c >= CHAR_DIGIT_0 && c <= CHAR_DIGIT_9) ||
-    c === CHAR_DOT ||
-    c === CHAR_HYPHEN
-  );
-}
-
-export function isAsciiWhitespaceCode(c: number): boolean {
-  return c === CHAR_SPACE || c === CHAR_TAB || c === CHAR_LF || c === CHAR_CR;
-}
+export {
+  isAsciiWhitespaceCode,
+  isNcnameContinueCode,
+  isNcnameStartCode,
+  skipTagWhitespace,
+};
 
 /** Validate a comma-separated XML tag specification for `sanitize`, returning `[primaryTag, validSpec]`. */
 export function validateSanitizeTagSpec(spec: string): [string, string] {
@@ -386,6 +371,79 @@ export function sanitizeBlockIdempotentString(
     }
   }
   const sanitized = sanitizeUntrustedString(inner, validSpec);
+  const trailingNl = sanitized.endsWith(ENVELOPE_NEWLINE)
+    ? ""
+    : ENVELOPE_NEWLINE;
+  const noticeLine = notice.length > 0 ? `${notice}${ENVELOPE_NEWLINE}` : "";
+  return `<${primaryTag}>${ENVELOPE_NEWLINE}${noticeLine}${sanitized}${trailingNl}</${primaryTag}>`;
+}
+
+export interface CompiledSanitizeBlockSpec {
+  readonly primaryTag: string;
+  readonly parsedTags: ParsedTagSpec | undefined;
+  readonly notice: string;
+}
+
+/** Pre-parse a 1-arg or 2-arg `| sanitize("tag", ...)` filter once at compile time. */
+export function compileSanitizeBlockSpec(
+  rawArg: string,
+): CompiledSanitizeBlockSpec | undefined {
+  try {
+    const parsed = parseSanitizeFilterArgs(rawArg);
+    if (parsed === undefined) return undefined;
+    const [primaryTag, validSpec] = validateSanitizeTagSpec(parsed.tagSpec);
+    const notice = formatSanitizeNotice(primaryTag, parsed.notice).replace(
+      /\n+$/,
+      "",
+    );
+    return {
+      primaryTag,
+      parsedTags: compileValidatedTagSpec(validSpec),
+      notice,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Fast path for `direct_renderer` block `| sanitize("tag", ...)` with zero per-render arg parsing. */
+export function sanitizeBlockIdempotentPreparsed(
+  s: string,
+  spec: CompiledSanitizeBlockSpec,
+): string {
+  const { primaryTag, parsedTags, notice } = spec;
+  const trimmed = s.trim();
+  let inner = s;
+  if (trimmed.startsWith("<")) {
+    if (s.startsWith("<")) {
+      const exactStripped = stripOuterQuarantineTag(s, primaryTag);
+      if (exactStripped !== undefined) {
+        let payload: string | undefined;
+        if (notice.length === 0) {
+          payload = exactStripped;
+        } else if (exactStripped.startsWith(notice)) {
+          const after = exactStripped.slice(notice.length);
+          payload = after.startsWith(ENVELOPE_NEWLINE)
+            ? after.slice(ENVELOPE_NEWLINE.length)
+            : after;
+        }
+        if (
+          payload !== undefined &&
+          !hasUntrustedBreakoutPreparsed(payload, parsedTags)
+        ) {
+          return s;
+        }
+      }
+    }
+    inner = stripOuterQuarantineTag(trimmed, primaryTag) ?? s;
+    if (notice.length > 0 && inner.startsWith(notice)) {
+      const afterNotice = inner.slice(notice.length);
+      inner = afterNotice.startsWith(ENVELOPE_NEWLINE)
+        ? afterNotice.slice(ENVELOPE_NEWLINE.length)
+        : afterNotice;
+    }
+  }
+  const sanitized = sanitizeUntrustedPreparsed(inner, parsedTags);
   const trailingNl = sanitized.endsWith(ENVELOPE_NEWLINE)
     ? ""
     : ENVELOPE_NEWLINE;

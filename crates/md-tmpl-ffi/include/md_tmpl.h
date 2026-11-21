@@ -43,6 +43,9 @@ char *pt_template_from_source_allowing_unused(const char *source,
 char *pt_template_from_source_with_base_dir(const char *source,
                                             const char *base_dir,
                                             PtTemplate **out);
+char *pt_template_from_source_with_env(const char *source,
+                                       const char *env_json,
+                                       PtTemplate **out);
 char *pt_template_from_source_with_frontmatter(const char *source,
                                                PtTemplate **out_tmpl,
                                                char **out_fm);
@@ -135,6 +138,8 @@ char *pt_template_imported_consts_json(const PtTemplate *tmpl);
 PtContext *pt_template_defaults_context(const PtTemplate *tmpl);
 char *pt_template_validate_declarations(const PtTemplate *tmpl,
                                         const char *expected_json);
+char *pt_template_validate_against_template(const PtTemplate *tmpl,
+                                            const PtTemplate *expected);
 
 /* ---- Cache lifecycle ---------------------------------------------------- */
 

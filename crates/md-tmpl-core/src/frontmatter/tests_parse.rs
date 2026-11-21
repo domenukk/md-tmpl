@@ -168,8 +168,8 @@ params: []
 ---
 body";
     let (fm, _) = parse_frontmatter(source).unwrap();
-    assert!(fm.declarations.is_empty());
-    assert!(fm.params.is_empty());
+    assert_eq!(fm.declarations, []);
+    assert_eq!(fm.params, Vec::<String>::new());
 }
 
 #[test]
@@ -249,8 +249,8 @@ types:
 {# no body #}";
     let (fm, body) = parse_frontmatter(source).unwrap();
     assert_eq!(fm.name, Some("types".to_string()));
-    assert!(fm.declarations.is_empty());
-    assert!(fm.params.is_empty());
+    assert_eq!(fm.declarations, []);
+    assert_eq!(fm.params, Vec::<String>::new());
     assert!(!fm.has_params);
     assert!(fm.type_aliases.contains_key("Priority"));
     assert_eq!(body, "{# no body #}");
@@ -281,7 +281,7 @@ fn empty_frontmatter_block_declares_nothing() {
 ---
 body";
     let (fm, body) = parse_frontmatter(source).unwrap();
-    assert!(fm.declarations.is_empty());
+    assert_eq!(fm.declarations, []);
     assert!(!fm.has_params);
     assert_eq!(body, "body");
 }
@@ -293,7 +293,7 @@ fn empty_frontmatter_block_with_blank_lines() {
 ---
 body";
     let (fm, body) = parse_frontmatter(source).unwrap();
-    assert!(fm.declarations.is_empty());
+    assert_eq!(fm.declarations, []);
     assert_eq!(body, "body");
 }
 
@@ -304,7 +304,7 @@ fn empty_frontmatter_block_crlf() {
 body"
         .replace('\n', "\r\n");
     let (fm, body) = parse_frontmatter(&source).unwrap();
-    assert!(fm.declarations.is_empty());
+    assert_eq!(fm.declarations, []);
     assert_eq!(body, "body");
 }
 
@@ -313,7 +313,7 @@ fn empty_frontmatter_block_at_eof() {
     let source = r"---
 ---";
     let (fm, body) = parse_frontmatter(source).unwrap();
-    assert!(fm.declarations.is_empty());
+    assert_eq!(fm.declarations, []);
     assert_eq!(body, "");
 }
 
@@ -376,7 +376,7 @@ fn parse_enum_with_associated_data() {
             assert_eq!(variants[0].fields.len(), 1);
             assert_eq!(variants[0].fields[0].name, "evidence");
             assert_eq!(variants[1].name, "Inconclusive");
-            assert!(variants[1].fields.is_empty());
+            assert_eq!(variants[1].fields, []);
         }
         other => panic!("Expected Enum, got {other:?}"),
     }

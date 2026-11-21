@@ -151,7 +151,10 @@ impl Template {
     fn render_core(&self, ctx: &Context, output: &mut String) -> Result<(), TemplateError> {
         let ctx = self.inject_defaults(ctx);
         let mut scope = Scope::new(&ctx)
-            .with_max_include_depth(self.max_include_depth)
+            .with_max_include_depth(
+                self.max_include_depth
+                    .load(core::sync::atomic::Ordering::Relaxed),
+            )
             .with_root_declarations(&self.declared_variables, self.has_options);
         if !self.consts.is_empty() || !self.imported_consts.is_empty() {
             scope.set_root_consts(&self.consts, &self.imported_consts);
@@ -192,7 +195,10 @@ impl Template {
         self.validate_context(ctx, false)?;
         let ctx = self.inject_defaults(ctx);
         let mut scope = Scope::with_cache(&ctx, cache)
-            .with_max_include_depth(self.max_include_depth)
+            .with_max_include_depth(
+                self.max_include_depth
+                    .load(core::sync::atomic::Ordering::Relaxed),
+            )
             .with_root_declarations(&self.declared_variables, self.has_options);
         if !self.consts.is_empty() || !self.imported_consts.is_empty() {
             scope.set_root_consts(&self.consts, &self.imported_consts);
@@ -222,7 +228,10 @@ impl Template {
         self.validate_context(ctx, true)?;
         let ctx = self.inject_defaults(ctx);
         let mut scope = Scope::with_cache(&ctx, cache)
-            .with_max_include_depth(self.max_include_depth)
+            .with_max_include_depth(
+                self.max_include_depth
+                    .load(core::sync::atomic::Ordering::Relaxed),
+            )
             .with_root_declarations(&self.declared_variables, self.has_options);
         if !self.consts.is_empty() || !self.imported_consts.is_empty() {
             scope.set_root_consts(&self.consts, &self.imported_consts);
@@ -260,21 +269,17 @@ impl Template {
 
 #[cfg(feature = "serde")]
 impl Template {
-    /// Render the template from any `Serialize` struct.
+    /// Render the template from any `Serialize` struct or map.
     ///
-    /// Struct fields become template variables — no manual `Context`
+    /// Struct fields become template variables and are validated against the
+    /// template's frontmatter declarations on every call — no manual `Context`
     /// construction needed.
-    ///
-    /// On the **first** call with a given `T`, the context is fully validated
-    /// against frontmatter declarations. If validation passes,
-    /// `TypeId::of::<T>()` is cached so that subsequent calls with the
-    /// **same concrete type** skip validation entirely. This gives the
-    /// safety of runtime type-checking with near-zero amortized cost.
     ///
     /// # Errors
     ///
-    /// Returns [`TemplateError`] if serialization fails, the value is not a
-    /// struct/map, or rendering encounters an error.
+    /// Returns [`TemplateError`](crate::error::TemplateError) if serialization
+    /// fails, the value is not a struct/map, validation fails, or rendering
+    /// encounters an error.
     ///
     /// # Examples
     ///
@@ -289,10 +294,10 @@ impl Template {
     /// }
     ///
     /// let tmpl = Template::from_source(
-    ///     r#"---
+    ///     r"---
     /// params: [name = str, count = int]
     /// ---
-    /// {{ name }} has {{ count }} items"#,
+    /// {{ name }} has {{ count }} items",
     /// )
     /// .unwrap();
     /// let output = tmpl
@@ -308,8 +313,9 @@ impl Template {
         value: &T,
     ) -> Result<String, crate::error::TemplateError> {
         let ctx = Context::from_serialize(value)?;
+        self.validate_context(&ctx, false)?;
         let mut output = String::with_capacity(self.estimated_capacity);
-        self.render_into_checked(core::any::TypeId::of::<T>(), &ctx, &mut output)?;
+        self.render_core(&ctx, &mut output)?;
         Ok(output)
     }
 
@@ -318,58 +324,16 @@ impl Template {
     ///
     /// # Errors
     ///
-    /// Returns [`TemplateError`] if serialization fails, the value is not a
-    /// struct/map, or rendering encounters an error.
+    /// Returns [`TemplateError`](crate::error::TemplateError) if serialization
+    /// fails, the value is not a struct/map, validation fails, or rendering
+    /// encounters an error.
     pub fn render_into<T: serde::Serialize + 'static>(
         &self,
         value: &T,
         output: &mut String,
     ) -> Result<(), crate::error::TemplateError> {
         let ctx = Context::from_serialize(value)?;
-        self.render_into_checked(core::any::TypeId::of::<T>(), &ctx, output)
-    }
-
-    /// Render-into with `TypeId`-based validation caching.
-    ///
-    /// If `type_id` has been validated before, skips `validate_context` and
-    /// goes straight to `render_core`. The cache itself requires `std` (it
-    /// uses a `Mutex`); `no_std` builds validate on every call.
-    #[cfg(feature = "std")]
-    fn render_into_checked(
-        &self,
-        type_id: core::any::TypeId,
-        ctx: &Context,
-        output: &mut String,
-    ) -> Result<(), crate::error::TemplateError> {
-        let already_checked = self
-            .checked_type_ids
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(&type_id);
-
-        if already_checked {
-            // Type has been validated before — skip straight to render.
-            return self.render_core(ctx, output);
-        }
-        // First time seeing this type — validate, then cache on success.
-        self.validate_context(ctx, false)?;
-        self.checked_type_ids
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(type_id);
-        self.render_core(ctx, output)
-    }
-
-    /// `no_std` variant: no cross-call cache (that needs a `Mutex`), so the
-    /// `type_id` is unused and the context is validated on every call.
-    #[cfg(not(feature = "std"))]
-    fn render_into_checked(
-        &self,
-        _type_id: core::any::TypeId,
-        ctx: &Context,
-        output: &mut String,
-    ) -> Result<(), crate::error::TemplateError> {
-        self.validate_context(ctx, false)?;
-        self.render_core(ctx, output)
+        self.validate_context(&ctx, false)?;
+        self.render_core(&ctx, output)
     }
 }

@@ -318,12 +318,14 @@ fn resolve_from_filesystem(
         .collect();
     let (fm, body) =
         crate::frontmatter::parse_frontmatter_with_base_dir(&source, include_base, &env_pairs)?;
-    let (mut segments, included_inline_templates) = crate::compiled::compile_source_body(
-        &source,
-        body,
-        &fm.type_aliases,
-        &fm.type_alias_sanitize,
-    )?;
+    let (mut segments, included_inline_templates) =
+        crate::compiled::compile_source_body_with_notice(
+            &source,
+            body,
+            &fm.type_aliases,
+            &fm.type_alias_sanitize,
+            fm.sanitize_notice.as_deref(),
+        )?;
     // Include target: parameter values take the caller's trust, so only the notice and
     // enclosing-tag passes run before the call-site context is applied.
     crate::compiled::apply_frontmatter_sanitization(

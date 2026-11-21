@@ -58,6 +58,7 @@ import {
   findRawClose,
   getLoc,
   rawCloseKeyword,
+  validateFilters,
 } from "./parser_utils.js";
 import { parseBody, parseBlock, parseBlockWithClosing } from "./parser.js";
 
@@ -677,8 +678,12 @@ function handleInclude(
       }
       const key = trimmedPair.slice(0, eqIdx).trim();
       const val = trimmedPair.slice(eqIdx + 1).trim();
+      validateFilters(val);
       withMappings.set(key, val);
     }
+  }
+  if (forExpr !== undefined) {
+    validateFilters(forExpr);
   }
 
   return [

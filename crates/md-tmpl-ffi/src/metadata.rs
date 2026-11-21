@@ -6,7 +6,7 @@ use md_tmpl::{Context, Value};
 
 use crate::{
     EMPTY_JSON_ARRAY, EMPTY_JSON_OBJECT, EMPTY_STR, JSON_BOOL_FALSE, JSON_BOOL_TRUE, JSON_NULL,
-    JSON_TEMPLATE_PLACEHOLDER, PtContext, PtTemplate, into_cstring_raw,
+    JSON_TEMPLATE_PLACEHOLDER, PtContext, PtTemplate, catch_ffi_val, into_cstring_raw,
 };
 
 /// Return the source hash of a template.
@@ -16,10 +16,10 @@ use crate::{
 /// `tmpl` must be a valid template handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pt_template_source_hash(tmpl: *const PtTemplate) -> u64 {
-    match unsafe { tmpl.as_ref() } {
+    catch_ffi_val(0, || match unsafe { tmpl.as_ref() } {
         Some(t) => t.inner.source_hash(),
         None => 0,
-    }
+    })
 }
 
 /// Return the template name from frontmatter, or null if none was declared.
@@ -32,10 +32,12 @@ pub unsafe extern "C" fn pt_template_source_hash(tmpl: *const PtTemplate) -> u64
 /// `tmpl` must be a valid template handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pt_template_name(tmpl: *const PtTemplate) -> *mut c_char {
-    match unsafe { tmpl.as_ref() }.and_then(|t| t.inner.name()) {
-        Some(name) => into_cstring_raw(name),
-        None => ptr::null_mut(),
-    }
+    catch_ffi_val(ptr::null_mut(), || {
+        match unsafe { tmpl.as_ref() }.and_then(|t| t.inner.name()) {
+            Some(name) => into_cstring_raw(name),
+            None => ptr::null_mut(),
+        }
+    })
 }
 
 /// Return the template description from frontmatter, or null if none was declared.
@@ -48,10 +50,12 @@ pub unsafe extern "C" fn pt_template_name(tmpl: *const PtTemplate) -> *mut c_cha
 /// `tmpl` must be a valid template handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pt_template_description(tmpl: *const PtTemplate) -> *mut c_char {
-    match unsafe { tmpl.as_ref() }.and_then(|t| t.inner.description()) {
-        Some(desc) => into_cstring_raw(desc),
-        None => ptr::null_mut(),
-    }
+    catch_ffi_val(ptr::null_mut(), || {
+        match unsafe { tmpl.as_ref() }.and_then(|t| t.inner.description()) {
+            Some(desc) => into_cstring_raw(desc),
+            None => ptr::null_mut(),
+        }
+    })
 }
 
 /// Return the template body (after frontmatter stripping).
@@ -63,10 +67,10 @@ pub unsafe extern "C" fn pt_template_description(tmpl: *const PtTemplate) -> *mu
 /// `tmpl` must be a valid template handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pt_template_body(tmpl: *const PtTemplate) -> *mut c_char {
-    match unsafe { tmpl.as_ref() } {
+    catch_ffi_val(ptr::null_mut(), || match unsafe { tmpl.as_ref() } {
         Some(t) => into_cstring_raw(t.inner.body()),
         None => into_cstring_raw(EMPTY_STR),
-    }
+    })
 }
 
 /// Return declarations as a JSON array of `[name, type]` pairs.
@@ -78,16 +82,24 @@ pub unsafe extern "C" fn pt_template_body(tmpl: *const PtTemplate) -> *mut c_cha
 /// `tmpl` must be a valid template handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pt_template_declarations(tmpl: *const PtTemplate) -> *mut c_char {
-    let Some(tmpl) = (unsafe { tmpl.as_ref() }) else {
-        return into_cstring_raw(EMPTY_JSON_ARRAY);
-    };
-    let decls: Vec<String> = tmpl
-        .inner
-        .declarations()
-        .iter()
-        .map(|d| format!("[\"{}\",\"{}\"]", d.name, d.var_type))
-        .collect();
-    into_cstring_raw(format!("[{}]", decls.join(",")))
+    catch_ffi_val(ptr::null_mut(), || {
+        let Some(tmpl) = (unsafe { tmpl.as_ref() }) else {
+            return into_cstring_raw(EMPTY_JSON_ARRAY);
+        };
+        let decls: Vec<String> = tmpl
+            .inner
+            .declaration_pairs()
+            .into_iter()
+            .map(|(name, ty)| {
+                format!(
+                    "[\"{}\",\"{}\"]",
+                    md_tmpl::escape_json_str(&name),
+                    md_tmpl::escape_json_str(&ty)
+                )
+            })
+            .collect();
+        into_cstring_raw(format!("[{}]", decls.join(",")))
+    })
 }
 
 /// Set the maximum include depth.
@@ -97,9 +109,11 @@ pub unsafe extern "C" fn pt_template_declarations(tmpl: *const PtTemplate) -> *m
 /// `tmpl` must be a valid template handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pt_template_set_max_include_depth(tmpl: *mut PtTemplate, depth: usize) {
-    if let Some(t) = unsafe { tmpl.as_mut() } {
-        t.inner.set_max_include_depth(depth);
-    }
+    catch_ffi_val((), || {
+        if let Some(t) = unsafe { tmpl.as_ref() } {
+            t.inner.set_max_include_depth_shared(depth);
+        }
+    });
 }
 
 /// Convert a template `Value` to a JSON string.
@@ -107,7 +121,15 @@ pub(crate) fn value_to_json(val: &Value) -> String {
     match val {
         Value::Str(s) => format!("\"{}\"", md_tmpl::escape_json_str(s)),
         Value::Int(i) => i.to_string(),
-        Value::Float(f) => format!("{f}"),
+        Value::Float(f) => {
+            if !f.is_finite() {
+                JSON_NULL.to_string()
+            } else if *f == 0.0 {
+                "0".to_string()
+            } else {
+                format!("{f}")
+            }
+        }
         Value::Bool(b) => if *b { JSON_BOOL_TRUE } else { JSON_BOOL_FALSE }.to_string(),
         Value::List(items) => {
             let inner: Vec<String> = items.iter().map(value_to_json).collect();
@@ -137,18 +159,20 @@ pub(crate) fn value_to_json(val: &Value) -> String {
 /// `tmpl` must be a valid template handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pt_template_defaults_json(tmpl: *const PtTemplate) -> *mut c_char {
-    let Some(tmpl) = (unsafe { tmpl.as_ref() }) else {
-        return into_cstring_raw(EMPTY_JSON_OBJECT);
-    };
-    let defaults = tmpl.inner.defaults();
-    if defaults.is_empty() {
-        return into_cstring_raw(EMPTY_JSON_OBJECT);
-    }
-    let pairs: Vec<String> = defaults
-        .iter()
-        .map(|(k, v)| format!("\"{k}\": {}", value_to_json(v)))
-        .collect();
-    into_cstring_raw(format!("{{{}}}", pairs.join(", ")))
+    catch_ffi_val(ptr::null_mut(), || {
+        let Some(tmpl) = (unsafe { tmpl.as_ref() }) else {
+            return into_cstring_raw(EMPTY_JSON_OBJECT);
+        };
+        let defaults = tmpl.inner.defaults();
+        if defaults.is_empty() {
+            return into_cstring_raw(EMPTY_JSON_OBJECT);
+        }
+        let pairs: Vec<String> = defaults
+            .iter()
+            .map(|(k, v)| format!("\"{}\": {}", md_tmpl::escape_json_str(k), value_to_json(v)))
+            .collect();
+        into_cstring_raw(format!("{{{}}}", pairs.join(", ")))
+    })
 }
 
 /// Returns the constants as a JSON object string.
@@ -163,18 +187,20 @@ pub unsafe extern "C" fn pt_template_defaults_json(tmpl: *const PtTemplate) -> *
 /// `tmpl` must be a valid template handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pt_template_consts_json(tmpl: *const PtTemplate) -> *mut c_char {
-    let Some(tmpl) = (unsafe { tmpl.as_ref() }) else {
-        return into_cstring_raw(EMPTY_JSON_OBJECT);
-    };
-    let consts = tmpl.inner.consts();
-    if consts.is_empty() {
-        return into_cstring_raw(EMPTY_JSON_OBJECT);
-    }
-    let pairs: Vec<String> = consts
-        .iter()
-        .map(|(k, v)| format!("\"{k}\": {}", value_to_json(v)))
-        .collect();
-    into_cstring_raw(format!("{{{}}}", pairs.join(", ")))
+    catch_ffi_val(ptr::null_mut(), || {
+        let Some(tmpl) = (unsafe { tmpl.as_ref() }) else {
+            return into_cstring_raw(EMPTY_JSON_OBJECT);
+        };
+        let consts = tmpl.inner.consts();
+        if consts.is_empty() {
+            return into_cstring_raw(EMPTY_JSON_OBJECT);
+        }
+        let pairs: Vec<String> = consts
+            .iter()
+            .map(|(k, v)| format!("\"{}\": {}", md_tmpl::escape_json_str(k), value_to_json(v)))
+            .collect();
+        into_cstring_raw(format!("{{{}}}", pairs.join(", ")))
+    })
 }
 
 /// Create a context pre-filled with all default parameter values.
@@ -187,14 +213,16 @@ pub unsafe extern "C" fn pt_template_consts_json(tmpl: *const PtTemplate) -> *mu
 /// `tmpl` must be a valid template handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pt_template_defaults_context(tmpl: *const PtTemplate) -> *mut PtContext {
-    let Some(tmpl) = (unsafe { tmpl.as_ref() }) else {
-        return Box::into_raw(Box::new(PtContext {
-            inner: Context::new(),
-        }));
-    };
-    Box::into_raw(Box::new(PtContext {
-        inner: tmpl.inner.defaults_context(),
-    }))
+    catch_ffi_val(ptr::null_mut(), || {
+        let Some(tmpl) = (unsafe { tmpl.as_ref() }) else {
+            return Box::into_raw(Box::new(PtContext {
+                inner: Context::new(),
+            }));
+        };
+        Box::into_raw(Box::new(PtContext {
+            inner: tmpl.inner.defaults_context(),
+        }))
+    })
 }
 
 /// Returns the imported constants as a JSON object string.
@@ -210,16 +238,18 @@ pub unsafe extern "C" fn pt_template_defaults_context(tmpl: *const PtTemplate) -
 /// `tmpl` must be a valid template handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pt_template_imported_consts_json(tmpl: *const PtTemplate) -> *mut c_char {
-    let Some(tmpl) = (unsafe { tmpl.as_ref() }) else {
-        return into_cstring_raw(EMPTY_JSON_OBJECT);
-    };
-    let imported = tmpl.inner.imported_consts();
-    if imported.is_empty() {
-        return into_cstring_raw(EMPTY_JSON_OBJECT);
-    }
-    let pairs: Vec<String> = imported
-        .iter()
-        .map(|(k, v)| format!("\"{k}\": {}", value_to_json(v)))
-        .collect();
-    into_cstring_raw(format!("{{{}}}", pairs.join(", ")))
+    catch_ffi_val(ptr::null_mut(), || {
+        let Some(tmpl) = (unsafe { tmpl.as_ref() }) else {
+            return into_cstring_raw(EMPTY_JSON_OBJECT);
+        };
+        let imported = tmpl.inner.imported_consts();
+        if imported.is_empty() {
+            return into_cstring_raw(EMPTY_JSON_OBJECT);
+        }
+        let pairs: Vec<String> = imported
+            .iter()
+            .map(|(k, v)| format!("\"{}\": {}", md_tmpl::escape_json_str(k), value_to_json(v)))
+            .collect();
+        into_cstring_raw(format!("{{{}}}", pairs.join(", ")))
+    })
 }

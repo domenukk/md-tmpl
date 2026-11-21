@@ -62,7 +62,7 @@ let output = code_review::Params::builder()
     .file_path("src/main.rs")
     .severity(code_review::Severity::High)
     .findings([
-        code_review::FindingsItem::builder()
+        code_review::ParamsFindingsItem::builder()
             .line(42)
             .message("unused import")
             .severity(code_review::Severity::Low)
@@ -113,11 +113,11 @@ let output = task_report::Params::builder()
     .title("Sprint 42")
     .priority(task_report::Priority::Critical)
     .tasks([
-        task_report::TasksItem::builder()
+        task_report::ParamsTasksItem::builder()
             .name("Fix auth bypass")
             .urgency(task_report::Priority::Critical)
             .build(),
-        task_report::TasksItem::builder()
+        task_report::ParamsTasksItem::builder()
             .name("Update dependencies")
             .urgency(task_report::Priority::Low)
             .build(),

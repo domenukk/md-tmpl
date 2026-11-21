@@ -128,16 +128,19 @@ function validateMatchAsCondition(s: string): void {
   }
 }
 
+import { validateFilters } from "./parser_utils.js";
+
 /**
  * Validate a single condition operand. Mirrors the error surface of the Rust
- * core's `ConditionOperand::compile`: an empty token is the only structural
- * syntax error. Paths themselves compile infallibly and are validated later by
- * the undeclared-variable and type-checking passes.
+ * core's `ConditionOperand::compile`: an empty token or invalid filter chain
+ * (unknown filter or forbidden post-sanitize filter) is rejected at compile time.
  */
 function validateOperand(token: string): void {
-  if (token.trim().length === 0) {
+  const trimmed = token.trim();
+  if (trimmed.length === 0) {
     throw new TemplateSyntaxError("empty token in expression");
   }
+  validateFilters(trimmed);
 }
 
 /**

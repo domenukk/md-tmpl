@@ -3,25 +3,20 @@
 use std::{borrow::Cow, ffi::c_char, ptr};
 
 use crate::{
-    EMPTY_STR, ERR_NULL_POINTER, cstr_to_str, err_to_cstring, into_cstring_raw, terr_to_cstring,
+    ERR_NULL_POINTER, catch_ffi_out_err, catch_ffi_val, cstr_to_str, err_to_cstring,
+    into_cstring_raw, raw_bytes_slice, terr_to_cstring,
 };
 
 /// Convert a `(data, len)` UTF-8 byte buffer passed across FFI into a strict `&str`.
 ///
-/// Used by [`pt_is_quarantined`] so buffers containing invalid UTF-8 fail closed
-/// (`false`) rather than being treated as already-quarantined.
+/// Used by [`pt_is_quarantined`], [`pt_is_sanitized_block`], [`pt_unsanitize_block`], and
+/// [`crate::security_host::pt_unquarantine`] so buffers containing invalid UTF-8 fail closed.
 ///
 /// # Safety
 ///
 /// If `len > 0`, `data` must point to `len` valid initialized bytes.
-unsafe fn bytes_to_str<'a>(data: *const u8, len: usize) -> Result<&'a str, String> {
-    if len == 0 {
-        return Ok(EMPTY_STR);
-    }
-    if data.is_null() {
-        return Err(ERR_NULL_POINTER.to_string());
-    }
-    let slice = unsafe { std::slice::from_raw_parts(data, len) };
+pub(crate) unsafe fn bytes_to_str<'a>(data: *const u8, len: usize) -> Result<&'a str, String> {
+    let slice = unsafe { raw_bytes_slice(data, len, ERR_NULL_POINTER) }?;
     std::str::from_utf8(slice).map_err(|e| format!("invalid UTF-8: {e}"))
 }
 
@@ -39,13 +34,7 @@ pub(crate) unsafe fn bytes_to_str_lossy<'a>(
     data: *const u8,
     len: usize,
 ) -> Result<Cow<'a, str>, String> {
-    if len == 0 {
-        return Ok(Cow::Borrowed(EMPTY_STR));
-    }
-    if data.is_null() {
-        return Err(ERR_NULL_POINTER.to_string());
-    }
-    let slice = unsafe { std::slice::from_raw_parts(data, len) };
+    let slice = unsafe { raw_bytes_slice(data, len, ERR_NULL_POINTER) }?;
     Ok(String::from_utf8_lossy(slice))
 }
 
@@ -83,14 +72,18 @@ pub(crate) fn serialize_delimiter_pairs(pairs: &[(&str, &str)]) -> String {
 /// Caller must free the returned string with `pt_free_string`.
 #[unsafe(no_mangle)]
 pub extern "C" fn pt_token_delimiters_json() -> *mut c_char {
-    into_cstring_raw(serialize_delimiter_pairs(md_tmpl::TOKEN_DELIMITERS))
+    catch_ffi_val(ptr::null_mut(), || {
+        into_cstring_raw(serialize_delimiter_pairs(md_tmpl::TOKEN_DELIMITERS))
+    })
 }
 
 /// Return `ROLE_TOKEN_DELIMITERS` as a JSON array of `[raw, escaped]` pairs.
 /// Caller must free the returned string with `pt_free_string`.
 #[unsafe(no_mangle)]
 pub extern "C" fn pt_role_token_delimiters_json() -> *mut c_char {
-    into_cstring_raw(serialize_delimiter_pairs(md_tmpl::ROLE_TOKEN_DELIMITERS))
+    catch_ffi_val(ptr::null_mut(), || {
+        into_cstring_raw(serialize_delimiter_pairs(md_tmpl::ROLE_TOKEN_DELIMITERS))
+    })
 }
 
 /// Escape XML/HTML special characters and strip illegal XML 1.0 control characters.
@@ -105,15 +98,19 @@ pub unsafe extern "C" fn pt_escape_xml(
     len: usize,
     out_err: *mut *mut c_char,
 ) -> *mut c_char {
-    let s = match unsafe { bytes_to_str_lossy(data, len) } {
-        Ok(s) => s,
-        Err(e) => {
-            unsafe { *out_err = err_to_cstring(&e) };
-            return ptr::null_mut();
-        }
-    };
-    unsafe { *out_err = ptr::null_mut() };
-    into_cstring_raw(md_tmpl::escape_xml_str(&s).into_owned())
+    unsafe {
+        catch_ffi_out_err(out_err, ptr::null_mut(), |out_err| {
+            let s = match bytes_to_str_lossy(data, len) {
+                Ok(s) => s,
+                Err(e) => {
+                    *out_err = err_to_cstring(&e);
+                    return ptr::null_mut();
+                }
+            };
+            *out_err = ptr::null_mut();
+            into_cstring_raw(md_tmpl::escape_xml_str(&s).into_owned())
+        })
+    }
 }
 
 /// Escape JSON string body characters (including `/` and `U+2028`/`U+2029`).
@@ -128,49 +125,49 @@ pub unsafe extern "C" fn pt_escape_json(
     len: usize,
     out_err: *mut *mut c_char,
 ) -> *mut c_char {
-    let s = match unsafe { bytes_to_str_lossy(data, len) } {
-        Ok(s) => s,
-        Err(e) => {
-            unsafe { *out_err = err_to_cstring(&e) };
-            return ptr::null_mut();
-        }
-    };
-    unsafe { *out_err = ptr::null_mut() };
-    into_cstring_raw(md_tmpl::escape_json_str(&s).into_owned())
+    unsafe {
+        catch_ffi_out_err(out_err, ptr::null_mut(), |out_err| {
+            let s = match bytes_to_str_lossy(data, len) {
+                Ok(s) => s,
+                Err(e) => {
+                    *out_err = err_to_cstring(&e);
+                    return ptr::null_mut();
+                }
+            };
+            *out_err = ptr::null_mut();
+            into_cstring_raw(md_tmpl::escape_json_str(&s).into_owned())
+        })
+    }
 }
 
 /// Return `true` if `data[..len]` contains any known LLM control token or generic pipe token.
-///
-/// Invalid UTF-8 sequences are lossily replaced with `U+FFFD` before scanning so
-/// non-UTF-8 bytes in untrusted payloads can never bypass detection. Null `data`
-/// with `len > 0` fails closed (`true`).
 ///
 /// # Safety
 ///
 /// If `len > 0`, `data` must point to `len` valid initialized bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pt_has_control_tokens(data: *const u8, len: usize) -> bool {
-    let Ok(s) = (unsafe { bytes_to_str_lossy(data, len) }) else {
-        return true;
-    };
-    md_tmpl::has_control_tokens(&s)
+    catch_ffi_val(true, || {
+        let Ok(s) = (unsafe { bytes_to_str_lossy(data, len) }) else {
+            return true;
+        };
+        md_tmpl::has_control_tokens(&s)
+    })
 }
 
 /// Return `true` if `data[..len]` contains any role/turn control token in `ROLE_TOKEN_DELIMITERS` or generic pipe token.
-///
-/// Invalid UTF-8 sequences are lossily replaced with `U+FFFD` before scanning so
-/// non-UTF-8 bytes in untrusted payloads can never bypass detection. Null `data`
-/// with `len > 0` fails closed (`true`).
 ///
 /// # Safety
 ///
 /// If `len > 0`, `data` must point to `len` valid initialized bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pt_has_role_control_tokens(data: *const u8, len: usize) -> bool {
-    let Ok(s) = (unsafe { bytes_to_str_lossy(data, len) }) else {
-        return true;
-    };
-    md_tmpl::has_role_control_tokens(&s)
+    catch_ffi_val(true, || {
+        let Ok(s) = (unsafe { bytes_to_str_lossy(data, len) }) else {
+            return true;
+        };
+        md_tmpl::has_role_control_tokens(&s)
+    })
 }
 
 /// Neutralize all known LLM control tokens and generic pipe tokens in a single pass.
@@ -185,15 +182,19 @@ pub unsafe extern "C" fn pt_sanitize_tokens(
     len: usize,
     out_err: *mut *mut c_char,
 ) -> *mut c_char {
-    let s = match unsafe { bytes_to_str_lossy(data, len) } {
-        Ok(s) => s,
-        Err(e) => {
-            unsafe { *out_err = err_to_cstring(&e) };
-            return ptr::null_mut();
-        }
-    };
-    unsafe { *out_err = ptr::null_mut() };
-    into_cstring_raw(md_tmpl::sanitize_tokens_str(&s).into_owned())
+    unsafe {
+        catch_ffi_out_err(out_err, ptr::null_mut(), |out_err| {
+            let s = match bytes_to_str_lossy(data, len) {
+                Ok(s) => s,
+                Err(e) => {
+                    *out_err = err_to_cstring(&e);
+                    return ptr::null_mut();
+                }
+            };
+            *out_err = ptr::null_mut();
+            into_cstring_raw(md_tmpl::sanitize_tokens_str(&s).into_owned())
+        })
+    }
 }
 
 /// Neutralize role/turn headers (`ROLE_TOKEN_DELIMITERS`) and generic pipe tokens in a single pass while preserving XML tool docs.
@@ -208,15 +209,19 @@ pub unsafe extern "C" fn pt_sanitize_role_tokens(
     len: usize,
     out_err: *mut *mut c_char,
 ) -> *mut c_char {
-    let s = match unsafe { bytes_to_str_lossy(data, len) } {
-        Ok(s) => s,
-        Err(e) => {
-            unsafe { *out_err = err_to_cstring(&e) };
-            return ptr::null_mut();
-        }
-    };
-    unsafe { *out_err = ptr::null_mut() };
-    into_cstring_raw(md_tmpl::sanitize_role_tokens_str(&s).into_owned())
+    unsafe {
+        catch_ffi_out_err(out_err, ptr::null_mut(), |out_err| {
+            let s = match bytes_to_str_lossy(data, len) {
+                Ok(s) => s,
+                Err(e) => {
+                    *out_err = err_to_cstring(&e);
+                    return ptr::null_mut();
+                }
+            };
+            *out_err = ptr::null_mut();
+            into_cstring_raw(md_tmpl::sanitize_role_tokens_str(&s).into_owned())
+        })
+    }
 }
 
 /// Wrap `data[..len]` in Markdown code fences with adaptive backtick counts.
@@ -233,37 +238,37 @@ pub unsafe extern "C" fn pt_fence(
     lang: *const c_char,
     out_err: *mut *mut c_char,
 ) -> *mut c_char {
-    let s = match unsafe { bytes_to_str_lossy(data, len) } {
-        Ok(s) => s,
-        Err(e) => {
-            unsafe { *out_err = err_to_cstring(&e) };
-            return ptr::null_mut();
-        }
-    };
-    let lang_opt = match unsafe { opt_cstr_to_str(lang) } {
-        Ok(l) => l,
-        Err(e) => {
-            unsafe { *out_err = err_to_cstring(&e) };
-            return ptr::null_mut();
-        }
-    };
-    match md_tmpl::fence_str(&s, lang_opt) {
-        Ok(fenced) => {
-            unsafe { *out_err = ptr::null_mut() };
-            into_cstring_raw(fenced)
-        }
-        Err(e) => {
-            unsafe { *out_err = terr_to_cstring(&e) };
-            ptr::null_mut()
-        }
+    unsafe {
+        catch_ffi_out_err(out_err, ptr::null_mut(), |out_err| {
+            let s = match bytes_to_str_lossy(data, len) {
+                Ok(s) => s,
+                Err(e) => {
+                    *out_err = err_to_cstring(&e);
+                    return ptr::null_mut();
+                }
+            };
+            let lang_opt = match opt_cstr_to_str(lang) {
+                Ok(l) => l,
+                Err(e) => {
+                    *out_err = err_to_cstring(&e);
+                    return ptr::null_mut();
+                }
+            };
+            match md_tmpl::fence_str(&s, lang_opt) {
+                Ok(fenced) => {
+                    *out_err = ptr::null_mut();
+                    into_cstring_raw(fenced)
+                }
+                Err(e) => {
+                    *out_err = terr_to_cstring(&e);
+                    ptr::null_mut()
+                }
+            }
+        })
     }
 }
 
 /// Return `true` if `data[..len]` contains any opening/closing XML tag matching `tag_spec`.
-///
-/// Invalid UTF-8 sequences in `data` are lossily replaced with `U+FFFD` so non-UTF-8
-/// bytes in untrusted inputs cannot bypass detection. Null `data` (with `len > 0`)
-/// or invalid UTF-8 in `tag_spec` fails closed (`true`).
 ///
 /// # Safety
 ///
@@ -275,23 +280,21 @@ pub unsafe extern "C" fn pt_has_quarantine_tag_breakout(
     len: usize,
     tag_spec: *const c_char,
 ) -> bool {
-    let Ok(s) = (unsafe { bytes_to_str_lossy(data, len) }) else {
-        return true;
-    };
-    let Ok(spec_opt) = (unsafe { opt_cstr_to_str(tag_spec) }) else {
-        return true;
-    };
-    let spec = spec_opt
-        .filter(|t| !t.is_empty())
-        .unwrap_or(md_tmpl::DEFAULT_QUARANTINE_TAG);
-    md_tmpl::has_quarantine_tag_breakout(&s, spec)
+    catch_ffi_val(true, || {
+        let Ok(s) = (unsafe { bytes_to_str_lossy(data, len) }) else {
+            return true;
+        };
+        let Ok(spec_opt) = (unsafe { opt_cstr_to_str(tag_spec) }) else {
+            return true;
+        };
+        let spec = spec_opt
+            .filter(|t| !t.is_empty())
+            .unwrap_or(md_tmpl::DEFAULT_QUARANTINE_TAG);
+        md_tmpl::has_quarantine_tag_breakout(&s, spec)
+    })
 }
 
 /// Return `true` if `data[..len]` contains any LLM control token, generic pipe token, or XML tag matching `tag_spec`.
-///
-/// Invalid UTF-8 sequences in `data` are lossily replaced with `U+FFFD` so non-UTF-8
-/// bytes in untrusted inputs cannot bypass detection. Null `data` (with `len > 0`)
-/// or invalid UTF-8 in `tag_spec` fails closed (`true`).
 ///
 /// # Safety
 ///
@@ -303,16 +306,18 @@ pub unsafe extern "C" fn pt_has_untrusted_breakout(
     len: usize,
     tag_spec: *const c_char,
 ) -> bool {
-    let Ok(s) = (unsafe { bytes_to_str_lossy(data, len) }) else {
-        return true;
-    };
-    let Ok(spec_opt) = (unsafe { opt_cstr_to_str(tag_spec) }) else {
-        return true;
-    };
-    let spec = spec_opt
-        .filter(|t| !t.is_empty())
-        .unwrap_or(md_tmpl::DEFAULT_QUARANTINE_TAG);
-    md_tmpl::has_untrusted_breakout(&s, spec)
+    catch_ffi_val(true, || {
+        let Ok(s) = (unsafe { bytes_to_str_lossy(data, len) }) else {
+            return true;
+        };
+        let Ok(spec_opt) = (unsafe { opt_cstr_to_str(tag_spec) }) else {
+            return true;
+        };
+        let spec = spec_opt
+            .filter(|t| !t.is_empty())
+            .unwrap_or(md_tmpl::DEFAULT_QUARANTINE_TAG);
+        md_tmpl::has_untrusted_breakout(&s, spec)
+    })
 }
 
 /// Sanitize untrusted content within quarantine boundaries for one or more comma-separated XML tag names.
@@ -329,25 +334,29 @@ pub unsafe extern "C" fn pt_sanitize_quarantine_payload(
     tag_spec: *const c_char,
     out_err: *mut *mut c_char,
 ) -> *mut c_char {
-    let s = match unsafe { bytes_to_str_lossy(data, len) } {
-        Ok(s) => s,
-        Err(e) => {
-            unsafe { *out_err = err_to_cstring(&e) };
-            return ptr::null_mut();
-        }
-    };
-    let spec_opt = match unsafe { opt_cstr_to_str(tag_spec) } {
-        Ok(t) => t,
-        Err(e) => {
-            unsafe { *out_err = err_to_cstring(&e) };
-            return ptr::null_mut();
-        }
-    };
-    let spec = spec_opt
-        .filter(|t| !t.is_empty())
-        .unwrap_or(md_tmpl::DEFAULT_QUARANTINE_TAG);
-    unsafe { *out_err = ptr::null_mut() };
-    into_cstring_raw(md_tmpl::sanitize_quarantine_payload(&s, spec).into_owned())
+    unsafe {
+        catch_ffi_out_err(out_err, ptr::null_mut(), |out_err| {
+            let s = match bytes_to_str_lossy(data, len) {
+                Ok(s) => s,
+                Err(e) => {
+                    *out_err = err_to_cstring(&e);
+                    return ptr::null_mut();
+                }
+            };
+            let spec_opt = match opt_cstr_to_str(tag_spec) {
+                Ok(t) => t,
+                Err(e) => {
+                    *out_err = err_to_cstring(&e);
+                    return ptr::null_mut();
+                }
+            };
+            let spec = spec_opt
+                .filter(|t| !t.is_empty())
+                .unwrap_or(md_tmpl::DEFAULT_QUARANTINE_TAG);
+            *out_err = ptr::null_mut();
+            into_cstring_raw(md_tmpl::sanitize_quarantine_payload(&s, spec).into_owned())
+        })
+    }
 }
 
 /// Neutralize all known LLM control tokens, generic pipe tokens, and opening/closing XML boundary tags matching `tag_spec`.
@@ -364,25 +373,29 @@ pub unsafe extern "C" fn pt_sanitize_untrusted(
     tag_spec: *const c_char,
     out_err: *mut *mut c_char,
 ) -> *mut c_char {
-    let s = match unsafe { bytes_to_str_lossy(data, len) } {
-        Ok(s) => s,
-        Err(e) => {
-            unsafe { *out_err = err_to_cstring(&e) };
-            return ptr::null_mut();
-        }
-    };
-    let spec_opt = match unsafe { opt_cstr_to_str(tag_spec) } {
-        Ok(t) => t,
-        Err(e) => {
-            unsafe { *out_err = err_to_cstring(&e) };
-            return ptr::null_mut();
-        }
-    };
-    let spec = spec_opt
-        .filter(|t| !t.is_empty())
-        .unwrap_or(md_tmpl::DEFAULT_QUARANTINE_TAG);
-    unsafe { *out_err = ptr::null_mut() };
-    into_cstring_raw(md_tmpl::sanitize_untrusted_str(&s, spec).into_owned())
+    unsafe {
+        catch_ffi_out_err(out_err, ptr::null_mut(), |out_err| {
+            let s = match bytes_to_str_lossy(data, len) {
+                Ok(s) => s,
+                Err(e) => {
+                    *out_err = err_to_cstring(&e);
+                    return ptr::null_mut();
+                }
+            };
+            let spec_opt = match opt_cstr_to_str(tag_spec) {
+                Ok(t) => t,
+                Err(e) => {
+                    *out_err = err_to_cstring(&e);
+                    return ptr::null_mut();
+                }
+            };
+            let spec = spec_opt
+                .filter(|t| !t.is_empty())
+                .unwrap_or(md_tmpl::DEFAULT_QUARANTINE_TAG);
+            *out_err = ptr::null_mut();
+            into_cstring_raw(md_tmpl::sanitize_untrusted_str(&s, spec).into_owned())
+        })
+    }
 }
 
 /// Wrap `data[..len]` in boundary XML tags (`<primary_tag>\n...\n</primary_tag>`), escaping any embedded tags matching `tag_spec`.
@@ -399,29 +412,33 @@ pub unsafe extern "C" fn pt_quarantine(
     tag_spec: *const c_char,
     out_err: *mut *mut c_char,
 ) -> *mut c_char {
-    let s = match unsafe { bytes_to_str_lossy(data, len) } {
-        Ok(s) => s,
-        Err(e) => {
-            unsafe { *out_err = err_to_cstring(&e) };
-            return ptr::null_mut();
-        }
-    };
-    let spec_opt = match unsafe { opt_cstr_to_str(tag_spec) } {
-        Ok(t) => t,
-        Err(e) => {
-            unsafe { *out_err = err_to_cstring(&e) };
-            return ptr::null_mut();
-        }
-    };
-    match md_tmpl::quarantine_str(&s, spec_opt) {
-        Ok(wrapped) => {
-            unsafe { *out_err = ptr::null_mut() };
-            into_cstring_raw(wrapped)
-        }
-        Err(e) => {
-            unsafe { *out_err = terr_to_cstring(&e) };
-            ptr::null_mut()
-        }
+    unsafe {
+        catch_ffi_out_err(out_err, ptr::null_mut(), |out_err| {
+            let s = match bytes_to_str_lossy(data, len) {
+                Ok(s) => s,
+                Err(e) => {
+                    *out_err = err_to_cstring(&e);
+                    return ptr::null_mut();
+                }
+            };
+            let spec_opt = match opt_cstr_to_str(tag_spec) {
+                Ok(t) => t,
+                Err(e) => {
+                    *out_err = err_to_cstring(&e);
+                    return ptr::null_mut();
+                }
+            };
+            match md_tmpl::quarantine_str(&s, spec_opt) {
+                Ok(wrapped) => {
+                    *out_err = ptr::null_mut();
+                    into_cstring_raw(wrapped)
+                }
+                Err(e) => {
+                    *out_err = terr_to_cstring(&e);
+                    ptr::null_mut()
+                }
+            }
+        })
     }
 }
 
@@ -439,29 +456,33 @@ pub unsafe extern "C" fn pt_quarantine_untrusted(
     tag_spec: *const c_char,
     out_err: *mut *mut c_char,
 ) -> *mut c_char {
-    let s = match unsafe { bytes_to_str_lossy(data, len) } {
-        Ok(s) => s,
-        Err(e) => {
-            unsafe { *out_err = err_to_cstring(&e) };
-            return ptr::null_mut();
-        }
-    };
-    let spec_opt = match unsafe { opt_cstr_to_str(tag_spec) } {
-        Ok(t) => t,
-        Err(e) => {
-            unsafe { *out_err = err_to_cstring(&e) };
-            return ptr::null_mut();
-        }
-    };
-    match md_tmpl::quarantine_untrusted_str(&s, spec_opt) {
-        Ok(wrapped) => {
-            unsafe { *out_err = ptr::null_mut() };
-            into_cstring_raw(wrapped)
-        }
-        Err(e) => {
-            unsafe { *out_err = terr_to_cstring(&e) };
-            ptr::null_mut()
-        }
+    unsafe {
+        catch_ffi_out_err(out_err, ptr::null_mut(), |out_err| {
+            let s = match bytes_to_str_lossy(data, len) {
+                Ok(s) => s,
+                Err(e) => {
+                    *out_err = err_to_cstring(&e);
+                    return ptr::null_mut();
+                }
+            };
+            let spec_opt = match opt_cstr_to_str(tag_spec) {
+                Ok(t) => t,
+                Err(e) => {
+                    *out_err = err_to_cstring(&e);
+                    return ptr::null_mut();
+                }
+            };
+            match md_tmpl::quarantine_untrusted_str(&s, spec_opt) {
+                Ok(wrapped) => {
+                    *out_err = ptr::null_mut();
+                    into_cstring_raw(wrapped)
+                }
+                Err(e) => {
+                    *out_err = terr_to_cstring(&e);
+                    ptr::null_mut()
+                }
+            }
+        })
     }
 }
 
@@ -477,13 +498,15 @@ pub unsafe extern "C" fn pt_is_quarantined(
     len: usize,
     tag_spec: *const c_char,
 ) -> bool {
-    let Ok(s) = (unsafe { bytes_to_str(data, len) }) else {
-        return false;
-    };
-    let Ok(spec_opt) = (unsafe { opt_cstr_to_str(tag_spec) }) else {
-        return false;
-    };
-    md_tmpl::is_quarantined_str(s, spec_opt)
+    catch_ffi_val(false, || {
+        let Ok(s) = (unsafe { bytes_to_str(data, len) }) else {
+            return false;
+        };
+        let Ok(spec_opt) = (unsafe { opt_cstr_to_str(tag_spec) }) else {
+            return false;
+        };
+        md_tmpl::is_quarantined_str(s, spec_opt)
+    })
 }
 
 /// Neutralize all known LLM control tokens, generic pipe tokens, and optional XML boundary tags (`tag_spec`).
@@ -500,29 +523,33 @@ pub unsafe extern "C" fn pt_sanitize(
     tag_spec: *const c_char,
     out_err: *mut *mut c_char,
 ) -> *mut c_char {
-    let s = match unsafe { bytes_to_str_lossy(data, len) } {
-        Ok(s) => s,
-        Err(e) => {
-            unsafe { *out_err = err_to_cstring(&e) };
-            return ptr::null_mut();
-        }
-    };
-    let spec_opt = match unsafe { opt_cstr_to_str(tag_spec) } {
-        Ok(t) => t,
-        Err(e) => {
-            unsafe { *out_err = err_to_cstring(&e) };
-            return ptr::null_mut();
-        }
-    };
-    match md_tmpl::sanitize_str(&s, spec_opt) {
-        Ok(sanitized) => {
-            unsafe { *out_err = ptr::null_mut() };
-            into_cstring_raw(sanitized.into_owned())
-        }
-        Err(e) => {
-            unsafe { *out_err = terr_to_cstring(&e) };
-            ptr::null_mut()
-        }
+    unsafe {
+        catch_ffi_out_err(out_err, ptr::null_mut(), |out_err| {
+            let s = match bytes_to_str_lossy(data, len) {
+                Ok(s) => s,
+                Err(e) => {
+                    *out_err = err_to_cstring(&e);
+                    return ptr::null_mut();
+                }
+            };
+            let spec_opt = match opt_cstr_to_str(tag_spec) {
+                Ok(t) => t,
+                Err(e) => {
+                    *out_err = err_to_cstring(&e);
+                    return ptr::null_mut();
+                }
+            };
+            match md_tmpl::sanitize_str(&s, spec_opt) {
+                Ok(sanitized) => {
+                    *out_err = ptr::null_mut();
+                    into_cstring_raw(sanitized.into_owned())
+                }
+                Err(e) => {
+                    *out_err = terr_to_cstring(&e);
+                    ptr::null_mut()
+                }
+            }
+        })
     }
 }
 
@@ -542,36 +569,40 @@ pub unsafe extern "C" fn pt_sanitize_block(
     custom_notice: *const c_char,
     out_err: *mut *mut c_char,
 ) -> *mut c_char {
-    let s = match unsafe { bytes_to_str_lossy(data, len) } {
-        Ok(s) => s,
-        Err(e) => {
-            unsafe { *out_err = err_to_cstring(&e) };
-            return ptr::null_mut();
-        }
-    };
-    let spec_opt = match unsafe { opt_cstr_to_str(tag_spec) } {
-        Ok(t) => t,
-        Err(e) => {
-            unsafe { *out_err = err_to_cstring(&e) };
-            return ptr::null_mut();
-        }
-    };
-    let notice_opt = match unsafe { opt_cstr_to_str(custom_notice) } {
-        Ok(n) => n,
-        Err(e) => {
-            unsafe { *out_err = err_to_cstring(&e) };
-            return ptr::null_mut();
-        }
-    };
-    match md_tmpl::sanitize_block_str(&s, spec_opt, notice_opt) {
-        Ok(wrapped) => {
-            unsafe { *out_err = ptr::null_mut() };
-            into_cstring_raw(wrapped)
-        }
-        Err(e) => {
-            unsafe { *out_err = terr_to_cstring(&e) };
-            ptr::null_mut()
-        }
+    unsafe {
+        catch_ffi_out_err(out_err, ptr::null_mut(), |out_err| {
+            let s = match bytes_to_str_lossy(data, len) {
+                Ok(s) => s,
+                Err(e) => {
+                    *out_err = err_to_cstring(&e);
+                    return ptr::null_mut();
+                }
+            };
+            let spec_opt = match opt_cstr_to_str(tag_spec) {
+                Ok(t) => t,
+                Err(e) => {
+                    *out_err = err_to_cstring(&e);
+                    return ptr::null_mut();
+                }
+            };
+            let notice_opt = match opt_cstr_to_str(custom_notice) {
+                Ok(n) => n,
+                Err(e) => {
+                    *out_err = err_to_cstring(&e);
+                    return ptr::null_mut();
+                }
+            };
+            match md_tmpl::sanitize_block_str(&s, spec_opt, notice_opt) {
+                Ok(wrapped) => {
+                    *out_err = ptr::null_mut();
+                    into_cstring_raw(wrapped)
+                }
+                Err(e) => {
+                    *out_err = terr_to_cstring(&e);
+                    ptr::null_mut()
+                }
+            }
+        })
     }
 }
 
@@ -589,16 +620,18 @@ pub unsafe extern "C" fn pt_is_sanitized_block(
     tag_spec: *const c_char,
     custom_notice: *const c_char,
 ) -> bool {
-    let Ok(s) = (unsafe { bytes_to_str(data, len) }) else {
-        return false;
-    };
-    let Ok(spec_opt) = (unsafe { opt_cstr_to_str(tag_spec) }) else {
-        return false;
-    };
-    let Ok(notice_opt) = (unsafe { opt_cstr_to_str(custom_notice) }) else {
-        return false;
-    };
-    md_tmpl::is_sanitized_block_str(s, spec_opt, notice_opt)
+    catch_ffi_val(false, || {
+        let Ok(s) = (unsafe { bytes_to_str(data, len) }) else {
+            return false;
+        };
+        let Ok(spec_opt) = (unsafe { opt_cstr_to_str(tag_spec) }) else {
+            return false;
+        };
+        let Ok(notice_opt) = (unsafe { opt_cstr_to_str(custom_notice) }) else {
+            return false;
+        };
+        md_tmpl::is_sanitized_block_str(s, spec_opt, notice_opt)
+    })
 }
 
 /// Extract the inner payload from a verified `sanitize_block_str` envelope, or return null if not valid.
@@ -614,19 +647,21 @@ pub unsafe extern "C" fn pt_unsanitize_block(
     tag_spec: *const c_char,
     custom_notice: *const c_char,
 ) -> *mut c_char {
-    let Ok(s) = (unsafe { bytes_to_str(data, len) }) else {
-        return ptr::null_mut();
-    };
-    let Ok(spec_opt) = (unsafe { opt_cstr_to_str(tag_spec) }) else {
-        return ptr::null_mut();
-    };
-    let Ok(notice_opt) = (unsafe { opt_cstr_to_str(custom_notice) }) else {
-        return ptr::null_mut();
-    };
-    match md_tmpl::unsanitize_block_str(s, spec_opt, notice_opt) {
-        Some(inner) => into_cstring_raw(inner.to_owned()),
-        None => ptr::null_mut(),
-    }
+    catch_ffi_val(ptr::null_mut(), || {
+        let Ok(s) = (unsafe { bytes_to_str(data, len) }) else {
+            return ptr::null_mut();
+        };
+        let Ok(spec_opt) = (unsafe { opt_cstr_to_str(tag_spec) }) else {
+            return ptr::null_mut();
+        };
+        let Ok(notice_opt) = (unsafe { opt_cstr_to_str(custom_notice) }) else {
+            return ptr::null_mut();
+        };
+        match md_tmpl::unsanitize_block_str(s, spec_opt, notice_opt) {
+            Some(inner) => into_cstring_raw(inner.to_owned()),
+            None => ptr::null_mut(),
+        }
+    })
 }
 
 #[cfg(test)]

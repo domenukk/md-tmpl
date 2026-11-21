@@ -98,9 +98,11 @@ export const FILTER_UNSAFE_TRUST = "unsafe_trust";
  */
 export const FILTER_SANITIZE_ENCLOSED = "sanitize#enclosed";
 export const FILTER_QUARANTINE = "quarantine";
+export const FILTER_FENCE = "fence";
 export const FILTER_TRUNCATE = "truncate";
 export const FILTER_TOJSON = "tojson";
 export const FILTER_TO_JSON = "to_json";
+export const FILTER_JSON = "json";
 export const FILTER_FIXED = "fixed";
 export const FILTER_LIMIT = "limit";
 export const FILTER_ADD = "add";
@@ -274,6 +276,69 @@ export function unescapeStringLiteral(inner: string): string {
     }
   }
   return out;
+}
+
+/** Strip surrounding quotes from a filter argument and unescape its content. */
+export function stripQuotes(s: string): string {
+  if (s.length >= 2) {
+    if (
+      (s.startsWith(QUOTE_DOUBLE) && s.endsWith(QUOTE_DOUBLE)) ||
+      (s.startsWith(QUOTE_SINGLE) && s.endsWith(QUOTE_SINGLE))
+    ) {
+      return unescapeStringLiteral(s.slice(1, -1));
+    }
+  }
+  return s;
+}
+
+/** Plain dotted identifier path allowing optional whitespace around `.` (mirrors Rust `CompiledPath`). */
+export const PLAIN_PATH_RE =
+  /^[A-Za-z_][A-Za-z0-9_-]*(?:\s*\.\s*[A-Za-z_][A-Za-z0-9_-]*)*$/;
+
+/** Strip a single leading `consts.`, `opts.`, `options.`, or `params.` prefix (including whitespace around `.`, mirrors Rust `strip_namespace_prefix`). */
+export function stripNamespacePrefix(raw: string): string {
+  const trimmed = raw.trim();
+  const dotIdx = trimmed.indexOf(DOT);
+  if (dotIdx > 0) {
+    const head = trimmed.slice(0, dotIdx).trim();
+    const rest = trimmed.slice(dotIdx + 1).trim();
+    if (
+      rest.length > 0 &&
+      (head === "consts" ||
+        head === "opts" ||
+        head === "options" ||
+        head === "params")
+    ) {
+      return rest;
+    }
+  }
+  return trimmed;
+}
+
+/**
+ * Strip any leading namespace prefix (`consts.`, `opts.`, `options.`, `params.`) and trim
+ * whitespace around `.` segments on valid dotted identifier paths.
+ */
+export function normalizeVariablePath(raw: string): string {
+  const stripped = stripNamespacePrefix(raw);
+  if (!stripped.includes(DOT)) {
+    return stripped;
+  }
+  if (
+    !stripped.includes(" ") &&
+    !stripped.includes("\t") &&
+    !stripped.includes("\n") &&
+    !stripped.includes("\r")
+  ) {
+    return stripped;
+  }
+  if (!PLAIN_PATH_RE.test(stripped)) {
+    return stripped;
+  }
+  return stripped
+    .split(DOT)
+    .map((part) => part.trim())
+    .join(DOT);
 }
 
 /** Returns true if the match node uses option-style variant names. */

@@ -4,6 +4,7 @@ mod context;
 mod metadata;
 mod options;
 mod render;
+mod security_0_10_8;
 
 /// Typed error payloads cross the FFI boundary as `<kind>\u{1f}<message>\u{1f}<json>`.
 #[test]

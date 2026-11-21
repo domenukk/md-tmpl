@@ -63,9 +63,9 @@ fn compile_for_loop() {
         } => {
             assert_eq!(binding, "item");
             assert!(matches!(list_expr, CompiledExpr::Path(p) if p.as_str() == "items"));
-            assert!(filters.is_empty());
+            assert_eq!(filters.len(), 0);
             assert_eq!(body.len(), 1);
-            assert!(else_body.is_empty());
+            assert_eq!(else_body.len(), 0);
         }
         other => panic!("expected ForLoop, got {other:?}"),
     }

@@ -385,14 +385,36 @@ pub fn resolve_imports_with_consts<S: core::hash::BuildHasher>(
 
         let (imported_fm, _) = parse_frontmatter(&source)?;
 
+        let mut param_sanitize = HashMap::new();
+        for d in &imported_fm.declarations {
+            let rel = super::sanitize_decl::extract_decl_relative_sanitize(
+                &d.name,
+                &imported_fm.param_sanitize,
+            );
+            if !rel.is_empty() {
+                param_sanitize.insert(d.name.clone(), rel);
+            }
+        }
+        for d in &imported_fm.consts {
+            if !param_sanitize.contains_key(&d.name) {
+                let mut rel = HashMap::new();
+                super::sanitize_decl::collect_all_str_leaf_paths(&d.var_type, "", &mut rel);
+                if !rel.is_empty() {
+                    param_sanitize.insert(d.name.clone(), rel);
+                }
+            }
+        }
+
         let ns = ImportedNamespace {
             type_aliases: imported_fm.type_aliases,
             type_alias_sanitize: imported_fm.type_alias_sanitize,
             param_types: imported_fm
                 .declarations
                 .iter()
+                .chain(imported_fm.consts.iter())
                 .map(|d| (d.name.clone(), d.var_type.clone()))
                 .collect(),
+            param_sanitize,
             consts: imported_fm
                 .consts
                 .iter()

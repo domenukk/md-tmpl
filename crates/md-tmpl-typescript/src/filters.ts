@@ -22,7 +22,7 @@ import {
   TYPE_FLOAT,
   TYPE_INT,
   TYPE_LIST,
-  unescapeStringLiteral,
+  stripQuotes,
 } from "./consts.js";
 import { applySanitizeFilterStr } from "./sanitize_pass.js";
 import {
@@ -65,18 +65,7 @@ export function parseFilter(filter: string): [string, string | undefined] {
   return [name, args.length === 0 ? undefined : args];
 }
 
-/** Strip surrounding quotes from a filter argument and unescape its content. */
-export function stripQuotes(s: string): string {
-  if (s.length >= 2) {
-    if (
-      (s.startsWith('"') && s.endsWith('"')) ||
-      (s.startsWith("'") && s.endsWith("'"))
-    ) {
-      return unescapeStringLiteral(s.slice(1, -1));
-    }
-  }
-  return s;
-}
+export { stripQuotes };
 
 /** Apply a named filter to a value. */
 export function applyFilter(
@@ -149,21 +138,24 @@ function applyUpper(value: Value): Value {
   if (value.type !== "str") {
     throw new TemplateSyntaxError("'upper' requires a string");
   }
-  return str(value.value.toUpperCase());
+  const out = value.value.toUpperCase();
+  return out === value.value ? value : str(out);
 }
 
 function applyLower(value: Value): Value {
   if (value.type !== "str") {
     throw new TemplateSyntaxError("'lower' requires a string");
   }
-  return str(value.value.toLowerCase());
+  const out = value.value.toLowerCase();
+  return out === value.value ? value : str(out);
 }
 
 function applyTrim(value: Value): Value {
   if (value.type !== "str") {
     throw new TemplateSyntaxError("'trim' requires a string");
   }
-  return str(value.value.trim());
+  const out = value.value.trim();
+  return out === value.value ? value : str(out);
 }
 
 function applyFixedFilter(value: Value, args: string | undefined): Value {
@@ -232,44 +224,26 @@ function applyArithFilter(
 // Security filters
 // ---------------------------------------------------------------------------
 
-/** Predefined XML entity escaping with illegal control character removal in a single pass. */
+import { isIllegalXmlCodePoint, replaceEachXmlCodePoint } from "./xml_codec.js";
+
+/** Predefined XML entity escaping with illegal control/noncharacter removal in a single pass. */
 export function escapeXmlString(s: string): string {
-  let out: string | undefined;
-  let lastCopied = 0;
-  for (let i = 0; i < s.length; i++) {
-    const code = s.charCodeAt(i);
-    let replacement: string | undefined;
-    switch (code) {
+  return replaceEachXmlCodePoint(s, (cp) => {
+    switch (cp) {
       case 38 /* '&' */:
-        replacement = "&amp;";
-        break;
+        return "&amp;";
       case 60 /* '<' */:
-        replacement = "&lt;";
-        break;
+        return "&lt;";
       case 62 /* '>' */:
-        replacement = "&gt;";
-        break;
+        return "&gt;";
       case 34 /* '"' */:
-        replacement = "&quot;";
-        break;
+        return "&quot;";
       case 39 /* "'" */:
-        replacement = "&apos;";
-        break;
+        return "&apos;";
       default:
-        if (
-          code <= 0x1f &&
-          (code <= 0x08 || code === 0x0b || code === 0x0c || code >= 0x0e)
-        ) {
-          replacement = "";
-        }
-        break;
+        return isIllegalXmlCodePoint(cp) ? "" : undefined;
     }
-    if (replacement !== undefined) {
-      out = (out ?? "") + s.slice(lastCopied, i) + replacement;
-      lastCopied = i + 1;
-    }
-  }
-  return out !== undefined ? out + s.slice(lastCopied) : s;
+  });
 }
 
 function applyEscapeXml(value: Value): Value {
@@ -301,8 +275,12 @@ import {
   ESCAPED_LT,
   ROLE_TOKEN_DELIMITERS,
   TOKEN_DELIMITERS,
-  isAsciiWhitespaceCode,
+  isNcnameContinueCode,
+  isNcnameStartCode,
+  isTagWhitespaceCode,
   matchControlTokenAt,
+  ncnameFirstCharBit,
+  skipTagWhitespace,
 } from "./token_delimiters.js";
 
 export { ROLE_TOKEN_DELIMITERS, TOKEN_DELIMITERS };
@@ -317,30 +295,6 @@ function toAsciiLowerCode(c: number): number {
 function toAsciiLowerString(s: string): string {
   return s.replace(/[A-Z]/g, (ch) =>
     String.fromCharCode(ch.charCodeAt(0) | 32),
-  );
-}
-
-function ncnameFirstCharBit(c: number): number {
-  const lower = c | 32;
-  if (lower >= 97 && lower <= 122) {
-    return 1 << (lower - 97);
-  }
-  if (c === 95 /* '_' */) {
-    return 1 << 26;
-  }
-  return 0;
-}
-
-function isNcnameStartCode(c: number): boolean {
-  return ncnameFirstCharBit(c) !== 0;
-}
-
-function isNcnameContinueCode(c: number): boolean {
-  return (
-    isNcnameStartCode(c) ||
-    (c >= 48 && c <= 57) ||
-    c === 46 /* '.' */ ||
-    c === 45 /* '-' */
   );
 }
 
@@ -468,15 +422,9 @@ function parseTagSpecUncached(tagSpec: string): ParsedTagSpec {
 }
 
 function quarantineTagNameStart(s: string, i: number): number {
-  let pos = i + 1;
-  while (pos < s.length && isAsciiWhitespaceCode(s.charCodeAt(pos))) {
-    pos++;
-  }
+  let pos = skipTagWhitespace(s, i + 1);
   if (pos < s.length && s.charCodeAt(pos) === 47 /* '/' */) {
-    pos++;
-    while (pos < s.length && isAsciiWhitespaceCode(s.charCodeAt(pos))) {
-      pos++;
-    }
+    pos = skipTagWhitespace(s, pos + 1);
   }
   return pos;
 }
@@ -527,6 +475,20 @@ function matchAnyQuarantineTag(
   return undefined;
 }
 
+function isTriggerUnit(c: number, i: number): boolean {
+  return (
+    c === 60 /* '<' */ ||
+    c === 91 /* '[' */ ||
+    c === 10 /* '\n' */ ||
+    c === 13 /* '\r' */ ||
+    (i === 0 &&
+      (c === 72 /* 'H' */ ||
+        c === 65 /* 'A' */ ||
+        c === 32 /* ' ' */ ||
+        c === 9)) /* '\t' */
+  );
+}
+
 function hasBreakoutClean(
   s: string,
   rules: readonly [string, string][],
@@ -534,7 +496,7 @@ function hasBreakoutClean(
 ): boolean {
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
-    if (c === 60 /* '<' */ || c === 91 /* '[' */ || c === 10 /* '\n' */) {
+    if (isTriggerUnit(c, i)) {
       if (rules.length > 0 && matchControlTokenAt(s, i, rules) !== undefined) {
         return true;
       }
@@ -558,7 +520,7 @@ function hasBreakoutWithRules(
   let checkedInvisible = false;
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
-    if (c === 60 /* '<' */ || c === 91 /* '[' */ || c === 10 /* '\n' */) {
+    if (isTriggerUnit(c, i)) {
       if (rules.length > 0 && matchControlTokenAt(s, i, rules) !== undefined) {
         return true;
       }
@@ -582,6 +544,20 @@ function hasBreakoutWithRules(
   return false;
 }
 
+const CHAR_PRINTABLE_MIN = 0x20;
+const CHAR_PRINTABLE_MAX = 0x7e;
+const CHAR_LT = 60;
+const CHAR_LBRACKET = 91;
+
+function isSafePrintableAsciiNonTrigger(c: number): boolean {
+  return (
+    c >= CHAR_PRINTABLE_MIN &&
+    c <= CHAR_PRINTABLE_MAX &&
+    c !== CHAR_LT &&
+    c !== CHAR_LBRACKET
+  );
+}
+
 function sanitizeWithRulesClean(
   s: string,
   rules: readonly [string, string][],
@@ -591,8 +567,14 @@ function sanitizeWithRulesClean(
   let lastCopied = 0;
   let i = 0;
   while (i < s.length) {
+    if (i > 0) {
+      while (i < s.length && isSafePrintableAsciiNonTrigger(s.charCodeAt(i))) {
+        i++;
+      }
+      if (i >= s.length) break;
+    }
     const c = s.charCodeAt(i);
-    if (c === 60 /* '<' */ || c === 91 /* '[' */ || c === 10 /* '\n' */) {
+    if (isTriggerUnit(c, i)) {
       if (c === 60 && parsedTags !== undefined) {
         const afterTag = matchAnyQuarantineTag(s, i, parsedTags);
         if (afterTag !== undefined) {
@@ -630,6 +612,9 @@ function sanitizeWithRulesClean(
           if (matched.kind === "rule") {
             out = (out ?? "") + s.slice(lastCopied, i) + matched.replacement;
             i += matched.len;
+          } else if (matched.kind === "turn") {
+            out = (out ?? "") + s.slice(lastCopied, matched.colonIdx) + "&#58;";
+            i = matched.colonIdx + 1;
           } else {
             const innerPipe = sanitizeWithRulesClean(
               s.slice(i + 1, matched.endIdx - 1),
@@ -662,8 +647,14 @@ function sanitizeWithRules(
   let checkedInvisible = false;
   let i = 0;
   while (i < s.length) {
+    if (i > 0) {
+      while (i < s.length && isSafePrintableAsciiNonTrigger(s.charCodeAt(i))) {
+        i++;
+      }
+      if (i >= s.length) break;
+    }
     const c = s.charCodeAt(i);
-    if (c === 60 /* '<' */ || c === 91 /* '[' */ || c === 10 /* '\n' */) {
+    if (isTriggerUnit(c, i)) {
       if (c === 60 && parsedTags !== undefined) {
         const afterTag = matchAnyQuarantineTag(s, i, parsedTags);
         if (afterTag !== undefined) {
@@ -679,7 +670,7 @@ function sanitizeWithRules(
             const inner = s.slice(i + 1, j);
             const sanitizedInner =
               rules.length === 0
-                ? inner
+                ? stripInvisibleStr(inner)
                 : sanitizeWithRules(inner, rules, undefined);
             out =
               (out ?? "") +
@@ -701,6 +692,9 @@ function sanitizeWithRules(
           if (matched.kind === "rule") {
             out = (out ?? "") + s.slice(lastCopied, i) + matched.replacement;
             i += matched.len;
+          } else if (matched.kind === "turn") {
+            out = (out ?? "") + s.slice(lastCopied, matched.colonIdx) + "&#58;";
+            i = matched.colonIdx + 1;
           } else {
             const innerPipe = sanitizeWithRules(
               s.slice(i + 1, matched.endIdx - 1),
@@ -793,8 +787,8 @@ export function sanitizeEnclosedPreparsed(
   parsedTags: ParsedTagSpec | undefined,
   heading: boolean,
 ): string {
-  const sanitized = sanitizeWithRules(s, TOKEN_DELIMITERS, parsedTags);
-  return heading ? collapseHeadingLineBreaks(sanitized) : sanitized;
+  const pre = heading ? collapseHeadingLineBreaks(s) : s;
+  return sanitizeWithRules(pre, TOKEN_DELIMITERS, parsedTags);
 }
 
 export function sanitizeEnclosedString(s: string, tagArg?: string): string {
@@ -802,11 +796,10 @@ export function sanitizeEnclosedString(s: string, tagArg?: string): string {
     return sanitizeTokensString(s);
   }
   const spec = enclosedSpec(tagArg);
-  const sanitized =
-    spec.tags.length === 0
-      ? sanitizeTokensString(s)
-      : sanitizeUntrustedString(s, spec.tags);
-  return spec.heading ? collapseHeadingLineBreaks(sanitized) : sanitized;
+  const pre = spec.heading ? collapseHeadingLineBreaks(s) : s;
+  return spec.tags.length === 0
+    ? sanitizeTokensString(pre)
+    : sanitizeUntrustedString(pre, spec.tags);
 }
 
 /** Decoded `sanitize#enclosed` argument: unquoted XML tag list + heading flag. */
@@ -859,30 +852,74 @@ function applySanitizeTokens(value: Value, args: string | undefined): Value {
 
 const MIN_FENCE_BACKTICKS = 3;
 
-/** Wrap a string in markdown code fences with adaptive backtick counts. */
-export function fenceString(s: string, langArg?: string): string {
-  const lang = langArg !== undefined ? stripQuotes(langArg) : "";
-  if (/[`\s]/.test(lang)) {
-    throw new TemplateSyntaxError(
-      `'fence' language must not contain backticks or whitespace: '${lang}'`,
-    );
+function hasDisallowedFenceLangChar(lang: string): boolean {
+  let i = 0;
+  while (i < lang.length) {
+    const cp = lang.codePointAt(i);
+    if (cp === undefined) break;
+    if (
+      cp === 96 /* '`' */ ||
+      cp <= 0x20 ||
+      (cp >= 0x7f && cp <= 0x9f) ||
+      isUnconditionalInvisibleCodePoint(cp) ||
+      isTagWhitespaceCode(cp)
+    ) {
+      return true;
+    }
+    i += cp > 0xffff ? 2 : 1;
   }
+  return false;
+}
+
+/** Pre-validate a `fence` language argument at compile time, returning `undefined` if invalid. */
+export function compileFenceLang(
+  langArg: string | undefined,
+): string | undefined {
+  const lang = langArg !== undefined ? stripQuotes(langArg) : "";
+  return hasDisallowedFenceLangChar(lang) ? undefined : lang;
+}
+
+/** Fast path for `direct_renderer` using a compile-time validated `lang` string. */
+export function fencePreparsed(s: string, lang: string): string {
+  const clean = s.includes("\0") ? s.replaceAll("\0", "") : s;
   let maxBackticks = 0;
   let currentBackticks = 0;
-  for (let i = 0; i < s.length; i++) {
-    if (s.charCodeAt(i) === 96 /* '`' */) {
+  let i = 0;
+  while (i < clean.length) {
+    const cp = clean.codePointAt(i);
+    if (cp === undefined) break;
+    const step = cp > 0xffff ? 2 : 1;
+    if (cp === 96 /* '`' */) {
       currentBackticks++;
       if (currentBackticks > maxBackticks) {
         maxBackticks = currentBackticks;
       }
+    } else if (
+      isUnconditionalInvisibleCodePoint(cp) ||
+      cp === 0x200d ||
+      cp === 0xfe0f
+    ) {
+      // Do not reset `currentBackticks` on invisible code points so split backtick runs widen the fence.
     } else {
       currentBackticks = 0;
     }
+    i += step;
   }
   const fenceLen = Math.max(MIN_FENCE_BACKTICKS, maxBackticks + 1);
   const fenceTicks = "`".repeat(fenceLen);
-  const trailingNl = s.endsWith("\n") ? "" : "\n";
-  return `${fenceTicks}${lang}\n${s}${trailingNl}${fenceTicks}`;
+  const trailingNl = clean.endsWith("\n") ? "" : "\n";
+  return `${fenceTicks}${lang}\n${clean}${trailingNl}${fenceTicks}`;
+}
+
+/** Wrap a string in markdown code fences with adaptive backtick counts, stripping NUL (`\0`) bytes. */
+export function fenceString(s: string, langArg?: string): string {
+  const lang = langArg !== undefined ? stripQuotes(langArg) : "";
+  if (hasDisallowedFenceLangChar(lang)) {
+    throw new TemplateSyntaxError(
+      `'fence' language must not contain backticks or whitespace: '${lang}'`,
+    );
+  }
+  return fencePreparsed(s, lang);
 }
 
 function applyFence(value: Value, args: string | undefined): Value {
@@ -900,6 +937,14 @@ export function hasQuarantineTagBreakout(s: string, tagSpec: string): boolean {
   return hasBreakoutWithRules(s, [], parseTagSpec(tagSpec));
 }
 
+/** Returns `true` if `s` contains any LLM control token, generic pipe token, or XML tag matching `parsedTags`. */
+export function hasUntrustedBreakoutPreparsed(
+  s: string,
+  parsedTags: ParsedTagSpec | undefined,
+): boolean {
+  return hasBreakoutWithRules(s, TOKEN_DELIMITERS, parsedTags);
+}
+
 /** Returns `true` if `s` contains any LLM control token, generic pipe token, or XML tag matching `tagSpec` in a single pass. */
 export function hasUntrustedBreakout(s: string, tagSpec: string): boolean {
   return hasBreakoutWithRules(s, TOKEN_DELIMITERS, parseTagSpec(tagSpec));
@@ -910,9 +955,78 @@ export function sanitizeQuarantinePayload(s: string, tagSpec: string): string {
   return sanitizeWithRules(s, [], parseTagSpec(tagSpec));
 }
 
+/** Neutralize all known LLM control tokens, generic pipe tokens, and opening/closing XML boundary tags matching `parsedTags`. */
+export function sanitizeUntrustedPreparsed(
+  s: string,
+  parsedTags: ParsedTagSpec | undefined,
+): string {
+  return sanitizeWithRules(s, TOKEN_DELIMITERS, parsedTags);
+}
+
 /** Neutralize all known LLM control tokens, generic pipe tokens, and opening/closing XML boundary tags matching `tagSpec` in a single pass. */
 export function sanitizeUntrustedString(s: string, tagSpec: string): string {
   return sanitizeWithRules(s, TOKEN_DELIMITERS, parseTagSpec(tagSpec));
+}
+
+export interface CompiledQuarantineSpec {
+  readonly primaryTag: string;
+  readonly parsedTags: ParsedTagSpec | undefined;
+}
+
+/** Pre-parse a `quarantine` tag argument once at compile time, returning `undefined` if invalid. */
+export function compileQuarantineSpec(
+  tagArg: string | undefined,
+): CompiledQuarantineSpec | undefined {
+  const rawSpec =
+    tagArg !== undefined ? stripQuotes(tagArg) : DEFAULT_QUARANTINE_TAG;
+  try {
+    const [primaryTag] = validateQuarantineTagSpec(rawSpec);
+    return { primaryTag, parsedTags: parseTagSpec(rawSpec) };
+  } catch {
+    return undefined;
+  }
+}
+
+/** Pre-parse a `sanitize_tokens("tags")` argument once at compile time, returning `undefined` if invalid. */
+export function compileSanitizeTokensTags(
+  tagArg: string,
+): ParsedTagSpec | undefined {
+  try {
+    const [, validSpec] = validateTagSpecForFilter(
+      stripQuotes(tagArg),
+      FILTER_SANITIZE_TOKENS,
+    );
+    return parseTagSpec(validSpec);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Pre-parse any validated `tagSpec` into a `ParsedTagSpec`. */
+export function compileValidatedTagSpec(
+  validSpec: string,
+): ParsedTagSpec | undefined {
+  return parseTagSpec(validSpec);
+}
+
+/** Fast path for `direct_renderer` `| quarantine(...)`. */
+export function quarantinePreparsed(
+  s: string,
+  spec: CompiledQuarantineSpec,
+): string {
+  const sanitized = sanitizeWithRules(s, [], spec.parsedTags);
+  const trailingNl = sanitized.endsWith("\n") ? "" : "\n";
+  return `<${spec.primaryTag}>\n${sanitized}${trailingNl}</${spec.primaryTag}>`;
+}
+
+/** Fast path for `direct_renderer` fused `| sanitize_tokens | quarantine(...)`. */
+export function quarantineUntrustedPreparsed(
+  s: string,
+  spec: CompiledQuarantineSpec,
+): string {
+  const sanitized = sanitizeWithRules(s, TOKEN_DELIMITERS, spec.parsedTags);
+  const trailingNl = sanitized.endsWith("\n") ? "" : "\n";
+  return `<${spec.primaryTag}>\n${sanitized}${trailingNl}</${spec.primaryTag}>`;
 }
 
 /** Wrap untrusted content in XML boundary tags (`<primary_tag>\n...\n</primary_tag>`). */

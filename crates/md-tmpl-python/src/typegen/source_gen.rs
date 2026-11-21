@@ -5,7 +5,7 @@ use std::fmt::Write;
 use md_tmpl::{VarDecl, VarType, VariantDecl, to_pascal_case};
 use pyo3::prelude::*;
 
-use super::vartype_to_python_annotation;
+use super::{scalar_list_elem, to_py_ident, vartype_to_python_annotation};
 
 // ---------------------------------------------------------------------------
 // Source code generation (for static type checkers)
@@ -152,6 +152,15 @@ fn source_gen_types_for_decl(
                 source: source_gen_enum_class(&enum_name, variants, enum_aliases),
             });
         }
+        VarType::List(fields) if scalar_list_elem(fields).is_some() => {
+            let elem_vt = scalar_list_elem(fields).expect("checked Some");
+            let inner_decl = VarDecl {
+                name: decl.name.clone(),
+                var_type: elem_vt.clone(),
+                default_value: None,
+            };
+            source_gen_types_for_decl(parent_name, &inner_decl, out, enum_aliases);
+        }
         VarType::List(fields) if !fields.is_empty() => {
             let item_name = format!("{parent_name}{}Item", to_pascal_case(&decl.name));
             // Recurse for nested types within list items first.
@@ -237,13 +246,18 @@ pub(super) fn source_gen_model_class(
         return s;
     }
     for f in fields {
-        writeln!(
-            s,
-            "    {}: {}",
-            f.name,
-            vartype_to_python_source_annotation(&f.var_type, name, &f.name, enum_aliases)
-        )
-        .expect("write to String");
+        let py_name = to_py_ident(&f.name);
+        let ann = vartype_to_python_source_annotation(&f.var_type, name, &f.name, enum_aliases);
+        if py_name == f.name {
+            writeln!(s, "    {py_name}: {ann}").expect("write to String");
+        } else {
+            writeln!(
+                s,
+                "    {py_name}: {ann} = field(metadata={{\"wire\": {:?}}})",
+                f.name
+            )
+            .expect("write to String");
+        }
     }
     s
 }
@@ -267,46 +281,94 @@ pub(super) fn source_gen_params_class(
     if decls.is_empty() {
         writeln!(out).expect("write to String");
         // Still need render() even with no params.
-        source_gen_render_method(out, template_path);
+        source_gen_render_method(out, template_path, false);
         return;
     }
 
     writeln!(out).expect("write to String");
+
+    let has_renamed = decls_have_renamed_fields(decls);
 
     // Fields without defaults first, then fields with defaults (dataclass rule).
     let (required, optional): (Vec<&VarDecl>, Vec<&VarDecl>) =
         decls.iter().partition(|d| d.default_value.is_none());
 
     for d in &required {
-        writeln!(
-            out,
-            "    {}: {}",
-            d.name,
-            vartype_to_python_source_annotation(&d.var_type, name, &d.name, enum_aliases)
-        )
-        .expect("write to String");
+        let py_name = to_py_ident(&d.name);
+        let ann = vartype_to_python_source_annotation(&d.var_type, name, &d.name, enum_aliases);
+        if py_name == d.name {
+            writeln!(out, "    {py_name}: {ann}").expect("write to String");
+        } else {
+            writeln!(
+                out,
+                "    {py_name}: {ann} = field(metadata={{\"wire\": {:?}}})",
+                d.name
+            )
+            .expect("write to String");
+        }
     }
 
     for d in &optional {
+        let py_name = to_py_ident(&d.name);
         let ann = vartype_to_python_source_annotation(&d.var_type, name, &d.name, enum_aliases);
         let Some(default_val) = d.default_value.as_ref() else {
             continue;
         };
         let default_repr = default_to_python_repr(default_val);
-        writeln!(
-            out,
-            "    {}: {} = field(default={})",
-            d.name, ann, default_repr
-        )
-        .expect("write to String");
+        if py_name == d.name {
+            writeln!(out, "    {py_name}: {ann} = field(default={default_repr})")
+                .expect("write to String");
+        } else {
+            writeln!(
+                out,
+                "    {py_name}: {ann} = field(default={default_repr}, metadata={{\"wire\": {:?}}})",
+                d.name
+            )
+            .expect("write to String");
+        }
     }
 
     writeln!(out).expect("write to String");
-    source_gen_render_method(out, template_path);
+    source_gen_render_method(out, template_path, has_renamed);
+}
+
+fn decls_have_renamed_fields(decls: &[VarDecl]) -> bool {
+    for d in decls {
+        if !d.name.is_empty() && to_py_ident(&d.name) != d.name {
+            return true;
+        }
+        match &d.var_type {
+            VarType::List(fields) | VarType::Struct(fields) | VarType::Tmpl(fields) => {
+                if decls_have_renamed_fields(fields) {
+                    return true;
+                }
+            }
+            VarType::Enum(variants) => {
+                if variants
+                    .iter()
+                    .any(|v| decls_have_renamed_fields(&v.fields))
+                {
+                    return true;
+                }
+            }
+            VarType::Option(inner) => {
+                let inner_decl = VarDecl {
+                    name: String::new(),
+                    var_type: (**inner).clone(),
+                    default_value: None,
+                };
+                if decls_have_renamed_fields(&[inner_decl]) {
+                    return true;
+                }
+            }
+            VarType::Str | VarType::Bool | VarType::Int | VarType::Float => {}
+        }
+    }
+    false
 }
 
 /// Emit the `render()` method for the params dataclass.
-fn source_gen_render_method(out: &mut String, template_path: &str) {
+fn source_gen_render_method(out: &mut String, template_path: &str, has_renamed: bool) {
     writeln!(
         out,
         "    def render(self, template: Template | None = None) -> str:"
@@ -324,11 +386,32 @@ fn source_gen_render_method(out: &mut String, template_path: &str) {
     )
     .expect("write to String");
     writeln!(out, "        import dataclasses").expect("write to String");
-    writeln!(
-        out,
-        "        return template.render_dict(dataclasses.asdict(self))"
-    )
-    .expect("write to String");
+    if has_renamed {
+        writeln!(out, "        def _wire(obj: Any) -> Any:").expect("write to String");
+        writeln!(
+            out,
+            "            if dataclasses.is_dataclass(obj) and not isinstance(obj, type):"
+        )
+        .expect("write to String");
+        writeln!(
+            out,
+            "                return {{f.metadata.get(\"wire\", f.name): _wire(getattr(obj, f.name)) for f in dataclasses.fields(obj)}}"
+        )
+        .expect("write to String");
+        writeln!(
+            out,
+            "            if isinstance(obj, list): return [_wire(x) for x in obj]"
+        )
+        .expect("write to String");
+        writeln!(out, "            return obj").expect("write to String");
+        writeln!(out, "        return template.render_dict(_wire(self))").expect("write to String");
+    } else {
+        writeln!(
+            out,
+            "        return template.render_dict(dataclasses.asdict(self))"
+        )
+        .expect("write to String");
+    }
 }
 
 /// Check if any declaration uses `Option<T>`.
@@ -338,9 +421,9 @@ pub(super) fn decls_need_optional(decls: &[VarDecl]) -> bool {
         .any(|d| matches!(&d.var_type, VarType::Option(_)))
 }
 
-/// Check if any declaration has a default value (needs `field(default=...)`).
+/// Check if any declaration has a default value or renamed wire metadata (needs `field(...)`).
 pub(super) fn decls_need_field(decls: &[VarDecl]) -> bool {
-    decls.iter().any(|d| d.default_value.is_some())
+    decls.iter().any(|d| d.default_value.is_some()) || decls_have_renamed_fields(decls)
 }
 
 /// Convert a default [`Value`] to its Python literal repr string.
@@ -399,6 +482,13 @@ fn vartype_to_python_source_annotation(
             "{} | None",
             vartype_to_python_source_annotation(inner, parent_name, field_name, enum_aliases)
         ),
+        VarType::List(fields) if scalar_list_elem(fields).is_some() => {
+            let elem = scalar_list_elem(fields).expect("checked Some");
+            format!(
+                "list[{}]",
+                vartype_to_python_source_annotation(elem, parent_name, field_name, enum_aliases)
+            )
+        }
         _ => vartype_to_python_annotation(vt, parent_name, field_name),
     }
 }

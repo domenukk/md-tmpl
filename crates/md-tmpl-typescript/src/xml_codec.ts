@@ -14,74 +14,118 @@ export const XML_DECODE_PAIRS: readonly (readonly [string, string])[] = [
   ["&apos;", "'"],
   ["&lt;", "<"],
   ["&gt;", ">"],
+  ["&#10;", "\n"],
+  ["&#13;", "\r"],
   ["&amp;", "&"],
 ];
 
-/** First and last code units of the C1 control block (Unicode `Cc`, with C0 and DEL). */
-const C0_CONTROL_MAX = 0x1f;
-const DEL_CODE = 0x7f;
-const C1_CONTROL_MAX = 0x9f;
-
-/** Returns `true` for Unicode general category `Cc` (Rust `char::is_control`). */
-function isControlCode(code: number): boolean {
-  return code <= C0_CONTROL_MAX || (code >= DEL_CODE && code <= C1_CONTROL_MAX);
+/**
+ * Returns `true` if Unicode scalar value `cp` is illegal in XML 1.0 documents
+ * (disallowed C0 controls, DEL/C1 controls, lone UTF-16 surrogates, or Unicode
+ * noncharacters `U+FDD0..=U+FDEF` and `U+nFFFE` / `U+nFFFF`).
+ */
+export function isIllegalXmlCodePoint(cp: number): boolean {
+  if (cp <= 0x1f) {
+    return cp <= 0x08 || cp === 0x0b || cp === 0x0c || cp >= 0x0e;
+  }
+  if (cp >= 0x7f && cp <= 0x9f) {
+    return true;
+  }
+  if (cp >= 0xd800 && cp <= 0xdfff) {
+    return true;
+  }
+  if (cp >= 0xfdd0 && cp <= 0xfdef) {
+    return true;
+  }
+  return (cp & 0xfffe) === 0xfffe;
 }
 
-/** Escapes shared by attribute and body escaping. */
-const MARKUP_ESCAPES: ReadonlyMap<string, string> = new Map([
-  ["&", "&amp;"],
-  ["<", "&lt;"],
-  [">", "&gt;"],
-  ["\0", "\\0"],
-]);
-
-/** Additional escapes for attribute values. */
-const ATTR_ONLY_ESCAPES: ReadonlyMap<string, string> = new Map([
-  ['"', "&quot;"],
-  ["'", "&apos;"],
-  ["\n", "\\n"],
-  ["\r", "\\r"],
-]);
-
-/** Replacement for any other control character inside an attribute value. */
-const ATTR_CONTROL_REPLACEMENT = " ";
-
-/** Apply `replacementFor` to every code unit of `s` in a single pass. */
-function replaceEach(
+/** Apply `replacementFor` across code points / lone surrogates of `s` in a single pass. */
+export function replaceEachXmlCodePoint(
   s: string,
-  replacementFor: (ch: string, code: number) => string | undefined,
+  replacementFor: (cp: number) => string | undefined,
 ): string {
   let out: string | undefined;
   let lastCopied = 0;
-  for (let i = 0; i < s.length; i++) {
-    const ch = s.charAt(i);
-    const replacement = replacementFor(ch, s.charCodeAt(i));
+  let i = 0;
+  while (i < s.length) {
+    const unit = s.charCodeAt(i);
+    if (
+      unit >= 0x20 &&
+      unit <= 0x7e &&
+      unit !== 38 /* '&' */ &&
+      unit !== 60 /* '<' */ &&
+      unit !== 62 /* '>' */ &&
+      unit !== 34 /* '"' */ &&
+      unit !== 39 /* "'" */
+    ) {
+      i++;
+      continue;
+    }
+    let cp = unit;
+    let step = 1;
+    if (unit >= 0xd800 && unit <= 0xdbff && i + 1 < s.length) {
+      const low = s.charCodeAt(i + 1);
+      if (low >= 0xdc00 && low <= 0xdfff) {
+        cp = ((unit - 0xd800) << 10) + (low - 0xdc00) + 0x10000;
+        step = 2;
+      }
+    }
+    const replacement = replacementFor(cp);
     if (replacement !== undefined) {
       out = (out ?? "") + s.slice(lastCopied, i) + replacement;
-      lastCopied = i + 1;
+      lastCopied = i + step;
     }
+    i += step;
   }
   return out !== undefined ? out + s.slice(lastCopied) : s;
 }
 
 /**
  * Escape a string for an XML attribute value: `&`, `<`, `>`, `"`, `'` become
- * entities; `\n`, `\r`, `\0` become the two-character escapes `\n`, `\r`, `\0`;
- * any other control character becomes a space.
+ * predefined entities; `\n` and `\r` become `&#10;` and `&#13;`; illegal XML 1.0
+ * controls and noncharacters are stripped.
  */
 export function escapeXmlAttrString(s: string): string {
-  return replaceEach(
-    s,
-    (ch, code) =>
-      MARKUP_ESCAPES.get(ch) ??
-      ATTR_ONLY_ESCAPES.get(ch) ??
-      (isControlCode(code) ? ATTR_CONTROL_REPLACEMENT : undefined),
-  );
+  return replaceEachXmlCodePoint(s, (cp) => {
+    switch (cp) {
+      case 38 /* '&' */:
+        return "&amp;";
+      case 60 /* '<' */:
+        return "&lt;";
+      case 62 /* '>' */:
+        return "&gt;";
+      case 34 /* '"' */:
+        return "&quot;";
+      case 39 /* "'" */:
+        return "&apos;";
+      case 10 /* '\n' */:
+        return "&#10;";
+      case 13 /* '\r' */:
+        return "&#13;";
+      default:
+        return isIllegalXmlCodePoint(cp) ? "" : undefined;
+    }
+  });
 }
 
-/** Escape an XML element body value: `&`, `<`, `>` become entities and `\0` becomes `\0`. */
+/**
+ * Escape an XML element body value: `&`, `<`, `>` become entities and illegal
+ * XML 1.0 controls and noncharacters are stripped.
+ */
 export function escapeXmlBodyString(s: string): string {
-  return replaceEach(s, (ch) => MARKUP_ESCAPES.get(ch));
+  return replaceEachXmlCodePoint(s, (cp) => {
+    switch (cp) {
+      case 38 /* '&' */:
+        return "&amp;";
+      case 60 /* '<' */:
+        return "&lt;";
+      case 62 /* '>' */:
+        return "&gt;";
+      default:
+        return isIllegalXmlCodePoint(cp) ? "" : undefined;
+    }
+  });
 }
 
 /**

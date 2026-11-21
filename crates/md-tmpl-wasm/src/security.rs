@@ -24,14 +24,20 @@ pub fn default_quarantine_tag() -> String {
 }
 
 /// Return `TOKEN_DELIMITERS` as a JS array of `[raw, escaped]` pairs.
-#[wasm_bindgen(js_name = "tokenDelimiters")]
+#[wasm_bindgen(
+    js_name = "tokenDelimiters",
+    unchecked_return_type = "[string, string][]"
+)]
 #[must_use]
 pub fn token_delimiters() -> Array {
     delimiters_to_js(md_tmpl::TOKEN_DELIMITERS)
 }
 
 /// Return `ROLE_TOKEN_DELIMITERS` as a JS array of `[raw, escaped]` pairs.
-#[wasm_bindgen(js_name = "roleTokenDelimiters")]
+#[wasm_bindgen(
+    js_name = "roleTokenDelimiters",
+    unchecked_return_type = "[string, string][]"
+)]
 #[must_use]
 pub fn role_token_delimiters() -> Array {
     delimiters_to_js(md_tmpl::ROLE_TOKEN_DELIMITERS)
@@ -62,6 +68,13 @@ pub fn has_invisible_chars(s: &str) -> bool {
 #[wasm_bindgen(js_name = "stripInvisibleString")]
 #[must_use]
 pub fn strip_invisible_string(s: &str) -> String {
+    md_tmpl::strip_invisible_str(s).into_owned()
+}
+
+/// Alias for `stripInvisibleString` matching the pure-TS `stripInvisibleStr` export.
+#[wasm_bindgen(js_name = "stripInvisibleStr")]
+#[must_use]
+pub fn strip_invisible_str_alias(s: &str) -> String {
     md_tmpl::strip_invisible_str(s).into_owned()
 }
 
@@ -292,7 +305,10 @@ pub fn untrusted_quarantine_close_tag() -> String {
 }
 
 /// Return `XML_DECODE_PAIRS` as a JS array of `[entity, decoded]` pairs.
-#[wasm_bindgen(js_name = "xmlDecodePairs")]
+#[wasm_bindgen(
+    js_name = "xmlDecodePairs",
+    unchecked_return_type = "[string, string][]"
+)]
 #[must_use]
 pub fn xml_decode_pairs() -> Array {
     delimiters_to_js(md_tmpl::XML_DECODE_PAIRS)
@@ -388,12 +404,47 @@ pub fn truncate_middle_string(s: &str, limit: usize, marker: Option<String>) -> 
     res
 }
 
+/// Return the default multi-line string truncation marker.
+#[wasm_bindgen(js_name = "defaultTruncateMarker")]
+#[must_use]
+pub fn default_truncate_marker() -> String {
+    md_tmpl::DEFAULT_TRUNCATE_MARKER.to_string()
+}
+
+/// Return the default compact single-line string truncation marker.
+#[wasm_bindgen(js_name = "defaultTruncateMarkerCompact")]
+#[must_use]
+pub fn default_truncate_marker_compact() -> String {
+    md_tmpl::DEFAULT_TRUNCATE_MARKER_COMPACT.to_string()
+}
+
+/// Return the default list truncation marker item.
+#[wasm_bindgen(js_name = "defaultListTruncateMarker")]
+#[must_use]
+pub fn default_list_truncate_marker() -> String {
+    md_tmpl::DEFAULT_LIST_TRUNCATE_MARKER.to_string()
+}
+
+/// Return the `{skipped}` placeholder substituted in truncation markers.
+#[wasm_bindgen(js_name = "truncatePlaceholderSkipped")]
+#[must_use]
+pub fn truncate_placeholder_skipped() -> String {
+    md_tmpl::TRUNCATE_PLACEHOLDER_SKIPPED.to_string()
+}
+
+/// Return the `{count}` alias placeholder substituted in truncation markers.
+#[wasm_bindgen(js_name = "truncatePlaceholderCount")]
+#[must_use]
+pub fn truncate_placeholder_count() -> String {
+    md_tmpl::TRUNCATE_PLACEHOLDER_COUNT.to_string()
+}
+
 /// Truncate a JS array in the middle, keeping at most `limit` items around one marker item.
 ///
 /// # Errors
 ///
 /// Returns a JS `Error` if an item cannot be converted to a template value.
-#[wasm_bindgen(js_name = "truncateMiddleList")]
+#[wasm_bindgen(js_name = "truncateMiddleList", unchecked_return_type = "unknown[]")]
 pub fn truncate_middle_list(
     items: &Array,
     limit: usize,

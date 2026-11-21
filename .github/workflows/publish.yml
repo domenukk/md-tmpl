@@ -87,7 +87,7 @@ jobs:
     needs: publish-python
     runs-on: ubuntu-latest
     permissions:
-      id-token: write  # trusted publishing
+      id-token: write # trusted publishing
     steps:
       - name: Download all wheels
         uses: actions/download-artifact@v4

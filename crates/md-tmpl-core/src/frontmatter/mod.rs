@@ -70,6 +70,9 @@ pub struct ImportedNamespace {
     pub type_alias_sanitize: HashMap<String, HashMap<String, SanitizeSpec>>,
     /// Parameter types (for cross-template type references).
     pub param_types: HashMap<String, VarType>,
+    /// Sanitization rules declared on exported `params:` (and default `str` leaves of `consts:`),
+    /// keyed by declaration name -> relative field path.
+    pub param_sanitize: HashMap<String, HashMap<String, SanitizeSpec>>,
     /// Constants exported by the imported template.
     pub consts: HashMap<String, crate::value::Value>,
     /// Type declarations for each exported constant.
@@ -452,6 +455,7 @@ fn resolve_fm_consts_and_imports(
     env_raw: Option<&str>,
     env_values: &[(&str, crate::value::Value)],
     parent_type_aliases: Option<&HashMap<String, VarType>>,
+    initial_alias_sanitize: &type_aliases::TypeAliasSanitizeMap,
     #[cfg(feature = "std")] base_dir: Option<&std::path::Path>,
 ) -> FmResolutionResult {
     let mut merged_aliases = if let Some(parent_aliases) = parent_type_aliases {
@@ -469,8 +473,14 @@ fn resolve_fm_consts_and_imports(
 
     // Resolve env declarations first so they're available for import path interpolation.
     if let Some(raw) = env_raw {
-        let (mut env_decls, _) =
-            parse_declarations(raw, &merged_aliases, &empty_imports, false, &empty_consts)?;
+        let (mut env_decls, _, env_sanitize) = parse_declarations_with_sanitize(
+            raw,
+            &merged_aliases,
+            initial_alias_sanitize,
+            &empty_imports,
+            sanitize_decl::DeclSection::Env,
+            &empty_consts,
+        )?;
         for decl in &mut env_decls {
             // Look up in provided env_values.
             if let Some((_, provided_val)) = env_values.iter().find(|(k, _)| *k == decl.name) {
@@ -484,6 +494,7 @@ fn resolve_fm_consts_and_imports(
             }
         }
         fm.env = env_decls;
+        fm.param_sanitize.extend(env_sanitize);
     }
 
     if !fm.imports.is_empty()
@@ -587,16 +598,6 @@ fn parse_frontmatter_impl<'a>(
         }
     }
 
-    let (merged_aliases, resolved_imports, available_consts) = resolve_fm_consts_and_imports(
-        &mut fm,
-        consts_raw.as_deref(),
-        env_raw.as_deref(),
-        env_values,
-        parent_type_aliases,
-        #[cfg(feature = "std")]
-        base_dir,
-    )?;
-
     let mut merged_alias_sanitize = if let Some(parent_san) = parent_type_alias_sanitize {
         parent_san.clone()
     } else {
@@ -605,10 +606,27 @@ fn parse_frontmatter_impl<'a>(
     for (k, v) in &fm.type_alias_sanitize {
         merged_alias_sanitize.insert(k.clone(), v.clone());
     }
+
+    let (merged_aliases, resolved_imports, available_consts) = resolve_fm_consts_and_imports(
+        &mut fm,
+        consts_raw.as_deref(),
+        env_raw.as_deref(),
+        env_values,
+        parent_type_aliases,
+        &merged_alias_sanitize,
+        #[cfg(feature = "std")]
+        base_dir,
+    )?;
+
     for (stem, ns) in &resolved_imports {
         for (type_name, specs) in &ns.type_alias_sanitize {
             merged_alias_sanitize
                 .entry(alloc::format!("{stem}.{type_name}"))
+                .or_insert_with(|| specs.clone());
+        }
+        for (decl_name, specs) in &ns.param_sanitize {
+            merged_alias_sanitize
+                .entry(alloc::format!("{stem}.{decl_name}"))
                 .or_insert_with(|| specs.clone());
         }
     }
@@ -620,14 +638,14 @@ fn parse_frontmatter_impl<'a>(
             &merged_aliases,
             &fm.type_alias_sanitize,
             &resolved_imports,
-            false,
+            sanitize_decl::DeclSection::Param,
             &available_consts,
         )?;
         fm.params = decls.iter().map(|d| d.name.clone()).collect();
         fm.declarations = decls;
         fm.has_params = true;
         fm.imported_type_params = import_refs;
-        fm.param_sanitize = param_sanitize;
+        fm.param_sanitize.extend(param_sanitize);
     }
 
     validate_collision_rules(&fm)?;

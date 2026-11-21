@@ -1,6 +1,6 @@
 /**
  * Compile-time AST pass for parameter sanitization propagation,
- * boundary notice resolution, and enclosing XML tag detection.
+ * boundary notice resolution, and enclosing XML tag / ATX heading detection.
  *
  * @module
  */
@@ -10,10 +10,15 @@ import {
   BACKSLASH,
   COMMA,
   DEFAULT_QUARANTINE_TAG,
+  DOT,
+  FILTER_FENCE,
+  FILTER_JSON,
   FILTER_QUARANTINE,
   FILTER_SANITIZE,
   FILTER_SANITIZE_ENCLOSED,
   FILTER_SANITIZE_TOKENS,
+  FILTER_TOJSON,
+  FILTER_TO_JSON,
   FILTER_UNSAFE_TRUST,
   FN_UNSAFE_TRUST,
   NODE_EXPR,
@@ -28,6 +33,7 @@ import {
   QUOTE_DOUBLE,
   SANITIZE_KIND_INLINE,
 } from "./consts.js";
+import { TemplateSyntaxError } from "./errors.js";
 import { splitPipes } from "./evaluator.js";
 import {
   type DeclaredSanitize,
@@ -42,13 +48,15 @@ import {
   INLINE_HEADING_SENTINEL,
   parseFilter,
   stripQuotes,
+  validateTagSpecForFilter,
 } from "./filters.js";
 import {
   type SanitizeSpec,
-  parseSanitizeFilterArgs,
   isAsciiWhitespaceCode,
-  isNcnameStartCode,
   isNcnameContinueCode,
+  isNcnameStartCode,
+  parseSanitizeFilterArgs,
+  skipTagWhitespace,
 } from "./sanitize_runtime.js";
 
 export * from "./sanitize_runtime.js";
@@ -63,13 +71,16 @@ const EMPTY_DECLARED: DeclaredSanitize = new Map();
 
 const CHAR_TAB = 9;
 const CHAR_SPACE = 32;
+const CHAR_DQUOTE = 34;
 const CHAR_HASH = 35;
+const CHAR_SQUOTE = 39;
 const CHAR_SLASH = 47;
 const CHAR_LT = 60;
 const CHAR_GT = 62;
 const MIN_HEADING_LEVEL = 1;
 const MAX_HEADING_LEVEL = 6;
 const NEWLINE_CHAR = "\n";
+const CR_CHAR = "\r";
 
 /**
  * Parse a `sanitize_notice:` frontmatter value, stripping optional surrounding quotes and
@@ -140,6 +151,40 @@ function mergeEnclosingTagsIntoSpec(
   return combined.length === 0 ? undefined : combined.join(COMMA);
 }
 
+function lookupDirectPathSpec(
+  canonical: string,
+  paramSanitize: ReadonlyMap<string, SanitizeSpec>,
+): SanitizeSpec | undefined {
+  const exact = paramSanitize.get(canonical);
+  if (exact !== undefined) {
+    return exact;
+  }
+  for (const [key, spec] of paramSanitize) {
+    if (canonical.startsWith(`${key}${DOT}`)) {
+      return spec;
+    }
+  }
+  return undefined;
+}
+
+function pathHasAnyUntrusted(
+  canonical: string,
+  paramSanitize: ReadonlyMap<string, SanitizeSpec>,
+): boolean {
+  if (paramSanitize.has(canonical)) {
+    return true;
+  }
+  for (const key of paramSanitize.keys()) {
+    if (
+      key.startsWith(`${canonical}${DOT}`) ||
+      canonical.startsWith(`${key}${DOT}`)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function rewriteExprForSanitize(
   expr: string,
   paramSanitize: ReadonlyMap<string, SanitizeSpec> | undefined,
@@ -162,7 +207,19 @@ function rewriteExprForSanitize(
     PLAIN_PATH_RE.test(baseExpr)
   ) {
     const canonical = resolveCanonicalPath(baseExpr, loopAliases);
-    const spec = paramSanitize.get(canonical);
+    const hasToJson = filterStrings.some((f) => {
+      const [fName] = parseFilter(f);
+      return (
+        fName === FILTER_TOJSON ||
+        fName === FILTER_TO_JSON ||
+        fName === FILTER_JSON
+      );
+    });
+    const spec: SanitizeSpec | undefined = hasToJson
+      ? pathHasAnyUntrusted(canonical, paramSanitize)
+        ? { kind: SANITIZE_KIND_INLINE }
+        : undefined
+      : lookupDirectPathSpec(canonical, paramSanitize);
     if (spec !== undefined) {
       const hasTokenSanitize = filterStrings.some((f) => {
         const [fName] = parseFilter(f);
@@ -190,10 +247,27 @@ function rewriteExprForSanitize(
     return expr;
   }
 
-  // 2. Rewrite any `sanitize` or `quarantine` filter for template-level `sanitizeNotice` and `openTags`
+  // 2. Rewrite any `sanitize`, `sanitize_tokens`, or `quarantine` filter for `sanitizeNotice` and `openTags`
   let modified = filterStrings.length !== parts.length - 1;
-  const updatedFilters = filterStrings.map((fStr) => {
+  const updatedFilters = filterStrings.map((fStr, idx) => {
     const [fName, fArgs] = parseFilter(fStr);
+    if (inAtxHeading) {
+      if (fName === FILTER_FENCE) {
+        throw new TemplateSyntaxError(
+          "multi-line filter 'fence' cannot be used inside a Markdown ATX heading line",
+        );
+      }
+      if (fName === FILTER_QUARANTINE) {
+        throw new TemplateSyntaxError(
+          "multi-line filter 'quarantine' cannot be used inside a Markdown ATX heading line",
+        );
+      }
+      if (fName === FILTER_SANITIZE && fArgs !== undefined) {
+        throw new TemplateSyntaxError(
+          "multi-line block 'sanitize' cannot be used inside a Markdown ATX heading line",
+        );
+      }
+    }
     if (fName === FILTER_QUARANTINE) {
       if (openTags.length > 0) {
         const raw =
@@ -206,8 +280,42 @@ function rewriteExprForSanitize(
       }
       return fStr;
     }
+    if (fName === FILTER_SANITIZE_TOKENS) {
+      // Keep compiler-inserted `sanitize_tokens | quarantine` intact so they fuse into 1 pass.
+      const nextFilter = filterStrings[idx + 1];
+      if (
+        fArgs === undefined &&
+        nextFilter !== undefined &&
+        parseFilter(nextFilter)[0] === FILTER_QUARANTINE
+      ) {
+        return fStr;
+      }
+      if (openTags.length === 0 && !inAtxHeading) {
+        return fStr;
+      }
+      let existingSpec: string | undefined;
+      if (fArgs !== undefined) {
+        try {
+          [, existingSpec] = validateTagSpecForFilter(
+            stripQuotes(fArgs),
+            FILTER_SANITIZE_TOKENS,
+          );
+        } catch {
+          return fStr;
+        }
+      }
+      const mergedTags = mergeEnclosingTagsIntoSpec(
+        existingSpec,
+        openTags,
+        inAtxHeading,
+      );
+      if (mergedTags !== undefined && mergedTags !== existingSpec) {
+        modified = true;
+        return `${FILTER_SANITIZE_ENCLOSED}(${quoteFilterArg(mergedTags)})`;
+      }
+      return fStr;
+    }
     if (fName === FILTER_SANITIZE_ENCLOSED) {
-      // Re-run after include resolution: merge newly visible enclosing tags.
       const existingTags = fArgs === undefined ? undefined : stripQuotes(fArgs);
       const mergedTags = mergeEnclosingTagsIntoSpec(
         existingTags,
@@ -225,7 +333,6 @@ function rewriteExprForSanitize(
     }
     const parsed = parseSanitizeFilterArgs(fArgs);
     if (parsed === undefined) {
-      // 0-arg `| sanitize`: inside enclosing XML tags or an ATX heading, carry the tags internally.
       const mergedTags = mergeEnclosingTagsIntoSpec(
         undefined,
         openTags,
@@ -237,7 +344,6 @@ function rewriteExprForSanitize(
       }
       return fStr;
     }
-    // 1-arg or 2-arg `| sanitize("tag", ...)`: merge enclosing tags + template sanitizeNotice
     const mergedTagSpec =
       mergeEnclosingTagsIntoSpec(parsed.tagSpec, openTags, false) ??
       parsed.tagSpec;
@@ -262,18 +368,9 @@ function scanClosingTagsInText(text: string, out: Set<string>): void {
   let i = 0;
   while (i + 3 < text.length) {
     if (text.charCodeAt(i) === CHAR_LT) {
-      let pos = i + 1;
-      while (pos < text.length && isAsciiWhitespaceCode(text.charCodeAt(pos))) {
-        pos++;
-      }
+      let pos = skipTagWhitespace(text, i + 1);
       if (pos < text.length && text.charCodeAt(pos) === CHAR_SLASH) {
-        pos++;
-        while (
-          pos < text.length &&
-          isAsciiWhitespaceCode(text.charCodeAt(pos))
-        ) {
-          pos++;
-        }
+        pos = skipTagWhitespace(text, pos + 1);
         if (pos < text.length && isNcnameStartCode(text.charCodeAt(pos))) {
           const start = pos;
           pos++;
@@ -284,12 +381,7 @@ function scanClosingTagsInText(text: string, out: Set<string>): void {
             pos++;
           }
           const name = text.slice(start, pos);
-          while (
-            pos < text.length &&
-            isAsciiWhitespaceCode(text.charCodeAt(pos))
-          ) {
-            pos++;
-          }
+          pos = skipTagWhitespace(text, pos);
           if (pos < text.length && text.charCodeAt(pos) === CHAR_GT) {
             out.add(name.toLowerCase());
             i = pos + 1;
@@ -341,57 +433,135 @@ function collectClosingXmlTags(nodes: readonly Node[], out: Set<string>): void {
   }
 }
 
+interface EnclosingScanState {
+  openTags: string[];
+  pendingOpenTag: string | undefined;
+  pendingQuote: number | undefined;
+  inAtxHeading: boolean;
+  atLineStart: boolean;
+}
+
+function cloneScanState(state: EnclosingScanState): EnclosingScanState {
+  return {
+    openTags: [...state.openTags],
+    pendingOpenTag: state.pendingOpenTag,
+    pendingQuote: state.pendingQuote,
+    inAtxHeading: state.inAtxHeading,
+    atLineStart: state.atLineStart,
+  };
+}
+
+function mergeBranchStates(
+  target: EnclosingScanState,
+  states: readonly EnclosingScanState[],
+): void {
+  if (states.length === 0) {
+    return;
+  }
+  const unionTags: string[] = [];
+  let pendingTag: string | undefined;
+  let pendingQuote: number | undefined;
+  let anyHeading = false;
+  let anyLineStart = false;
+  for (const st of states) {
+    for (const tag of st.openTags) {
+      if (!unionTags.some((t) => t.toLowerCase() === tag.toLowerCase())) {
+        unionTags.push(tag);
+      }
+    }
+    if (pendingTag === undefined && st.pendingOpenTag !== undefined) {
+      pendingTag = st.pendingOpenTag;
+      pendingQuote = st.pendingQuote;
+    }
+    anyHeading ||= st.inAtxHeading;
+    anyLineStart ||= st.atLineStart;
+  }
+  target.openTags = unionTags;
+  target.pendingOpenTag = pendingTag;
+  target.pendingQuote = pendingQuote;
+  target.inAtxHeading = anyHeading;
+  target.atLineStart = anyLineStart;
+}
+
+type OpenTagTailOutcome =
+  | {
+      readonly kind: "closed";
+      readonly closeIdx: number;
+      readonly selfClosing: boolean;
+    }
+  | { readonly kind: "pending"; readonly quote: number | undefined }
+  | { readonly kind: "aborted"; readonly ltIdx: number };
+
+function scanOpenTagTail(
+  text: string,
+  startIdx: number,
+  initialQuote: number | undefined,
+): OpenTagTailOutcome {
+  let quote = initialQuote;
+  let lastUnquotedNonWs: number | undefined;
+  let idx = startIdx;
+  while (idx < text.length) {
+    const code = text.charCodeAt(idx);
+    if (quote !== undefined) {
+      if (code === quote) {
+        quote = undefined;
+        lastUnquotedNonWs = code;
+      }
+      idx++;
+      continue;
+    }
+    if (code === CHAR_DQUOTE || code === CHAR_SQUOTE) {
+      quote = code;
+    } else if (code === CHAR_GT) {
+      return {
+        kind: "closed",
+        closeIdx: idx,
+        selfClosing: lastUnquotedNonWs === CHAR_SLASH,
+      };
+    } else if (code === CHAR_LT) {
+      return { kind: "aborted", ltIdx: idx };
+    } else if (!isAsciiWhitespaceCode(code)) {
+      lastUnquotedNonWs = code;
+    }
+    idx++;
+  }
+  return { kind: "pending", quote };
+}
+
 function updateOpenXmlTagsFromText(
   text: string,
   closingTags: ReadonlySet<string>,
-  openTags: string[],
-  pendingOpenTag?: string,
-): string | undefined {
+  state: EnclosingScanState,
+): void {
   let i = 0;
-  if (pendingOpenTag !== undefined) {
-    let closeIdx = 0;
-    while (
-      closeIdx < text.length &&
-      text.charCodeAt(closeIdx) !== CHAR_GT &&
-      text.charCodeAt(closeIdx) !== CHAR_LT
-    ) {
-      closeIdx++;
-    }
-    if (closeIdx < text.length && text.charCodeAt(closeIdx) === CHAR_GT) {
-      let beforeGt = closeIdx;
-      while (
-        beforeGt > 0 &&
-        isAsciiWhitespaceCode(text.charCodeAt(beforeGt - 1))
-      ) {
-        beforeGt--;
+  if (state.pendingOpenTag !== undefined) {
+    const pendingName = state.pendingOpenTag;
+    const prevQuote = state.pendingQuote;
+    state.pendingOpenTag = undefined;
+    state.pendingQuote = undefined;
+    const tail = scanOpenTagTail(text, 0, prevQuote);
+    if (tail.kind === "closed") {
+      if (!tail.selfClosing && closingTags.has(pendingName.toLowerCase())) {
+        state.openTags.push(pendingName);
       }
-      const selfClosing =
-        beforeGt > 0 && text.charCodeAt(beforeGt - 1) === CHAR_SLASH;
-      if (!selfClosing && closingTags.has(pendingOpenTag.toLowerCase())) {
-        openTags.push(pendingOpenTag);
-      }
-      i = closeIdx + 1;
-    } else if (closeIdx === text.length) {
-      return pendingOpenTag;
+      i = tail.closeIdx + 1;
+    } else if (tail.kind === "pending") {
+      state.pendingOpenTag = pendingName;
+      state.pendingQuote = tail.quote;
+      return;
     } else {
-      i = closeIdx;
+      i = tail.ltIdx;
     }
   }
 
-  while (i + 2 < text.length) {
+  while (i + 1 < text.length) {
     if (text.charCodeAt(i) !== CHAR_LT) {
       i++;
       continue;
     }
-    let pos = i + 1;
-    while (pos < text.length && isAsciiWhitespaceCode(text.charCodeAt(pos))) {
-      pos++;
-    }
+    let pos = skipTagWhitespace(text, i + 1);
     if (pos < text.length && text.charCodeAt(pos) === CHAR_SLASH) {
-      pos++;
-      while (pos < text.length && isAsciiWhitespaceCode(text.charCodeAt(pos))) {
-        pos++;
-      }
+      pos = skipTagWhitespace(text, pos + 1);
       if (pos < text.length && isNcnameStartCode(text.charCodeAt(pos))) {
         const start = pos;
         pos++;
@@ -402,17 +572,12 @@ function updateOpenXmlTagsFromText(
           pos++;
         }
         const name = text.slice(start, pos);
-        while (
-          pos < text.length &&
-          isAsciiWhitespaceCode(text.charCodeAt(pos))
-        ) {
-          pos++;
-        }
+        pos = skipTagWhitespace(text, pos);
         if (pos < text.length && text.charCodeAt(pos) === CHAR_GT) {
           const lowerName = name.toLowerCase();
-          for (let k = openTags.length - 1; k >= 0; k--) {
-            if (openTags[k]?.toLowerCase() === lowerName) {
-              openTags.splice(k, 1);
+          for (let k = state.openTags.length - 1; k >= 0; k--) {
+            if (state.openTags[k]?.toLowerCase() === lowerName) {
+              state.openTags.splice(k, 1);
               break;
             }
           }
@@ -430,55 +595,92 @@ function updateOpenXmlTagsFromText(
         end++;
       }
       const name = text.slice(start, end);
+      if (end === text.length) {
+        if (closingTags.has(name.toLowerCase())) {
+          state.pendingOpenTag = name;
+          state.pendingQuote = undefined;
+        }
+        return;
+      }
       if (
-        end < text.length &&
-        (text.charCodeAt(end) === CHAR_GT ||
-          text.charCodeAt(end) === CHAR_SLASH ||
-          isAsciiWhitespaceCode(text.charCodeAt(end)))
+        text.charCodeAt(end) === CHAR_GT ||
+        text.charCodeAt(end) === CHAR_SLASH ||
+        skipTagWhitespace(text, end) > end
       ) {
-        let closeIdx = end;
-        while (
-          closeIdx < text.length &&
-          text.charCodeAt(closeIdx) !== CHAR_GT &&
-          text.charCodeAt(closeIdx) !== CHAR_LT
-        ) {
-          closeIdx++;
-        }
-        if (closeIdx < text.length && text.charCodeAt(closeIdx) === CHAR_GT) {
-          let beforeGt = closeIdx;
-          while (
-            beforeGt > end &&
-            isAsciiWhitespaceCode(text.charCodeAt(beforeGt - 1))
-          ) {
-            beforeGt--;
+        const tail = scanOpenTagTail(text, end, undefined);
+        if (tail.kind === "closed") {
+          if (!tail.selfClosing && closingTags.has(name.toLowerCase())) {
+            state.openTags.push(name);
           }
-          const selfClosing =
-            beforeGt > end && text.charCodeAt(beforeGt - 1) === CHAR_SLASH;
-          if (!selfClosing && closingTags.has(name.toLowerCase())) {
-            openTags.push(name);
-          }
-          i = closeIdx + 1;
+          i = tail.closeIdx + 1;
           continue;
-        } else if (
-          closeIdx === text.length &&
-          closingTags.has(name.toLowerCase())
-        ) {
-          return name;
         }
+        if (tail.kind === "pending") {
+          if (closingTags.has(name.toLowerCase())) {
+            state.pendingOpenTag = name;
+            state.pendingQuote = tail.quote;
+          }
+          return;
+        }
+        i = tail.ltIdx;
+        continue;
       }
     }
     i++;
   }
-  return undefined;
 }
 
-interface HeadingLineState {
-  inAtxHeading: boolean;
-  atLineStart: boolean;
+function stripMarkdownContainerPrefixes(rawLine: string): string {
+  let pos = 0;
+  const len = rawLine.length;
+  for (;;) {
+    while (pos < len) {
+      const ws = rawLine.charCodeAt(pos);
+      if (ws !== 32 /* ' ' */ && ws !== 9 /* '\t' */) break;
+      pos++;
+    }
+    if (pos >= len) {
+      return "";
+    }
+    const ch = rawLine.charCodeAt(pos);
+    if (ch === 62 /* '>' */) {
+      pos++;
+      continue;
+    }
+    if (
+      (ch === 45 /* '-' */ || ch === 42 /* '*' */ || ch === 43) /* '+' */ &&
+      pos + 1 < len &&
+      (rawLine.charCodeAt(pos + 1) === 32 || rawLine.charCodeAt(pos + 1) === 9)
+    ) {
+      pos++;
+      continue;
+    }
+    let digits = 0;
+    while (
+      pos + digits < len &&
+      rawLine.charCodeAt(pos + digits) >= 48 &&
+      rawLine.charCodeAt(pos + digits) <= 57
+    ) {
+      digits++;
+    }
+    if (
+      digits >= 1 &&
+      digits <= 9 &&
+      pos + digits + 1 < len &&
+      (rawLine.charCodeAt(pos + digits) === 46 /* '.' */ ||
+        rawLine.charCodeAt(pos + digits) === 41) /* ')' */ &&
+      (rawLine.charCodeAt(pos + digits + 1) === 32 ||
+        rawLine.charCodeAt(pos + digits + 1) === 9)
+    ) {
+      pos += digits + 1;
+      continue;
+    }
+    return pos === 0 ? rawLine : rawLine.slice(pos);
+  }
 }
 
 function isAtxHeadingPrefix(line: string): boolean {
-  const trimmed = line.replace(/^[ \t]+/, "");
+  const trimmed = stripMarkdownContainerPrefixes(line);
   let hashes = 0;
   while (hashes < trimmed.length && trimmed.charCodeAt(hashes) === CHAR_HASH) {
     hashes++;
@@ -494,20 +696,23 @@ function isAtxHeadingPrefix(line: string): boolean {
   return next === CHAR_SPACE || next === CHAR_TAB;
 }
 
-function updateHeadingLineState(text: string, state: HeadingLineState): void {
+function updateHeadingLineState(text: string, state: EnclosingScanState): void {
   if (text.length === 0) {
     return;
   }
-  const lastNl = text.lastIndexOf(NEWLINE_CHAR);
+  const lastNl = Math.max(
+    text.lastIndexOf(NEWLINE_CHAR),
+    text.lastIndexOf(CR_CHAR),
+  );
   if (lastNl !== -1) {
     const tail = text.slice(lastNl + 1);
     state.inAtxHeading = isAtxHeadingPrefix(tail);
-    state.atLineStart = tail.replace(/^[ \t]+|[ \t]+$/g, "").length === 0;
+    state.atLineStart = stripMarkdownContainerPrefixes(tail).length === 0;
   } else if (state.atLineStart) {
     if (isAtxHeadingPrefix(text)) {
       state.inAtxHeading = true;
       state.atLineStart = false;
-    } else if (text.replace(/^[ \t]+|[ \t]+$/g, "").length > 0) {
+    } else if (stripMarkdownContainerPrefixes(text).length > 0) {
       state.atLineStart = false;
     }
   }
@@ -519,28 +724,20 @@ function applySanitizeNodesInner(
   sanitizeNotice: string | undefined,
   closingTags: ReadonlySet<string>,
   loopAliases: Map<string, string>,
-  openTags: string[],
-  headingState: HeadingLineState,
-  initialPending?: string,
-): string | undefined {
-  let pendingTag = initialPending;
+  state: EnclosingScanState,
+): void {
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i];
     if (node === undefined) continue;
     switch (node.kind) {
       case NODE_TEXT:
         if (closingTags.size > 0) {
-          pendingTag = updateOpenXmlTagsFromText(
-            node.text,
-            closingTags,
-            openTags,
-            pendingTag,
-          );
+          updateOpenXmlTagsFromText(node.text, closingTags, state);
         }
-        updateHeadingLineState(node.text, headingState);
+        updateHeadingLineState(node.text, state);
         break;
       case NODE_RAW:
-        updateHeadingLineState(node.text, headingState);
+        updateHeadingLineState(node.text, state);
         break;
       case NODE_EXPR: {
         const newExpr = rewriteExprForSanitize(
@@ -548,13 +745,13 @@ function applySanitizeNodesInner(
           paramSanitize,
           sanitizeNotice,
           loopAliases,
-          openTags,
-          headingState.inAtxHeading,
+          state.openTags,
+          state.inAtxHeading,
         );
         if (newExpr !== node.expr) {
           nodes[i] = { ...node, expr: newExpr, _compiled: undefined };
         }
-        headingState.atLineStart = false;
+        state.atLineStart = false;
         break;
       }
       case NODE_FOR: {
@@ -569,16 +766,13 @@ function applySanitizeNodesInner(
             resolveCanonicalPath(iterBase, loopAliases),
           );
         }
-        const bodyTags = [...openTags];
         applySanitizeNodesInner(
           node.body,
           paramSanitize,
           sanitizeNotice,
           closingTags,
           loopAliases,
-          bodyTags,
-          { ...headingState },
-          pendingTag,
+          cloneScanState(state),
         );
         if (hadAlias) {
           if (prevAlias !== undefined) {
@@ -588,102 +782,98 @@ function applySanitizeNodesInner(
           }
         }
         if (node.elseBody) {
-          const elseTags = [...openTags];
           applySanitizeNodesInner(
             node.elseBody,
             paramSanitize,
             sanitizeNotice,
             closingTags,
             loopAliases,
-            elseTags,
-            { ...headingState },
-            pendingTag,
+            cloneScanState(state),
           );
         }
         break;
       }
       case NODE_IF: {
+        const postStates: EnclosingScanState[] = [];
         for (const branch of node.branches) {
-          const branchTags = [...openTags];
+          const branchState = cloneScanState(state);
           applySanitizeNodesInner(
             branch.body,
             paramSanitize,
             sanitizeNotice,
             closingTags,
             loopAliases,
-            branchTags,
-            { ...headingState },
-            pendingTag,
+            branchState,
           );
+          postStates.push(branchState);
         }
-        if (node.elseBody) {
-          const elseTags = [...openTags];
+        if (node.elseBody && node.elseBody.length > 0) {
+          const elseState = cloneScanState(state);
           applySanitizeNodesInner(
             node.elseBody,
             paramSanitize,
             sanitizeNotice,
             closingTags,
             loopAliases,
-            elseTags,
-            { ...headingState },
-            pendingTag,
+            elseState,
           );
+          postStates.push(elseState);
+        } else {
+          postStates.push(cloneScanState(state));
         }
+        mergeBranchStates(state, postStates);
         break;
       }
       case NODE_MATCH: {
+        const postStates: EnclosingScanState[] = [];
         for (const arm of node.arms) {
-          const armTags = [...openTags];
+          const armState = cloneScanState(state);
           applySanitizeNodesInner(
             arm.body,
             paramSanitize,
             sanitizeNotice,
             closingTags,
             loopAliases,
-            armTags,
-            { ...headingState },
-            pendingTag,
+            armState,
           );
+          postStates.push(armState);
         }
         if (node.elseArm) {
-          const elseTags = [...openTags];
+          const elseState = cloneScanState(state);
           applySanitizeNodesInner(
             node.elseArm,
             paramSanitize,
             sanitizeNotice,
             closingTags,
             loopAliases,
-            elseTags,
-            { ...headingState },
-            pendingTag,
+            elseState,
           );
+          postStates.push(elseState);
         }
         if (node.inlineGuard) {
-          const guardTags = [...openTags];
+          const guardState = cloneScanState(state);
           applySanitizeNodesInner(
             node.inlineGuard.body,
             paramSanitize,
             sanitizeNotice,
             closingTags,
             loopAliases,
-            guardTags,
-            { ...headingState },
-            pendingTag,
+            guardState,
           );
+          postStates.push(guardState);
+          postStates.push(cloneScanState(state));
         }
+        mergeBranchStates(state, postStates);
         break;
       }
       case NODE_PANIC: {
-        const panicTags = [...openTags];
         applySanitizeNodesInner(
           node.body,
           paramSanitize,
           sanitizeNotice,
           closingTags,
           loopAliases,
-          panicTags,
-          { ...headingState },
-          pendingTag,
+          cloneScanState(state),
         );
         break;
       }
@@ -698,7 +888,6 @@ function applySanitizeNodesInner(
               )
             : undefined;
         if (node.inlineNodes) {
-          const includeTags = [...openTags];
           applySanitizeNodesInner(
             node.inlineNodes,
             taint !== undefined && taint.entries.length > 0
@@ -710,35 +899,35 @@ function applySanitizeNodesInner(
             undefined,
             closingTags,
             new Map(),
-            includeTags,
-            { ...headingState },
-            pendingTag,
+            cloneScanState(state),
           );
         } else {
           const ctx = updateIncludeContext(
             node.sanitizeCtx,
             taint,
-            openTags,
-            headingState,
-            pendingTag,
+            state.openTags,
+            {
+              inAtxHeading: state.inAtxHeading,
+              atLineStart: state.atLineStart,
+            },
+            state.pendingOpenTag,
           );
           if (ctx !== node.sanitizeCtx) {
             nodes[i] = { ...node, sanitizeCtx: ctx };
           }
         }
-        headingState.atLineStart = false;
+        state.atLineStart = false;
         break;
       }
       default:
         break;
     }
   }
-  return pendingTag;
 }
 
 /**
- * Returns `true` if `nodes` contain a `sanitize` / `quarantine` filter or an include
- * resolved at render time (whose call-site enclosing state must be recorded).
+ * Returns `true` if `nodes` contain a `sanitize` / `sanitize_tokens` / `quarantine`
+ * filter or an include resolved at render time (whose call-site enclosing state must be recorded).
  */
 function nodesNeedEnclosingPass(nodes: readonly Node[]): boolean {
   for (const node of nodes) {
@@ -746,7 +935,8 @@ function nodesNeedEnclosingPass(nodes: readonly Node[]): boolean {
       case NODE_EXPR:
         if (
           node.expr.includes(FILTER_SANITIZE) ||
-          node.expr.includes(FILTER_QUARANTINE)
+          node.expr.includes(FILTER_QUARANTINE) ||
+          node.expr.includes(FILTER_FENCE)
         )
           return true;
         break;
@@ -808,7 +998,7 @@ function nodesNeedEnclosingPass(nodes: readonly Node[]): boolean {
  * Run the compile-time sanitization AST pass on `nodes`:
  * 1. Propagates declarative `params:` sanitization (`paramSanitize`) onto matching `{{ path }}` expressions.
  * 2. Propagates template-level `sanitize_notice:` (`sanitizeNotice`) onto 1-arg `| sanitize("tag")` filters.
- * 3. Detects enclosing XML tags across static template text and merges them into `| sanitize` filters.
+ * 3. Detects enclosing XML tags and ATX headings across static template text and merges them into sanitizing filters.
  */
 export function applySanitizeAstPass(
   nodes: Node[],
@@ -817,6 +1007,7 @@ export function applySanitizeAstPass(
 ): void {
   if (
     (paramSanitize === undefined || paramSanitize.size === 0) &&
+    sanitizeNotice === undefined &&
     !nodesNeedEnclosingPass(nodes)
   ) {
     return;
@@ -824,15 +1015,19 @@ export function applySanitizeAstPass(
   const closingTags = new Set<string>();
   collectClosingXmlTags(nodes, closingTags);
   const loopAliases = new Map<string, string>();
-  const openTags: string[] = [];
   applySanitizeNodesInner(
     nodes,
     paramSanitize,
     sanitizeNotice,
     closingTags,
     loopAliases,
-    openTags,
-    { inAtxHeading: false, atLineStart: true },
+    {
+      openTags: [],
+      pendingOpenTag: undefined,
+      pendingQuote: undefined,
+      inAtxHeading: false,
+      atLineStart: true,
+    },
   );
 }
 
@@ -851,21 +1046,27 @@ export function applyIncludeContext(
     ctx.untrusted.length > 0
       ? effectiveUntrustedMap(ctx.untrusted, declared)
       : undefined;
-  if (untrusted === undefined && !nodesNeedEnclosingPass(nodes)) {
+  if (
+    untrusted === undefined &&
+    ctx.enclosingTags.length === 0 &&
+    !ctx.inAtxHeading &&
+    ctx.pendingOpenTag === undefined &&
+    !nodesNeedEnclosingPass(nodes)
+  ) {
     return;
   }
   const closingTags = new Set<string>();
   collectClosingXmlTags(nodes, closingTags);
-  applySanitizeNodesInner(
-    nodes,
-    untrusted,
-    undefined,
-    closingTags,
-    new Map(),
-    [...ctx.enclosingTags],
-    { inAtxHeading: ctx.inAtxHeading, atLineStart: ctx.atLineStart },
-    ctx.pendingOpenTag,
-  );
+  if (ctx.pendingOpenTag !== undefined) {
+    closingTags.add(ctx.pendingOpenTag.toLowerCase());
+  }
+  applySanitizeNodesInner(nodes, untrusted, undefined, closingTags, new Map(), {
+    openTags: [...ctx.enclosingTags],
+    pendingOpenTag: ctx.pendingOpenTag,
+    pendingQuote: undefined,
+    inAtxHeading: ctx.inAtxHeading,
+    atLineStart: ctx.atLineStart,
+  });
 }
 
 /** Per-context memo: call-site context → (child nodes → contextualized clone). */
@@ -876,14 +1077,6 @@ const contextualizedMemo = new WeakMap<
 
 /**
  * Return the child nodes to render for an include call site carrying `ctx`.
- *
- * `nodes` is the include target parsed without its own parameter policy and `declared`
- * its declared sanitization. The child is cloned and re-run through the sanitize pass
- * with the call-site context (untrusted taint, enclosing XML tags, heading state).
- * Results are memoized per `(ctx, nodes)` pair via weak maps, so repeated renders reuse
- * the same clone and nothing is retained once the template or child is dropped.
- *
- * @throws {TemplateSyntaxError} if a nested include path interpolates an untrusted value.
  */
 export function contextualizeIncludeNodes(
   nodes: readonly Node[],
@@ -903,8 +1096,13 @@ export function contextualizeIncludeNodes(
     return hit;
   }
   let derived: readonly Node[];
-  if (ctx.untrusted.length === 0 && !nodesNeedEnclosingPass(nodes)) {
-    // Nothing to rewrite: memoize the child itself so the tree walk runs once.
+  if (
+    ctx.untrusted.length === 0 &&
+    ctx.enclosingTags.length === 0 &&
+    !ctx.inAtxHeading &&
+    ctx.pendingOpenTag === undefined &&
+    !nodesNeedEnclosingPass(nodes)
+  ) {
     derived = nodes;
   } else {
     const cloned = cloneNodes(nodes);

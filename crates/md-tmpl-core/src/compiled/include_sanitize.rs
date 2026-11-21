@@ -31,7 +31,7 @@ use alloc::{
     vec::Vec,
 };
 
-use super::{CompiledInclude, FilterOrigin, Segment, sanitize_pass};
+use super::{CompiledInclude, FilterOrigin, Segment, heading_check, sanitize_pass};
 use crate::{compat::HashMap, error::TemplateError, scope::CompiledPath, types::SanitizeSpec};
 
 /// Sanitization context captured at an `{% include %}` call site that is resolved at
@@ -59,6 +59,7 @@ impl IncludeSanitizeContext {
     pub fn is_empty(&self) -> bool {
         self.enclosing_tags.is_empty()
             && !self.in_atx_heading
+            && self.pending_open_tag.is_none()
             && self.untrusted.is_empty()
             && self.untrusted_path_ref.is_none()
     }
@@ -177,6 +178,11 @@ pub(crate) fn contextualized_segments(
         }
         let mut segments = child.to_vec();
         apply_include_context(&mut segments, ctx, declared);
+        heading_check::check_heading_block_filters_from(
+            &segments,
+            ctx.in_atx_heading,
+            ctx.at_line_start,
+        )?;
         check_untrusted_include_paths(&segments)?;
         Ok(Arc::from(segments))
     })
@@ -209,6 +215,11 @@ pub(crate) fn handle_segments(
         strip_declared_sanitization(&mut segments);
         if let Some(ctx) = site.and_then(|inc| inc.sanitize_ctx.as_deref()) {
             apply_include_context(&mut segments, ctx, declared);
+            heading_check::check_heading_block_filters_from(
+                &segments,
+                ctx.in_atx_heading,
+                ctx.at_line_start,
+            )?;
         }
         check_untrusted_include_paths(&segments)?;
         Ok(Arc::from(segments))
@@ -363,35 +374,40 @@ fn untrusted_include_path_error(path: &str, expr: &str) -> TemplateError {
 /// # Errors
 /// Returns [`TemplateError::Syntax`] for the first offending include.
 pub fn check_untrusted_include_paths(segments: &[Segment]) -> Result<(), TemplateError> {
+    heading_check::check_heading_block_filters_from(segments, false, true)?;
+    check_untrusted_include_paths_inner(segments)
+}
+
+fn check_untrusted_include_paths_inner(segments: &[Segment]) -> Result<(), TemplateError> {
     for seg in segments {
         match seg {
             Segment::Include(inc) => {
                 check_untrusted_include_path(inc)?;
                 if let Some(ic) = &inc.inline_compiled {
-                    check_untrusted_include_paths(&ic.segments)?;
+                    check_untrusted_include_paths_inner(&ic.segments)?;
                 }
             }
             Segment::ForLoop {
                 body, else_body, ..
             } => {
-                check_untrusted_include_paths(body)?;
-                check_untrusted_include_paths(else_body)?;
+                check_untrusted_include_paths_inner(body)?;
+                check_untrusted_include_paths_inner(else_body)?;
             }
             Segment::If {
                 branches,
                 else_body,
             } => {
                 for (_, body) in branches {
-                    check_untrusted_include_paths(body)?;
+                    check_untrusted_include_paths_inner(body)?;
                 }
-                check_untrusted_include_paths(else_body)?;
+                check_untrusted_include_paths_inner(else_body)?;
             }
             Segment::Match { arms, .. } => {
                 for arm in arms {
-                    check_untrusted_include_paths(&arm.body)?;
+                    check_untrusted_include_paths_inner(&arm.body)?;
                 }
             }
-            Segment::Panic(inner) => check_untrusted_include_paths(inner)?,
+            Segment::Panic(inner) => check_untrusted_include_paths_inner(inner)?,
             Segment::Static(_) | Segment::Raw(_) | Segment::Comment(_) | Segment::Expr { .. } => {}
         }
     }
@@ -423,7 +439,7 @@ pub(super) fn record_enclosing(
     at_line_start: bool,
     pending_open_tag: Option<&str>,
 ) {
-    if open_tags.is_empty() && !in_atx_heading {
+    if open_tags.is_empty() && !in_atx_heading && pending_open_tag.is_none() {
         return;
     }
     let ctx = Arc::make_mut(inc.sanitize_ctx.get_or_insert_with(Default::default));
@@ -433,11 +449,13 @@ pub(super) fn record_enclosing(
     ctx.pending_open_tag = pending_open_tag.map(ToString::to_string);
 }
 
-/// Returns `true` if `s` is a plain dotted identifier path (`a`, `my-var`, `a.b-c.d`).
+/// Returns `true` if `s` is a plain dotted identifier path (`a`, `my-var`, `a.b-c.d`, `params. x`).
 fn is_plain_path(s: &str) -> bool {
-    !s.is_empty()
-        && s.split(crate::consts::PATH_SEP).all(|part| {
-            let mut bytes = part.bytes();
+    let trimmed = s.trim();
+    !trimmed.is_empty()
+        && trimmed.split(crate::consts::PATH_SEP).all(|part| {
+            let p = part.trim();
+            let mut bytes = p.bytes();
             bytes
                 .next()
                 .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
@@ -586,6 +604,24 @@ fn first_untrusted_interpolation(
     None
 }
 
+fn filter_chain_has_tojson(filter_chain: &str) -> bool {
+    if filter_chain.is_empty() {
+        return false;
+    }
+    for f in crate::parser::split_filters_aware(filter_chain) {
+        let (name, _) = crate::filter::parse_filter(f.trim());
+        if matches!(
+            name,
+            crate::consts::FILTER_TOJSON
+                | crate::consts::FILTER_TO_JSON
+                | crate::consts::FILTER_JSON
+        ) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Append the untrusted child entries for argument `expr` passed to child path `target`.
 fn push_argument_taint(
     target: &str,
@@ -599,7 +635,7 @@ fn push_argument_taint(
     if has_unsafe_trust_opt_out(expr) {
         return;
     }
-    let (base, _) = crate::parser::split_pipe_aware(expr);
+    let (base, filter_chain) = crate::parser::split_pipe_aware(expr);
     let base = base.trim();
     if let Some(lit) = crate::consts::strip_string_literal(base) {
         if first_untrusted_interpolation(lit, param_sanitize, loop_aliases).is_some() {
@@ -608,14 +644,24 @@ fn push_argument_taint(
         return;
     }
     match classify_base(base) {
-        BaseTrust::Path => map_path(
-            target,
-            base,
-            param_sanitize,
-            host_notice,
-            loop_aliases,
-            entries,
-        ),
+        BaseTrust::Path => {
+            if filter_chain_has_tojson(filter_chain) {
+                let mut probe = Vec::new();
+                map_path("", base, param_sanitize, None, loop_aliases, &mut probe);
+                if !probe.is_empty() {
+                    entries.push((target.to_string(), SanitizeSpec::Inline));
+                }
+            } else {
+                map_path(
+                    target,
+                    base,
+                    param_sanitize,
+                    host_notice,
+                    loop_aliases,
+                    entries,
+                );
+            }
+        }
         BaseTrust::Trusted => {}
         BaseTrust::Unknown => entries.push((target.to_string(), SanitizeSpec::Inline)),
     }

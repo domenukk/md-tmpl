@@ -1,5 +1,5 @@
 /**
- * LLM control token tables and single-pass delimiter matching.
+ * LLM control token tables, XML `NCName` / whitespace helpers, and single-pass delimiter matching.
  *
  * @module
  */
@@ -136,20 +136,96 @@ export const TOKEN_DELIMITERS: readonly [string, string][] = [
 export const ROLE_TOKEN_DELIMITERS: readonly [string, string][] =
   TOKEN_DELIMITERS.slice(0, ROLE_DELIMITER_COUNT);
 
-/** Anthropic `\n\nHuman:` / `\n\nAssistant:` turn markers (matched anywhere). */
-const ANTHROPIC_TURN_RULES: readonly [string, string][] = [
-  ["\n\nHuman:", "\n\nHuman&#58;"],
-  ["\n\nAssistant:", "\n\nAssistant&#58;"],
-];
+const ROLE_XML_TAG_NAMES = new Set([
+  "role",
+  "start_of_turn",
+  "end_of_turn",
+  "bos",
+  "eos",
+  "sop",
+  "eop",
+  "beginning_of_sentence",
+  "end_of_sentence",
+]);
 
-/** Single-newline `\nHuman:` / `\nAssistant:` turn markers (matched only at input start). */
-const ANTHROPIC_START_TURN_RULES: readonly [string, string][] = [
-  ["\nHuman:", "\nHuman&#58;"],
-  ["\nAssistant:", "\nAssistant&#58;"],
-];
+const TOOL_XML_TAG_NAMES = new Set([
+  "tool_call",
+  "tool_response",
+  "function",
+  "parameter",
+  "tools",
+  "function_calls",
+  "function_results",
+  "think",
+  "untrusted_tool_output",
+  "tool_output_quarantine",
+  "untrusted_content",
+]);
 
 const BRACKET_TOKEN_RULES: readonly [string, string][] =
   ROLE_TOKEN_DELIMITERS.filter(([pat]) => pat.charCodeAt(0) === 91 /* '[' */);
+
+/** 27-bit ASCII case-insensitive `NCName` start-character bit (`'a'..'z'` -> `0..25`, `'_'` -> `26`). */
+export function ncnameFirstCharBit(c: number): number {
+  const lower = c | 32;
+  if (lower >= 97 && lower <= 122) {
+    return 1 << (lower - 97);
+  }
+  if (c === 95 /* '_' */) {
+    return 1 << 26;
+  }
+  return 0;
+}
+
+export function isNcnameStartCode(c: number): boolean {
+  return ncnameFirstCharBit(c) !== 0;
+}
+
+export function isNcnameContinueCode(c: number): boolean {
+  return (
+    isNcnameStartCode(c) ||
+    (c >= 48 && c <= 57) ||
+    c === 46 /* '.' */ ||
+    c === 45 /* '-' */
+  );
+}
+
+export function isAsciiWhitespaceCode(c: number): boolean {
+  return (
+    c === 32 /* ' ' */ ||
+    c === 9 /* '\t' */ ||
+    c === 10 /* '\n' */ ||
+    c === 11 /* '\v' */ ||
+    c === 12 /* '\f' */ ||
+    c === 13 /* '\r' */
+  );
+}
+
+export function isTagWhitespaceCode(c: number): boolean {
+  if (c <= 0x20) {
+    return c === 0x20 || (c >= 0x09 && c <= 0x0d);
+  }
+  return (
+    c === 0x0085 ||
+    c === 0x00a0 ||
+    c === 0x1680 ||
+    (c >= 0x2000 && c <= 0x200a) ||
+    c === 0x2028 ||
+    c === 0x2029 ||
+    c === 0x202f ||
+    c === 0x205f ||
+    c === 0x3000
+  );
+}
+
+/** Advance `pos` past all ASCII and Unicode whitespace / line-break code units (mirrors Rust `skip_tag_whitespace`). */
+export function skipTagWhitespace(s: string, pos: number): number {
+  let idx = pos;
+  while (idx < s.length && isTagWhitespaceCode(s.charCodeAt(idx))) {
+    idx++;
+  }
+  return idx;
+}
 
 function isBracketSecondCode(c1: number): boolean {
   return (
@@ -177,16 +253,6 @@ function isAngleSecondCode(c1: number): boolean {
     c1 === 102 /* 'f' */ ||
     c1 === 112 /* 'p' */ ||
     c1 === 117 /* 'u' */
-  );
-}
-
-export function isAsciiWhitespaceCode(c: number): boolean {
-  return (
-    c === 32 /* ' ' */ ||
-    c === 9 /* '\t' */ ||
-    c === 10 /* '\n' */ ||
-    c === 12 /* '\f' */ ||
-    c === 13 /* '\r' */
   );
 }
 
@@ -247,13 +313,85 @@ function matchGenericPipeToken(s: string, i: number): number | undefined {
   return undefined;
 }
 
+function matchWhitespaceXmlControlTag(
+  s: string,
+  i: number,
+  includeToolXml: boolean,
+): number | undefined {
+  let pos = skipTagWhitespace(s, i + 1);
+  let isClosing = false;
+  if (pos < s.length && s.charCodeAt(pos) === 47 /* '/' */) {
+    isClosing = true;
+    pos = skipTagWhitespace(s, pos + 1);
+  }
+  if (pos >= s.length || !isNcnameStartCode(s.charCodeAt(pos))) {
+    return undefined;
+  }
+  const nameStart = pos;
+  pos++;
+  while (pos < s.length && isNcnameContinueCode(s.charCodeAt(pos))) {
+    pos++;
+  }
+  const rawName = s.slice(nameStart, pos);
+  const matched =
+    (isClosing && rawName === "s") ||
+    ROLE_XML_TAG_NAMES.has(rawName) ||
+    (includeToolXml && TOOL_XML_TAG_NAMES.has(rawName));
+  if (!matched) {
+    return undefined;
+  }
+  const afterWs = skipTagWhitespace(s, pos);
+  return afterWs < s.length && s.charCodeAt(afterWs) === 62 /* '>' */
+    ? afterWs + 1
+    : undefined;
+}
+
 export type ControlTokenMatch =
   | {
       readonly kind: "rule";
       readonly len: number;
       readonly replacement: string;
     }
+  | { readonly kind: "turn"; readonly colonIdx: number }
   | { readonly kind: "pipe"; readonly endIdx: number };
+
+function matchTurnHeaderAt(
+  s: string,
+  i: number,
+): ControlTokenMatch | undefined {
+  const c0 = s.charCodeAt(i);
+  let pos: number;
+  if (c0 === 10 /* '\n' */ || c0 === 13 /* '\r' */) {
+    pos = i + 1;
+    while (pos < s.length) {
+      const ch = s.charCodeAt(pos);
+      if (ch !== 10 && ch !== 13) break;
+      pos++;
+    }
+  } else if (
+    i === 0 &&
+    (c0 === 72 /* 'H' */ ||
+      c0 === 65 /* 'A' */ ||
+      c0 === 32 /* ' ' */ ||
+      c0 === 9) /* '\t' */
+  ) {
+    pos = 0;
+  } else {
+    return undefined;
+  }
+  while (pos < s.length) {
+    const ch = s.charCodeAt(pos);
+    if (ch !== 32 && ch !== 9) break;
+    pos++;
+  }
+  if (s.startsWith("Human:", pos)) {
+    return { kind: "turn", colonIdx: pos + 5 };
+  }
+  if (s.startsWith("Assistant:", pos)) {
+    return { kind: "turn", colonIdx: pos + 9 };
+  }
+  return undefined;
+}
 
 export function matchControlTokenAt(
   s: string,
@@ -265,20 +403,16 @@ export function matchControlTokenAt(
   }
   const c0 = s.charCodeAt(i);
   const c1 = s.charCodeAt(i + 1);
-  if (c0 === 10 /* '\n' */) {
-    // `\n\nHuman:` anywhere, or `\nHuman:` at the very start of the input.
-    let turnRules: readonly [string, string][] = [];
-    if (c1 === 10) {
-      turnRules = ANTHROPIC_TURN_RULES;
-    } else if (i === 0) {
-      turnRules = ANTHROPIC_START_TURN_RULES;
-    }
-    for (const [pat, replacement] of turnRules) {
-      if (s.startsWith(pat, i)) {
-        return { kind: "rule", len: pat.length, replacement };
-      }
-    }
-    return undefined;
+  if (
+    c0 === 10 /* '\n' */ ||
+    c0 === 13 /* '\r' */ ||
+    (i === 0 &&
+      (c0 === 72 /* 'H' */ ||
+        c0 === 65 /* 'A' */ ||
+        c0 === 32 /* ' ' */ ||
+        c0 === 9)) /* '\t' */
+  ) {
+    return matchTurnHeaderAt(s, i);
   }
   if (c0 === 91 /* '[' */) {
     if (!isBracketSecondCode(c1)) {
@@ -299,27 +433,34 @@ export function matchControlTokenAt(
     return undefined;
   }
   if (c0 === 60 /* '<' */) {
-    if (!isAngleSecondCode(c1)) {
-      return undefined;
-    }
     if (c1 === 124 /* '|' */ || c1 === 0xff5c /* '｜' */) {
       const endIdx = matchGenericPipeToken(s, i);
       if (endIdx !== undefined) {
         return { kind: "pipe", endIdx };
       }
     }
-    const c2 = s.charCodeAt(i + 2);
-    const c3 = s.charCodeAt(i + 3);
-    for (const [pat, replacement] of rules) {
-      if (
-        pat.charCodeAt(0) === 60 &&
-        pat.charCodeAt(1) === c1 &&
-        pat.charCodeAt(2) === c2 &&
-        pat.charCodeAt(3) === c3 &&
-        s.startsWith(pat, i)
-      ) {
-        return { kind: "rule", len: pat.length, replacement };
+    if (isAngleSecondCode(c1)) {
+      const c2 = s.charCodeAt(i + 2);
+      const c3 = s.charCodeAt(i + 3);
+      for (const [pat, replacement] of rules) {
+        if (
+          pat.charCodeAt(0) === 60 &&
+          pat.charCodeAt(1) === c1 &&
+          pat.charCodeAt(2) === c2 &&
+          pat.charCodeAt(3) === c3 &&
+          s.startsWith(pat, i)
+        ) {
+          return { kind: "rule", len: pat.length, replacement };
+        }
       }
+    }
+    const xmlEnd = matchWhitespaceXmlControlTag(
+      s,
+      i,
+      rules.length > ROLE_DELIMITER_COUNT,
+    );
+    if (xmlEnd !== undefined) {
+      return { kind: "pipe", endIdx: xmlEnd };
     }
   }
   return undefined;

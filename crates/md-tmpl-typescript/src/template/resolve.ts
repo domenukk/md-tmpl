@@ -15,7 +15,10 @@ import {
   varTypeToString,
 } from "../frontmatter.js";
 import {
+  collectAllStrLeafPaths,
   collectInheritedAliasSanitizeFromVarType,
+  expandExplicitUntrustedOnType,
+  extractDeclRelativeSanitize,
   registerDeclSanitizeSpecs,
   type SanitizeSpec,
 } from "../sanitize_pass.js";
@@ -254,24 +257,36 @@ export function resolveImportedConsts(
 
     registerImplicitImportedTypes(
       imp.stem,
-      [...importedFm.params, ...importedFm.consts],
+      importedFm.params,
+      importedFm.consts,
+      importedFm.paramSanitize,
+      importedFm.typeAliases,
       mergedTypeAliases,
+      mergedTypeAliasSanitize,
     );
   }
 
   let mergedParamSanitize: ReadonlyMap<string, SanitizeSpec> = fm.paramSanitize;
-  if (mergedTypeAliasSanitize.size > fm.typeAliasSanitize.size) {
+  if (fm.imports.length > 0) {
     const paramSanitizeCopy = new Map(fm.paramSanitize);
-    for (const decl of fm.params) {
+    for (const decl of [...fm.params, ...fm.env]) {
       const relSpecs = new Map<string, SanitizeSpec>();
-      collectInheritedAliasSanitizeFromVarType(
+      if (fm.params.includes(decl)) {
+        collectInheritedAliasSanitizeFromVarType(
+          decl.varType,
+          "",
+          mergedTypeAliasSanitize,
+          relSpecs,
+          mergedTypeAliases,
+          new Set(),
+          decl.trustedPaths,
+        );
+      }
+      expandExplicitUntrustedOnType(
         decl.varType,
-        "",
-        mergedTypeAliasSanitize,
+        decl.explicitUntrustedPaths,
         relSpecs,
         mergedTypeAliases,
-        new Set(),
-        decl.trustedPaths,
       );
       if (relSpecs.size > 0) {
         registerDeclSanitizeSpecs(
@@ -311,6 +326,12 @@ export function resolveImportedConsts(
         typeAliasSanitize: mergedTypeAliasSanitize,
         paramSanitize: mergedParamSanitize,
         importedNamespaceTypes,
+      };
+    }
+    if (mergedParamSanitize.size > fm.paramSanitize.size) {
+      return {
+        ...fm,
+        paramSanitize: mergedParamSanitize,
       };
     }
     return fm;
@@ -355,8 +376,7 @@ export function resolveImportedConsts(
     }
     // Validate type compatibility
     newParams.push({
-      name: decl.name,
-      varType: decl.varType,
+      ...decl,
       defaultValue: constVal,
     });
   }
@@ -382,21 +402,73 @@ const IMPLICIT_TYPE_KINDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Expose an imported template's list/struct/enum params and consts as types
- * `stem.PascalName` (unless an explicit alias exists) and `stem.raw_name`,
- * mirroring Rust `add_implicit_param_types` and `ImportedNamespace.param_types`.
+ * Expose an imported template's params and consts as `stem.raw_name` (and `stem.PascalName`
+ * for compound list/struct/enum kinds unless an explicit alias exists), exporting their
+ * declarative `paramSanitize` rules alongside `mergedTypeAliases` (mirrors Rust `ImportedNamespace`).
  */
 function registerImplicitImportedTypes(
   stem: string,
-  decls: readonly VarDecl[],
+  importedParams: readonly VarDecl[],
+  importedConsts: readonly VarDecl[],
+  importedParamSanitize: ReadonlyMap<string, SanitizeSpec>,
+  importedTypeAliases: ReadonlyMap<string, VarType>,
   mergedTypeAliases: Map<string, VarType>,
+  mergedTypeAliasSanitize: Map<string, ReadonlyMap<string, SanitizeSpec>>,
 ): void {
-  for (const decl of decls) {
-    if (!IMPLICIT_TYPE_KINDS.has(decl.varType.kind)) continue;
-    for (const name of [toPascalCase(decl.name), decl.name]) {
-      const key = `${stem}.${name}`;
-      if (!mergedTypeAliases.has(key)) {
-        mergedTypeAliases.set(key, decl.varType);
+  for (const decl of importedParams) {
+    const rawKey = `${stem}.${decl.name}`;
+    if (!mergedTypeAliases.has(rawKey)) {
+      mergedTypeAliases.set(rawKey, decl.varType);
+    }
+    const relSpecs = extractDeclRelativeSanitize(
+      decl.name,
+      importedParamSanitize,
+    );
+    if (relSpecs.size > 0 && !mergedTypeAliasSanitize.has(rawKey)) {
+      mergedTypeAliasSanitize.set(rawKey, relSpecs);
+    }
+    if (IMPLICIT_TYPE_KINDS.has(decl.varType.kind)) {
+      const pascal = toPascalCase(decl.name);
+      const pascalKey = `${stem}.${pascal}`;
+      if (!mergedTypeAliases.has(pascalKey)) {
+        mergedTypeAliases.set(pascalKey, decl.varType);
+      }
+      if (
+        relSpecs.size > 0 &&
+        !importedTypeAliases.has(pascal) &&
+        !mergedTypeAliasSanitize.has(pascalKey)
+      ) {
+        mergedTypeAliasSanitize.set(pascalKey, relSpecs);
+      }
+    }
+  }
+  for (const decl of importedConsts) {
+    const rawKey = `${stem}.${decl.name}`;
+    if (!mergedTypeAliases.has(rawKey)) {
+      mergedTypeAliases.set(rawKey, decl.varType);
+    }
+    const constRelSpecs = new Map<string, SanitizeSpec>();
+    collectAllStrLeafPaths(
+      decl.varType,
+      "",
+      constRelSpecs,
+      importedTypeAliases,
+    );
+    if (constRelSpecs.size > 0 && !mergedTypeAliasSanitize.has(rawKey)) {
+      mergedTypeAliasSanitize.set(rawKey, constRelSpecs);
+    }
+    if (IMPLICIT_TYPE_KINDS.has(decl.varType.kind)) {
+      const pascal = toPascalCase(decl.name);
+      const pascalKey = `${stem}.${pascal}`;
+      if (!mergedTypeAliases.has(pascalKey)) {
+        mergedTypeAliases.set(pascalKey, decl.varType);
+      }
+      if (
+        constRelSpecs.size > 0 &&
+        !importedTypeAliases.has(pascal) &&
+        !mergedTypeAliasSanitize.has(pascalKey)
+      ) {
+        mergedTypeAliasSanitize.set(pascalKey, constRelSpecs);
       }
     }
   }
@@ -537,10 +609,8 @@ export function resolveEnvDeclarations(
     const provided = envValues[decl.name];
     if (provided !== undefined) {
       resolvedEnv.push({
-        name: decl.name,
-        varType: decl.varType,
+        ...decl,
         defaultValue: validateEnvValue(decl, provided, fm.typeAliases),
-        loc: decl.loc,
       });
     } else if (decl.defaultValue !== undefined) {
       resolvedEnv.push(decl);

@@ -1,6 +1,7 @@
 /**
  * Single-pass JSON string body escaping shared by the `escape_json` and
- * `json` filters (mirrors Rust `escape_json_str` / `escape_json_into`).
+ * `json` filters (mirrors Rust `escape_json_str` / `write_escaped_json_body`,
+ * plus RFC 8259 lone UTF-16 surrogate escaping).
  *
  * @module
  */
@@ -17,9 +18,17 @@ const CODE_LINE_SEPARATOR = 0x2028;
 const CODE_PARAGRAPH_SEPARATOR = 0x2029;
 /** First code unit that is not a C0 control character. */
 const CODE_FIRST_NON_CONTROL = 0x20;
+const HIGH_SURROGATE_MIN = 0xd800;
+const HIGH_SURROGATE_MAX = 0xdbff;
+const LOW_SURROGATE_MIN = 0xdc00;
+const LOW_SURROGATE_MAX = 0xdfff;
 const HEX_RADIX = 16;
 const UNICODE_ESCAPE_WIDTH = 4;
 const UNICODE_ESCAPE_PREFIX = "\\u";
+
+function hexEscapeUnit(code: number): string {
+  return `${UNICODE_ESCAPE_PREFIX}${code.toString(HEX_RADIX).padStart(UNICODE_ESCAPE_WIDTH, "0")}`;
+}
 
 function replacementFor(
   code: number,
@@ -47,22 +56,35 @@ function replacementFor(
     case CODE_PARAGRAPH_SEPARATOR:
       return "\\u2029";
     default:
-      return code < CODE_FIRST_NON_CONTROL
-        ? `${UNICODE_ESCAPE_PREFIX}${code.toString(HEX_RADIX).padStart(UNICODE_ESCAPE_WIDTH, "0")}`
-        : undefined;
+      return code < CODE_FIRST_NON_CONTROL ? hexEscapeUnit(code) : undefined;
   }
 }
 
 /**
  * Escape JSON string body characters: quotes, backslashes, control characters,
- * `U+2028` / `U+2029`, and (when `escapeSlash`) `/` → `\/`. The caller supplies
- * the surrounding quotes.
+ * lone UTF-16 surrogates (`\ud800`–`\udfff`), `U+2028` / `U+2029`, and
+ * (when `escapeSlash`) `/` → `\/`. The caller supplies surrounding quotes.
  */
 export function escapeJsonBody(s: string, escapeSlash: boolean): string {
   let out: string | undefined;
   let lastCopied = 0;
   for (let i = 0; i < s.length; i++) {
-    const replacement = replacementFor(s.charCodeAt(i), escapeSlash);
+    const code = s.charCodeAt(i);
+    if (code >= HIGH_SURROGATE_MIN && code <= LOW_SURROGATE_MAX) {
+      if (
+        code <= HIGH_SURROGATE_MAX &&
+        i + 1 < s.length &&
+        s.charCodeAt(i + 1) >= LOW_SURROGATE_MIN &&
+        s.charCodeAt(i + 1) <= LOW_SURROGATE_MAX
+      ) {
+        i++;
+        continue;
+      }
+      out = (out ?? "") + s.slice(lastCopied, i) + hexEscapeUnit(code);
+      lastCopied = i + 1;
+      continue;
+    }
+    const replacement = replacementFor(code, escapeSlash);
     if (replacement !== undefined) {
       out = (out ?? "") + s.slice(lastCopied, i) + replacement;
       lastCopied = i + 1;

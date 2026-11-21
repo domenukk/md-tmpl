@@ -181,6 +181,36 @@ const BRACKET_TOKEN_RULES: &[(&str, &str)] = &[
     ("[/THINK]", "&#91;/THINK&#93;"),
 ];
 
+/// XML tag names matched in [`ROLE_TOKEN_DELIMITERS`] even with optional XML whitespace
+/// (e.g. `</role >`, `</ role>`). Note `"s"` only matches closing `</s...>`.
+const ROLE_XML_TAG_NAMES: &[&[u8]] = &[
+    b"role",
+    b"start_of_turn",
+    b"end_of_turn",
+    b"bos",
+    b"eos",
+    b"sop",
+    b"eop",
+    b"beginning_of_sentence",
+    b"end_of_sentence",
+];
+
+/// XML tool/reasoning/quarantine tag names matched in [`TOKEN_DELIMITERS`] even with optional
+/// XML whitespace (e.g. `</tool_call >`, `</tool_output_quarantine >`, `</untrusted_content >`).
+const TOOL_XML_TAG_NAMES: &[&[u8]] = &[
+    b"tool_call",
+    b"tool_response",
+    b"function",
+    b"parameter",
+    b"tools",
+    b"function_calls",
+    b"function_results",
+    b"think",
+    b"untrusted_tool_output",
+    b"tool_output_quarantine",
+    b"untrusted_content",
+];
+
 #[inline]
 const fn is_bracket_second_byte(b1: u8) -> bool {
     matches!(b1, b'I' | b'/' | b'g' | b'S' | b'T' | b'A')
@@ -225,27 +255,42 @@ const _: () = {
     assert!(newline_count == 2);
 };
 
-/// Escape XML/HTML special characters in a string slice in a single pass,
-/// returning [`Cow::Borrowed`] when no escaping or control-character stripping is required.
+/// Returns `true` if `ch` is illegal in XML 1.0 documents (disallowed C0 controls,
+/// DEL/C1 controls, or Unicode noncharacters `U+FDD0..=U+FDEF` and `U+nFFFE`/`U+nFFFF`).
+#[inline]
+pub(in crate::filter) const fn is_illegal_xml_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{0000}'..='\u{0008}'
+            | '\u{000B}'
+            | '\u{000C}'
+            | '\u{000E}'..='\u{001F}'
+            | '\u{007F}'..='\u{009F}'
+            | '\u{FDD0}'..='\u{FDEF}'
+    ) || ((ch as u32) & 0xFFFE) == 0xFFFE
+}
+
+/// Escape XML/HTML special characters in a string slice in a single pass, stripping
+/// illegal XML 1.0 control characters and noncharacters, and returning [`Cow::Borrowed`]
+/// when no modification is required.
 #[must_use]
 pub fn escape_xml_str(s: &str) -> Cow<'_, str> {
-    let bytes = s.as_bytes();
     let mut out: Option<String> = None;
     let mut last_copied = 0usize;
-    for (i, &b) in bytes.iter().enumerate() {
-        let replacement = match b {
-            b'&' => "&amp;",
-            b'<' => "&lt;",
-            b'>' => "&gt;",
-            b'"' => "&quot;",
-            b'\'' => "&apos;",
-            0x00..=0x08 | 0x0B | 0x0C | 0x0E..=0x1F => "",
+    for (idx, ch) in s.char_indices() {
+        let replacement = match ch {
+            '&' => "&amp;",
+            '<' => "&lt;",
+            '>' => "&gt;",
+            '"' => "&quot;",
+            '\'' => "&apos;",
+            c if is_illegal_xml_char(c) => "",
             _ => continue,
         };
         let buf = out.get_or_insert_with(|| String::with_capacity(s.len() + 8));
-        buf.push_str(&s[last_copied..i]);
+        buf.push_str(&s[last_copied..idx]);
         buf.push_str(replacement);
-        last_copied = i + 1;
+        last_copied = idx + ch.len_utf8();
     }
     match out {
         Some(mut buf) => {
@@ -267,10 +312,9 @@ pub(super) fn apply_escape_xml(value: &Value) -> Result<Value, TemplateError> {
     }
 }
 
-/// Escape JSON string body characters in a string slice in a single pass,
-/// returning [`Cow::Borrowed`] when no escaping is required.
-#[must_use]
-pub fn escape_json_str(s: &str) -> Cow<'_, str> {
+/// Shared single-pass JSON string body escaper (`escape_slash = true` for `escape_json`,
+/// `false` for `tojson`), returning [`Cow::Borrowed`] when `s` requires no escaping.
+pub(in crate::filter) fn escape_json_body_cow(s: &str, escape_slash: bool) -> Cow<'_, str> {
     let bytes = s.as_bytes();
     let mut out: Option<String> = None;
     let mut last_copied = 0usize;
@@ -280,7 +324,7 @@ pub fn escape_json_str(s: &str) -> Cow<'_, str> {
         let replacement = match b {
             b'\\' => Some("\\\\"),
             b'"' => Some("\\\""),
-            b'/' => Some("\\/"),
+            b'/' if escape_slash => Some("\\/"),
             b'\n' => Some("\\n"),
             b'\r' => Some("\\r"),
             b'\t' => Some("\\t"),
@@ -334,6 +378,19 @@ pub fn escape_json_str(s: &str) -> Cow<'_, str> {
     }
 }
 
+/// Write a JSON-escaped string body directly into `out` (`escape_slash = false` for `tojson`).
+#[inline]
+pub(in crate::filter) fn write_escaped_json_body(s: &str, escape_slash: bool, out: &mut String) {
+    out.push_str(&escape_json_body_cow(s, escape_slash));
+}
+
+/// Escape JSON string body characters in a string slice in a single pass,
+/// returning [`Cow::Borrowed`] when no escaping is required.
+#[must_use]
+pub fn escape_json_str(s: &str) -> Cow<'_, str> {
+    escape_json_body_cow(s, true)
+}
+
 /// Escape JSON string characters in a string [`Value`].
 pub(super) fn apply_escape_json(value: &Value) -> Result<Value, TemplateError> {
     match value {
@@ -373,7 +430,9 @@ fn match_generic_pipe_token(bytes: &[u8], i: usize) -> Option<usize> {
             };
         }
         let b = window[k];
-        if k == MAX_PIPE_TOKEN_INNER_LEN || b.is_ascii_whitespace() || b == b'<' || b == b'>' {
+        if k == MAX_PIPE_TOKEN_INNER_LEN
+            || matches!(b, b' ' | b'\t' | b'\n' | 0x0B | 0x0C | b'\r' | b'<' | b'>')
+        {
             return None;
         }
         k += 1;
@@ -381,61 +440,101 @@ fn match_generic_pipe_token(bytes: &[u8], i: usize) -> Option<usize> {
     None
 }
 
+/// Match whitespace-padded XML control/quarantine tags (such as `</tool_call >`,
+/// `</tool_output_quarantine >`, `</untrusted_content >`, `</ role>`, `<untrusted_content >`),
+/// returning the exclusive byte offset after `>`.
+#[inline]
+fn match_whitespace_xml_control_tag(s: &str, i: usize, include_tool_xml: bool) -> Option<usize> {
+    let bytes = s.as_bytes();
+    let mut pos = quarantine::skip_tag_whitespace(s, i + 1);
+    let is_closing = if bytes.get(pos) == Some(&b'/') {
+        pos = quarantine::skip_tag_whitespace(s, pos + 1);
+        true
+    } else {
+        false
+    };
+    let &first = bytes.get(pos)?;
+    if !quarantine::is_ncname_start_byte(first) {
+        return None;
+    }
+    let name_start = pos;
+    pos += 1;
+    while pos < bytes.len() && quarantine::is_ncname_continue_byte(bytes[pos]) {
+        pos += 1;
+    }
+    let name = &bytes[name_start..pos];
+    let matched_tag = (is_closing && name == b"s")
+        || ROLE_XML_TAG_NAMES.contains(&name)
+        || (include_tool_xml && TOOL_XML_TAG_NAMES.contains(&name));
+    if !matched_tag {
+        return None;
+    }
+    let after_ws = quarantine::skip_tag_whitespace(s, pos);
+    if bytes.get(after_ws) == Some(&b'>') {
+        Some(after_ws + 1)
+    } else {
+        None
+    }
+}
+
 pub(super) enum ControlTokenMatch {
     Rule {
         len: usize,
         replacement: &'static str,
     },
-    GenericPipe {
+    TurnHeader {
+        colon_idx: usize,
+    },
+    AngleSpan {
         end_idx: usize,
     },
 }
 
-/// Single-pass matcher at byte offset `i` for either an explicit rule in `rules`
-/// or a generic `<|...|>` / `<｜...｜>` pipe-delimited special token.
+/// Match Anthropic `Human:` / `Assistant:` turn headers (with optional leading `[ \t]*`
+/// horizontal whitespace) at start of input or immediately after LF/CRLF/CR line breaks.
+#[inline]
+fn match_turn_header_at(bytes: &[u8], i: usize) -> Option<ControlTokenMatch> {
+    let mut pos = match bytes[i] {
+        b'\n' | b'\r' => {
+            let mut p = i + 1;
+            while p < bytes.len() && matches!(bytes[p], b'\n' | b'\r') {
+                p += 1;
+            }
+            p
+        }
+        b'H' | b'A' | b' ' | b'\t' if i == 0 => 0,
+        _ => return None,
+    };
+    while pos < bytes.len() && matches!(bytes[pos], b' ' | b'\t') {
+        pos += 1;
+    }
+    let rest = bytes.get(pos..)?;
+    if rest.starts_with(b"Human:") {
+        Some(ControlTokenMatch::TurnHeader { colon_idx: pos + 5 })
+    } else if rest.starts_with(b"Assistant:") {
+        Some(ControlTokenMatch::TurnHeader { colon_idx: pos + 9 })
+    } else {
+        None
+    }
+}
+
+/// Single-pass matcher at byte offset `i` for either an explicit rule in `rules`,
+/// a whitespace-padded XML control tag, or a generic `<|...|>` / `<｜...｜>` special token.
 #[inline]
 pub(super) fn match_control_token_at(
-    bytes: &[u8],
+    s: &str,
     i: usize,
     rules: &[(&'static str, &'static str)],
 ) -> Option<ControlTokenMatch> {
+    let bytes = s.as_bytes();
     if i + MIN_RULE_LEN > bytes.len() {
         return None;
     }
     let b0 = bytes[i];
     let b1 = bytes[i + 1];
     match b0 {
-        b'\n' => {
-            if b1 == b'\n' {
-                let tail = &bytes[i..];
-                if tail.starts_with(b"\n\nHuman:") {
-                    return Some(ControlTokenMatch::Rule {
-                        len: 8,
-                        replacement: "\n\nHuman&#58;",
-                    });
-                }
-                if tail.starts_with(b"\n\nAssistant:") {
-                    return Some(ControlTokenMatch::Rule {
-                        len: 12,
-                        replacement: "\n\nAssistant&#58;",
-                    });
-                }
-            } else if i == 0 {
-                if bytes.starts_with(b"\nHuman:") {
-                    return Some(ControlTokenMatch::Rule {
-                        len: 7,
-                        replacement: "\nHuman&#58;",
-                    });
-                }
-                if bytes.starts_with(b"\nAssistant:") {
-                    return Some(ControlTokenMatch::Rule {
-                        len: 11,
-                        replacement: "\nAssistant&#58;",
-                    });
-                }
-            }
-            None
-        }
+        b'\n' | b'\r' => match_turn_header_at(bytes, i),
+        b'H' | b'A' | b' ' | b'\t' if i == 0 => match_turn_header_at(bytes, 0),
         b'[' => {
             if !is_bracket_second_byte(b1) {
                 return None;
@@ -455,30 +554,34 @@ pub(super) fn match_control_token_at(
             None
         }
         b'<' => {
-            if !is_angle_second_byte(b1) {
-                return None;
-            }
             if (b1 == b'|' || b1 == FULLWIDTH_PIPE_OPEN.as_bytes()[1])
                 && let Some(end_idx) = match_generic_pipe_token(bytes, i)
             {
-                return Some(ControlTokenMatch::GenericPipe { end_idx });
+                return Some(ControlTokenMatch::AngleSpan { end_idx });
             }
-            let b2 = bytes[i + 2];
-            let b3 = bytes[i + 3];
-            let tail = &bytes[i..];
-            for &(pat, replacement) in rules {
-                let pb = pat.as_bytes();
-                if pb[0] == b'<'
-                    && pb[1] == b1
-                    && pb[2] == b2
-                    && pb[3] == b3
-                    && tail.starts_with(pb)
-                {
-                    return Some(ControlTokenMatch::Rule {
-                        len: pb.len(),
-                        replacement,
-                    });
+            if is_angle_second_byte(b1) {
+                let b2 = bytes[i + 2];
+                let b3 = bytes[i + 3];
+                let tail = &bytes[i..];
+                for &(pat, replacement) in rules {
+                    let pb = pat.as_bytes();
+                    if pb[0] == b'<'
+                        && pb[1] == b1
+                        && pb[2] == b2
+                        && pb[3] == b3
+                        && tail.starts_with(pb)
+                    {
+                        return Some(ControlTokenMatch::Rule {
+                            len: pb.len(),
+                            replacement,
+                        });
+                    }
                 }
+            }
+            if let Some(end_idx) =
+                match_whitespace_xml_control_tag(s, i, rules.len() > ROLE_DELIMITER_COUNT)
+            {
+                return Some(ControlTokenMatch::AngleSpan { end_idx });
             }
             None
         }
@@ -492,8 +595,8 @@ pub(super) use quarantine::{
     validate_quarantine_tag_spec,
 };
 pub(crate) use quarantine::{
-    fence_into, is_ncname_continue_byte, is_ncname_start_byte, quarantine_into,
-    quarantine_untrusted_into, validate_sanitize_tag_spec,
+    fence_into, is_ncname_continue_byte, is_ncname_start_byte, is_valid_ncname, quarantine_into,
+    quarantine_untrusted_into, skip_tag_whitespace, validate_sanitize_tag_spec,
 };
 pub use quarantine::{
     fence_str, has_control_tokens, has_quarantine_tag_breakout, has_role_control_tokens,

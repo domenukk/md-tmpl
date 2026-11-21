@@ -24,8 +24,8 @@ use pyo3::prelude::*;
 ///
 /// Exposes `Template`, `TemplateCache`, security filter functions, and helper
 /// functions to the pure-Python `md_tmpl` package.
-#[pymodule]
-fn _md_tmpl(m: &Bound<'_, PyModule>) -> PyResult<()> {
+#[pymodule(name = "_md_tmpl")]
+fn md_tmpl_pymodule(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<template::PyTemplate>()?;
     m.add_class::<template::PyTemplateCache>()?;
     m.add_function(wrap_pyfunction!(typegen::generate_types_for_template, m)?)?;

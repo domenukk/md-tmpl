@@ -55,7 +55,7 @@ pub mod __private {
             write_int, write_lower, write_upper,
         },
         filter::{i64_to_f64, sanitize_inline_into},
-        template::analysis::inject_enum_type_constants,
+        template::{analysis::inject_enum_type_constants, run_static_analysis},
     };
 
     /// FNV-1a hash over raw bytes.

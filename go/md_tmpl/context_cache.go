@@ -34,6 +34,7 @@ import "C"
 import (
 	"errors"
 	"fmt"
+	"math"
 	"runtime"
 	"unsafe"
 )
@@ -54,7 +55,12 @@ func NewContext() *Context {
 // Close frees the context resources. Safe to call multiple times and
 // concurrently. Implements [io.Closer].
 func (c *Context) Close() error {
+	if c == nil {
+		return nil
+	}
 	c.closeOnce.Do(func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
 		if c.ptr != nil {
 			C.pt_context_free(c.ptr)
 			c.ptr = nil
@@ -65,6 +71,11 @@ func (c *Context) Close() error {
 
 // SetStr sets a string value in the context.
 func (c *Context) SetStr(key, value string) error {
+	if c == nil {
+		return ErrClosed
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.ptr == nil {
 		return ErrClosed
 	}
@@ -74,11 +85,17 @@ func (c *Context) SetStr(key, value string) error {
 	defer C.free(unsafe.Pointer(cVal))
 
 	errPtr := C.pt_context_set_str(c.ptr, cKey, cVal)
+	runtime.KeepAlive(c)
 	return freeError(errPtr)
 }
 
 // SetInt sets an integer value in the context.
 func (c *Context) SetInt(key string, value int64) error {
+	if c == nil {
+		return ErrClosed
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.ptr == nil {
 		return ErrClosed
 	}
@@ -86,11 +103,17 @@ func (c *Context) SetInt(key string, value int64) error {
 	defer C.free(unsafe.Pointer(cKey))
 
 	errPtr := C.pt_context_set_int(c.ptr, cKey, C.int64_t(value))
+	runtime.KeepAlive(c)
 	return freeError(errPtr)
 }
 
 // SetFloat sets a float value in the context.
 func (c *Context) SetFloat(key string, value float64) error {
+	if c == nil {
+		return ErrClosed
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.ptr == nil {
 		return ErrClosed
 	}
@@ -98,11 +121,17 @@ func (c *Context) SetFloat(key string, value float64) error {
 	defer C.free(unsafe.Pointer(cKey))
 
 	errPtr := C.pt_context_set_float(c.ptr, cKey, C.double(value))
+	runtime.KeepAlive(c)
 	return freeError(errPtr)
 }
 
 // SetBool sets a bool value in the context.
 func (c *Context) SetBool(key string, value bool) error {
+	if c == nil {
+		return ErrClosed
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.ptr == nil {
 		return ErrClosed
 	}
@@ -110,14 +139,17 @@ func (c *Context) SetBool(key string, value bool) error {
 	defer C.free(unsafe.Pointer(cKey))
 
 	errPtr := C.pt_context_set_bool(c.ptr, cKey, C._Bool(value))
+	runtime.KeepAlive(c)
 	return freeError(errPtr)
 }
 
 // SetNone sets a None (absent) value in the context.
-//
-// Use this for option(T) parameters to indicate an absent value.
-// Equivalent to passing null/nil.
 func (c *Context) SetNone(key string) error {
+	if c == nil {
+		return ErrClosed
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.ptr == nil {
 		return ErrClosed
 	}
@@ -125,15 +157,17 @@ func (c *Context) SetNone(key string) error {
 	defer C.free(unsafe.Pointer(cKey))
 
 	errPtr := C.pt_context_set_none(c.ptr, cKey)
+	runtime.KeepAlive(c)
 	return freeError(errPtr)
 }
 
 // SetJSON sets a complex value (list, struct, enum) in the context from a JSON string.
-//
-// Example:
-//
-//	ctx.SetJSON("items", `[{"label":"alpha"},{"label":"beta"}]`)
 func (c *Context) SetJSON(key, jsonStr string) error {
+	if c == nil {
+		return ErrClosed
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.ptr == nil {
 		return ErrClosed
 	}
@@ -143,19 +177,17 @@ func (c *Context) SetJSON(key, jsonStr string) error {
 	defer C.free(unsafe.Pointer(cJSON))
 
 	errPtr := C.pt_context_set_json(c.ptr, cKey, cJSON)
+	runtime.KeepAlive(c)
 	return freeError(errPtr)
 }
 
 // MergeJSON merges all top-level keys from a JSON object into the context.
-//
-// The JSON string must be a JSON object. Each key becomes a context variable.
-// This is more efficient than calling [Set] in a loop because it crosses the
-// FFI boundary only once.
-//
-// Example:
-//
-//	ctx.MergeJSON(`{"name": "Alice", "count": 42}`)
 func (c *Context) MergeJSON(jsonStr string) error {
+	if c == nil {
+		return ErrClosed
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.ptr == nil {
 		return ErrClosed
 	}
@@ -163,18 +195,17 @@ func (c *Context) MergeJSON(jsonStr string) error {
 	defer C.free(unsafe.Pointer(cJSON))
 
 	errPtr := C.pt_context_merge_json(c.ptr, cJSON)
+	runtime.KeepAlive(c)
 	return freeError(errPtr)
 }
 
 // MergeStruct merges all exported struct fields into the context via FlexBuffers.
-//
-// Struct fields are mapped to context variables by their json tag name,
-// falling back to the lowercased field name. Unexported fields are skipped.
-//
-// Example:
-//
-//	ctx.MergeStruct(Params{Name: "Alice", Count: 42})
 func (c *Context) MergeStruct(v any) error {
+	if c == nil {
+		return ErrClosed
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.ptr == nil {
 		return ErrClosed
 	}
@@ -187,11 +218,18 @@ func (c *Context) MergeStruct(v any) error {
 	}
 
 	errPtr := C.pt_context_merge_flexbuffers(c.ptr, (*C.uint8_t)(&data[0]), C.size_t(len(data)))
+	runtime.KeepAlive(data)
+	runtime.KeepAlive(c)
 	return freeError(errPtr)
 }
 
 // MergeMap merges all map keys into the context via FlexBuffers.
 func (c *Context) MergeMap(params map[string]any) error {
+	if c == nil {
+		return ErrClosed
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.ptr == nil {
 		return ErrClosed
 	}
@@ -204,41 +242,47 @@ func (c *Context) MergeMap(params map[string]any) error {
 	}
 
 	errPtr := C.pt_context_merge_flexbuffers(c.ptr, (*C.uint8_t)(&data[0]), C.size_t(len(data)))
+	runtime.KeepAlive(data)
+	runtime.KeepAlive(c)
 	return freeError(errPtr)
 }
 
 // SetTmpl sets a template-typed parameter in the context.
-//
-// This is used for tmpl(...) parameters, where one template is passed as a
-// parameter to another template. The template is shared via Arc — the caller
-// retains ownership of the original.
 func (c *Context) SetTmpl(key string, tmpl *Template) error {
+	if c == nil || tmpl == nil {
+		return ErrClosed
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if c.ptr == nil {
 		return ErrClosed
 	}
-	if tmpl == nil || tmpl.ptr == nil {
+	tmpl.mu.RLock()
+	defer tmpl.mu.RUnlock()
+	if tmpl.ptr == nil {
 		return ErrClosed
 	}
 	cKey := C.CString(key)
 	defer C.free(unsafe.Pointer(cKey))
 
 	errPtr := C.pt_context_set_tmpl(c.ptr, cKey, tmpl.ptr)
+	runtime.KeepAlive(c)
+	runtime.KeepAlive(tmpl)
 	return freeError(errPtr)
 }
 
+func (c *Context) isClosed() bool {
+	if c == nil {
+		return true
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ptr == nil
+}
+
 // Set sets a value in the context, automatically choosing the right type.
-//
-// Supported types:
-//   - nil → SetNone (absent option value)
-//   - string → SetStr
-//   - int, int64 → SetInt
-//   - float64 → SetFloat
-//   - bool → SetBool
-//   - *Template → SetTmpl
-//   - []any, map[string]any, structs → SetFlexbuffers (via binary encoding)
-//   - anything else → SetFlexbuffers (via binary encoding)
 func (c *Context) Set(key string, value any) error {
-	if c.ptr == nil {
+	if c.isClosed() {
 		return ErrClosed
 	}
 	if value == nil {
@@ -258,6 +302,9 @@ func (c *Context) Set(key string, value any) error {
 	case int64:
 		return c.SetInt(key, v)
 	case uint:
+		if uint64(v) > math.MaxInt64 {
+			return fmt.Errorf("md_tmpl: uint value %d overflows int64", v)
+		}
 		return c.SetInt(key, int64(v))
 	case uint8:
 		return c.SetInt(key, int64(v))
@@ -266,6 +313,9 @@ func (c *Context) Set(key string, value any) error {
 	case uint32:
 		return c.SetInt(key, int64(v))
 	case uint64:
+		if v > math.MaxInt64 {
+			return fmt.Errorf("md_tmpl: uint64 value %d overflows int64", v)
+		}
 		return c.SetInt(key, int64(v))
 	case float64:
 		return c.SetFloat(key, v)
@@ -277,10 +327,8 @@ func (c *Context) Set(key string, value any) error {
 		return c.SetTmpl(key, v)
 	case Variant:
 		if len(v.Fields) == 0 {
-			// Unit variant → set as string directly.
 			return c.SetStr(key, v.Kind)
 		}
-		// Struct variant → fall through to FlexBuffers path.
 		return c.setFlexbuffers(key, v)
 	default:
 		return c.setFlexbuffers(key, v)
@@ -289,13 +337,26 @@ func (c *Context) Set(key string, value any) error {
 
 // setFlexbuffers marshals any value to FlexBuffers and sets it in the context.
 func (c *Context) setFlexbuffers(key string, v any) error {
+	if c == nil {
+		return ErrClosed
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ptr == nil {
+		return ErrClosed
+	}
 	data, err := marshalFlexbuffers(v)
 	if err != nil {
 		return fmt.Errorf("cannot marshal %T to flexbuffers: %w", v, err)
 	}
+	if len(data) == 0 {
+		return errors.New("md_tmpl: setFlexbuffers: empty flexbuffers data")
+	}
 	cKey := C.CString(key)
 	defer C.free(unsafe.Pointer(cKey))
 	errPtr := C.pt_context_set_flexbuffers(c.ptr, cKey, (*C.uint8_t)(&data[0]), C.size_t(len(data)))
+	runtime.KeepAlive(data)
+	runtime.KeepAlive(c)
 	return freeError(errPtr)
 }
 
@@ -315,7 +376,12 @@ func NewCache() *Cache {
 // Close frees the cache resources. Safe to call multiple times and
 // concurrently. Implements [io.Closer].
 func (c *Cache) Close() error {
+	if c == nil {
+		return nil
+	}
 	c.closeOnce.Do(func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
 		if c.ptr != nil {
 			C.pt_cache_free(c.ptr)
 			c.ptr = nil
@@ -327,6 +393,11 @@ func (c *Cache) Close() error {
 // Load loads a template through the cache. Unchanged files return cached
 // compilations with zero re-parsing.
 func (c *Cache) Load(path string) (*Template, error) {
+	if c == nil {
+		return nil, ErrClosed
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	if c.ptr == nil {
 		return nil, ErrClosed
 	}
@@ -336,6 +407,7 @@ func (c *Cache) Load(path string) (*Template, error) {
 
 	var ptr unsafe.Pointer
 	errPtr := C.pt_cache_load(c.ptr, cPath, &ptr)
+	runtime.KeepAlive(c)
 	if err := freeError(errPtr); err != nil {
 		return nil, err
 	}
@@ -347,23 +419,43 @@ func (c *Cache) Load(path string) (*Template, error) {
 
 // Clear invalidates all cached entries.
 func (c *Cache) Clear() {
+	if c == nil {
+		return
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	if c.ptr != nil {
 		C.pt_cache_clear(c.ptr)
+		runtime.KeepAlive(c)
 	}
 }
 
 // TemplateCount returns the number of cached main templates.
 func (c *Cache) TemplateCount() int {
+	if c == nil {
+		return 0
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	if c.ptr == nil {
 		return 0
 	}
-	return int(C.pt_cache_template_count(c.ptr))
+	n := int(C.pt_cache_template_count(c.ptr))
+	runtime.KeepAlive(c)
+	return n
 }
 
 // IncludeCount returns the number of cached include templates.
 func (c *Cache) IncludeCount() int {
+	if c == nil {
+		return 0
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	if c.ptr == nil {
 		return 0
 	}
-	return int(C.pt_cache_include_count(c.ptr))
+	n := int(C.pt_cache_include_count(c.ptr))
+	runtime.KeepAlive(c)
+	return n
 }

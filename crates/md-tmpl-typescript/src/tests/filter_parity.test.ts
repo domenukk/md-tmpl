@@ -298,24 +298,24 @@ describe("XML codec and list truncation match the Rust host primitives", () => {
   it("decodeXmlString decodes in a single pass", () => {
     assert.strictEqual(
       decodeXmlString(
-        "a &lt;b&gt; &amp;lt; &quot;q&quot; &#39;s&apos; &unknown; &",
+        "a &lt;b&gt; &amp;lt; &quot;q&quot; &#39;s&apos; &#10;nl&#13;cr &unknown; &",
       ),
-      "a <b> &lt; \"q\" 's' &unknown; &",
+      "a <b> &lt; \"q\" 's' \nnl\rcr &unknown; &",
     );
-    assert.strictEqual(XML_DECODE_PAIRS.length, 6);
+    assert.strictEqual(XML_DECODE_PAIRS.length, 8);
   });
 
-  it("escapeXmlAttrString escapes markup and control characters", () => {
+  it("escapeXmlAttrString escapes markup and strips illegal XML 1.0 controls", () => {
     assert.strictEqual(
-      escapeXmlAttrString("a&b<c>\"d'e\nf\rg\0h\u0001i\u007fj\u0085k"),
-      "a&amp;b&lt;c&gt;&quot;d&apos;e\\nf\\rg\\0h i j k",
+      escapeXmlAttrString("a&b<c>\"d'e\nf\rg\0h\u0001i\u007fj\u0085k\ufffel"),
+      "a&amp;b&lt;c&gt;&quot;d&apos;e&#10;f&#13;ghijkl",
     );
   });
 
-  it("escapeXmlBodyString escapes markup and NUL only", () => {
+  it("escapeXmlBodyString escapes markup and strips illegal XML 1.0 controls", () => {
     assert.strictEqual(
-      escapeXmlBodyString("a&b<c>\"d'\n\0"),
-      "a&amp;b&lt;c&gt;\"d'\n\\0",
+      escapeXmlBodyString("a&b<c>\"d'\n\0\u0001\uffff"),
+      "a&amp;b&lt;c&gt;\"d'\n",
     );
   });
 

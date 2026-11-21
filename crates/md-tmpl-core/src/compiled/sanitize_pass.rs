@@ -13,7 +13,10 @@ use super::{Condition, FilterKind, FilterOrigin, ParsedFilter, Segment};
 use crate::{
     compat::{HashMap, HashSet},
     error::TemplateError,
-    filter::{is_ncname_continue_byte, is_ncname_start_byte, parse_sanitize_filter_mode},
+    filter::{
+        is_ncname_continue_byte, is_ncname_start_byte, is_valid_ncname, parse_sanitize_filter_mode,
+        skip_tag_whitespace,
+    },
     scope::{CompiledExpr, CompiledPath, ConditionOperand},
     types::SanitizeSpec,
 };
@@ -98,6 +101,7 @@ pub(crate) const INLINE_HEADING_SENTINEL: &str = "#heading";
 struct EnclosingScanState {
     open_tags: Vec<String>,
     pending_open_tag: Option<String>,
+    pending_quote: Option<u8>,
     in_atx_heading: bool,
     at_line_start: bool,
 }
@@ -107,6 +111,7 @@ impl Default for EnclosingScanState {
         Self {
             open_tags: Vec::new(),
             pending_open_tag: None,
+            pending_quote: None,
             in_atx_heading: false,
             at_line_start: true,
         }
@@ -114,14 +119,55 @@ impl Default for EnclosingScanState {
 }
 
 impl EnclosingScanState {
-    fn propagate_branch(&self, segments: &mut [Segment], closing_tags: &HashSet<String>) {
+    fn run_branch(&self, segments: &mut [Segment], closing_tags: &HashSet<String>) -> Self {
         let mut branch_state = self.clone();
         propagate_enclosing_xml_tags(segments, closing_tags, &mut branch_state);
+        branch_state
+    }
+
+    fn scan_isolated_branch(&self, segments: &mut [Segment], closing_tags: &HashSet<String>) {
+        let mut branch_state = self.clone();
+        propagate_enclosing_xml_tags(segments, closing_tags, &mut branch_state);
+    }
+
+    fn merge_branches(&mut self, states: &[Self]) {
+        if states.is_empty() {
+            return;
+        }
+        let mut union_tags: Vec<String> = Vec::new();
+        let mut pending: Option<(String, Option<u8>)> = None;
+        let mut any_heading = false;
+        let mut any_line_start = false;
+        for st in states {
+            for tag in &st.open_tags {
+                if !union_tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
+                    union_tags.push(tag.clone());
+                }
+            }
+            if pending.is_none()
+                && let Some(ref p) = st.pending_open_tag
+            {
+                pending = Some((p.clone(), st.pending_quote));
+            }
+            any_heading |= st.in_atx_heading;
+            any_line_start |= st.at_line_start;
+        }
+        self.open_tags = union_tags;
+        if let Some((p, q)) = pending {
+            self.pending_open_tag = Some(p);
+            self.pending_quote = q;
+        } else {
+            self.pending_open_tag = None;
+            self.pending_quote = None;
+        }
+        self.in_atx_heading = any_heading;
+        self.at_line_start = any_line_start;
     }
 }
 
 /// Scan `segments` for enclosing XML tags and ATX Markdown heading contexts around
-/// `FilterKind::Sanitize` expressions and merge them into each filter's [`SanitizeFilterMode`].
+/// `FilterKind::Sanitize` / `FilterKind::SanitizeTokens` / `FilterKind::Quarantine`
+/// expressions and merge them into each filter.
 pub fn apply_enclosing_xml_tags(segments: &mut [Segment]) {
     apply_enclosing_xml_tags_from(segments, &[], false, true, None);
 }
@@ -140,9 +186,13 @@ pub(super) fn apply_enclosing_xml_tags_from(
     }
     let mut closing_tags = HashSet::new();
     collect_closing_xml_tags(segments, &mut closing_tags);
+    if let Some(pending) = pending_open_tag {
+        closing_tags.insert(pending.to_ascii_lowercase());
+    }
     let mut state = EnclosingScanState {
         open_tags: open_tags.to_vec(),
         pending_open_tag: pending_open_tag.map(ToString::to_string),
+        pending_quote: None,
         in_atx_heading,
         at_line_start,
     };
@@ -168,16 +218,21 @@ pub fn apply_frontmatter_sanitization(
     apply_enclosing_xml_tags(segments);
 }
 
-/// Returns `true` if `segments` contain a `sanitize` / `quarantine` filter or an include
-/// resolved at render time (whose call-site enclosing state must be recorded).
+/// Returns `true` if `segments` contain a `sanitize`, `sanitize_tokens`, `quarantine`, or `fence`
+/// filter, or an include resolved at render time (whose call-site enclosing state must be recorded).
 pub(super) fn needs_enclosing_pass(segments: &[Segment]) -> bool {
     for seg in segments {
         match seg {
             Segment::Expr { filters, .. } => {
-                if filters
-                    .iter()
-                    .any(|f| matches!(f.kind, FilterKind::Sanitize | FilterKind::Quarantine))
-                {
+                if filters.iter().any(|f| {
+                    matches!(
+                        f.kind,
+                        FilterKind::Sanitize
+                            | FilterKind::SanitizeTokens
+                            | FilterKind::Quarantine
+                            | FilterKind::Fence
+                    )
+                }) {
                     return true;
                 }
             }
@@ -262,15 +317,9 @@ fn scan_closing_tags_in_text(text: &str, out: &mut HashSet<String>) {
     let mut i = 0usize;
     while i + 3 < bytes.len() {
         if bytes[i] == b'<' {
-            let mut pos = i + 1;
-            while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
-                pos += 1;
-            }
+            let mut pos = skip_tag_whitespace(text, i + 1);
             if pos < bytes.len() && bytes[pos] == b'/' {
-                pos += 1;
-                while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
-                    pos += 1;
-                }
+                pos = skip_tag_whitespace(text, pos + 1);
                 if pos < bytes.len() && is_ncname_start_byte(bytes[pos]) {
                     let start = pos;
                     pos += 1;
@@ -278,9 +327,7 @@ fn scan_closing_tags_in_text(text: &str, out: &mut HashSet<String>) {
                         pos += 1;
                     }
                     let name = &text[start..pos];
-                    while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
-                        pos += 1;
-                    }
+                    pos = skip_tag_whitespace(text, pos);
                     if pos < bytes.len() && bytes[pos] == b'>' {
                         out.insert(name.to_ascii_lowercase());
                         i = pos + 1;
@@ -293,8 +340,35 @@ fn scan_closing_tags_in_text(text: &str, out: &mut HashSet<String>) {
     }
 }
 
+/// Strip leading spaces/tabs and `CommonMark` blockquote (`>`) / list (`- `, `* `, `+ `, `1. `, `1) `)
+/// container markers from a line prefix.
+fn strip_markdown_container_prefixes(mut line: &str) -> &str {
+    loop {
+        let s = line.trim_start_matches([' ', '\t']);
+        if let Some(after_gt) = s.strip_prefix('>') {
+            line = after_gt;
+            continue;
+        }
+        if let Some(after_bullet) = s.strip_prefix(['-', '*', '+'])
+            && after_bullet.starts_with([' ', '\t'])
+        {
+            line = after_bullet;
+            continue;
+        }
+        let digits = s.bytes().take_while(u8::is_ascii_digit).count();
+        if (1..=9).contains(&digits)
+            && let Some(after_delim) = s[digits..].strip_prefix(['.', ')'])
+            && after_delim.starts_with([' ', '\t'])
+        {
+            line = after_delim;
+            continue;
+        }
+        return s;
+    }
+}
+
 fn is_atx_heading_prefix(line: &str) -> bool {
-    let trimmed = line.trim_start_matches([' ', '\t']);
+    let trimmed = strip_markdown_container_prefixes(line);
     let hashes = trimmed.bytes().take_while(|&b| b == b'#').count();
     (1..=6).contains(&hashes)
         && trimmed
@@ -303,70 +377,124 @@ fn is_atx_heading_prefix(line: &str) -> bool {
             .is_some_and(|&b| b == b' ' || b == b'\t')
 }
 
-fn update_heading_line_state(text: &str, in_atx_heading: &mut bool, at_line_start: &mut bool) {
+pub(super) fn update_heading_line_state(
+    text: &str,
+    in_atx_heading: &mut bool,
+    at_line_start: &mut bool,
+) {
     if text.is_empty() {
         return;
     }
-    if let Some(last_nl) = text.rfind('\n') {
+    if let Some(last_nl) = text.rfind(['\n', '\r']) {
         let tail = &text[last_nl + 1..];
         *in_atx_heading = is_atx_heading_prefix(tail);
-        *at_line_start = tail.trim_matches([' ', '\t']).is_empty();
+        *at_line_start = strip_markdown_container_prefixes(tail).is_empty();
     } else if *at_line_start {
         if is_atx_heading_prefix(text) {
             *in_atx_heading = true;
             *at_line_start = false;
-        } else if !text.trim_matches([' ', '\t']).is_empty() {
+        } else if !strip_markdown_container_prefixes(text).is_empty() {
             *at_line_start = false;
         }
     }
 }
 
+enum OpenTagTailOutcome {
+    Closed {
+        close_idx: usize,
+        self_closing: bool,
+    },
+    Pending {
+        quote: Option<u8>,
+    },
+    AbortedAtLt {
+        lt_idx: usize,
+    },
+}
+
+/// Scan the attribute tail of an opening XML tag starting at `start_idx`, ignoring `>`, `<`,
+/// and `/` inside single- or double-quoted attribute values.
+fn scan_open_tag_tail(
+    bytes: &[u8],
+    start_idx: usize,
+    initial_quote: Option<u8>,
+) -> OpenTagTailOutcome {
+    let mut quote = initial_quote;
+    let mut last_unquoted_non_ws: Option<u8> = None;
+    let mut idx = start_idx;
+    while idx < bytes.len() {
+        let b = bytes[idx];
+        if let Some(q) = quote {
+            if b == q {
+                quote = None;
+                last_unquoted_non_ws = Some(b);
+            }
+            idx += 1;
+            continue;
+        }
+        match b {
+            b'"' | b'\'' => {
+                quote = Some(b);
+            }
+            b'>' => {
+                return OpenTagTailOutcome::Closed {
+                    close_idx: idx,
+                    self_closing: last_unquoted_non_ws == Some(b'/'),
+                };
+            }
+            b'<' => {
+                return OpenTagTailOutcome::AbortedAtLt { lt_idx: idx };
+            }
+            _ => {
+                if !matches!(b, b' ' | b'\t' | b'\n' | 0x0B | 0x0C | b'\r') {
+                    last_unquoted_non_ws = Some(b);
+                }
+            }
+        }
+        idx += 1;
+    }
+    OpenTagTailOutcome::Pending { quote }
+}
+
 fn update_open_xml_tags_from_text(
     text: &str,
     closing_tags: &HashSet<String>,
-    open_tags: &mut Vec<String>,
-    pending_open_tag: &mut Option<String>,
+    state: &mut EnclosingScanState,
 ) {
     let bytes = text.as_bytes();
     let mut i = 0usize;
 
-    if let Some(pending_name) = pending_open_tag.take() {
-        let mut close_idx = 0usize;
-        while close_idx < bytes.len() && bytes[close_idx] != b'>' && bytes[close_idx] != b'<' {
-            close_idx += 1;
-        }
-        if close_idx < bytes.len() && bytes[close_idx] == b'>' {
-            let mut before_gt = close_idx;
-            while before_gt > 0 && bytes[before_gt - 1].is_ascii_whitespace() {
-                before_gt -= 1;
+    if let Some(pending_name) = state.pending_open_tag.take() {
+        let prev_quote = state.pending_quote.take();
+        match scan_open_tag_tail(bytes, 0, prev_quote) {
+            OpenTagTailOutcome::Closed {
+                close_idx,
+                self_closing,
+            } => {
+                if !self_closing && closing_tags.contains(&pending_name.to_ascii_lowercase()) {
+                    state.open_tags.push(pending_name);
+                }
+                i = close_idx + 1;
             }
-            let self_closing = before_gt > 0 && bytes[before_gt - 1] == b'/';
-            if !self_closing && closing_tags.contains(&pending_name.to_ascii_lowercase()) {
-                open_tags.push(pending_name);
+            OpenTagTailOutcome::Pending { quote } => {
+                state.pending_open_tag = Some(pending_name);
+                state.pending_quote = quote;
+                return;
             }
-            i = close_idx + 1;
-        } else if close_idx == bytes.len() {
-            *pending_open_tag = Some(pending_name);
-            return;
-        } else {
-            i = close_idx;
+            OpenTagTailOutcome::AbortedAtLt { lt_idx } => {
+                i = lt_idx;
+            }
         }
     }
 
-    while i + 2 < bytes.len() {
+    while i + 1 < bytes.len() {
         if bytes[i] != b'<' {
             i += 1;
             continue;
         }
-        let mut pos = i + 1;
-        while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
-            pos += 1;
-        }
+        let mut pos = skip_tag_whitespace(text, i + 1);
         if pos < bytes.len() && bytes[pos] == b'/' {
-            pos += 1;
-            while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
-                pos += 1;
-            }
+            pos = skip_tag_whitespace(text, pos + 1);
             if pos < bytes.len() && is_ncname_start_byte(bytes[pos]) {
                 let start = pos;
                 pos += 1;
@@ -374,13 +502,14 @@ fn update_open_xml_tags_from_text(
                     pos += 1;
                 }
                 let name = &text[start..pos];
-                while pos < bytes.len() && bytes[pos].is_ascii_whitespace() {
-                    pos += 1;
-                }
+                pos = skip_tag_whitespace(text, pos);
                 if pos < bytes.len() && bytes[pos] == b'>' {
-                    if let Some(idx) = open_tags.iter().rposition(|t| t.eq_ignore_ascii_case(name))
+                    if let Some(idx) = state
+                        .open_tags
+                        .iter()
+                        .rposition(|t| t.eq_ignore_ascii_case(name))
                     {
-                        open_tags.remove(idx);
+                        state.open_tags.remove(idx);
                     }
                     i = pos + 1;
                     continue;
@@ -397,32 +526,36 @@ fn update_open_xml_tags_from_text(
                 end += 1;
             }
             let name = &text[start..end];
-            if end < bytes.len()
-                && (bytes[end] == b'>' || bytes[end] == b'/' || bytes[end].is_ascii_whitespace())
-            {
-                let mut close_idx = end;
-                while close_idx < bytes.len()
-                    && bytes[close_idx] != b'>'
-                    && bytes[close_idx] != b'<'
-                {
-                    close_idx += 1;
+            if end == bytes.len() {
+                if closing_tags.contains(&name.to_ascii_lowercase()) {
+                    state.pending_open_tag = Some(name.to_string());
+                    state.pending_quote = None;
                 }
-                if close_idx < bytes.len() && bytes[close_idx] == b'>' {
-                    let mut before_gt = close_idx;
-                    while before_gt > end && bytes[before_gt - 1].is_ascii_whitespace() {
-                        before_gt -= 1;
+                return;
+            }
+            if bytes[end] == b'>' || bytes[end] == b'/' || skip_tag_whitespace(text, end) > end {
+                match scan_open_tag_tail(bytes, end, None) {
+                    OpenTagTailOutcome::Closed {
+                        close_idx,
+                        self_closing,
+                    } => {
+                        if !self_closing && closing_tags.contains(&name.to_ascii_lowercase()) {
+                            state.open_tags.push(name.to_string());
+                        }
+                        i = close_idx + 1;
+                        continue;
                     }
-                    let self_closing = before_gt > end && bytes[before_gt - 1] == b'/';
-                    if !self_closing && closing_tags.contains(&name.to_ascii_lowercase()) {
-                        open_tags.push(name.to_string());
+                    OpenTagTailOutcome::Pending { quote } => {
+                        if closing_tags.contains(&name.to_ascii_lowercase()) {
+                            state.pending_open_tag = Some(name.to_string());
+                            state.pending_quote = quote;
+                        }
+                        return;
                     }
-                    i = close_idx + 1;
-                    continue;
-                } else if close_idx == bytes.len()
-                    && closing_tags.contains(&name.to_ascii_lowercase())
-                {
-                    *pending_open_tag = Some(name.to_string());
-                    return;
+                    OpenTagTailOutcome::AbortedAtLt { lt_idx } => {
+                        i = lt_idx;
+                        continue;
+                    }
                 }
             }
         }
@@ -479,26 +612,74 @@ fn attach_open_tags_to_filters(
     if open_tags.is_empty() && !in_atx_heading {
         return;
     }
-    for f in filters {
-        if f.kind == FilterKind::Quarantine {
+    let len = filters.len();
+    for idx in 0..len {
+        if filters[idx].kind == FilterKind::Quarantine {
             if !open_tags.is_empty() {
-                let raw = f
+                let raw = filters[idx]
                     .args
                     .as_deref()
                     .map_or(crate::filter::DEFAULT_QUARANTINE_TAG, |a| {
                         a.trim().trim_matches(['"', '\''])
                     });
                 if let Some(merged) = merge_enclosing_tags_into_spec(Some(raw), open_tags, false) {
-                    f.args = Some(Cow::Owned(merged));
+                    filters[idx].args = Some(Cow::Owned(merged));
                 }
             }
             continue;
         }
-        if f.kind != FilterKind::Sanitize {
+        if filters[idx].kind == FilterKind::SanitizeTokens {
+            // Keep the compiler-inserted `[SanitizeTokens, Quarantine]` pair intact so
+            // `try_apply_str_filters_into` fuses them into `quarantine_untrusted_into`
+            // (`Quarantine` immediately following already receives `open_tags`).
+            if filters[idx].args.is_none()
+                && idx + 1 < len
+                && filters[idx + 1].kind == FilterKind::Quarantine
+            {
+                continue;
+            }
+            let existing_valid: Option<String> = match filters[idx].args.as_deref() {
+                None => Some(String::new()),
+                Some(raw) => {
+                    let unquoted = crate::consts::strip_string_literal(raw.trim()).map_or_else(
+                        || raw.trim().to_string(),
+                        crate::consts::unescape_string_literal,
+                    );
+                    let trimmed_spec = unquoted.trim();
+                    if !trimmed_spec.is_empty()
+                        && trimmed_spec
+                            .split(',')
+                            .all(|part| is_valid_ncname(part.trim()))
+                    {
+                        Some(trimmed_spec.to_string())
+                    } else {
+                        None
+                    }
+                }
+            };
+            if let Some(ex) = existing_valid {
+                let ex_opt = if ex.is_empty() {
+                    None
+                } else {
+                    Some(ex.as_str())
+                };
+                if let Some(merged) =
+                    merge_enclosing_tags_into_spec(ex_opt, open_tags, in_atx_heading)
+                {
+                    filters[idx].kind = FilterKind::Sanitize;
+                    filters[idx].args = None;
+                    filters[idx].sanitize_mode = Some(SanitizeFilterMode::Inline {
+                        enclosing_tags: Some(Cow::Owned(merged)),
+                    });
+                }
+            }
             continue;
         }
-        ensure_sanitize_mode(f);
-        match &mut f.sanitize_mode {
+        if filters[idx].kind != FilterKind::Sanitize {
+            continue;
+        }
+        ensure_sanitize_mode(&mut filters[idx]);
+        match &mut filters[idx].sanitize_mode {
             Some(SanitizeFilterMode::Inline { enclosing_tags }) => {
                 if let Some(merged) = merge_enclosing_tags_into_spec(
                     enclosing_tags.as_deref(),
@@ -528,12 +709,9 @@ fn propagate_enclosing_xml_tags(
     for seg in segments {
         match seg {
             Segment::Static(text) => {
-                update_open_xml_tags_from_text(
-                    text,
-                    closing_tags,
-                    &mut state.open_tags,
-                    &mut state.pending_open_tag,
-                );
+                if !closing_tags.is_empty() {
+                    update_open_xml_tags_from_text(text, closing_tags, state);
+                }
                 update_heading_line_state(
                     text,
                     &mut state.in_atx_heading,
@@ -547,29 +725,37 @@ fn propagate_enclosing_xml_tags(
             Segment::ForLoop {
                 body, else_body, ..
             } => {
-                state.propagate_branch(body, closing_tags);
-                state.propagate_branch(else_body, closing_tags);
+                state.scan_isolated_branch(body, closing_tags);
+                state.scan_isolated_branch(else_body, closing_tags);
             }
             Segment::If {
                 branches,
                 else_body,
             } => {
+                let mut post_states = Vec::with_capacity(branches.len() + 1);
                 for (_, branch_body) in branches {
-                    state.propagate_branch(branch_body, closing_tags);
+                    post_states.push(state.run_branch(branch_body, closing_tags));
                 }
-                state.propagate_branch(else_body, closing_tags);
+                if else_body.is_empty() {
+                    post_states.push(state.clone());
+                } else {
+                    post_states.push(state.run_branch(else_body, closing_tags));
+                }
+                state.merge_branches(&post_states);
             }
             Segment::Match { arms, .. } => {
+                let mut post_states = Vec::with_capacity(arms.len());
                 for arm in arms {
-                    state.propagate_branch(&mut arm.body, closing_tags);
+                    post_states.push(state.run_branch(&mut arm.body, closing_tags));
                 }
+                state.merge_branches(&post_states);
             }
             Segment::Panic(inner) => {
-                state.propagate_branch(inner, closing_tags);
+                state.scan_isolated_branch(inner, closing_tags);
             }
             Segment::Include(inc) => {
                 if let Some(ic) = &mut inc.inline_compiled {
-                    state.propagate_branch(
+                    state.scan_isolated_branch(
                         alloc::sync::Arc::make_mut(&mut ic.segments),
                         closing_tags,
                     );
@@ -582,6 +768,7 @@ fn propagate_enclosing_xml_tags(
                         state.pending_open_tag.as_deref(),
                     );
                 }
+                state.at_line_start = false;
             }
             Segment::Raw(text) => {
                 update_heading_line_state(
@@ -610,7 +797,7 @@ pub(super) fn propagate_param_sanitization(
     );
 }
 
-/// Canonical (loop-alias resolved, `params.`-stripped) dot path for `path`.
+/// Canonical (loop-alias resolved, namespace-prefix stripped) dot path for `path`.
 pub(super) fn canonical_path(
     path: &CompiledPath,
     loop_aliases: &HashMap<String, String>,
@@ -623,24 +810,53 @@ fn resolve_canonical_path(path: &CompiledPath, loop_aliases: &HashMap<String, St
     if parts.is_empty() {
         return String::new();
     }
-    let slice = if parts.len() > 1 && parts[0] == "params" {
-        &parts[1..]
-    } else {
-        parts
-    };
-    let root = &slice[0];
+    let root = &parts[0];
     let resolved_root = loop_aliases.get(root).map_or(root.as_str(), String::as_str);
-    if slice.len() == 1 {
+    if parts.len() == 1 {
         resolved_root.to_string()
     } else {
         let mut out = String::with_capacity(resolved_root.len() + path.as_str().len());
         out.push_str(resolved_root);
-        for part in &slice[1..] {
+        for part in &parts[1..] {
             out.push(crate::consts::PATH_SEP);
             out.push_str(part);
         }
         out
     }
+}
+
+/// Look up the effective [`SanitizeSpec`] for `canonical` when emitted directly,
+/// falling back to any untrusted ancestor path `key` (`canonical == "{key}.{rest}"`).
+fn lookup_direct_path_spec<'a>(
+    canonical: &str,
+    param_sanitize: &'a HashMap<String, SanitizeSpec>,
+) -> Option<&'a SanitizeSpec> {
+    if let Some(exact) = param_sanitize.get(canonical) {
+        return Some(exact);
+    }
+    for (key, spec) in param_sanitize {
+        if let Some(rest) = canonical.strip_prefix(key.as_str())
+            && rest.starts_with(crate::consts::PATH_SEP)
+        {
+            return Some(spec);
+        }
+    }
+    None
+}
+
+/// Returns `true` if `canonical` or any nested field (`"{canonical}.{rest}"`) or ancestor
+/// (`canonical == "{key}.{rest}"`) is marked untrusted in `param_sanitize`.
+fn path_has_any_untrusted(canonical: &str, param_sanitize: &HashMap<String, SanitizeSpec>) -> bool {
+    if param_sanitize.contains_key(canonical) {
+        return true;
+    }
+    param_sanitize.keys().any(|key| {
+        key.strip_prefix(canonical)
+            .is_some_and(|rest| rest.starts_with(crate::consts::PATH_SEP))
+            || canonical
+                .strip_prefix(key.as_str())
+                .is_some_and(|rest| rest.starts_with(crate::consts::PATH_SEP))
+    })
 }
 
 fn apply_sanitize_to_path_filters(
@@ -651,7 +867,17 @@ fn apply_sanitize_to_path_filters(
     loop_aliases: &HashMap<String, String>,
 ) {
     let canonical = resolve_canonical_path(path, loop_aliases);
-    if let Some(spec) = param_sanitize.get(&canonical) {
+    let has_tojson = filters.iter().any(|f| f.kind == FilterKind::ToJson);
+    let resolved_spec: Option<Cow<'_, SanitizeSpec>> = if has_tojson {
+        if path_has_any_untrusted(&canonical, param_sanitize) {
+            Some(Cow::Owned(SanitizeSpec::Inline))
+        } else {
+            None
+        }
+    } else {
+        lookup_direct_path_spec(&canonical, param_sanitize).map(Cow::Borrowed)
+    };
+    if let Some(spec) = resolved_spec {
         let has_token_sanitize = filters.iter().any(|f| {
             matches!(
                 f.kind,
@@ -675,7 +901,7 @@ fn apply_sanitize_to_path_filters(
                 );
             }
         } else if !has_token_sanitize {
-            filters.push(ParsedFilter::from_sanitize_spec(spec, sanitize_notice));
+            filters.push(ParsedFilter::from_sanitize_spec(&spec, sanitize_notice));
         }
     }
     if let Some(fm_notice) = sanitize_notice {

@@ -362,11 +362,10 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
     }
 
     fn build_template_from_entry(
-        entry: &mut CacheEntry,
+        entry: &CacheEntry,
         base_dir: Option<PathBuf>,
         need_frontmatter: bool,
     ) -> (crate::Template, Option<Frontmatter>) {
-        entry.last_accessed = Instant::now();
         let tmpl = crate::Template::from_cached(crate::template::CachedTemplateData {
             segments: entry.segments.clone(),
             declared_variables: entry.declarations.clone(),
@@ -387,6 +386,47 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
         (tmpl, fm)
     }
 
+    /// Fast-path mtime lookup on `self.templates`, using a shared read lock when LRU eviction is
+    /// disabled (`max_entries.is_none()`) and a write lock when `last_accessed` must be updated.
+    fn lookup_by_mtime(
+        &self,
+        canonical: &Path,
+        file_mtime: SystemTime,
+        base_dir: Option<&Path>,
+        need_frontmatter: bool,
+    ) -> Option<(crate::Template, Option<Frontmatter>)> {
+        if self.max_entries.is_none() {
+            let cache = self
+                .templates
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let entry = cache.get(canonical)?;
+            if entry.last_modified == file_mtime {
+                return Some(Self::build_template_from_entry(
+                    entry,
+                    base_dir.map(Path::to_path_buf),
+                    need_frontmatter,
+                ));
+            }
+            None
+        } else {
+            let mut cache = self
+                .templates
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let entry = cache.get_mut(canonical)?;
+            if entry.last_modified == file_mtime {
+                entry.last_accessed = Instant::now();
+                return Some(Self::build_template_from_entry(
+                    entry,
+                    base_dir.map(Path::to_path_buf),
+                    need_frontmatter,
+                ));
+            }
+            None
+        }
+    }
+
     /// Shared implementation: stat → mtime check → (read → hash) → cache → compile → store.
     ///
     /// When `need_frontmatter` is false, avoids cloning the cached frontmatter.
@@ -401,25 +441,20 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
             .unwrap_or(SystemTime::UNIX_EPOCH);
         let base_dir = path.parent().map(Path::to_path_buf);
 
-        // Fast path: if mtime matches the cached entry, skip reading the file entirely.
-        {
-            let mut cache = self
-                .templates
-                .write()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some(entry) = cache.get_mut(&canonical)
-                && entry.last_modified == file_mtime
-            {
-                return Ok(Self::build_template_from_entry(
-                    entry,
-                    base_dir,
-                    need_frontmatter,
-                ));
-            }
+        if let Some(hit) = self.lookup_by_mtime(
+            &canonical,
+            file_mtime,
+            base_dir.as_deref(),
+            need_frontmatter,
+        ) {
+            return Ok(hit);
         }
 
         // Mtime changed (or first load) — read file and hash.
-        let source = std::fs::read_to_string(path)?;
+        let mut source = std::fs::read_to_string(path)?;
+        if source.contains('\r') {
+            source = source.replace("\r\n", "\n");
+        }
         let source_hash = self.hash_content(&source);
 
         // Check if content hash still matches despite mtime change (e.g. whitespace-only save).
@@ -432,6 +467,9 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
                 && entry.source_hash == source_hash
             {
                 entry.last_modified = file_mtime;
+                if self.max_entries.is_some() {
+                    entry.last_accessed = Instant::now();
+                }
                 return Ok(Self::build_template_from_entry(
                     entry,
                     base_dir,
@@ -447,11 +485,12 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
             frontmatter::parse_frontmatter(&source)?
         };
         let body_str = body.to_string();
-        let (mut segments, inline_templates) = compiled::compile_source_body(
+        let (mut segments, inline_templates) = compiled::compile_source_body_with_notice(
             &source,
             &body_str,
             &fm.type_aliases,
             &fm.type_alias_sanitize,
+            fm.sanitize_notice.as_deref(),
         )?;
         compiled::apply_frontmatter_sanitization(
             &mut segments,
@@ -459,6 +498,7 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
             fm.sanitize_notice.as_deref(),
         );
         compiled::check_untrusted_include_paths(&segments)?;
+        crate::template::run_static_analysis(&segments, &fm, &inline_templates, false)?;
 
         let mut consts = frontmatter_consts(&fm);
         crate::template::analysis::inject_enum_type_constants(&fm.type_aliases, &mut consts);
@@ -527,7 +567,18 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
         let env_hash = self.hash_env(env);
 
         // Fast path: mtime + env match → skip reading the file.
-        {
+        if self.max_entries.is_none() {
+            let cache = self
+                .includes
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(entry) = cache.get(&canonical)
+                && entry.last_modified == file_mtime
+                && entry.env_hash == env_hash
+            {
+                return Ok(entry.cached.clone());
+            }
+        } else {
             let mut cache = self
                 .includes
                 .write()
@@ -563,46 +614,7 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
             }
         }
 
-        // Cache miss — compile.
-        let base_dir = include_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .to_path_buf();
-        // Propagate compile-time env so the include's `env:` frontmatter
-        // resolves to the same values as on the uncached render path.
-        let env_pairs: Vec<(&str, Value)> =
-            env.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
-        let (fm, body) =
-            frontmatter::parse_frontmatter_with_base_dir(&source, &base_dir, &env_pairs)?;
-        let (mut segments, _inline_templates) = compiled::compile_source_body(
-            &source,
-            body,
-            &fm.type_aliases,
-            &fm.type_alias_sanitize,
-        )?;
-        // Include target: parameter values take the caller's trust, so only the notice and
-        // enclosing-tag passes run; call sites apply their own context.
-        compiled::apply_frontmatter_sanitization(
-            &mut segments,
-            &HashMap::new(),
-            fm.sanitize_notice.as_deref(),
-        );
-        compiled::check_untrusted_include_paths(&segments)?;
-
-        let include_consts = frontmatter_consts(&fm);
-
-        let declared_sanitize = Arc::new(compiled::declared_sanitize(
-            &fm.param_sanitize,
-            fm.sanitize_notice.as_deref(),
-        ));
-        let cached = CachedInclude {
-            segments: Arc::from(segments),
-            declarations: Arc::from(fm.declarations),
-            base_dir,
-            consts: include_consts,
-            imported_consts: fm.imported_consts,
-            declared_sanitize,
-        };
+        let cached = Self::compile_cached_include(&source, include_path, env)?;
 
         {
             let mut cache = self
@@ -623,6 +635,47 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
         }
 
         Ok(cached)
+    }
+
+    fn compile_cached_include(
+        source: &str,
+        include_path: &Path,
+        env: &[(String, Value)],
+    ) -> Result<CachedInclude, TemplateError> {
+        let base_dir = include_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
+        let env_pairs: Vec<(&str, Value)> =
+            env.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+        let (fm, body) =
+            frontmatter::parse_frontmatter_with_base_dir(source, &base_dir, &env_pairs)?;
+        let (mut segments, _inline_templates) = compiled::compile_source_body_with_notice(
+            source,
+            body,
+            &fm.type_aliases,
+            &fm.type_alias_sanitize,
+            fm.sanitize_notice.as_deref(),
+        )?;
+        compiled::apply_frontmatter_sanitization(
+            &mut segments,
+            &HashMap::new(),
+            fm.sanitize_notice.as_deref(),
+        );
+        compiled::check_untrusted_include_paths(&segments)?;
+        let include_consts = frontmatter_consts(&fm);
+        let declared_sanitize = Arc::new(compiled::declared_sanitize(
+            &fm.param_sanitize,
+            fm.sanitize_notice.as_deref(),
+        ));
+        Ok(CachedInclude {
+            segments: Arc::from(segments),
+            declarations: Arc::from(fm.declarations),
+            base_dir,
+            consts: include_consts,
+            imported_consts: fm.imported_consts,
+            declared_sanitize,
+        })
     }
 
     /// Invalidate all cached entries (e.g. after a bulk file update).

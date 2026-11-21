@@ -130,11 +130,14 @@ export class DirectScope {
 
     // 4. Top-level params + defaults
     if (this.topObj !== undefined) {
-      const val = this.topObj[name];
-      if (val !== undefined) {
-        return val;
+      if (Object.hasOwn(this.topObj, name)) {
+        const val = this.topObj[name];
+        if (val !== undefined) {
+          return val;
+        }
+        return undefined;
       }
-      if (this.defaults !== undefined && !Object.hasOwn(this.topObj, name)) {
+      if (this.defaults !== undefined) {
         return this.defaults.get(name);
       }
       return undefined;
@@ -159,7 +162,7 @@ export class DirectScope {
     if (top !== undefined) {
       if (top.binding === root) {
         const v = top.value;
-        return v !== null && typeof v === "object"
+        return v !== null && typeof v === "object" && Object.hasOwn(v, prop)
           ? (v as Record<string, unknown>)[prop]
           : undefined;
       }
@@ -167,7 +170,7 @@ export class DirectScope {
         const frame = this.loopPool[i];
         if (frame?.binding === root) {
           const v = frame.value;
-          return v !== null && typeof v === "object"
+          return v !== null && typeof v === "object" && Object.hasOwn(v, prop)
             ? (v as Record<string, unknown>)[prop]
             : undefined;
         }
@@ -182,7 +185,8 @@ export class DirectScope {
       rootVal !== null &&
       rootVal !== undefined &&
       typeof rootVal === "object" &&
-      !Array.isArray(rootVal)
+      !Array.isArray(rootVal) &&
+      Object.hasOwn(rootVal, prop)
     ) {
       return (rootVal as Record<string, unknown>)[prop];
     }

@@ -69,9 +69,12 @@ pub(crate) const EMPTY_STR: &str = "";
 pub(crate) const EMPTY_JSON_ARRAY: &str = "[]";
 pub(crate) const EMPTY_JSON_OBJECT: &str = "{}";
 pub(crate) const ERR_NULL_POINTER: &str = "null pointer";
+pub(crate) const ERR_NULL_OUT_POINTER: &str = "null out pointer";
+pub(crate) const ERR_BUFFER_TOO_LARGE: &str = "buffer length exceeds isize::MAX";
 pub(crate) const ERR_NULL_TEMPLATE: &str = "null template";
 pub(crate) const ERR_NULL_CONTEXT: &str = "null context";
 pub(crate) const ERR_NULL_CACHE: &str = "null cache";
+pub(crate) const ERR_INTERNAL_PANIC: &str = "internal FFI panic";
 pub(crate) const JSON_BOOL_TRUE: &str = "true";
 pub(crate) const JSON_BOOL_FALSE: &str = "false";
 pub(crate) const JSON_NULL: &str = "null";
@@ -86,6 +89,29 @@ pub(crate) fn into_cstring_raw(s: impl Into<Vec<u8>>) -> *mut c_char {
             CString::new(cleaned).expect("filtered out NUL bytes")
         })
         .into_raw()
+}
+
+/// Validate a `(data, len)` FFI byte slice, allowing `(null, 0)` as `&[]` while rejecting
+/// `(null, len > 0)` and `len > isize::MAX as usize`.
+///
+/// # Safety
+///
+/// If `len > 0` and `data` is non-null, `data` must point to `len` initialized bytes.
+pub(crate) unsafe fn raw_bytes_slice<'a>(
+    data: *const u8,
+    len: usize,
+    null_err: &str,
+) -> Result<&'a [u8], String> {
+    if len == 0 {
+        return Ok(&[]);
+    }
+    if data.is_null() {
+        return Err(null_err.to_string());
+    }
+    if len > isize::MAX as usize {
+        return Err(ERR_BUFFER_TOO_LARGE.to_string());
+    }
+    Ok(unsafe { std::slice::from_raw_parts(data, len) })
 }
 
 /// Convert a C string pointer to a Rust `&str`.
@@ -103,34 +129,85 @@ unsafe fn cstr_to_str<'a>(ptr: *const c_char) -> Result<&'a str, String> {
     cstr.to_str().map_err(|e| format!("invalid UTF-8: {e}"))
 }
 
-/// Allocate a C error string. Returns null on success (no error).
-fn err_to_cstring(msg: &str) -> *mut c_char {
-    into_cstring_raw(msg)
-}
-
 /// Separator between the stable error-kind id and the human-readable message
 /// in error strings returned across the FFI boundary.
 ///
-/// The ASCII Unit Separator (0x1F) never appears in template messages or
-/// rendered output, so bindings can split on it unambiguously.
+/// Any literal occurrence inside untrusted error messages is replaced with `' '`
+/// so bindings can split on `ERR_KIND_SEP` without framing spoofing.
 const ERR_KIND_SEP: char = '\u{1f}';
+
+fn strip_err_sep(msg: &str) -> std::borrow::Cow<'_, str> {
+    if msg.contains(ERR_KIND_SEP) {
+        std::borrow::Cow::Owned(msg.replace(ERR_KIND_SEP, " "))
+    } else {
+        std::borrow::Cow::Borrowed(msg)
+    }
+}
+
+/// Allocate a C error string with any embedded `ERR_KIND_SEP` neutralized.
+fn err_to_cstring(msg: &str) -> *mut c_char {
+    into_cstring_raw(strip_err_sep(msg).into_owned())
+}
+
+/// Extract a human-readable panic description without unwinding across FFI.
+fn panic_payload_msg(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        format!("{ERR_INTERNAL_PANIC}: {s}")
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        format!("{ERR_INTERNAL_PANIC}: {s}")
+    } else {
+        ERR_INTERNAL_PANIC.to_string()
+    }
+}
+
+/// Catch panics in FFI functions returning `*mut c_char` error strings (null = success).
+pub(crate) fn catch_ffi_err(f: impl FnOnce() -> *mut c_char) -> *mut c_char {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(ptr) => ptr,
+        Err(payload) => err_to_cstring(&panic_payload_msg(&*payload)),
+    }
+}
+
+/// Catch panics in FFI functions returning a value + `*mut *mut c_char` `out_err` pointer.
+/// Safely returns `err_ret` without dereferencing if `out_err` itself is null.
+///
+/// # Safety
+///
+/// If non-null, `out_err` must point to a valid writable `*mut c_char`.
+pub(crate) unsafe fn catch_ffi_out_err<T: Copy>(
+    out_err: *mut *mut c_char,
+    err_ret: T,
+    f: impl FnOnce(*mut *mut c_char) -> T,
+) -> T {
+    if out_err.is_null() {
+        return err_ret;
+    }
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(out_err))) {
+        Ok(val) => val,
+        Err(payload) => {
+            unsafe { *out_err = err_to_cstring(&panic_payload_msg(&*payload)) };
+            err_ret
+        }
+    }
+}
+
+/// Catch panics in FFI functions without an error out-channel, returning `fallback` on unwind.
+pub(crate) fn catch_ffi_val<T>(fallback: T, f: impl FnOnce() -> T) -> T {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or(fallback)
+}
 
 /// Allocate a C error string for a [`TemplateError`]:
 /// `"<kind>\u{1f}<message>"`, followed by `"\u{1f}<details-json>"` when the error
-/// carries a structured payload, e.g.
-/// `"missing_params\u{1f}missing required parameters: name\u{1f}{\"missing\":[\"name\"]}"`.
-///
-/// Bindings split on the separator to recover the machine-readable kind, the
-/// human-readable message, and the typed payload (see [`md_tmpl::ErrorDetails`]).
-/// The payload is JSON, so any separator byte inside it is escaped. Reuses
-/// [`err_to_cstring`] for the NUL-safe allocation.
+/// carries a structured payload.
 fn terr_to_cstring(e: &TemplateError) -> *mut c_char {
-    let mut out = format!("{}{}{}", e.kind().as_str(), ERR_KIND_SEP, e);
+    let raw_msg = e.to_string();
+    let clean_msg = strip_err_sep(&raw_msg);
+    let mut out = format!("{}{}{}", e.kind().as_str(), ERR_KIND_SEP, clean_msg);
     if let Some(details) = error_details_json(&e.details()) {
         out.push(ERR_KIND_SEP);
         out.push_str(&details);
     }
-    err_to_cstring(&out)
+    into_cstring_raw(out)
 }
 
 /// Serialize an [`md_tmpl::ErrorDetails`] payload as a compact JSON object, or `None`
@@ -204,10 +281,12 @@ fn error_details_json(d: &md_tmpl::ErrorDetails<'_>) -> Option<String> {
 /// twice.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn pt_free_string(ptr: *mut c_char) {
-    if !ptr.is_null() {
-        // SAFETY: caller guarantees ptr came from CString::into_raw.
-        drop(unsafe { CString::from_raw(ptr) });
-    }
+    catch_ffi_val((), || {
+        if !ptr.is_null() {
+            // SAFETY: caller guarantees ptr came from CString::into_raw.
+            drop(unsafe { CString::from_raw(ptr) });
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------

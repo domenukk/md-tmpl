@@ -6,20 +6,27 @@
  */
 
 import { type Node } from "../parser.js";
-import { type VarDecl } from "../frontmatter.js";
+import {
+  type VarDecl,
+  stripStringLiteral,
+  varTypeToString,
+} from "../frontmatter.js";
 import {
   IncludeNotFoundError,
   TemplateError,
   TemplatePanicError,
   TemplateSyntaxError,
+  UndefinedVariableError,
 } from "../errors.js";
-import { valueToJs } from "../value.js";
+import { type Value, fromJs, valueToJs } from "../value.js";
+import { validateIncludeTypes } from "../evaluator.js";
 import {
   checkUntrustedIncludePath,
   contextualizeIncludeNodes,
 } from "../sanitize_pass.js";
 import { EMPTY_DECLARED_SANITIZE } from "../include_sanitize.js";
 import {
+  EXPR_END,
   EXPR_START,
   KW_RAW,
   MATCH_DEFAULT,
@@ -32,6 +39,8 @@ import {
   NODE_PANIC,
   NODE_TEXT,
   NODE_TMPL,
+  TYPE_OPTION,
+  isValidResolvedPath,
   unescapeStringLiteral,
 } from "../consts.js";
 import { type DirectRenderOptions } from "./options.js";
@@ -540,19 +549,22 @@ export function renderDirectNodes(
         const loadedConsts = new Map<string, unknown>(scope.allConsts());
         let decls: readonly VarDecl[];
         let childOpts: DirectRenderOptions | undefined;
+        let includeLabel: string = node.path ?? node.name;
 
         if (node.path !== undefined) {
+          const resolvedPath = interpolateDirectIncludePath(node.path, scope);
+          includeLabel = resolvedPath;
           if (!options?.templateLoader) {
             throw new TemplateError(
-              `cannot resolve '{% include "${node.path}" %}': file includes require a base directory (compile with fromFile or baseDir option)`,
+              `cannot resolve '{% include "${resolvedPath}" %}': file includes require a base directory (compile with fromFile or baseDir option)`,
             );
           }
           const loaded = options.templateLoader(
-            node.path,
+            resolvedPath,
             options.currentBasePath,
           );
           if (!loaded) {
-            throw new IncludeNotFoundError(node.path);
+            throw new IncludeNotFoundError(resolvedPath);
           }
           const [lNodes, lConsts, lDecls, lBase, lInline, lDeclared] = loaded;
           includedNodes = contextualizeIncludeNodes(
@@ -624,11 +636,7 @@ export function renderDirectNodes(
                 evalCompiledDirectExpr(compiledVal, scope),
               );
             }
-            for (const decl of decls) {
-              if (!iterMap.has(decl.name) && decl.defaultValue !== undefined) {
-                iterMap.set(decl.name, valueToJs(decl.defaultValue));
-              }
-            }
+            finalizeDirectChildParams(decls, iterMap, includeLabel);
             out += renderDirect(
               includedNodes,
               iterMap,
@@ -643,11 +651,7 @@ export function renderDirectNodes(
         for (const [targetKey, compiledVal] of compiledWith) {
           childMap.set(targetKey, evalCompiledDirectExpr(compiledVal, scope));
         }
-        for (const decl of decls) {
-          if (!childMap.has(decl.name) && decl.defaultValue !== undefined) {
-            childMap.set(decl.name, valueToJs(decl.defaultValue));
-          }
-        }
+        finalizeDirectChildParams(decls, childMap, includeLabel);
         out += renderDirect(includedNodes, childMap, loadedConsts, childOpts);
         break;
       }
@@ -658,4 +662,94 @@ export function renderDirectNodes(
   }
 
   return out;
+}
+
+function finalizeDirectChildParams(
+  decls: readonly VarDecl[],
+  childMap: Map<string, unknown>,
+  includeLabel: string,
+): void {
+  if (decls.length > 0 && childMap.size > 0) {
+    const valueCtx = new Map<string, Value>();
+    for (const [k, v] of childMap) {
+      valueCtx.set(k, fromJs(v));
+    }
+    validateIncludeTypes(decls, valueCtx, includeLabel);
+  }
+  for (const decl of decls) {
+    if (!childMap.has(decl.name)) {
+      if (decl.defaultValue !== undefined) {
+        childMap.set(decl.name, valueToJs(decl.defaultValue));
+      } else if (decl.varType.kind === TYPE_OPTION) {
+        childMap.set(decl.name, null);
+      } else {
+        throw new TemplateError(
+          `missing required parameter '${decl.name}' for include '${includeLabel}' (expected ${varTypeToString(decl.varType)})`,
+        );
+      }
+    }
+  }
+}
+
+function interpolateDirectIncludePath(
+  path: string,
+  scope: DirectScope,
+): string {
+  if (!path.includes(EXPR_START)) return path;
+  let result = "";
+  let cursor = 0;
+  let startIdx = path.indexOf(EXPR_START, cursor);
+  while (startIdx !== -1) {
+    if (startIdx > cursor) {
+      result += path.slice(cursor, startIdx);
+    }
+    const exprStart = startIdx + EXPR_START.length;
+    const endIdx = path.indexOf(EXPR_END, exprStart);
+    if (endIdx === -1) {
+      throw new TemplateSyntaxError(
+        `unclosed '${EXPR_START}' in include path '${path}'`,
+      );
+    }
+    const expr = path.slice(exprStart, endIdx).trim();
+    if (expr === "") {
+      throw new TemplateSyntaxError(
+        `empty expression '${EXPR_START}${EXPR_END}' in include path '${path}'`,
+      );
+    }
+    const lit = stripStringLiteral(expr);
+    if (lit !== expr) {
+      result += lit;
+    } else {
+      let resolved: unknown;
+      try {
+        resolved = evalCompiledDirectExpr(compileDirectExpr(expr), scope);
+      } catch (err: unknown) {
+        if (err instanceof UndefinedVariableError) {
+          throw new TemplateSyntaxError(
+            `undeclared variable '${expr}' in include path '${path}'`,
+          );
+        }
+        throw new TemplateSyntaxError(
+          `unresolvable expression '${EXPR_START}${expr}${EXPR_END}' in include path '${path}'`,
+        );
+      }
+      if (resolved === undefined) {
+        throw new TemplateSyntaxError(
+          `undeclared variable '${expr}' in include path '${path}'`,
+        );
+      }
+      result += directDisplay(resolved);
+    }
+    cursor = endIdx + EXPR_END.length;
+    startIdx = path.indexOf(EXPR_START, cursor);
+  }
+  if (cursor < path.length) {
+    result += path.slice(cursor);
+  }
+  if (!isValidResolvedPath(result) || result.includes(EXPR_START)) {
+    throw new TemplateSyntaxError(
+      `include path '${result}' must start with './', '../', or '/'`,
+    );
+  }
+  return result;
 }

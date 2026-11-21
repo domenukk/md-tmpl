@@ -279,7 +279,7 @@ params: []
 Hello",
     )
     .unwrap();
-    assert!(tmpl.declarations().is_empty());
+    assert_eq!(tmpl.declarations(), []);
 }
 
 #[test]
@@ -357,7 +357,7 @@ fn empty_frontmatter_block_compiles_and_renders() {
 # Plain
 ";
     let (tmpl, fm) = Template::compile(source, CompileOptions::default()).unwrap();
-    assert!(fm.declarations.is_empty());
+    assert_eq!(fm.declarations, []);
     assert_eq!(tmpl.render_empty().unwrap().trim(), "# Plain");
 }
 

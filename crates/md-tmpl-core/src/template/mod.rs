@@ -20,7 +20,8 @@ pub(crate) mod analysis;
 mod render_methods;
 #[cfg(not(feature = "std"))]
 use self::analysis::hash_source_no_std;
-use self::{analysis::inject_enum_type_constants, traits_and_io::run_static_analysis};
+use self::analysis::inject_enum_type_constants;
+pub use self::traits_and_io::run_static_analysis;
 
 /// Configuration for template compilation.
 ///
@@ -117,7 +118,7 @@ pub struct Template {
     /// Pre-compiled inline template definitions (`{% tmpl name %}...{% /tmpl %}`).
     inline_templates: Arc<HashMap<String, CompiledInlineTemplate>>,
     source_hash: u64,
-    max_include_depth: usize,
+    max_include_depth: core::sync::atomic::AtomicUsize,
     /// Pre-computed: true if any declared variable has a default value.
     has_defaults: bool,
     /// Pre-computed: true if any declared variable (or nested field) is `Option`.
@@ -139,13 +140,6 @@ pub struct Template {
     /// Declared parameter sanitization (block notices resolved), used when this template
     /// is included as a `tmpl(...)` handle: its parameters then take the caller's trust.
     declared_sanitize: Arc<compiled::DeclaredSanitize>,
-    /// Cached `TypeId`s of Rust types that have passed validation.
-    ///
-    /// When `render::<T>()` is called, the first invocation runs full
-    /// `validate_context`. If it passes, `TypeId::of::<T>()` is stored
-    /// here so subsequent calls skip validation entirely.
-    #[cfg(feature = "std")]
-    checked_type_ids: std::sync::Mutex<Vec<core::any::TypeId>>,
 }
 
 impl core::fmt::Debug for Template {
@@ -173,7 +167,10 @@ impl Clone for Template {
             base_dir: self.base_dir.clone(),
             inline_templates: self.inline_templates.clone(),
             source_hash: self.source_hash,
-            max_include_depth: self.max_include_depth,
+            max_include_depth: core::sync::atomic::AtomicUsize::new(
+                self.max_include_depth
+                    .load(core::sync::atomic::Ordering::Relaxed),
+            ),
             has_defaults: self.has_defaults,
             has_options: self.has_options,
             validation_token: self.validation_token,
@@ -184,15 +181,6 @@ impl Clone for Template {
             env_values: self.env_values.clone(),
             declared_names: self.declared_names.clone(),
             declared_sanitize: self.declared_sanitize.clone(),
-            // Clone inherits cached type IDs — the validation is
-            // shape-based, not instance-based.
-            #[cfg(feature = "std")]
-            checked_type_ids: std::sync::Mutex::new(
-                self.checked_type_ids
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone(),
-            ),
         }
     }
 }
@@ -402,11 +390,12 @@ impl Template {
             frontmatter::parse_frontmatter_with_env(source, env_values)?
         };
         let body = body.to_string();
-        let (mut segments, inline_templates) = compiled::compile_source_body(
+        let (mut segments, inline_templates) = compiled::compile_source_body_with_notice(
             source,
             &body,
             &fm.type_aliases,
             &fm.type_alias_sanitize,
+            fm.sanitize_notice.as_deref(),
         )?;
         compiled::apply_frontmatter_sanitization(
             &mut segments,
@@ -453,7 +442,9 @@ impl Template {
             base_dir: base_dir.map(Path::to_path_buf),
             inline_templates: Arc::new(inline_templates),
             source_hash,
-            max_include_depth: crate::scope::MAX_INCLUDE_DEPTH,
+            max_include_depth: core::sync::atomic::AtomicUsize::new(
+                crate::scope::MAX_INCLUDE_DEPTH,
+            ),
             has_defaults,
             has_options,
             validation_token: next_validation_token(),
@@ -463,7 +454,6 @@ impl Template {
             env_values,
             declared_names,
             declared_sanitize,
-            checked_type_ids: std::sync::Mutex::new(Vec::new()),
         };
         Ok((tmpl, fm))
     }
@@ -484,11 +474,12 @@ impl Template {
         let source_hash = hash_source_no_std(source);
         let (fm, body) = frontmatter::parse_frontmatter_with_env(source, env_values)?;
         let body = body.to_string();
-        let (mut segments, inline_templates) = compiled::compile_source_body(
+        let (mut segments, inline_templates) = compiled::compile_source_body_with_notice(
             source,
             &body,
             &fm.type_aliases,
             &fm.type_alias_sanitize,
+            fm.sanitize_notice.as_deref(),
         )?;
         compiled::apply_frontmatter_sanitization(
             &mut segments,
@@ -529,7 +520,9 @@ impl Template {
             declared_variables: Arc::from(fm.declarations.clone()),
             inline_templates: Arc::new(inline_templates),
             source_hash,
-            max_include_depth: crate::scope::MAX_INCLUDE_DEPTH,
+            max_include_depth: core::sync::atomic::AtomicUsize::new(
+                crate::scope::MAX_INCLUDE_DEPTH,
+            ),
             has_defaults,
             has_options,
             validation_token: next_validation_token(),
@@ -569,7 +562,9 @@ impl Template {
             base_dir: data.base_dir,
             inline_templates: data.inline_templates,
             source_hash: data.source_hash,
-            max_include_depth: crate::scope::MAX_INCLUDE_DEPTH,
+            max_include_depth: core::sync::atomic::AtomicUsize::new(
+                crate::scope::MAX_INCLUDE_DEPTH,
+            ),
             has_defaults,
             has_options,
             validation_token: next_validation_token(),
@@ -579,7 +574,6 @@ impl Template {
             env_values: alloc::sync::Arc::from([]),
             declared_names,
             declared_sanitize: data.declared_sanitize,
-            checked_type_ids: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -628,7 +622,9 @@ impl Template {
             base_dir: None,
             inline_templates: Arc::new(inline_map),
             source_hash: data.source_hash,
-            max_include_depth: crate::scope::MAX_INCLUDE_DEPTH,
+            max_include_depth: core::sync::atomic::AtomicUsize::new(
+                crate::scope::MAX_INCLUDE_DEPTH,
+            ),
             has_defaults,
             has_options,
             validation_token: next_validation_token(),
@@ -639,8 +635,6 @@ impl Template {
             env_values: alloc::sync::Arc::from([]),
             declared_names,
             declared_sanitize: Arc::new(declared_sanitize),
-            #[cfg(feature = "std")]
-            checked_type_ids: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -668,6 +662,11 @@ impl Template {
             .load(core::sync::atomic::Ordering::Relaxed);
         if cached != 0 && (cached == target_tok || cached == strict_tok) {
             return Ok(());
+        }
+        if ctx.values.contains_key(crate::consts::ENUM_TAG_KEY) {
+            return Err(TemplateError::syntax(
+                crate::consts::ERR_RESERVED_ENUM_TAG_KEY,
+            ));
         }
 
         let mut missing: Option<Vec<&str>> = None;
@@ -802,13 +801,20 @@ impl Template {
 
     /// Set the maximum include depth for rendering this template.
     pub fn set_max_include_depth(&mut self, depth: usize) {
-        self.max_include_depth = depth;
+        *self.max_include_depth.get_mut() = depth;
+    }
+
+    /// Set the maximum include depth via a shared reference (thread-safe atomic store,
+    /// used across FFI/cgo boundaries without creating `&mut Template`).
+    pub fn set_max_include_depth_shared(&self, depth: usize) {
+        self.max_include_depth
+            .store(depth, core::sync::atomic::Ordering::Relaxed);
     }
 
     /// Set the maximum include depth for rendering this template (builder style).
     #[must_use]
     pub fn with_max_include_depth(mut self, depth: usize) -> Self {
-        self.max_include_depth = depth;
+        *self.max_include_depth.get_mut() = depth;
         self
     }
 
@@ -819,6 +825,23 @@ impl Template {
     #[must_use]
     pub fn declarations(&self) -> &[VarDecl] {
         &self.declared_variables
+    }
+
+    /// Return parameter declarations as `(name, canonical_type_string)` pairs,
+    /// preserving `trusted str` annotations alongside structural types so
+    /// declaration-contract checks reject `str` -> `trusted str` downgrades.
+    #[must_use]
+    pub fn declaration_pairs(&self) -> Vec<(String, String)> {
+        self.declared_variables
+            .iter()
+            .map(|d| {
+                (
+                    d.name.clone(),
+                    d.var_type
+                        .format_with_sanitize(&d.name, &self.declared_sanitize),
+                )
+            })
+            .collect()
     }
 
     /// Shared handle to the compiled segments (used to memoize per-include-site

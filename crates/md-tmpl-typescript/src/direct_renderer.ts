@@ -14,6 +14,7 @@
 
 export type { DirectRenderOptions } from "./direct_renderer/options.js";
 export { DirectScope } from "./direct_renderer/scope.js";
+export { directToJson } from "./direct_renderer/expr.js";
 export {
   precompileDirectNodes,
   renderDirect,

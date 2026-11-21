@@ -6,12 +6,12 @@ and the TypeScript ``filter_parity.test.ts`` verbatim.
 
 import md_tmpl
 
-DECODE_INPUT = "a &lt;b&gt; &amp;lt; &quot;q&quot; &#39;s&apos; &unknown; &"
-DECODE_EXPECTED = "a <b> &lt; \"q\" 's' &unknown; &"
-ATTR_INPUT = "a&b<c>\"d'e\nf\rg\0h\x01i\x7fj\x85k"
-ATTR_EXPECTED = "a&amp;b&lt;c&gt;&quot;d&apos;e\\nf\\rg\\0h i j k"
-BODY_INPUT = "a&b<c>\"d'\n\0"
-BODY_EXPECTED = "a&amp;b&lt;c&gt;\"d'\n\\0"
+DECODE_INPUT = "a &lt;b&gt; &amp;lt; &quot;q&quot; &#39;s&apos; &#10;x&#13; &unknown; &"
+DECODE_EXPECTED = "a <b> &lt; \"q\" 's' \nx\r &unknown; &"
+ATTR_INPUT = "a&b<c>\"d'e\nf\rg\0h\x01i\x7fj\x85k\ufffel"
+ATTR_EXPECTED = "a&amp;b&lt;c&gt;&quot;d&apos;e&#10;f&#13;ghijkl"
+BODY_INPUT = "a&b<c>\"d'\n\0\x01\uffff"
+BODY_EXPECTED = "a&amp;b&lt;c&gt;\"d'\n"
 LETTERS = ["a", "b", "c", "d", "e"]
 
 
@@ -19,7 +19,7 @@ def test_xml_codec() -> None:
     assert md_tmpl.decode_xml(DECODE_INPUT) == DECODE_EXPECTED
     assert md_tmpl.escape_xml_attr(ATTR_INPUT) == ATTR_EXPECTED
     assert md_tmpl.escape_xml_body(BODY_INPUT) == BODY_EXPECTED
-    assert len(md_tmpl.XML_DECODE_PAIRS) == 6
+    assert len(md_tmpl.XML_DECODE_PAIRS) == 8
     assert ("&amp;", "&") in md_tmpl.XML_DECODE_PAIRS
 
 

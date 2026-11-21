@@ -794,6 +794,7 @@ fn unquote_filter_arg(raw: &str) -> String {
     }
 }
 
+#[derive(Clone, Copy)]
 enum PostJoinSanitize<'a> {
     None,
     Inline(Option<&'a str>),
@@ -895,61 +896,40 @@ fn codegen_list_join_expr(
                 return None;
             }
             let elem_vt = &fields[0].var_type;
-            let write_item = match elem_vt {
-                VarType::Str => match post_sanitize {
-                    PostJoinSanitize::None => quote! {
-                        __out.push_str(::core::convert::AsRef::<str>::as_ref(__join_item));
-                    },
-                    PostJoinSanitize::Inline(None) => quote! {
-                        __out.push_str(&#cp::sanitize_tokens_str(
-                            ::core::convert::AsRef::<str>::as_ref(__join_item),
-                        ));
-                    },
-                    PostJoinSanitize::Inline(Some(tags_lit)) => quote! {
-                        #cp::__private::sanitize_inline_into(
-                            ::core::convert::AsRef::<str>::as_ref(__join_item),
-                            ::core::option::Option::Some(#tags_lit),
-                            __out,
-                        );
-                    },
-                },
-                VarType::Int => quote! { #cp::__private::write_int(*__join_item, __out); },
-                VarType::Float => quote! { #cp::__private::write_float(*__join_item, __out); },
-                VarType::Bool => quote! {
-                    __out.push_str(if *__join_item { "true" } else { "false" });
-                },
-                _ => return None,
-            };
             let list_e = &b.expr;
             let iter_expr = if let Some(n) = limit_n {
                 quote! { (#list_e).iter().take(#n) }
             } else {
                 quote! { (#list_e).iter() }
             };
-            let write_sep = match post_sanitize {
-                PostJoinSanitize::Inline(Some(tags_lit)) => {
-                    let mut sanitized_sep = String::new();
-                    md_tmpl_core::__private::sanitize_inline_into(
-                        &sep,
-                        Some(tags_lit),
-                        &mut sanitized_sep,
-                    );
-                    quote! { __out.push_str(#sanitized_sep); }
-                }
-                PostJoinSanitize::Inline(None) => {
-                    let sanitized_sep = md_tmpl_core::sanitize_tokens_str(&sep).into_owned();
-                    quote! { __out.push_str(#sanitized_sep); }
-                }
-                PostJoinSanitize::None => quote! { __out.push_str(#sep); },
-            };
-            Some(quote! {
-                for (__join_idx, __join_item) in #iter_expr.enumerate() {
-                    if __join_idx > 0 {
-                        #write_sep
+            match elem_vt {
+                VarType::Str => Some(codegen_str_list_join(&cp, &iter_expr, &sep, post_sanitize)),
+                VarType::Int => Some(quote! {
+                    for (__join_idx, __join_item) in #iter_expr.enumerate() {
+                        if __join_idx > 0 {
+                            __out.push_str(#sep);
+                        }
+                        #cp::__private::write_int(*__join_item, __out);
                     }
-                    #write_item
-                }
-            })
+                }),
+                VarType::Float => Some(quote! {
+                    for (__join_idx, __join_item) in #iter_expr.enumerate() {
+                        if __join_idx > 0 {
+                            __out.push_str(#sep);
+                        }
+                        #cp::__private::write_float(*__join_item, __out);
+                    }
+                }),
+                VarType::Bool => Some(quote! {
+                    for (__join_idx, __join_item) in #iter_expr.enumerate() {
+                        if __join_idx > 0 {
+                            __out.push_str(#sep);
+                        }
+                        __out.push_str(if *__join_item { "true" } else { "false" });
+                    }
+                }),
+                _ => None,
+            }
         }
         CompiledExpr::Kinds(path) => {
             let names = resolve_static_kinds(path, scope)?;
@@ -962,6 +942,50 @@ fn codegen_list_join_expr(
             Some(quote! { __out.push_str(#joined); })
         }
         _ => None,
+    }
+}
+
+fn codegen_str_list_join(
+    cp: &TokenStream,
+    iter_expr: &TokenStream,
+    sep: &str,
+    post_sanitize: PostJoinSanitize,
+) -> TokenStream {
+    match post_sanitize {
+        PostJoinSanitize::None => quote! {
+            for (__join_idx, __join_item) in #iter_expr.enumerate() {
+                if __join_idx > 0 {
+                    __out.push_str(#sep);
+                }
+                __out.push_str(::core::convert::AsRef::<str>::as_ref(__join_item));
+            }
+        },
+        PostJoinSanitize::Inline(tags_opt) => {
+            let flush_joined = match tags_opt {
+                None => quote! {
+                    __out.push_str(&#cp::sanitize_tokens_str(&__joined));
+                },
+                Some(tags_lit) => quote! {
+                    #cp::__private::sanitize_inline_into(
+                        &__joined,
+                        ::core::option::Option::Some(#tags_lit),
+                        __out,
+                    );
+                },
+            };
+            quote! {
+                {
+                    let mut __joined = #cp::__private::String::new();
+                    for (__join_idx, __join_item) in #iter_expr.enumerate() {
+                        if __join_idx > 0 {
+                            __joined.push_str(#sep);
+                        }
+                        __joined.push_str(::core::convert::AsRef::<str>::as_ref(__join_item));
+                    }
+                    #flush_joined
+                }
+            }
+        }
     }
 }
 

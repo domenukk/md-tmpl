@@ -51,6 +51,7 @@ pub fn extract_inline_templates(
 ///
 /// Returns [`TemplateError::Syntax`] on duplicate names, empty names, or
 /// compilation failures in inline template bodies.
+#[cfg(all(test, feature = "std"))]
 pub fn extract_inline_templates_with_sanitize(
     input: &str,
     parent_type_aliases: &crate::compat::HashMap<String, crate::types::VarType>,
@@ -58,6 +59,31 @@ pub fn extract_inline_templates_with_sanitize(
         String,
         crate::compat::HashMap<String, crate::types::SanitizeSpec>,
     >,
+) -> Result<(String, HashMap<String, CompiledInlineTemplate>), TemplateError> {
+    extract_inline_templates_with_notice(
+        input,
+        parent_type_aliases,
+        parent_type_alias_sanitize,
+        None,
+    )
+}
+
+/// Extract `{% tmpl NAME %}...{% /tmpl %}` inline template definitions from
+/// the input, inheriting `parent_type_aliases`, `parent_type_alias_sanitize`,
+/// and `parent_sanitize_notice` (unless overridden by the inline block's own `sanitize_notice:`).
+///
+/// # Errors
+///
+/// Returns [`TemplateError::Syntax`] on duplicate names, empty names, or
+/// compilation failures in inline template bodies.
+pub fn extract_inline_templates_with_notice(
+    input: &str,
+    parent_type_aliases: &crate::compat::HashMap<String, crate::types::VarType>,
+    parent_type_alias_sanitize: &crate::compat::HashMap<
+        String,
+        crate::compat::HashMap<String, crate::types::SanitizeSpec>,
+    >,
+    parent_sanitize_notice: Option<&str>,
 ) -> Result<(String, HashMap<String, CompiledInlineTemplate>), TemplateError> {
     let mut templates: HashMap<String, CompiledInlineTemplate> = HashMap::new();
     let mut cleaned = String::with_capacity(input.len());
@@ -119,13 +145,9 @@ pub fn extract_inline_templates_with_sanitize(
             let mut segments = compile_body(tmpl_body)?;
             // Inline templates are include targets: parameter values take the caller's
             // trust, so only the notice and enclosing-tag passes run here.
-            super::apply_frontmatter_sanitization(
-                &mut segments,
-                &HashMap::new(),
-                fm.sanitize_notice.as_deref(),
-            );
-            let declared_sanitize =
-                super::declared_sanitize(&fm.param_sanitize, fm.sanitize_notice.as_deref());
+            let effective_notice = fm.sanitize_notice.as_deref().or(parent_sanitize_notice);
+            super::apply_frontmatter_sanitization(&mut segments, &HashMap::new(), effective_notice);
+            let declared_sanitize = super::declared_sanitize(&fm.param_sanitize, effective_notice);
 
             // Build const values map from inline template's own consts.
             let mut inline_consts = HashMap::new();

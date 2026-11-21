@@ -31,6 +31,7 @@ import "C"
 
 import (
 	"encoding/json"
+	"runtime"
 	"sync"
 	"unsafe"
 )
@@ -104,6 +105,7 @@ func EscapeXML(s string) string {
 	ptr, n := strPtrAndLen(s)
 	var errPtr *C.char
 	res := C.pt_escape_xml(ptr, n, &errPtr)
+	runtime.KeepAlive(s)
 	if errPtr != nil {
 		panic(freeError(errPtr))
 	}
@@ -116,6 +118,7 @@ func EscapeJSON(s string) string {
 	ptr, n := strPtrAndLen(s)
 	var errPtr *C.char
 	res := C.pt_escape_json(ptr, n, &errPtr)
+	runtime.KeepAlive(s)
 	if errPtr != nil {
 		panic(freeError(errPtr))
 	}
@@ -126,13 +129,17 @@ func EscapeJSON(s string) string {
 // HasControlTokens reports whether s contains any known LLM control token or generic <|...|> / <｜...｜> token.
 func HasControlTokens(s string) bool {
 	ptr, n := strPtrAndLen(s)
-	return bool(C.pt_has_control_tokens(ptr, n))
+	ok := bool(C.pt_has_control_tokens(ptr, n))
+	runtime.KeepAlive(s)
+	return ok
 }
 
 // HasRoleControlTokens reports whether s contains any role/turn control token in RoleTokenDelimiters or generic pipe token.
 func HasRoleControlTokens(s string) bool {
 	ptr, n := strPtrAndLen(s)
-	return bool(C.pt_has_role_control_tokens(ptr, n))
+	ok := bool(C.pt_has_role_control_tokens(ptr, n))
+	runtime.KeepAlive(s)
+	return ok
 }
 
 // SanitizeTokens neutralizes all known LLM control tokens and generic pipe tokens in a single pass.
@@ -140,6 +147,7 @@ func SanitizeTokens(s string) string {
 	ptr, n := strPtrAndLen(s)
 	var errPtr *C.char
 	res := C.pt_sanitize_tokens(ptr, n, &errPtr)
+	runtime.KeepAlive(s)
 	if errPtr != nil {
 		panic(freeError(errPtr))
 	}
@@ -152,6 +160,7 @@ func SanitizeRoleTokens(s string) string {
 	ptr, n := strPtrAndLen(s)
 	var errPtr *C.char
 	res := C.pt_sanitize_role_tokens(ptr, n, &errPtr)
+	runtime.KeepAlive(s)
 	if errPtr != nil {
 		panic(freeError(errPtr))
 	}
@@ -167,6 +176,7 @@ func Fence(s string, lang string) (string, error) {
 	defer freeLang()
 	var errPtr *C.char
 	res := C.pt_fence(ptr, n, cLang, &errPtr)
+	runtime.KeepAlive(s)
 	if errPtr != nil {
 		return "", freeError(errPtr)
 	}
@@ -179,7 +189,9 @@ func HasQuarantineTagBreakout(s string, tagSpec string) bool {
 	ptr, n := strPtrAndLen(s)
 	cSpec, freeSpec := optCString(tagSpec)
 	defer freeSpec()
-	return bool(C.pt_has_quarantine_tag_breakout(ptr, n, cSpec))
+	ok := bool(C.pt_has_quarantine_tag_breakout(ptr, n, cSpec))
+	runtime.KeepAlive(s)
+	return ok
 }
 
 // HasUntrustedBreakout reports whether s contains any LLM control token, generic pipe token, or XML tag matching tagSpec.
@@ -187,7 +199,9 @@ func HasUntrustedBreakout(s string, tagSpec string) bool {
 	ptr, n := strPtrAndLen(s)
 	cSpec, freeSpec := optCString(tagSpec)
 	defer freeSpec()
-	return bool(C.pt_has_untrusted_breakout(ptr, n, cSpec))
+	ok := bool(C.pt_has_untrusted_breakout(ptr, n, cSpec))
+	runtime.KeepAlive(s)
+	return ok
 }
 
 // SanitizeQuarantinePayload escapes embedded opening/closing tags matching tagSpec.
@@ -197,6 +211,7 @@ func SanitizeQuarantinePayload(s string, tagSpec string) string {
 	defer freeSpec()
 	var errPtr *C.char
 	res := C.pt_sanitize_quarantine_payload(ptr, n, cSpec, &errPtr)
+	runtime.KeepAlive(s)
 	if errPtr != nil {
 		panic(freeError(errPtr))
 	}
@@ -211,6 +226,7 @@ func SanitizeUntrusted(s string, tagSpec string) string {
 	defer freeSpec()
 	var errPtr *C.char
 	res := C.pt_sanitize_untrusted(ptr, n, cSpec, &errPtr)
+	runtime.KeepAlive(s)
 	if errPtr != nil {
 		panic(freeError(errPtr))
 	}
@@ -226,6 +242,7 @@ func Quarantine(s string, tagSpec string) (string, error) {
 	defer freeSpec()
 	var errPtr *C.char
 	res := C.pt_quarantine(ptr, n, cSpec, &errPtr)
+	runtime.KeepAlive(s)
 	if errPtr != nil {
 		return "", freeError(errPtr)
 	}
@@ -241,6 +258,7 @@ func QuarantineUntrusted(s string, tagSpec string) (string, error) {
 	defer freeSpec()
 	var errPtr *C.char
 	res := C.pt_quarantine_untrusted(ptr, n, cSpec, &errPtr)
+	runtime.KeepAlive(s)
 	if errPtr != nil {
 		return "", freeError(errPtr)
 	}
@@ -254,7 +272,9 @@ func IsQuarantined(s string, tagSpec string) bool {
 	ptr, n := strPtrAndLen(s)
 	cSpec, freeSpec := optCString(tagSpec)
 	defer freeSpec()
-	return bool(C.pt_is_quarantined(ptr, n, cSpec))
+	ok := bool(C.pt_is_quarantined(ptr, n, cSpec))
+	runtime.KeepAlive(s)
+	return ok
 }
 
 // Sanitize neutralizes all known LLM control tokens, generic pipe tokens, and optional XML boundary tags matching tagSpec.
@@ -265,6 +285,7 @@ func Sanitize(s string, tagSpec string) (string, error) {
 	defer freeSpec()
 	var errPtr *C.char
 	res := C.pt_sanitize(ptr, n, cSpec, &errPtr)
+	runtime.KeepAlive(s)
 	if errPtr != nil {
 		return "", freeError(errPtr)
 	}
@@ -281,6 +302,7 @@ func SanitizeBlock(s string, tagSpec string) (string, error) {
 	defer freeSpec()
 	var errPtr *C.char
 	res := C.pt_sanitize_block(ptr, n, cSpec, nil, &errPtr)
+	runtime.KeepAlive(s)
 	if errPtr != nil {
 		return "", freeError(errPtr)
 	}
@@ -299,6 +321,7 @@ func SanitizeBlockWithNotice(s string, tagSpec string, customNotice string) (str
 	defer C.free(unsafe.Pointer(cNotice))
 	var errPtr *C.char
 	res := C.pt_sanitize_block(ptr, n, cSpec, cNotice, &errPtr)
+	runtime.KeepAlive(s)
 	if errPtr != nil {
 		return "", freeError(errPtr)
 	}
@@ -312,7 +335,9 @@ func IsSanitizedBlock(s string, tagSpec string) bool {
 	ptr, n := strPtrAndLen(s)
 	cSpec, freeSpec := optCString(tagSpec)
 	defer freeSpec()
-	return bool(C.pt_is_sanitized_block(ptr, n, cSpec, nil))
+	ok := bool(C.pt_is_sanitized_block(ptr, n, cSpec, nil))
+	runtime.KeepAlive(s)
+	return ok
 }
 
 // IsSanitizedBlockWithNotice reports whether s is wrapped in <primary_tag>\n{customNotice}\n...\n</primary_tag>
@@ -323,7 +348,9 @@ func IsSanitizedBlockWithNotice(s string, tagSpec string, customNotice string) b
 	defer freeSpec()
 	cNotice := C.CString(customNotice)
 	defer C.free(unsafe.Pointer(cNotice))
-	return bool(C.pt_is_sanitized_block(ptr, n, cSpec, cNotice))
+	ok := bool(C.pt_is_sanitized_block(ptr, n, cSpec, cNotice))
+	runtime.KeepAlive(s)
+	return ok
 }
 
 // UnsanitizeBlock extracts the inner sanitized payload from a verified SanitizeBlock envelope.
@@ -332,6 +359,7 @@ func UnsanitizeBlock(s string, tagSpec string) (string, bool) {
 	cSpec, freeSpec := optCString(tagSpec)
 	defer freeSpec()
 	res := C.pt_unsanitize_block(ptr, n, cSpec, nil)
+	runtime.KeepAlive(s)
 	if res == nil {
 		return "", false
 	}
@@ -347,6 +375,7 @@ func UnsanitizeBlockWithNotice(s string, tagSpec string, customNotice string) (s
 	cNotice := C.CString(customNotice)
 	defer C.free(unsafe.Pointer(cNotice))
 	res := C.pt_unsanitize_block(ptr, n, cSpec, cNotice)
+	runtime.KeepAlive(s)
 	if res == nil {
 		return "", false
 	}
