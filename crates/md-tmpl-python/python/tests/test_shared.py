@@ -74,7 +74,7 @@ def _resolve_tmpl_str(tc: dict[str, Any], key: str, lines_key: str) -> str:
         if val.endswith(".tmpl.md"):
             path = SHARED_DIR / val
             if path.exists():
-                return path.read_text()
+                return path.read_text(encoding="utf-8")
         return val
     lines = tc.get(lines_key)
     if isinstance(lines, list):
@@ -87,7 +87,7 @@ def _resolve_file_content(val: Any) -> str:
         if val.endswith(".tmpl.md"):
             path = SHARED_DIR / val
             if path.exists():
-                return path.read_text()
+                return path.read_text(encoding="utf-8")
         return val
     if isinstance(val, list):
         return "\n".join(str(x) for x in val)
@@ -111,7 +111,7 @@ def _suite_files(suite: str) -> list[str]:
 def _load_all_cases() -> list[tuple[str, str, dict[str, Any]]]:
     all_cases: list[tuple[str, str, dict[str, Any]]] = []
     for fname in (f for suite in SHARED_SUITES for f in _suite_files(suite)):
-        data = tomllib.loads((SHARED_DIR / fname).read_text())
+        data = tomllib.loads((SHARED_DIR / fname).read_text(encoding="utf-8"))
         for case in data.get("tests", []):
             case_id = f"{fname}::{case.get('name', 'unnamed')}"
             all_cases.append((fname, case_id, case))
@@ -150,7 +150,7 @@ def test_shared_case(
             content = _resolve_file_content(raw_content)
             target = tmp_path / rel_path
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content)
+            target.write_text(content, encoding="utf-8")
         base_dir = tmp_path
         source = _resolve_tmpl_str(case, "parent_template", "parent_template_lines")
     else:

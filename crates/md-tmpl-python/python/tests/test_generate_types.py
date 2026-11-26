@@ -384,7 +384,7 @@ class TestGenerateTypesSource:
 
         source = generate_types_source(tmpl_path)
         py_path = tmp_path / "greet_types.py"
-        py_path.write_text(source)
+        py_path.write_text(source, encoding="utf-8")
 
         # Import the generated module.
         spec = importlib.util.spec_from_file_location("greet_types", str(py_path))

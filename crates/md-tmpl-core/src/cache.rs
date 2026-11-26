@@ -451,10 +451,8 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
         }
 
         // Mtime changed (or first load) — read file and hash.
-        let mut source = std::fs::read_to_string(path)?;
-        if source.contains('\r') {
-            source = source.replace("\r\n", "\n");
-        }
+        let raw_source = std::fs::read_to_string(path)?;
+        let source = crate::consts::normalize_line_endings(&raw_source);
         let source_hash = self.hash_content(&source);
 
         // Check if content hash still matches despite mtime change (e.g. whitespace-only save).
@@ -593,9 +591,10 @@ impl<S: std::hash::BuildHasher> TemplateCache<S> {
         }
 
         // Mtime changed — read and hash.
-        let source = std::fs::read_to_string(include_path).map_err(|err| {
+        let raw_source = std::fs::read_to_string(include_path).map_err(|err| {
             TemplateError::IncludeNotFound(format!("{}: {err}", include_path.display()))
         })?;
+        let source = crate::consts::normalize_line_endings(&raw_source);
         let source_hash = self.hash_content(&source);
 
         // Content hash still matches (and same env) despite mtime change?

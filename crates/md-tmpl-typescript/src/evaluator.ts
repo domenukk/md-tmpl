@@ -7,6 +7,8 @@ import {
   type Value,
   ENUM_TAG_KEY,
   ENUM_VARIANTS_KEY,
+  bool,
+  float,
   str,
   int,
   isTruthy,
@@ -164,7 +166,7 @@ const NUM_LITERAL_RE = /^-?[0-9]+(?:\.[0-9]+)?$/;
  */
 function numericLiteralToValue(token: string): Value {
   const num = Number(token);
-  return Number.isInteger(num) ? int(num) : { type: TYPE_FLOAT, value: num };
+  return Number.isInteger(num) ? int(num) : float(num);
 }
 
 /** Resolve a single expression (path, function call, or literal). */
@@ -184,8 +186,8 @@ function resolveExpr(expr: string, scope: Scope): Value {
 
   // Bare bool literal — usable in every expression position (option B), so
   // `{{ true }}` / `{{ false }}` render like a bool variable would.
-  if (expr === LIT_TRUE) return { type: TYPE_BOOL, value: true };
-  if (expr === LIT_FALSE) return { type: TYPE_BOOL, value: false };
+  if (expr === LIT_TRUE) return bool(true);
+  if (expr === LIT_FALSE) return bool(false);
 
   // Bare numeric literal (int or float). The strict shape check keeps
   // variable names and malformed tokens out of the literal path, letting
@@ -252,15 +254,15 @@ function resolveExpr(expr: string, scope: Scope): Value {
         const val = scope.resolvePath(arg);
         if (scope.isOptionParam(arg)) {
           if (val.type === TYPE_NONE) {
-            return { type: TYPE_BOOL, value: false };
+            return bool(false);
           }
-          return { type: TYPE_BOOL, value: true };
+          return bool(true);
         } else {
           let hasVal = true;
           if (val.type === TYPE_NONE) hasVal = false;
           else if (val.type === TYPE_STR) hasVal = val.value.length > 0;
           else if (val.type === TYPE_LIST) hasVal = val.items.length > 0;
-          return { type: TYPE_BOOL, value: hasVal };
+          return bool(hasVal);
         }
       }
       case FN_UNSAFE_TRUST: {
@@ -353,9 +355,6 @@ export function evaluateCondition(condition: string, scope: Scope): boolean {
   }
   return result;
 }
-
-// Compile-time condition syntax validation — extracted to its own module.
-export { validateConditionSyntax } from "./condition_validate.js";
 
 // ---------------------------------------------------------------------------
 // Recursive descent parser/evaluator (evaluates in-place)
@@ -559,7 +558,7 @@ function evaluateOperandValue(operand: OperandToken, scope: Scope): Value {
       return str(inner);
     }
     case TokKind.BoolLit:
-      return { type: TYPE_BOOL, value: operand.value === LIT_TRUE };
+      return bool(operand.value === LIT_TRUE);
     case TokKind.NumLit:
       return numericLiteralToValue(operand.value);
     case TokKind.Ident:

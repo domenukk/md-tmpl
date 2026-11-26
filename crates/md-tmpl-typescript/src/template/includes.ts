@@ -4,6 +4,7 @@
  * @module
  */
 
+import { normalizeLineEndings } from "../consts.js";
 import { parseFrontmatter } from "../frontmatter.js";
 import { declaredSanitize } from "../include_sanitize.js";
 import { parseBody } from "../parser.js";
@@ -45,9 +46,9 @@ export function resolveIncludeEntry(
   if (entry?.mtimeMs === stat.mtimeMs && entry.envHash === envHash) {
     return entry.cached;
   }
-  let source: string;
+  let rawSource: string;
   try {
-    source = getFs().readFileSync(absPath, "utf-8");
+    rawSource = getFs().readFileSync(absPath, "utf-8");
   } catch (err) {
     console.debug(
       "Template include resolution failed for path %s: %s",
@@ -56,6 +57,7 @@ export function resolveIncludeEntry(
     );
     return undefined;
   }
+  const source = normalizeLineEndings(rawSource);
   const hash = hashString(source);
   if (entry?.hash === hash && entry.envHash === envHash) {
     entry.mtimeMs = stat.mtimeMs;

@@ -229,8 +229,8 @@ fn load_template_missing_file() {
     let err = load_template(dir.path(), "nonexistent")
         .expect_err("loading nonexistent template should fail");
     assert!(
-        err.to_string().contains("No such file") || err.to_string().contains("not found"),
-        "should mention file not found: {err}"
+        matches!(err, TemplateError::Io(ref io_err) if io_err.kind() == std::io::ErrorKind::NotFound),
+        "expected Io(NotFound), got: {err}"
     );
 }
 

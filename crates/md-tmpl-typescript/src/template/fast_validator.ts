@@ -14,6 +14,7 @@
 
 import { type VarDecl, type VarType } from "../frontmatter.js";
 import { type Node } from "../parser.js";
+import { isBoxedValue } from "../value.js";
 import {
   ENUM_TAG_KEY,
   FN_KIND,
@@ -30,7 +31,6 @@ import {
   TYPE_FLOAT,
   TYPE_INT,
   TYPE_LIST,
-  TYPE_NONE,
   TYPE_OPTION,
   TYPE_SCALAR_LIST,
   TYPE_STR,
@@ -40,9 +40,6 @@ import {
 } from "../consts.js";
 
 const MAX_FAST_VALIDATION_DEPTH = 32;
-const LEGACY_DICT_TYPE = "dict";
-const FIELD_NAME_TYPE = "type";
-const FIELD_NAME_VALUE = "value";
 
 export interface CompiledFieldCheck {
   readonly name: string;
@@ -62,12 +59,10 @@ export type CompiledTypeSpec =
   | {
       readonly kind: typeof TYPE_LIST;
       readonly fields: readonly CompiledFieldCheck[];
-      readonly needsBoxedCheck: boolean;
     }
   | {
       readonly kind: typeof TYPE_STRUCT;
       readonly fields: readonly CompiledFieldCheck[];
-      readonly needsBoxedCheck: boolean;
     }
   | {
       readonly kind: typeof TYPE_OPTION;
@@ -150,15 +145,9 @@ function compileTypeSpec(
         name: f.name,
         spec: compileTypeSpec(f.varType, typeAliases, seenAliases),
       }));
-      const hasTypeField = fields.some((f) => f.name === FIELD_NAME_TYPE);
       return {
         kind: TYPE_LIST,
         fields,
-        needsBoxedCheck:
-          !hasTypeField &&
-          fields.every(
-            (f) => f.name === FIELD_NAME_TYPE || f.name === FIELD_NAME_VALUE,
-          ),
       };
     }
 
@@ -167,15 +156,9 @@ function compileTypeSpec(
         name: f.name,
         spec: compileTypeSpec(f.varType, typeAliases, seenAliases),
       }));
-      const hasTypeField = fields.some((f) => f.name === FIELD_NAME_TYPE);
       return {
         kind: TYPE_STRUCT,
         fields,
-        needsBoxedCheck:
-          !hasTypeField &&
-          fields.every(
-            (f) => f.name === FIELD_NAME_TYPE || f.name === FIELD_NAME_VALUE,
-          ),
       };
     }
 
@@ -216,22 +199,6 @@ function compileTypeSpec(
       };
     }
   }
-}
-
-function isBoxedValueObject(val: object): boolean {
-  if (!(FIELD_NAME_TYPE in val)) return false;
-  const t = val.type;
-  return (
-    t === TYPE_STR ||
-    t === TYPE_BOOL ||
-    t === TYPE_INT ||
-    t === TYPE_FLOAT ||
-    t === TYPE_LIST ||
-    t === TYPE_STRUCT ||
-    t === TYPE_TMPL ||
-    t === TYPE_NONE ||
-    t === LEGACY_DICT_TYPE
-  );
 }
 
 function isValidStructFields(
@@ -311,7 +278,7 @@ function isValidFastValue(
         if (
           typeof item !== "object" ||
           item === null ||
-          (spec.needsBoxedCheck && isBoxedValueObject(item)) ||
+          isBoxedValue(item) ||
           !isValidStructFields(
             item as Record<string, unknown>,
             spec.fields,
@@ -324,11 +291,7 @@ function isValidFastValue(
       return true;
     }
     case TYPE_STRUCT:
-      if (
-        typeof val !== "object" ||
-        val === null ||
-        (spec.needsBoxedCheck && isBoxedValueObject(val))
-      ) {
+      if (typeof val !== "object" || val === null || isBoxedValue(val)) {
         return false;
       }
       return isValidStructFields(
@@ -344,7 +307,7 @@ function isValidFastValue(
         typeof val !== "object" ||
         val === null ||
         Array.isArray(val) ||
-        isBoxedValueObject(val)
+        isBoxedValue(val)
       ) {
         return false;
       }

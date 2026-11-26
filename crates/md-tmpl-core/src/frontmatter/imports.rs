@@ -304,6 +304,34 @@ pub fn resolve_imports<S: core::hash::BuildHasher>(
     resolve_imports_with_consts(&mut imports_clone, base_dir, visited, &empty_consts)
 }
 
+#[cfg(feature = "std")]
+fn interpolate_import_path(
+    import: &mut Import,
+    available_consts: &HashMap<String, Value>,
+) -> Result<(), TemplateError> {
+    let path_str = import.path.to_string_lossy();
+    if !path_str.contains(crate::consts::EXPR_START) {
+        return Ok(());
+    }
+    let interpolated = interpolate_path_str(&path_str, available_consts)?;
+    if !crate::consts::is_valid_resolved_path(&interpolated)
+        || interpolated.contains(crate::consts::EXPR_START)
+    {
+        return Err(TemplateError::syntax(format!(
+            "import path '{interpolated}' must start with './', '../', or '/'"
+        )));
+    }
+    let expected_stem = extract_template_stem_str(&interpolated);
+    if import.stem != expected_stem {
+        return Err(TemplateError::syntax(format!(
+            "import stem '{}' does not match filename stem '{expected_stem}' (from '{interpolated}')",
+            import.stem
+        )));
+    }
+    import.path = PathBuf::from(interpolated);
+    Ok(())
+}
+
 /// Resolve imports with available constants for path interpolation.
 ///
 /// Imports are processed **sequentially**: literal-path imports are resolved
@@ -326,39 +354,7 @@ pub fn resolve_imports_with_consts<S: core::hash::BuildHasher>(
     let mut accumulated_consts = available_consts.clone();
 
     for import in imports.iter_mut() {
-        // Interpolate this import's path using all consts accumulated so far.
-        {
-            #[cfg(feature = "std")]
-            let path_str = import.path.to_string_lossy().to_string();
-            #[cfg(not(feature = "std"))]
-            let path_str = import.path.clone();
-
-            if path_str.contains(crate::consts::EXPR_START) {
-                let interpolated = interpolate_path_str(&path_str, &accumulated_consts)?;
-                if !crate::consts::is_valid_resolved_path(&interpolated)
-                    || interpolated.contains(crate::consts::EXPR_START)
-                {
-                    return Err(TemplateError::syntax(format!(
-                        "import path '{interpolated}' must start with './', '../', or '/'"
-                    )));
-                }
-                let expected_stem = extract_template_stem_str(&interpolated);
-                if import.stem != expected_stem {
-                    return Err(TemplateError::syntax(format!(
-                        "import stem '{}' does not match filename stem '{expected_stem}' (from '{interpolated}')",
-                        import.stem
-                    )));
-                }
-                #[cfg(feature = "std")]
-                {
-                    import.path = PathBuf::from(interpolated);
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    import.path = interpolated;
-                }
-            }
-        }
+        interpolate_import_path(import, &accumulated_consts)?;
 
         let resolved_path = if import.path.is_absolute() {
             import.path.clone()
@@ -375,13 +371,14 @@ pub fn resolve_imports_with_consts<S: core::hash::BuildHasher>(
             )));
         }
 
-        let source = std::fs::read_to_string(&resolved_path).map_err(|e| {
+        let raw_source = std::fs::read_to_string(&resolved_path).map_err(|e| {
             TemplateError::syntax(format!(
                 "cannot read imported template '{}': {}",
                 resolved_path.display(),
                 e
             ))
         })?;
+        let source = crate::consts::normalize_line_endings(&raw_source);
 
         let (imported_fm, _) = parse_frontmatter(&source)?;
 

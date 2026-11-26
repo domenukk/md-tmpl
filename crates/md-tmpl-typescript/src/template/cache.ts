@@ -5,6 +5,7 @@
  */
 
 import { TemplateError } from "../errors.js";
+import { normalizeLineEndings } from "../consts.js";
 import { type CachedInclude, type IncludeCacheEntry } from "./types.js";
 import { getFs, getPath, hashString } from "./utils.js";
 import { resolveIncludeEntry } from "./includes.js";
@@ -37,15 +38,16 @@ export class TemplateCache {
   /** Load a template, returning a cached version if unchanged. */
   load(filePath: string): Template {
     const absPath = getPath().resolve(filePath);
-    let source: string;
+    let rawSource: string;
     try {
-      source = getFs().readFileSync(absPath, "utf-8");
+      rawSource = getFs().readFileSync(absPath, "utf-8");
     } catch (err) {
       throw new TemplateError(
         `failed to load template: ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
 
+    const source = normalizeLineEndings(rawSource);
     const hash = hashString(source);
     const cached = this.cache.get(absPath);
     if (cached?.hash === hash) {

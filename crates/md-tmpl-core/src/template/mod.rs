@@ -259,11 +259,8 @@ impl Template {
     /// Returns [`TemplateError::Io`] if the file cannot be read.
     #[cfg(feature = "std")]
     pub fn from_file(path: &Path) -> Result<Self, TemplateError> {
-        let mut source = std::fs::read_to_string(path)?;
-        // Normalize CRLF → LF for cross-platform consistency.
-        if source.contains('\r') {
-            source = source.replace("\r\n", "\n");
-        }
+        let raw = std::fs::read_to_string(path)?;
+        let source = crate::consts::normalize_line_endings(&raw);
         let (tmpl, _fm) =
             Self::compile_from_source(&source, Some(path.parent().unwrap_or(Path::new("."))))?;
         Ok(tmpl)
@@ -275,12 +272,7 @@ impl Template {
     ///
     /// Returns [`TemplateError::Syntax`] if the body contains a syntax error.
     pub fn from_source(source: &str) -> Result<Self, TemplateError> {
-        // Normalize CRLF → LF for cross-platform consistency.
-        let source = if source.contains('\r') {
-            alloc::borrow::Cow::Owned(source.replace("\r\n", "\n"))
-        } else {
-            alloc::borrow::Cow::Borrowed(source)
-        };
+        let source = crate::consts::normalize_line_endings(source);
         #[cfg(feature = "std")]
         let (tmpl, _fm) = Self::compile_from_source(&source, None)?;
         #[cfg(not(feature = "std"))]
@@ -316,13 +308,7 @@ impl Template {
         source: &str,
         options: CompileOptions<'_>,
     ) -> Result<(Self, Frontmatter), TemplateError> {
-        // Normalize CRLF → LF so templates read on Windows produce identical
-        // output to Unix.  Uses `Cow` to avoid allocation when no `\r` present.
-        let source = if source.contains('\r') {
-            alloc::borrow::Cow::Owned(source.replace("\r\n", "\n"))
-        } else {
-            alloc::borrow::Cow::Borrowed(source)
-        };
+        let source = crate::consts::normalize_line_endings(source);
         #[cfg(feature = "std")]
         return Self::compile_inner(&source, options.base_dir, options.allow_unused, options.env);
         #[cfg(not(feature = "std"))]
@@ -354,11 +340,8 @@ impl Template {
         path: &Path,
         options: CompileOptions<'_>,
     ) -> Result<(Self, Frontmatter), TemplateError> {
-        let mut source = std::fs::read_to_string(path)?;
-        // Normalize CRLF → LF for cross-platform consistency.
-        if source.contains('\r') {
-            source = source.replace("\r\n", "\n");
-        }
+        let raw = std::fs::read_to_string(path)?;
+        let source = crate::consts::normalize_line_endings(&raw);
         let base_dir = options.base_dir.or_else(|| path.parent());
         Self::compile_inner(&source, base_dir, options.allow_unused, options.env)
     }

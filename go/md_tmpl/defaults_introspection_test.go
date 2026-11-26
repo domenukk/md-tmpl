@@ -244,7 +244,7 @@ func TestFromSourceWithBaseDir(t *testing.T) {
 	tmpl, err := FromSourceWithBaseDir(`---
 params: [x = str]
 ---
-{{ x }}`, "/tmp")
+{{ x }}`, t.TempDir())
 	if err != nil {
 		t.Fatalf("FromSourceWithBaseDir: %v", err)
 	}

@@ -48,6 +48,7 @@ import {
 import {
   splitTopLevel,
   startsWithCompoundType,
+  stripSingleTrustKeyword,
   stripTypeBrackets,
 } from "./frontmatter/var_type.js";
 import {
@@ -56,43 +57,10 @@ import {
   parseSanitizeFilterArgs,
 } from "./sanitize_runtime.js";
 
+export { stripSingleTrustKeyword };
+
 export type TrustMode = "safe" | "trusted";
 export type DeclSection = "param" | "env" | "const";
-
-/**
- * Strip a single leading `trusted` or `untrusted` modifier (`kw T` or `kw(T)`),
- * returning the inner type expression. Does not strip `kw("tag")` string-literal
- * arguments so invalid forms like `untrusted("doc") str` or `trusted("doc") str`
- * are rejected by the type parser.
- */
-export function stripSingleTrustKeyword(
-  s: string,
-  kw: string,
-): string | undefined {
-  if (!s.startsWith(kw)) return undefined;
-  const rest = s.slice(kw.length);
-  const restTrimmed = rest.trim();
-  if (rest.startsWith(" ") || rest.startsWith("\t")) {
-    if (restTrimmed.length > 0) {
-      return restTrimmed;
-    }
-  } else if (
-    restTrimmed.startsWith(PAREN_OPEN) &&
-    restTrimmed.endsWith(PAREN_CLOSE)
-  ) {
-    const inner = restTrimmed
-      .slice(PAREN_OPEN.length, -PAREN_CLOSE.length)
-      .trim();
-    if (
-      inner.length > 0 &&
-      !inner.startsWith(QUOTE_DOUBLE) &&
-      !inner.startsWith(QUOTE_SINGLE)
-    ) {
-      return inner;
-    }
-  }
-  return undefined;
-}
 
 function splitPipeAware(s: string): [string, string] {
   let depth = 0;

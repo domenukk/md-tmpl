@@ -52,7 +52,7 @@ def _denull(value: Any) -> Any:
 def _load_all() -> list[tuple[str, dict]]:
     cases: list[tuple[str, dict]] = []
     for fname in CORPUS_FILES:
-        data = tomllib.loads((CORPUS_DIR / fname).read_text())
+        data = tomllib.loads((CORPUS_DIR / fname).read_text(encoding="utf-8"))
         for case in data["cases"]:
             cases.append((f"{fname}:{case['name']}", _denull(case)))
     return cases

@@ -5,22 +5,17 @@
  */
 
 import { TemplateSyntaxError } from "../errors.js";
-import { type Value, display, getField } from "../value.js";
+import { type Value, display, getField, str } from "../value.js";
 import {
   DOT,
   EXPR_END,
   EXPR_START,
-  PATH_PREFIX_CUR,
-  PATH_PREFIX_CUR_WIN,
-  PATH_PREFIX_PARENT,
-  PATH_PREFIX_PARENT_WIN,
   PREFIX_CONSTS_DOT,
   PREFIX_OPTIONS_DOT,
   PREFIX_OPTS_DOT,
   PREFIX_PARAMS_DOT,
   QUOTE_DOUBLE,
   QUOTE_SINGLE,
-  SLASH,
   isValidResolvedPath,
 } from "../consts.js";
 import { type ImportDecl } from "./types.js";
@@ -55,7 +50,7 @@ export function interpolatePathStr(
     let valOpt: Value | undefined;
     const lit = stripStringLiteral(expr);
     if (lit !== expr) {
-      valOpt = { type: "str", value: lit };
+      valOpt = str(lit);
     } else {
       valOpt = constsMap.get(expr);
       if (valOpt === undefined) {
@@ -185,12 +180,5 @@ export function stripStringLiteral(s: string): string {
 }
 
 export function isValidPathPrefix(path: string): boolean {
-  return (
-    path.startsWith(PATH_PREFIX_CUR) ||
-    path.startsWith(PATH_PREFIX_PARENT) ||
-    path.startsWith(PATH_PREFIX_CUR_WIN) ||
-    path.startsWith(PATH_PREFIX_PARENT_WIN) ||
-    path.startsWith(SLASH) ||
-    path.startsWith(EXPR_START)
-  );
+  return isValidResolvedPath(path) || path.startsWith(EXPR_START);
 }

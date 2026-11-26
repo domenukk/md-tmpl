@@ -20,14 +20,6 @@ pub(crate) fn hash_source(source: &str) -> u64 {
     md_tmpl_core::__private::fnv1a_hash(source.as_bytes())
 }
 
-fn normalize_crlf(source: &str) -> std::borrow::Cow<'_, str> {
-    if source.contains('\r') {
-        std::borrow::Cow::Owned(source.replace("\r\n", "\n"))
-    } else {
-        std::borrow::Cow::Borrowed(source)
-    }
-}
-
 /// Result of compiling a template at macro expansion time.
 pub(crate) struct CompiledTemplateAst {
     pub(crate) frontmatter: md_tmpl_core::Frontmatter,
@@ -65,7 +57,7 @@ pub(crate) fn compile_template_to_ast(
     base_dir: &std::path::Path,
     env_values: &[(&str, md_tmpl_core::Value)],
 ) -> Result<CompiledTemplateAst, String> {
-    let normalized = normalize_crlf(raw_source);
+    let normalized = md_tmpl_core::consts::normalize_line_endings(raw_source);
     let source = normalized.as_ref();
     let source_hash = hash_source(source);
     let (mut fm, body) =
@@ -319,7 +311,7 @@ pub(crate) fn load_include_declarations(
     }
     let raw_source = std::fs::read_to_string(include_path)
         .map_err(|e| format!("cannot read include {}: {e}", include_path.display()))?;
-    let normalized = normalize_crlf(&raw_source);
+    let normalized = md_tmpl_core::consts::normalize_line_endings(&raw_source);
     let included_source = normalized.as_ref();
     deps.push(include_path.to_path_buf());
     let included_base_dir = include_path.parent().unwrap_or(std::path::Path::new("."));
@@ -410,7 +402,7 @@ pub(crate) fn resolve_single_include(
     let include_path = base_dir.join(inc.path.as_ref());
     let raw_source = std::fs::read_to_string(&include_path)
         .map_err(|e| format!("cannot read include {}: {e}", include_path.display()))?;
-    let normalized = normalize_crlf(&raw_source);
+    let normalized = md_tmpl_core::consts::normalize_line_endings(&raw_source);
     let included_source = normalized.as_ref();
     deps.push(include_path.clone());
 

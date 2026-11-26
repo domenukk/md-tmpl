@@ -5,7 +5,11 @@ use std::fmt::Write;
 use md_tmpl::{VarDecl, VarType, VariantDecl, to_pascal_case};
 use pyo3::prelude::*;
 
-use super::{scalar_list_elem, to_py_ident, vartype_to_python_annotation};
+use super::{
+    safe_params_class_name, scalar_list_elem, to_py_ident, validate_py_class_or_variant_ident,
+    validate_template_declarations, vartype_to_python_annotation,
+};
+use crate::pyclass_builder::{py_docstring_escape, py_double_quoted_literal};
 
 // ---------------------------------------------------------------------------
 // Source code generation (for static type checkers)
@@ -22,20 +26,22 @@ use super::{scalar_list_elem, to_py_ident, vartype_to_python_annotation};
 pub(crate) fn generate_python_source_for_template(path: &str) -> PyResult<String> {
     let tmpl = crate::template::load_template(path)?;
     let decls = tmpl.inner().declarations();
+    validate_template_declarations(decls, tmpl.type_aliases())?;
 
-    let stem = std::path::Path::new(path)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("Template");
-    let base_name = stem.strip_suffix(".tmpl").unwrap_or(stem);
-    let params_class_name = to_pascal_case(base_name);
+    let params_class_name = safe_params_class_name(path);
+    validate_py_class_or_variant_ident(&params_class_name, "params class")?;
 
     // Check what imports we need.
     let needs_optional = decls_need_optional(decls);
     let needs_field = decls_need_field(decls);
 
     let mut out = String::new();
-    writeln!(out, "\"\"\"Auto-generated typed stubs for {path}.").expect("write to String");
+    writeln!(
+        out,
+        "\"\"\"Auto-generated typed stubs for {}.",
+        py_docstring_escape(path)
+    )
+    .expect("write to String");
     writeln!(out).expect("write to String");
     writeln!(
         out,
@@ -274,7 +280,8 @@ pub(super) fn source_gen_params_class(
     writeln!(out, "class {name}:").expect("write to String");
     writeln!(
         out,
-        "    \"\"\"Typed parameters for template ``{template_path}``.\"\"\""
+        "    \"\"\"Typed parameters for template ``{}``.\"\"\"",
+        py_docstring_escape(template_path)
     )
     .expect("write to String");
 
@@ -382,7 +389,8 @@ fn source_gen_render_method(out: &mut String, template_path: &str, has_renamed: 
     writeln!(out, "        if template is None:").expect("write to String");
     writeln!(
         out,
-        "            template = Template.from_file(\"{template_path}\")"
+        "            template = Template.from_file({})",
+        py_double_quoted_literal(template_path)
     )
     .expect("write to String");
     writeln!(out, "        import dataclasses").expect("write to String");

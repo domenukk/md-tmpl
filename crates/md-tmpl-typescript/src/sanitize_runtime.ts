@@ -17,6 +17,7 @@ import {
   SANITIZE_KIND_BLOCK,
   SANITIZE_KIND_INLINE,
   SANITIZE_NOTICE_TAG_PLACEHOLDER,
+  stripQuotes,
 } from "./consts.js";
 import { TemplateSyntaxError } from "./errors.js";
 import {
@@ -27,9 +28,8 @@ import {
   sanitizeTokensString,
   sanitizeUntrustedPreparsed,
   sanitizeUntrustedString,
-  stripQuotes,
   validateTagSpecForFilter,
-} from "./filters.js";
+} from "./filter_security.js";
 
 export {
   DEFAULT_SANITIZE_NOTICE,

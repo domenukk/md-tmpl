@@ -10,7 +10,6 @@ import {
   type Node,
 } from "./ast.js";
 import { Scope } from "./scope.js";
-import { type RenderOptions, renderNodes } from "./renderer.js";
 import { evaluateExpression } from "./evaluator.js";
 import { TemplateSyntaxError } from "./errors.js";
 import {
@@ -28,7 +27,10 @@ import {
   validateFilters,
   withParseLocation,
 } from "./parser_utils.js";
-import { handleStatement } from "./statement_handlers.js";
+import {
+  type StatementParserCallbacks,
+  handleStatement,
+} from "./statement_handlers.js";
 import {
   ERR_COMMENT_SPACING,
   NODE_TEXT,
@@ -43,11 +45,15 @@ export {
   getLocation,
   type Node,
   Scope,
-  type RenderOptions,
-  renderNodes,
   evaluateExpression,
   VALID_FILTERS,
   validateFilters,
+};
+
+const PARSER_CALLBACKS: StatementParserCallbacks = {
+  parseBody,
+  parseBlock,
+  parseBlockWithClosing,
 };
 
 /**
@@ -204,6 +210,7 @@ export function parseNodes(
           input,
           endPos,
           trimAfter,
+          PARSER_CALLBACKS,
           lineMap,
           earliest,
         );
@@ -383,6 +390,7 @@ export function parseBlockWithClosing(
         input,
         endPos,
         trimAfter,
+        PARSER_CALLBACKS,
         lineMap,
         stmtIdx,
       );

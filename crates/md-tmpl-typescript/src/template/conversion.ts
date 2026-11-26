@@ -11,6 +11,7 @@ import {
   NONE,
   type Value,
   fromJs,
+  isBoxedValue,
   list,
   str,
   structVal,
@@ -55,18 +56,11 @@ export function jsToValue(
   }
 
   // Pre-constructed Value objects (e.g. from V.structVal(), V.list(), fromJs())
-  if (typeof value === "object" && value !== null && "type" in value) {
-    const tagged = value as {
-      type?: unknown;
-      fields?: unknown;
-      items?: unknown;
-    };
-    if (
-      (tagged.type === TYPE_STRUCT && tagged.fields instanceof Map) ||
-      (tagged.type === TYPE_LIST && Array.isArray(tagged.items))
-    ) {
-      return value as Value;
-    }
+  if (
+    isBoxedValue(value) &&
+    (value.type === TYPE_STRUCT || value.type === TYPE_LIST)
+  ) {
+    return value;
   }
 
   // Option types: null/undefined → NONE, otherwise convert the inner value

@@ -350,7 +350,7 @@ export function getLoc(
   return getAstLoc(pos, lineMap);
 }
 
-import { parseSanitizeFilterArgs } from "./sanitize_pass.js";
+import { parseSanitizeFilterArgs } from "./sanitize_runtime.js";
 
 export const VALID_FILTERS = new Set([
   "upper",

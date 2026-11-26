@@ -7,21 +7,11 @@
  * @module
  */
 
-import {
-  TYPE_BOOL,
-  TYPE_FLOAT,
-  TYPE_INT,
-  TYPE_LIST,
-  TYPE_NONE,
-  TYPE_STR,
-  TYPE_STRUCT,
-  TYPE_TMPL,
-} from "../consts.js";
 import { TemplateError, TemplateSyntaxError } from "../errors.js";
 import { compareCodePoints, serializeJson } from "../filter_json.js";
 import { escapeJsonBody } from "../json_escape.js";
 import { formatFloatDisplay, formatIntDisplay } from "../numeric_format.js";
-import { type TmplRef, type Value } from "../value.js";
+import { type TmplRef, isBoxedValue } from "../value.js";
 
 const JSON_NULL = "null";
 const JSON_TRUE = "true";
@@ -39,26 +29,8 @@ const JSON_LIST_OPEN = "[";
 const JSON_LIST_CLOSE = "]";
 const JSON_OBJECT_OPEN = "{";
 const JSON_OBJECT_CLOSE = "}";
-const LEGACY_DICT_TYPE = "dict";
-const FIELD_NAME_TYPE = "type";
 const MAX_JSON_DEPTH = 256;
 const ERR_SERIALIZE_TEMPLATE = "cannot serialize template to JSON";
-
-function isBoxedValue(val: object): val is Value {
-  if (!(FIELD_NAME_TYPE in val)) return false;
-  const t = val.type;
-  return (
-    t === TYPE_STR ||
-    t === TYPE_BOOL ||
-    t === TYPE_INT ||
-    t === TYPE_FLOAT ||
-    t === TYPE_LIST ||
-    t === TYPE_STRUCT ||
-    t === TYPE_TMPL ||
-    t === TYPE_NONE ||
-    t === LEGACY_DICT_TYPE
-  );
-}
 
 function pushIndent(out: string[], spaces: number, depth: number): void {
   out.push(JSON_INDENT_UNIT.repeat(spaces * depth));

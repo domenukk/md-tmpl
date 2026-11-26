@@ -80,4 +80,21 @@ params:
     assert.ok(!output.includes("\r"));
     assert.strictEqual(output, "yes");
   });
+
+  it("sourceHash matches between CRLF and LF inputs", () => {
+    const lf = `---
+params: [x = str]
+---
+Hello {{ x }}
+`;
+    const crlf = lf.replaceAll("\n", "\r\n");
+    assert.strictEqual(
+      Template.fromSource(crlf).sourceHash(),
+      Template.fromSource(lf).sourceHash(),
+    );
+    assert.strictEqual(
+      Template.fromSourceWithOptions(crlf, {}).sourceHash(),
+      Template.fromSourceWithOptions(lf, {}).sourceHash(),
+    );
+  });
 });

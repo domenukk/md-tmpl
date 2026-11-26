@@ -25,3 +25,4 @@ benchmarks/target
 *.tgz
 .npmrc
 go/cmd/pt-gen-go/pt-gen-go
+go/cmd/pt-gen-go/pt-gen-go.exe

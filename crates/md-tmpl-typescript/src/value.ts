@@ -123,50 +123,95 @@ export type Value =
   | TmplValue;
 
 // ---------------------------------------------------------------------------
-// Constructors
+// Constructors & runtime brand
 // ---------------------------------------------------------------------------
+
+const FIELD_NAME_TYPE = "type";
+const BOXED_VALUES = new WeakSet();
+
+function brandValue<T extends object>(v: T): T {
+  BOXED_VALUES.add(v);
+  return v;
+}
+
+/**
+ * Returns `true` if `val` is a boxed `Value` wrapper created by `md-tmpl`'s
+ * value constructors (or an unbranded `StructValue`/`TmplValue` whose payload
+ * cannot collide with plain JSON objects). Plain JS objects such as
+ * `{ type: "str", value: "hello" }` or `{ type: "none", data: "x" }` return
+ * `false`.
+ */
+export function isBoxedValue(val: unknown): val is Value {
+  if (typeof val !== "object" || val === null || Array.isArray(val)) {
+    return false;
+  }
+  if (BOXED_VALUES.has(val)) {
+    return true;
+  }
+  if (!Object.hasOwn(val, FIELD_NAME_TYPE)) {
+    return false;
+  }
+  const v = val as Record<string, unknown>;
+  if (
+    v.type === TYPE_STRUCT &&
+    v.fields instanceof Map &&
+    Object.keys(v).length === 2
+  ) {
+    return true;
+  }
+  if (
+    v.type === TYPE_TMPL &&
+    typeof v.ref === "object" &&
+    v.ref !== null &&
+    typeof (v.ref as TmplRef).renderForInclude === "function" &&
+    Object.keys(v).length === 2
+  ) {
+    return true;
+  }
+  return false;
+}
 
 /** Create a string value. */
 export function str(value: string): StrValue {
-  return { type: TYPE_STR, value };
+  return brandValue({ type: TYPE_STR, value });
 }
 
 /** Create a boolean value. */
 export function bool(value: boolean): BoolValue {
-  return { type: TYPE_BOOL, value };
+  return brandValue({ type: TYPE_BOOL, value });
 }
 
 /** Create an integer value. */
 export function int(value: number): IntValue {
-  return { type: TYPE_INT, value: Math.trunc(value) };
+  return brandValue({ type: TYPE_INT, value: Math.trunc(value) });
 }
 
 /** Create a float value. */
 export function float(value: number): FloatValue {
-  return { type: TYPE_FLOAT, value };
+  return brandValue({ type: TYPE_FLOAT, value });
 }
 
 /** Create a list value. */
 export function list(items: readonly Value[]): ListValue {
-  return { type: TYPE_LIST, items };
+  return brandValue({ type: TYPE_LIST, items });
 }
 
 /** Create a struct value from key-value pairs. */
 export function structVal(
   entries: Iterable<readonly [string, Value]>,
 ): StructValue {
-  return { type: TYPE_STRUCT, fields: new Map(entries) };
+  return brandValue({ type: TYPE_STRUCT, fields: new Map(entries) });
 }
 
 /** Deprecated alias for structVal */
 export const dict = structVal;
 
 /** Singleton None value. */
-export const NONE: NoneValue = { type: TYPE_NONE };
+export const NONE: NoneValue = brandValue({ type: TYPE_NONE });
 
 /** Create a template value wrapping a TmplRef. */
 export function tmplVal(ref: TmplRef): TmplValue {
-  return { type: TYPE_TMPL, ref };
+  return brandValue({ type: TYPE_TMPL, ref });
 }
 
 // ---------------------------------------------------------------------------
@@ -291,21 +336,8 @@ export function fromJs(value: unknown, seen = new WeakSet(), depth = 0): Value {
   if (value === null || value === undefined) {
     return NONE;
   }
-  if (typeof value === "object" && "type" in value) {
-    const t = (value as { type: string }).type;
-    if (
-      t === TYPE_STR ||
-      t === TYPE_BOOL ||
-      t === TYPE_INT ||
-      t === TYPE_FLOAT ||
-      t === TYPE_LIST ||
-      t === TYPE_STRUCT ||
-      t === TYPE_TMPL ||
-      t === TYPE_NONE ||
-      t === "dict"
-    ) {
-      return value as Value;
-    }
+  if (isBoxedValue(value)) {
+    return value;
   }
   if (typeof value === "string") {
     return str(value);

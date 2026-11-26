@@ -60,13 +60,34 @@ import {
   rawCloseKeyword,
   validateFilters,
 } from "./parser_utils.js";
-import { parseBody, parseBlock, parseBlockWithClosing } from "./parser.js";
+export interface StatementParserCallbacks {
+  readonly parseBody: (
+    body: string,
+    skipPreprocess?: boolean,
+    startLineNo?: number,
+  ) => Node[];
+  readonly parseBlock: (
+    input: string,
+    start: number,
+    closingTags: string[],
+    lineMap?: LineMapSource,
+    openTag?: { keyword: string; tagStart?: number },
+  ) => [Node[], number];
+  readonly parseBlockWithClosing: (
+    input: string,
+    start: number,
+    closingTags: string[],
+    lineMap?: LineMapSource,
+    openTag?: { keyword: string; tagStart?: number },
+  ) => [Node[], number, string | undefined, string | undefined];
+}
 
 export function handleStatement(
   tag: string,
   input: string,
   afterTag: number,
   trimAfter: boolean,
+  callbacks: StatementParserCallbacks,
   lineMap?: LineMapSource,
   tagStart?: number,
 ): [Node[], number] {
@@ -80,17 +101,17 @@ export function handleStatement(
 
   // For loop
   if (tag.startsWith(TAG_FOR_PREFIX)) {
-    return handleFor(tag, input, bodyStart, lineMap, tagStart);
+    return handleFor(tag, input, bodyStart, callbacks, lineMap, tagStart);
   }
 
   // If/elif/else
   if (tag.startsWith(TAG_IF_PREFIX)) {
-    return handleIf(tag, input, bodyStart, lineMap, tagStart);
+    return handleIf(tag, input, bodyStart, callbacks, lineMap, tagStart);
   }
 
   // Match
   if (tag.startsWith(TAG_MATCH_PREFIX)) {
-    return handleMatch(tag, input, bodyStart, lineMap, tagStart);
+    return handleMatch(tag, input, bodyStart, callbacks, lineMap, tagStart);
   }
 
   // Raw block
@@ -105,7 +126,7 @@ export function handleStatement(
 
   // Inline template definition
   if (tag === KW_TMPL || tag.startsWith(TAG_TMPL_PREFIX)) {
-    return handleTmpl(tag, input, bodyStart, lineMap, tagStart);
+    return handleTmpl(tag, input, bodyStart, callbacks, lineMap, tagStart);
   }
 
   // Panic statement
@@ -114,7 +135,7 @@ export function handleStatement(
     tag.startsWith(TAG_PANIC_PREFIX) ||
     tag === KW_PANIC
   ) {
-    return handlePanic(tag, bodyStart, lineMap, tagStart);
+    return handlePanic(tag, bodyStart, callbacks, lineMap, tagStart);
   }
 
   if (
@@ -143,6 +164,7 @@ function handleFor(
   tag: string,
   input: string,
   afterTag: number,
+  callbacks: StatementParserCallbacks,
   lineMap?: LineMapSource,
   tagStart?: number,
 ): [Node[], number] {
@@ -151,7 +173,7 @@ function handleFor(
     throw new TemplateSyntaxError(`invalid for loop: '${tag}'`);
   }
 
-  const [body, endPos, closingTag] = parseBlockWithClosing(
+  const [body, endPos, closingTag] = callbacks.parseBlockWithClosing(
     input,
     afterTag,
     [KW_END_FOR, KW_ELSE],
@@ -173,7 +195,7 @@ function handleFor(
   let finalPos = endPos;
 
   if (closingTag === KW_ELSE) {
-    const [elBody, elEndPos] = parseBlock(
+    const [elBody, elEndPos] = callbacks.parseBlock(
       input,
       endPos,
       [KW_END_FOR],
@@ -207,6 +229,7 @@ function handleIf(
   tag: string,
   input: string,
   afterTag: number,
+  callbacks: StatementParserCallbacks,
   lineMap?: LineMapSource,
   tagStart?: number,
 ): [Node[], number] {
@@ -218,13 +241,14 @@ function handleIf(
   let currentCondition = condition;
 
   for (;;) {
-    const [body, endPos, closingTag, closingContent] = parseBlockWithClosing(
-      input,
-      pos,
-      [KW_END_IF, KW_ELIF, KW_ELSE],
-      lineMap,
-      { keyword: KW_IF, tagStart },
-    );
+    const [body, endPos, closingTag, closingContent] =
+      callbacks.parseBlockWithClosing(
+        input,
+        pos,
+        [KW_END_IF, KW_ELIF, KW_ELSE],
+        lineMap,
+        { keyword: KW_IF, tagStart },
+      );
 
     if (
       !closingTag ||
@@ -248,7 +272,7 @@ function handleIf(
       pos = endPos;
     } else if (closingTag === KW_ELSE) {
       branches.push({ condition: currentCondition, body });
-      const [elBody, elEndPos, elClosingTag] = parseBlockWithClosing(
+      const [elBody, elEndPos, elClosingTag] = callbacks.parseBlockWithClosing(
         input,
         endPos,
         [KW_END_IF],
@@ -354,6 +378,7 @@ function handleMatch(
   tag: string,
   input: string,
   afterTag: number,
+  callbacks: StatementParserCallbacks,
   lineMap?: LineMapSource,
   tagStart?: number,
 ): [Node[], number] {
@@ -381,7 +406,7 @@ function handleMatch(
     }
 
     // Parse body, stopping at /match or else.
-    const [body, endPos, closingTag] = parseBlockWithClosing(
+    const [body, endPos, closingTag] = callbacks.parseBlockWithClosing(
       input,
       afterTag,
       [KW_END_MATCH, KW_ELSE],
@@ -403,13 +428,14 @@ function handleMatch(
     let elseArm: Node[] | undefined;
     let finalPos = endPos;
     if (closingTag === KW_ELSE) {
-      const [elseBody, elseEndPos, elClosingTag] = parseBlockWithClosing(
-        input,
-        endPos,
-        [KW_END_MATCH],
-        lineMap,
-        { keyword: KW_MATCH, tagStart },
-      );
+      const [elseBody, elseEndPos, elClosingTag] =
+        callbacks.parseBlockWithClosing(
+          input,
+          endPos,
+          [KW_END_MATCH],
+          lineMap,
+          { keyword: KW_MATCH, tagStart },
+        );
       if (elClosingTag !== KW_END_MATCH) {
         const loc = getLoc(tagStart, lineMap);
         throw new TemplateSyntaxError(
@@ -452,13 +478,14 @@ function handleMatch(
 
   // Parse case arms
   for (;;) {
-    const [body, endPos, closingTag, closingContent] = parseBlockWithClosing(
-      input,
-      pos,
-      [KW_END_MATCH, KW_CASE, KW_ELSE],
-      lineMap,
-      { keyword: KW_MATCH, tagStart },
-    );
+    const [body, endPos, closingTag, closingContent] =
+      callbacks.parseBlockWithClosing(
+        input,
+        pos,
+        [KW_END_MATCH, KW_CASE, KW_ELSE],
+        lineMap,
+        { keyword: KW_MATCH, tagStart },
+      );
 
     if (
       !closingTag ||
@@ -506,13 +533,14 @@ function handleMatch(
       if (lastArm !== undefined) {
         lastArm.body = body;
       }
-      const [elseBody, elseEndPos, elClosingTag] = parseBlockWithClosing(
-        input,
-        endPos,
-        [KW_END_MATCH],
-        lineMap,
-        { keyword: KW_MATCH, tagStart },
-      );
+      const [elseBody, elseEndPos, elClosingTag] =
+        callbacks.parseBlockWithClosing(
+          input,
+          endPos,
+          [KW_END_MATCH],
+          lineMap,
+          { keyword: KW_MATCH, tagStart },
+        );
       if (elClosingTag !== KW_END_MATCH) {
         const loc = getLoc(tagStart, lineMap);
         throw new TemplateSyntaxError(
@@ -779,11 +807,12 @@ function handleTmpl(
   tag: string,
   input: string,
   afterTag: number,
+  callbacks: StatementParserCallbacks,
   lineMap?: LineMapSource,
   tagStart?: number,
 ): [Node[], number] {
   const name = tag === KW_TMPL ? "" : tag.slice(TAG_TMPL_PREFIX.length).trim();
-  const [, endPos, closingTag] = parseBlockWithClosing(
+  const [, endPos, closingTag] = callbacks.parseBlockWithClosing(
     input,
     afterTag,
     [KW_END_TMPL],
@@ -830,6 +859,7 @@ function handleTmpl(
 function handlePanic(
   tag: string,
   afterTag: number,
+  callbacks: StatementParserCallbacks,
   _lineMap?: LineMapSource,
   _tagStart?: number,
 ): [Node[], number] {
@@ -852,6 +882,6 @@ function handlePanic(
   } else {
     bodySrc = `{{ ${arg} }}`;
   }
-  const body = parseBody(bodySrc);
+  const body = callbacks.parseBody(bodySrc);
   return [[{ kind: NODE_PANIC, body }], afterTag];
 }

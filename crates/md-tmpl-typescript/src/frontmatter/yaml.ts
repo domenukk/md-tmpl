@@ -21,6 +21,7 @@ import {
   LIT_TRUE,
   QUOTE_DOUBLE,
   QUOTE_SINGLE,
+  normalizeLineEndings,
 } from "../consts.js";
 import {
   type Frontmatter,
@@ -71,9 +72,7 @@ export function parseFrontmatter(
   parentTypeAliasSanitize?: TypeAliasSanitize,
 ): [Frontmatter, string] {
   // Normalize CRLF → LF for cross-platform consistency.
-  const normalized = source.includes("\r")
-    ? source.replace(/\r\n/g, "\n")
-    : source;
+  const normalized = normalizeLineEndings(source);
 
   // Fast scan for opening and closing `---` without splitting the body into lines
   const len = normalized.length;

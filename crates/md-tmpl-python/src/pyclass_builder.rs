@@ -239,12 +239,16 @@ impl PyClassDef {
 
         // Docstring.
         if let Some(doc) = &self.doc {
-            write!(out, "{member}\"\"\"{doc}\"\"\"\n\n").expect("write to String");
+            write!(out, "{member}\"\"\"{}\"\"\"\n\n", py_docstring_escape(doc))
+                .expect("write to String");
         }
 
         // __match_args__
         if let Some(args) = &self.match_args {
-            let names: Vec<String> = args.iter().map(|f| format!("'{}'", f.name)).collect();
+            let names: Vec<String> = args
+                .iter()
+                .map(|f| py_single_quoted_literal(&f.name))
+                .collect();
             writeln!(
                 out,
                 "{member}__match_args__ = ({})",
@@ -255,7 +259,11 @@ impl PyClassDef {
 
         // __slots__
         if !self.slots.is_empty() {
-            let names: Vec<String> = self.slots.iter().map(|f| format!("'{}'", f.name)).collect();
+            let names: Vec<String> = self
+                .slots
+                .iter()
+                .map(|f| py_single_quoted_literal(&f.name))
+                .collect();
             writeln!(out, "{member}__slots__ = ({})", py_tuple_literal(&names))
                 .expect("write to String");
         }
@@ -315,7 +323,7 @@ fn render_method(out: &mut String, method: &PyMethodDef, member: &str, body: &st
 
     // Docstring.
     if let Some(doc) = &method.doc {
-        writeln!(out, "{body}\"\"\"{doc}\"\"\"").expect("write to String");
+        writeln!(out, "{body}\"\"\"{}\"\"\"", py_docstring_escape(doc)).expect("write to String");
     }
 
     // Body.
@@ -354,6 +362,59 @@ fn py_tuple_literal(items: &[String]) -> String {
     } else {
         items.join(", ")
     }
+}
+
+/// Escape an arbitrary string as a single-quoted Python string literal (`'...'`).
+pub(crate) fn py_single_quoted_literal(s: &str) -> String {
+    py_quoted_literal(s, '\'')
+}
+
+/// Escape an arbitrary string as a double-quoted Python string literal (`"..."`).
+pub(crate) fn py_double_quoted_literal(s: &str) -> String {
+    py_quoted_literal(s, '"')
+}
+
+fn py_quoted_literal(s: &str, quote: char) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push(quote);
+    for ch in s.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            c if c == quote => {
+                out.push('\\');
+                out.push(c);
+            }
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 || c == '\x7f' => {
+                write!(out, "\\x{:02x}", c as u32).expect("write to String");
+            }
+            c => out.push(c),
+        }
+    }
+    out.push(quote);
+    out
+}
+
+/// Escape a docstring body so it cannot break out of a `"""..."""` literal.
+pub(crate) fn py_docstring_escape(doc: &str) -> String {
+    let mut escaped = doc
+        .replace('\\', "\\\\")
+        .replace('\r', "\\r")
+        .replace("\"\"\"", "\\\"\\\"\\\"");
+    if escaped.ends_with('"') {
+        let trailing_backslashes = escaped[..escaped.len() - 1]
+            .bytes()
+            .rev()
+            .take_while(|&b| b == b'\\')
+            .count();
+        if trailing_backslashes % 2 == 0 {
+            escaped.pop();
+            escaped.push_str("\\\"");
+        }
+    }
+    escaped
 }
 
 // ---------------------------------------------------------------------------
@@ -420,10 +481,11 @@ impl PyClassDef {
     /// Add a `__hash__` hashing a tag and all fields.
     pub fn with_hash(self, tag: &str, fields: &[Field]) -> Self {
         let parts: Vec<String> = fields.iter().map(|f| format!("self.{}", f.name)).collect();
+        let quoted_tag = py_single_quoted_literal(tag);
         let hash_expr = if parts.is_empty() {
-            format!("return hash('{tag}')")
+            format!("return hash({quoted_tag})")
         } else {
-            format!("return hash(('{tag}', {}))", parts.join(", "))
+            format!("return hash(({quoted_tag}, {}))", parts.join(", "))
         };
         self.method(
             PyMethodDef::builder()
@@ -438,7 +500,13 @@ impl PyClassDef {
     pub fn with_fields_property(self, fields: &[Field]) -> Self {
         let items: Vec<String> = fields
             .iter()
-            .map(|f| format!("'{}': self.{}", f.wire_name, f.name))
+            .map(|f| {
+                format!(
+                    "{}: self.{}",
+                    py_single_quoted_literal(&f.wire_name),
+                    f.name
+                )
+            })
             .collect();
         self.property(PyPropertyDef {
             name: "_md_tmpl_fields".into(),
@@ -451,7 +519,13 @@ impl PyClassDef {
     pub fn with_dict_property(self, fields: &[Field]) -> Self {
         let items: Vec<String> = fields
             .iter()
-            .map(|f| format!("'{}': self.{}", f.wire_name, f.name))
+            .map(|f| {
+                format!(
+                    "{}: self.{}",
+                    py_single_quoted_literal(&f.wire_name),
+                    f.name
+                )
+            })
             .collect();
         self.property(PyPropertyDef {
             name: "__dict__".into(),
@@ -464,6 +538,17 @@ impl PyClassDef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn docstring_escape_handles_trailing_triple_and_escaped_quotes() {
+        assert_eq!(py_docstring_escape("foo\"\"\""), "foo\\\"\\\"\\\"");
+        assert_eq!(py_docstring_escape("foo\""), "foo\\\"");
+        assert_eq!(py_docstring_escape("foo\\\""), "foo\\\\\\\"");
+        assert_eq!(
+            py_docstring_escape("\"\"\"\"\"\""),
+            "\\\"\\\"\\\"\\\"\\\"\\\""
+        );
+    }
 
     #[test]
     fn simple_class_renders() {
@@ -542,5 +627,38 @@ mod tests {
         assert!(source.contains("@property"));
         assert!(source.contains("def value(self) -> int:"));
         assert!(source.contains("return 42"));
+    }
+
+    #[test]
+    fn windows_path_escaping_in_python_literals_and_docstrings() {
+        assert_eq!(
+            py_double_quoted_literal("crates/md-tmpl/prompts/greeting.tmpl.md"),
+            "\"crates/md-tmpl/prompts/greeting.tmpl.md\""
+        );
+        assert_eq!(
+            py_single_quoted_literal(r"C:\Users\alice\prompts\task_report.tmpl.md"),
+            r"'C:\\Users\\alice\\prompts\\task_report.tmpl.md'"
+        );
+        assert_eq!(
+            py_single_quoted_literal(r"C:\Users\o'neil\file.tmpl.md"),
+            r"'C:\\Users\\o\'neil\\file.tmpl.md'"
+        );
+        assert_eq!(
+            py_docstring_escape(r"Typed for C:\Users\alice\greeting.tmpl.md"),
+            r"Typed for C:\\Users\\alice\\greeting.tmpl.md"
+        );
+        assert_eq!(
+            py_docstring_escape("crates/md-tmpl/prompts/greeting.tmpl.md"),
+            "crates/md-tmpl/prompts/greeting.tmpl.md"
+        );
+
+        let cls = PyClassDef::build("WinTest")
+            .doc(r"Template 'C:\Users\alice\t.tmpl.md'")
+            .attr(ClassAttr::new(
+                "_template_path",
+                py_single_quoted_literal(r"C:\Users\alice\t.tmpl.md"),
+            ));
+        let rendered = cls.render();
+        assert!(rendered.contains(r"C:\\Users\\alice\\t.tmpl.md"));
     }
 }

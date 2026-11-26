@@ -90,18 +90,23 @@ export function resetFileSystemProvider(): void {
  * outside a Node runtime exposing `process.getBuiltinModule` (Node 20.16+ /
  * 22.3+).
  */
+interface ProcessWithBuiltinModule {
+  getBuiltinModule?: (moduleId: string) => unknown;
+}
+
 function loadBuiltin(id: string): unknown {
-  if (
-    typeof process === "undefined" ||
-    typeof process.getBuiltinModule !== "function"
-  ) {
+  const proc =
+    typeof process !== "undefined"
+      ? (process as unknown as ProcessWithBuiltinModule)
+      : undefined;
+  if (proc === undefined || typeof proc.getBuiltinModule !== "function") {
     throw new Error(
       `Cannot load Node built-in "${id}": file I/O requires a Node.js ` +
         `runtime (v20.16+ / v22.3+) exposing process.getBuiltinModule. ` +
         `In non-Node environments, call setFileSystemProvider() first.`,
     );
   }
-  return process.getBuiltinModule(id);
+  return proc.getBuiltinModule(id);
 }
 
 export function getFs(): FsProvider {

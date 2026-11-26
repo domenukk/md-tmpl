@@ -680,3 +680,52 @@ template{i}: {{{{ x }}}}"
         "no renders succeeded across {NUM_THREADS} threads"
     );
 }
+
+#[test]
+fn cache_normalizes_crlf_line_endings() {
+    let dir = tempfile::tempdir().unwrap();
+    let child_path = dir.path().join("child.tmpl.md");
+    std::fs::write(
+        &child_path,
+        b"---\r\nparams: [item = str]\r\n---\r\nItem: {{ item }}\r\n",
+    )
+    .unwrap();
+    let main_path = dir.path().join("main.tmpl.md");
+    std::fs::write(
+        &main_path,
+        b"---\r\nparams: [name = str]\r\n---\r\nHello {{ name }}!\r\n\r\n> {% include [child](./child.tmpl.md) with item=name %}\r\n\r\nDone\r\n",
+    )
+    .unwrap();
+
+    let lf_path = dir.path().join("main_lf.tmpl.md");
+    std::fs::write(
+        &lf_path,
+        "---
+params: [name = str]
+---
+Hello {{ name }}!
+
+> {% include [child](./child.tmpl.md) with item=name %}
+
+Done
+",
+    )
+    .unwrap();
+
+    let cache = TemplateCache::new();
+    let cached = cache.load(&main_path).unwrap();
+    let cached_lf = cache.load(&lf_path).unwrap();
+    assert_eq!(cached.source_hash(), cached_lf.source_hash());
+
+    let direct = crate::Template::from_file(&main_path).unwrap();
+
+    let mut ctx = crate::Context::new();
+    ctx.set("name", "world");
+    let cached_out = cached.render_ctx_cached(&ctx, &cache).unwrap();
+    let direct_out = direct.render_ctx(&ctx).unwrap();
+    assert!(
+        !cached_out.contains('\r'),
+        "cached output leaked \\r: {cached_out:?}"
+    );
+    assert_eq!(cached_out, direct_out);
+}

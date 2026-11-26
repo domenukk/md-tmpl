@@ -22,6 +22,8 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -43,7 +45,34 @@ TS_README = PROJECT_ROOT / "crates" / "md-tmpl-typescript" / "README.md"
 WASM_README = PROJECT_ROOT / "crates" / "md-tmpl-wasm" / "README.md"
 
 
-PYTHON_VENV = PROJECT_ROOT / "crates" / "md-tmpl-python" / ".venv" / "bin"
+PYTHON_VENV = (
+    PROJECT_ROOT
+    / "crates"
+    / "md-tmpl-python"
+    / ".venv"
+    / ("Scripts" if os.name == "nt" else "bin")
+)
+EXE_SUFFIX = ".exe" if os.name == "nt" else ""
+
+
+def _resolve_exe(name: str) -> str:
+    """Resolve CLI tools (including `.cmd`/`.exe` shims on Windows)."""
+    if os.path.sep in name or "/" in name:
+        return name
+    return shutil.which(name) or name
+
+
+def _write_temp_output(prefix: str, text: str) -> Path:
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        newline="\n",
+        suffix=".txt",
+        prefix=prefix,
+        delete=False,
+    ) as tmp:
+        tmp.write(text)
+        return Path(tmp.name)
 
 
 def run_cmd(
@@ -53,18 +82,19 @@ def run_cmd(
     env_extra: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run a command, logging it and optionally capturing output."""
-    import os
-
     env = os.environ.copy()
     if env_extra:
         env.update(env_extra)
 
-    log.info("Running: %s (cwd=%s)", " ".join(cmd), cwd or ".")
+    resolved_cmd = [_resolve_exe(cmd[0]), *cmd[1:]]
+    log.info("Running: %s (cwd=%s)", " ".join(resolved_cmd), cwd or ".")
     result = subprocess.run(
-        cmd,
+        resolved_cmd,
         cwd=cwd,
         capture_output=capture,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         env=env,
     )
     if result.returncode != 0:
@@ -106,13 +136,13 @@ def run_python_bench() -> Path | None:
     log.info("=== Running Python benchmarks ===")
 
     # Check venv exists
-    python_bin = PYTHON_VENV / "python"
+    python_bin = PYTHON_VENV / f"python{EXE_SUFFIX}"
     if not python_bin.exists():
         log.error("Python venv not found at %s", python_bin)
         return None
 
     # Build release-mode bindings (debug builds are ~10× slower)
-    maturin_bin = PYTHON_VENV / "maturin"
+    maturin_bin = PYTHON_VENV / f"maturin{EXE_SUFFIX}"
     py_crate = PROJECT_ROOT / "crates" / "md-tmpl-python"
     build_result = run_cmd(
         [str(maturin_bin), "develop", "--release"],
@@ -134,8 +164,7 @@ def run_python_bench() -> Path | None:
         return None
 
     # Save output to temp file
-    outfile = Path(tempfile.mktemp(suffix=".txt", prefix="bench_python_"))
-    outfile.write_text(result.stdout)
+    outfile = _write_temp_output("bench_python_", result.stdout)
     log.info("Python output saved to %s", outfile)
     return outfile
 
@@ -165,8 +194,7 @@ def run_go_bench() -> Path | None:
         log.error("stdout: %s", result.stdout[:2000] if result.stdout else "(empty)")
         return None
 
-    outfile = Path(tempfile.mktemp(suffix=".txt", prefix="bench_go_"))
-    outfile.write_text(result.stdout)
+    outfile = _write_temp_output("bench_go_", result.stdout)
     log.info("Go output saved to %s", outfile)
     return outfile
 
@@ -192,8 +220,7 @@ def run_ts_bench() -> Path | None:
         log.error("TypeScript benchmarks failed")
         return None
 
-    outfile = Path(tempfile.mktemp(suffix=".txt", prefix="bench_ts_"))
-    outfile.write_text(result.stdout)
+    outfile = _write_temp_output("bench_ts_", result.stdout)
     log.info("TS output saved to %s", outfile)
     return outfile
 
@@ -219,8 +246,7 @@ def run_ts_comparison_bench() -> Path | None:
         log.error("TypeScript comparison benchmarks failed")
         return None
 
-    outfile = Path(tempfile.mktemp(suffix=".txt", prefix="bench_ts_comp_"))
-    outfile.write_text(result.stdout)
+    outfile = _write_temp_output("bench_ts_comp_", result.stdout)
     log.info("TS comparison output saved to %s", outfile)
     return outfile
 
@@ -255,8 +281,7 @@ def run_wasm_bench() -> Path | None:
         log.error("WASM benchmarks failed")
         return None
 
-    outfile = Path(tempfile.mktemp(suffix=".txt", prefix="bench_wasm_"))
-    outfile.write_text(result.stdout)
+    outfile = _write_temp_output("bench_wasm_", result.stdout)
     log.info("WASM output saved to %s", outfile)
     return outfile
 
@@ -338,7 +363,9 @@ def main() -> None:
 
     # Parse results
     log.info("=== Parsing benchmark results ===")
-    result = subprocess.run(parse_args, capture_output=True, text=True)
+    result = subprocess.run(
+        parse_args, capture_output=True, text=True, encoding="utf-8"
+    )
     if result.returncode != 0:
         log.error("Parsing failed: %s", result.stderr)
         sys.exit(1)
@@ -348,7 +375,7 @@ def main() -> None:
     # Save unified JSON for reference
     json_path = PROJECT_ROOT / "target" / "bench_results.json"
     json_path.parent.mkdir(parents=True, exist_ok=True)
-    json_path.write_text(unified_json)
+    json_path.write_text(unified_json, encoding="utf-8")
     log.info("Unified results saved to %s", json_path)
 
     if args.dry_run:

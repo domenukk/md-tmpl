@@ -146,6 +146,8 @@ pub const PATH_PREFIX_PARENT: &str = "../";
 pub const PATH_PREFIX_CUR_WIN: &str = ".\\";
 /// Windows relative parent directory prefix: `..\`.
 pub const PATH_PREFIX_PARENT_WIN: &str = "..\\";
+/// Windows UNC / extended-length path prefix: `\\`.
+pub const PATH_PREFIX_UNC: &str = "\\\\";
 /// Backslash separator: `\`.
 pub const BACKSLASH: char = '\\';
 /// Newline character: `\n`.
@@ -164,7 +166,30 @@ pub const STR_DOUBLE_NEWLINE: &str = "\n\n";
 /// Carriage return + newline string literal: `"\r\n"`.
 pub const STR_CRLF: &str = "\r\n";
 
-/// Check if a resolved path starts with `/`, `./`, `../`, `.\`, or `..\`.
+/// Normalize CRLF (`\r\n`) line endings to LF (`\n`).
+///
+/// Borrows `source` without allocating when it already uses LF line endings.
+#[must_use]
+pub fn normalize_line_endings(source: &str) -> alloc::borrow::Cow<'_, str> {
+    if source.contains(STR_CRLF) {
+        alloc::borrow::Cow::Owned(source.replace(STR_CRLF, STR_NEWLINE))
+    } else {
+        alloc::borrow::Cow::Borrowed(source)
+    }
+}
+
+/// Returns `true` if `path` starts with a Windows drive-letter absolute prefix
+/// such as `C:\` or `C:/`.
+fn is_windows_drive_abs(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'\\' || bytes[2] == b'/')
+}
+
+/// Check if a resolved path starts with `/`, `./`, `../`, `.\`, `..\`,
+/// a UNC prefix `\\`, or a Windows drive-letter absolute path (`C:\` / `C:/`).
 #[must_use]
 pub fn is_valid_resolved_path(path: &str) -> bool {
     path.starts_with(PATH_PREFIX_SLASH)
@@ -172,6 +197,8 @@ pub fn is_valid_resolved_path(path: &str) -> bool {
         || path.starts_with(PATH_PREFIX_PARENT)
         || path.starts_with(PATH_PREFIX_CUR_WIN)
         || path.starts_with(PATH_PREFIX_PARENT_WIN)
+        || path.starts_with(PATH_PREFIX_UNC)
+        || is_windows_drive_abs(path)
 }
 
 /// Check if a path starts with a valid import or include prefix (`/`, `./`, `../`, `.\`, `..\`, or an expression `{{`).
@@ -749,11 +776,28 @@ mod tests {
         assert!(is_valid_include_path(".\\file.tmpl.md"));
         assert!(is_valid_include_path("..\\file.tmpl.md"));
         assert!(is_valid_include_path("/file.tmpl.md"));
+        assert!(is_valid_include_path(r"C:\prompts\file.tmpl.md"));
+        assert!(is_valid_include_path("c:/prompts/file.tmpl.md"));
+        assert!(is_valid_include_path(r"\\server\share\file.tmpl.md"));
+        assert!(is_valid_include_path(r"\\?\C:\prompts\file.tmpl.md"));
         assert!(is_valid_include_path("{{ consts.DIR }}/file.tmpl.md"));
         assert!(!is_valid_include_path("file.tmpl.md"));
         assert!(!is_valid_include_path("sub/file.tmpl.md"));
+        assert!(!is_valid_include_path("C:relative.tmpl.md"));
+        assert!(!is_valid_include_path("1:/not_a_drive.tmpl.md"));
 
         assert!(is_valid_resolved_path("./file.tmpl.md"));
+        assert!(is_valid_resolved_path(r"C:\prompts\file.tmpl.md"));
+        assert!(is_valid_resolved_path(r"\\server\share\file.tmpl.md"));
         assert!(!is_valid_resolved_path("{{ consts.DIR }}/file.tmpl.md"));
+    }
+
+    #[test]
+    fn test_normalize_line_endings() {
+        assert!(matches!(
+            normalize_line_endings("hello\nworld\n"),
+            alloc::borrow::Cow::Borrowed("hello\nworld\n")
+        ));
+        assert_eq!(normalize_line_endings("a\r\nb\r\n").as_ref(), "a\nb\n");
     }
 }

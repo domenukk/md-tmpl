@@ -299,6 +299,89 @@ params:
     cyclic.self = cyclic;
     assert.throws(() => directToJson(cyclic), /cyclic/);
 
+    // Plain JS objects carrying a `type` field matching Value discriminants must
+    // never be misclassified as boxed Value wrappers (no crash, no data corruption).
+    assert.strictEqual(
+      directToJson({ type: "str", name: "Alice" }),
+      '{"name":"Alice","type":"str"}',
+    );
+    assert.strictEqual(
+      directToJson({ type: "str", value: "literal-payload" }),
+      '{"type":"str","value":"literal-payload"}',
+    );
+    assert.strictEqual(
+      directToJson({ type: "list", items: ["a", "b"] }),
+      '{"items":["a","b"],"type":"list"}',
+    );
+    assert.strictEqual(
+      directToJson({ type: "struct", fields: { k: 1 } }),
+      '{"fields":{"k":1},"type":"struct"}',
+    );
+    assert.strictEqual(
+      directToJson({ type: "none", data: "x" }),
+      '{"data":"x","type":"none"}',
+    );
+    assert.strictEqual(directToJson({ type: "none" }), '{"type":"none"}');
+    assert.strictEqual(
+      directToJson({ type: "bool", ok: true }),
+      '{"ok":true,"type":"bool"}',
+    );
+    assert.strictEqual(
+      directToJson({ type: "dict", k: "v" }),
+      '{"k":"v","type":"dict"}',
+    );
+    assert.strictEqual(
+      directToJson({ type: "tmpl", id: 7 }),
+      '{"id":7,"type":"tmpl"}',
+    );
+    // Prototype-inherited `type` and arrays with an expando `type` property.
+    const inherited = Object.assign(Object.create({ type: "str" }) as object, {
+      k: 1,
+    });
+    assert.strictEqual(directToJson(inherited), '{"k":1}');
+    const arrWithType: unknown[] & { type?: string } = ["x", "y"];
+    arrWithType.type = "list";
+    assert.strictEqual(directToJson(arrWithType), '["x","y"]');
+    // Real boxed Values constructed via V.* still serialize as boxed Values.
+    assert.strictEqual(
+      directToJson({
+        n: V.NONE,
+        l: V.list([V.int(1), V.str("two")]),
+        s: V.structVal([["k", V.bool(true)]]),
+      }),
+      '{"l":[1,"two"],"n":null,"s":{"k":true}}',
+    );
+    // End-to-end Template.render fast-path and slow-path parity on structs with `type` fields.
+    const typedStructTmpl = Template.fromSource(`---
+params:
+  - item = struct(type = str, value = str)
+  - listItem = struct(type = str, items = list(str))
+---
+{{ item | tojson }}
+{{ listItem | tojson }}`);
+    assert.strictEqual(
+      typedStructTmpl.render({
+        item: { type: "str", value: "hello" },
+        listItem: { type: "list", items: ["a", "b"] },
+      }),
+      '{"type":"str","value":"hello"}\n{"items":["a","b"],"type":"list"}',
+    );
+    // Slow-path parity when an option parameter disables the direct validated fast path.
+    const slowPathStructTmpl = Template.fromSource(`---
+params:
+  - flag = option(str) := None
+  - item = struct(type = str, value = str)
+  - listItem = struct(type = str, items = list(str))
+---
+{{ kind(flag) }}|{{ item | tojson }}|{{ listItem | tojson }}`);
+    assert.strictEqual(
+      slowPathStructTmpl.render({
+        item: { type: "str", value: "hello" },
+        listItem: { type: "list", items: ["a", "b"] },
+      }),
+      'None|{"type":"str","value":"hello"}|{"items":["a","b"],"type":"list"}',
+    );
+
     const dir = mkdtempSync(join(tmpdir(), "md-tmpl-0108-codegen-"));
     try {
       writeFileSync(
@@ -380,5 +463,81 @@ params: []
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("scans long newline runs in O(N), rejects loop/nested ATX heading block filters, and unions multi-branch pendingOpenTags", () => {
+    const longNewlines = "\n".repeat(100_000) + " ".repeat(100_000);
+    const t0 = Date.now();
+    const clean = Template.fromSource(
+      `---
+params:
+  - x = str
+---
+{{ x }}`,
+    ).render({
+      x: longNewlines,
+    });
+    assert.strictEqual(clean.length, longNewlines.length);
+    assert.ok(Date.now() - t0 < 1000);
+
+    assert.throws(() => {
+      Template.fromSource(`---
+params:
+  - a = bool
+  - b = bool
+  - x = str
+---
+- {% if a %}{% if b %}# {% /if %}{% /if %}{{ x | fence }}`);
+    }, /ATX heading/);
+
+    assert.throws(() => {
+      Template.fromSource(`---
+params:
+  - cond = bool
+  - items = list(str)
+---
+- {% for x in items %}{% if cond %}# {% else %}{{ x | fence }}{% /if %}{% /for %}`);
+    }, /ATX heading/);
+
+    const multiPending = Template.fromSource(`---
+params:
+  - cond = bool
+  - x = str
+---
+<wrap>{% if cond %}<alpha attr="1"{% else %}<beta attr="2"{% /if %}>{{ x }}{% if cond %}</alpha>{% else %}</beta>{% /if %}</wrap>`);
+    assert.strictEqual(
+      multiPending.render({ cond: false, x: "</beta></alpha>" }),
+      '<wrap><beta attr="2">&lt;/beta&gt;&lt;/alpha&gt;</beta></wrap>',
+    );
+
+    const loopTag = Template.fromSource(`---
+params:
+  - items = list(str)
+---
+<wrap>{% for x in items %}{{ x }}<doc>{% /for %}</doc></wrap>`);
+    assert.strictEqual(
+      loopTag.render({ items: ["a", "</doc>"] }),
+      "<wrap>a<doc>&lt;/doc&gt;<doc></doc></wrap>",
+    );
+
+    const childHeading = Template.fromSource(`---
+params:
+  - heading = trusted str
+---
+# {{ heading }}`);
+    const hostInclude = Template.fromSource(`---
+params:
+  - child = tmpl(heading = str)
+  - title = str
+---
+> {% include child with heading = title %}`);
+    const renderedInclude = hostInclude.render({
+      child: childHeading,
+      title: "Safe\n## Injected Heading",
+    });
+    assert.ok(
+      !renderedInclude.includes("\n## Injected Heading"),
+      `runtime include at line start must collapse newline in child ATX heading: ${renderedInclude}`,
+    );
   });
 });

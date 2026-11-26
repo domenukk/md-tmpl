@@ -221,3 +221,113 @@ Hello {{ name }}`)
 	}
 	wg.Wait()
 }
+
+func TestConcurrentSetTmplRenderAndValidateAgainstTemplateNoDeadlock(t *testing.T) {
+	child, err := FromSource(`---
+params:
+  - msg = str
+---
+{{ msg }}`)
+	if err != nil {
+		t.Fatalf("FromSource child: %v", err)
+	}
+	defer child.Close()
+
+	host, err := FromSource(`---
+params:
+  - slot = tmpl(msg = str)
+  - msg = str
+---
+> {% include slot with msg = msg %}`)
+	if err != nil {
+		t.Fatalf("FromSource host: %v", err)
+	}
+	defer host.Close()
+
+	if err := child.ValidateAgainstTemplate(child); err != nil {
+		t.Fatalf("self ValidateAgainstTemplate failed: %v", err)
+	}
+
+	ctx := NewContext()
+	defer ctx.Close()
+	if err := ctx.SetStr("msg", "hello"); err != nil {
+		t.Fatalf("SetStr: %v", err)
+	}
+	if err := ctx.SetTmpl("slot", child); err != nil {
+		t.Fatalf("SetTmpl: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(4)
+		go func() {
+			defer wg.Done()
+			if serr := ctx.SetTmpl("slot", child); serr != nil {
+				t.Errorf("concurrent SetTmpl = %v", serr)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			out, rerr := host.Render(ctx)
+			if rerr != nil || out != "hello" {
+				t.Errorf("concurrent host.Render = %q, %v", out, rerr)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if verr := child.ValidateAgainstTemplate(child); verr != nil {
+				t.Errorf("self ValidateAgainstTemplate = %v", verr)
+			}
+		}()
+		go func(idx int) {
+			defer wg.Done()
+			var verr error
+			if idx%2 == 0 {
+				verr = host.ValidateAgainstTemplate(child)
+			} else {
+				verr = child.ValidateAgainstTemplate(host)
+			}
+			if verr == nil {
+				t.Errorf("expected declaration mismatch between host and child")
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	childH1, err := FromSource(`---
+params:
+  - heading = trusted str
+---
+# {{ heading }}`)
+	if err != nil {
+		t.Fatalf("FromSource childH1: %v", err)
+	}
+	defer childH1.Close()
+
+	hostH1, err := FromSource(`---
+params:
+  - slot = tmpl(heading = str)
+  - title = str
+---
+> {% include slot with heading = title %}`)
+	if err != nil {
+		t.Fatalf("FromSource hostH1: %v", err)
+	}
+	defer hostH1.Close()
+
+	ctxH1 := NewContext()
+	defer ctxH1.Close()
+	if err := ctxH1.SetTmpl("slot", childH1); err != nil {
+		t.Fatalf("SetTmpl slot: %v", err)
+	}
+	if err := ctxH1.SetStr("title", "Safe\n## Injected"); err != nil {
+		t.Fatalf("SetStr title: %v", err)
+	}
+	renderedH1, err := hostH1.Render(ctxH1)
+	if err != nil {
+		t.Fatalf("hostH1.Render: %v", err)
+	}
+	if renderedH1 != "# Safe ## Injected" {
+		t.Fatalf("expected collapsed ATX heading, got %q", renderedH1)
+	}
+}

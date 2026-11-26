@@ -9,7 +9,150 @@ use std::fmt::Write;
 use md_tmpl::{VarDecl, VarType, VariantDecl, to_pascal_case};
 use pyo3::{Py, prelude::*, types::PyDict};
 
-use crate::pyclass_builder::{ClassAttr, Field, PyClassDef, PyMethodDef};
+use crate::pyclass_builder::{ClassAttr, Field, PyClassDef, PyMethodDef, py_single_quoted_literal};
+
+const PY_KEYWORDS: &[&str] = &[
+    "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class", "continue",
+    "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if", "import",
+    "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return", "try", "while",
+    "with", "yield",
+];
+
+pub(super) fn is_py_keyword(name: &str) -> bool {
+    PY_KEYWORDS.contains(&name)
+}
+
+pub(super) fn is_valid_py_ident(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == b'_')
+        && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && !is_py_keyword(name)
+}
+
+pub(super) fn validate_frontmatter_ident(raw: &str, kind: &str) -> PyResult<()> {
+    let mut bytes = raw.bytes();
+    let valid = bytes.next().is_some_and(|first| {
+        (first.is_ascii_alphabetic() || first == b'_')
+            && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    });
+    if !valid {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "invalid {kind} name {raw:?}: expected ASCII identifier [A-Za-z_][A-Za-z0-9_-]*"
+        )));
+    }
+    Ok(())
+}
+
+pub(super) fn validate_py_class_or_variant_ident(name: &str, kind: &str) -> PyResult<()> {
+    if !is_valid_py_ident(name) {
+        return Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "invalid {kind} name {name:?}: expected valid non-keyword Python identifier [A-Za-z_][A-Za-z0-9_]*"
+        )));
+    }
+    Ok(())
+}
+
+pub(super) fn safe_params_class_name(path: &str) -> String {
+    let stem = std::path::Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Template");
+    let base_name = stem.strip_suffix(".tmpl").unwrap_or(stem);
+    let cleaned: String = base_name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let pascal = to_pascal_case(&cleaned);
+    let candidate = if pascal.is_empty() {
+        "Template".to_string()
+    } else if pascal.as_bytes()[0].is_ascii_digit() {
+        format!("Template{pascal}")
+    } else {
+        pascal
+    };
+    if is_py_keyword(&candidate) {
+        format!("{candidate}_")
+    } else {
+        candidate
+    }
+}
+
+pub(super) fn validate_template_declarations<'a>(
+    decls: &[VarDecl],
+    aliases: impl IntoIterator<Item = (&'a String, &'a VarType)>,
+) -> PyResult<()> {
+    for decl in decls {
+        validate_decl(decl, "parameter")?;
+    }
+    for (alias_name, var_type) in aliases {
+        validate_frontmatter_ident(alias_name, "type alias")?;
+        validate_py_class_or_variant_ident(&to_pascal_case(alias_name), "type alias class")?;
+        validate_vartype(alias_name, var_type)?;
+    }
+    Ok(())
+}
+
+fn validate_decl(decl: &VarDecl, kind: &str) -> PyResult<()> {
+    validate_frontmatter_ident(&decl.name, kind)?;
+    let py_ident = to_py_ident(&decl.name);
+    validate_py_class_or_variant_ident(&py_ident, kind)?;
+    validate_vartype(&decl.name, &decl.var_type)
+}
+
+fn validate_vartype(decl_name: &str, var_type: &VarType) -> PyResult<()> {
+    match var_type {
+        VarType::Enum(variants) => {
+            validate_py_class_or_variant_ident(&to_pascal_case(decl_name), "enum class")?;
+            for var in variants {
+                validate_py_class_or_variant_ident(&var.name, "enum variant")?;
+                for field in &var.fields {
+                    validate_decl(field, "variant field")?;
+                }
+            }
+        }
+        VarType::List(fields) if scalar_list_elem(fields).is_some() => {
+            let elem = scalar_list_elem(fields).expect("checked Some");
+            validate_vartype(decl_name, elem)?;
+        }
+        VarType::List(fields) if !fields.is_empty() => {
+            validate_py_class_or_variant_ident(
+                &format!("{}Item", to_pascal_case(decl_name)),
+                "list item class",
+            )?;
+            for field in fields {
+                validate_decl(field, "list item field")?;
+            }
+        }
+        VarType::Struct(fields) if !fields.is_empty() => {
+            validate_py_class_or_variant_ident(&to_pascal_case(decl_name), "struct class")?;
+            for field in fields {
+                validate_decl(field, "struct field")?;
+            }
+        }
+        VarType::Tmpl(fields) => {
+            for field in fields {
+                validate_decl(field, "tmpl parameter")?;
+            }
+        }
+        VarType::Option(inner) => validate_vartype(decl_name, inner)?,
+        VarType::Str
+        | VarType::Bool
+        | VarType::Int
+        | VarType::Float
+        | VarType::List(_)
+        | VarType::Struct(_) => {}
+    }
+    Ok(())
+}
 
 /// Generate Python type classes for a template file.
 ///
@@ -19,15 +162,12 @@ use crate::pyclass_builder::{ClassAttr, Field, PyClassDef, PyMethodDef};
 pub(crate) fn generate_types_for_template(py: Python<'_>, path: &str) -> PyResult<Py<PyAny>> {
     let tmpl = crate::template::load_template(path)?;
     let decls = tmpl.inner().declarations();
+    validate_template_declarations(decls, tmpl.type_aliases())?;
     let result = PyDict::new(py);
 
-    // Derive a base name from the file stem.
-    let stem = std::path::Path::new(path)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("Template");
-    let base_name = stem.strip_suffix(".tmpl").unwrap_or(stem);
-    let params_class_name = to_pascal_case(base_name);
+    // Derive a safe base class name from the file stem.
+    let params_class_name = safe_params_class_name(path);
+    validate_py_class_or_variant_ident(&params_class_name, "params class")?;
 
     // Generate nested types first, then the top-level params class.
     let mut generated_types: Vec<(String, Py<PyAny>)> = Vec::new();
@@ -59,14 +199,8 @@ pub(super) fn scalar_list_elem(fields: &[VarDecl]) -> Option<&VarType> {
 }
 
 pub(super) fn to_py_ident(name: &str) -> String {
-    const PY_KEYWORDS: &[&str] = &[
-        "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class",
-        "continue", "def", "del", "elif", "else", "except", "finally", "for", "from", "global",
-        "if", "import", "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return",
-        "try", "while", "with", "yield",
-    ];
     let normalized = name.replace('-', "_");
-    if PY_KEYWORDS.contains(&normalized.as_str()) {
+    if is_py_keyword(&normalized) {
         format!("{normalized}_")
     } else {
         normalized
@@ -226,7 +360,7 @@ fn build_enum_class(py: Python<'_>, name: &str, variants: &[VariantDecl]) -> PyR
         if var.fields.is_empty() {
             cls = cls.attr(ClassAttr::new(
                 &var.name,
-                format!("_Variant('{}')", var.name),
+                format!("_Variant({})", py_single_quoted_literal(&var.name)),
             ));
         } else {
             let struct_cls = build_struct_variant_def(&var.name, &var.fields);
@@ -260,7 +394,10 @@ fn build_struct_variant_def(name: &str, fields: &[VarDecl]) -> PyClassDef {
         .doc(format!("Struct variant: {name}({field_sig})."))
         .match_args(typed_fields.clone())
         .slots(typed_fields.clone())
-        .attr(ClassAttr::new("_md_tmpl_tag", format!("'{name}'")))
+        .attr(ClassAttr::new(
+            "_md_tmpl_tag",
+            py_single_quoted_literal(name),
+        ))
         .with_init(&typed_fields)
         .with_fields_property(&typed_fields)
         .with_repr(name, &typed_fields)
@@ -331,12 +468,19 @@ fn build_params_class(
     // Build render() method body.
     let kwarg_items: Vec<String> = typed_fields
         .iter()
-        .map(|f| format!("'{}': self.{}", f.wire_name, f.name))
+        .map(|f| {
+            format!(
+                "{}: self.{}",
+                py_single_quoted_literal(&f.wire_name),
+                f.name
+            )
+        })
         .collect();
+    let quoted_path = py_single_quoted_literal(template_path);
     let render_body = vec![
         "from md_tmpl._md_tmpl import Template as _NativeTemplate".into(),
         "if template is None:".into(),
-        format!("    template = _NativeTemplate.from_file('{template_path}')"),
+        format!("    template = _NativeTemplate.from_file({quoted_path})"),
         format!("_kwargs = {{{}}}", kwarg_items.join(", ")),
         "return template.render_dict(_kwargs)".into(),
     ];
@@ -358,10 +502,7 @@ fn build_params_class(
 
     let cls = PyClassDef::build(name)
         .doc(doc)
-        .attr(ClassAttr::new(
-            "_template_path",
-            format!("'{template_path}'"),
-        ))
+        .attr(ClassAttr::new("_template_path", quoted_path))
         .slots(typed_fields.clone())
         .method(
             PyMethodDef::builder()

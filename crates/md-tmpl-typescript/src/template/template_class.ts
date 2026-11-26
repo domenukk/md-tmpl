@@ -12,6 +12,7 @@
  */
 
 import { Context } from "../context.js";
+import { normalizeLineEndings } from "../consts.js";
 import {
   DeclarationsMutatedError,
   ExtraParamsError,
@@ -40,13 +41,8 @@ import {
   type DeclaredSanitize,
   declaredSanitize,
 } from "../include_sanitize.js";
-import {
-  type Node,
-  type RenderOptions,
-  Scope as ScopeImpl,
-  parseBody,
-  renderNodes,
-} from "../parser.js";
+import { type Node, Scope as ScopeImpl, parseBody } from "../parser.js";
+import { type RenderOptions, renderNodes } from "../renderer.js";
 import {
   type TmplRef,
   type TmplValue,
@@ -391,7 +387,8 @@ export class Template implements ITemplate, TmplRef {
    *
    * @throws {TemplateSyntaxError} If the source contains syntax errors.
    */
-  static fromSource(source: string): Template {
+  static fromSource(rawSource: string): Template {
+    const source = normalizeLineEndings(rawSource);
     const [fm, body] = parseFrontmatter(source);
     const resolvedFm =
       fm.env.length > 0 ? resolveEnvDeclarations(fm, EMPTY_PARAMS) : fm;
@@ -421,9 +418,10 @@ export class Template implements ITemplate, TmplRef {
    * @throws {TemplateSyntaxError} If an env var value fails type checking.
    */
   static fromSourceWithOptions(
-    source: string,
+    rawSource: string,
     options: CompileOptions,
   ): Template {
+    const source = normalizeLineEndings(rawSource);
     const baseDir = options.baseDir;
     const envValues = options.env ?? EMPTY_PARAMS;
     const allowUnused = options.allowUnused ?? false;
@@ -501,14 +499,15 @@ export class Template implements ITemplate, TmplRef {
    * @throws {TemplateSyntaxError} If an env var is missing without a default.
    */
   static fromFileWithEnv(filePath: string, options?: CompileOptions): Template {
-    let source: string;
+    let rawSource: string;
     try {
-      source = getFs().readFileSync(filePath, "utf-8");
+      rawSource = getFs().readFileSync(filePath, "utf-8");
     } catch (err) {
       throw new TemplateError(
         `failed to load template: ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+    const source = normalizeLineEndings(rawSource);
     const absPath = getPath().resolve(filePath);
     const baseDir = getPath().dirname(absPath);
     const [fm, body] = parseFrontmatter(source);

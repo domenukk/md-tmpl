@@ -14,6 +14,7 @@ import {
   int,
   list,
   str,
+  structVal,
 } from "../value.js";
 import {
   BRACE_OPEN,
@@ -221,7 +222,7 @@ export function parseLiteral(
           parseLiteralOrConst(valStr, fieldType, constValues),
         ]);
       }
-      return { type: TYPE_STRUCT, fields: new Map(entries) };
+      return structVal(entries);
     }
 
     // Bare identifier — must be a known variant. A qualified `Type.Variant`
@@ -283,7 +284,7 @@ export function parseStructLiteral(
 ): Value {
   const inner = literal.slice(1, -1).trim();
   if (inner === "") {
-    return { type: TYPE_STRUCT, fields: new Map() };
+    return structVal([]);
   }
 
   // Build a lookup of field name → VarType from the struct declaration
@@ -304,7 +305,7 @@ export function parseStructLiteral(
     const fieldType = fieldTypeMap.get(key) ?? { kind: TYPE_STR };
     entries.push([key, parseLiteralOrConst(valStr, fieldType, constValues)]);
   }
-  return { type: TYPE_STRUCT, fields: new Map(entries) };
+  return structVal(entries);
 }
 
 /**

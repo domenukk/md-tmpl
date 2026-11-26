@@ -424,7 +424,7 @@ def run_pattern_checks() -> bool:
     all_exts_set = {e for _, e in all_dirs_exts}
     for path in source_files(list(all_dirs_set), all_exts_set):
         try:
-            lines = path.read_text(errors="replace").splitlines()
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
             continue
         for lineno, line in enumerate(lines, start=1):
@@ -436,10 +436,11 @@ def run_pattern_checks() -> bool:
         print(f"=== {check.name} ===")
         files = source_files(check.dirs, check.exts)
         for path in files:
-            if check.exclude_path and check.exclude_path.search(path.as_posix()):
+            posix_path = path.as_posix()
+            if check.exclude_path and check.exclude_path.search(posix_path):
                 continue
             try:
-                lines = path.read_text(errors="replace").splitlines()
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
             except OSError:
                 continue
             cfg_test_mask = (
@@ -460,10 +461,10 @@ def run_pattern_checks() -> bool:
                         if nolint_key in nolint_locations:
                             nolint_locations[nolint_key] = True
                         check.suppressed.append(
-                            f"  {path}:{lineno}: {line.strip()}"
+                            f"  {posix_path}:{lineno}: {line.strip()}"
                         )
                         continue
-                check.hits.append(f"  {path}:{lineno}: {line.strip()}")
+                check.hits.append(f"  {posix_path}:{lineno}: {line.strip()}")
         if check.hits:
             for hit in check.hits:
                 print(hit)
@@ -481,11 +482,11 @@ def run_pattern_checks() -> bool:
     for (path, lineno), consumed in sorted(nolint_locations.items()):
         if not consumed:
             try:
-                lines = path.read_text(errors="replace").splitlines()
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
                 line_text = lines[lineno - 1].strip() if lineno <= len(lines) else "???"
             except OSError:
                 line_text = "???"
-            stale.append(f"  {path}:{lineno}: {line_text}")
+            stale.append(f"  {path.as_posix()}:{lineno}: {line_text}")
     if stale:
         for s in stale:
             print(s)
@@ -503,12 +504,12 @@ def run_bare_nolint_check() -> bool:
     hits: list[str] = []
     for path in source_files(ALL_DIRS, ALL_EXTS):
         try:
-            content = path.read_text(errors="replace")
+            content = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         for lineno, line in enumerate(content.splitlines(), start=1):
             if NOLINT_BARE.search(line):
-                hits.append(f"  {path}:{lineno}: {line.strip()}")
+                hits.append(f"  {path.as_posix()}:{lineno}: {line.strip()}")
     if hits:
         for hit in hits:
             print(hit)
@@ -530,7 +531,7 @@ def run_empty_catch_check() -> bool:
     hits: list[str] = []
     for path in source_files(TS_DIRS, TS_EXTS):
         try:
-            lines = path.read_text(errors="replace").splitlines()
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
             continue
         for i, line in enumerate(lines):
@@ -553,7 +554,7 @@ def run_empty_catch_check() -> bool:
                     body_has_content = True
                     break
             if found_close and not body_has_content:
-                hits.append(f"  {path}:{i + 1}: {stripped}")
+                hits.append(f"  {path.as_posix()}:{i + 1}: {stripped}")
     if hits:
         for hit in hits:
             print(hit)
@@ -575,15 +576,18 @@ def run_long_file_check() -> bool:
         if resolved in seen:
             continue
         seen.add(resolved)
-        with path.open(errors="replace") as handle:
-            line_count = sum(1 for _ in handle)
+        try:
+            with path.open(encoding="utf-8", errors="replace") as handle:
+                line_count = sum(1 for _ in handle)
+        except OSError:
+            continue
         if line_count >= MAX_FILE_LINES:
             long_files.append((path, line_count))
 
     if long_files:
         long_files.sort(key=lambda x: -x[1])
         for path, count in long_files:
-            print(f"  ⚠  {path} ({count} lines)")
+            print(f"  ⚠  {path.as_posix()} ({count} lines)")
         print(
             "^^^ Long file detected. Should be refactored to be modular "
             "and testable (with good testing) and a good folder structure."
@@ -619,9 +623,9 @@ def run_packaging_invariant_check() -> bool:
     manifest = crate_dir / "Cargo.toml"
     build_dep_header = re.compile(r"^\s*\[[^\]]*build-dependencies\]")
     try:
-        for lineno, line in enumerate(manifest.read_text().splitlines(), start=1):
+        for lineno, line in enumerate(manifest.read_text(encoding="utf-8").splitlines(), start=1):
             if build_dep_header.search(line):
-                hits.append(f"  {manifest}:{lineno}: {line.strip()}")
+                hits.append(f"  {manifest.as_posix()}:{lineno}: {line.strip()}")
     except OSError as err:
         # Don't silently ignore a read failure — surface it as a violation.
         hits.append(f"  {manifest}: could not read manifest ({err})")
@@ -634,6 +638,233 @@ def run_packaging_invariant_check() -> bool:
             "and build-dependencies (adds compile cost to every downstream)."
         )
         return True
+    print("  ✓ clean")
+    return False
+
+
+def run_synced_files_check() -> bool:
+    """Verify non-symlink copies stay identical to their canonical sources.
+
+    Those copies replace git symlinks so the repo builds cleanly on Windows
+    when `core.symlinks` is disabled (the default on Git for Windows).
+    """
+    print("=== Synced crate copies (Windows-safe replacement for symlinks) ===")
+    pairs = [
+        (Path("AGENTS.md"), Path("AGENT.md")),
+        (Path("SPEC.md"), Path("crates/md-tmpl/SPEC.md")),
+    ]
+    macros_prompts = Path("crates/md-tmpl-macros/prompts")
+    if macros_prompts.is_dir():
+        for copy_path in sorted(macros_prompts.glob("*.tmpl.md")):
+            pairs.append((Path("crates/md-tmpl/prompts") / copy_path.name, copy_path))
+
+    hits: list[str] = []
+    for src, dst in pairs:
+        if not src.is_file():
+            hits.append(f"  missing canonical source: {src.as_posix()}")
+            continue
+        if not dst.is_file():
+            hits.append(f"  missing copy: {dst.as_posix()}")
+            continue
+        src_norm = src.read_bytes().replace(b"\r\n", b"\n")
+        dst_norm = dst.read_bytes().replace(b"\r\n", b"\n")
+        if src_norm != dst_norm:
+            hits.append(
+                f"  {dst.as_posix()} differs from {src.as_posix()} — sync them"
+            )
+
+    if hits:
+        for hit in hits:
+            print(hit)
+        print("^^^ Copy drifted from its canonical source.")
+        return True
+    print("  ✓ clean")
+    return False
+
+
+TS_IMPORT_FROM_RE = re.compile(
+    r"(?m)^\s*import\s+([^;]+?)\s+from\s+[\"'](\.[^\"']+)[\"']\s*;?",
+    re.S,
+)
+TS_EXPORT_FROM_RE = re.compile(
+    r"(?m)^\s*export\s+((?:type\s+)?(?:\*(?:\s+as\s+[A-Za-z_$][\w$]*)?|\{[^;{}]*\}))\s+from\s+[\"'](\.[^\"']+)[\"']\s*;?",
+    re.S,
+)
+TS_BARE_IMPORT_RE = re.compile(r"(?m)^\s*import\s+[\"'](\.[^\"']+)[\"']\s*;?")
+
+
+def _strip_ts_comments(source: str) -> str:
+    """Strip `//` and `/* ... */` comments while preserving string literals."""
+    out: list[str] = []
+    idx = 0
+    length = len(source)
+    while idx < length:
+        ch = source[idx]
+        if ch in ("'", '"', "`"):
+            quote = ch
+            out.append(ch)
+            idx += 1
+            while idx < length:
+                cur = source[idx]
+                out.append(cur)
+                idx += 1
+                if cur == "\\" and idx < length:
+                    out.append(source[idx])
+                    idx += 1
+                elif cur == quote:
+                    break
+            continue
+        if ch == "/" and idx + 1 < length:
+            nxt = source[idx + 1]
+            if nxt == "/":
+                idx += 2
+                while idx < length and source[idx] != "\n":
+                    idx += 1
+                continue
+            if nxt == "*":
+                idx += 2
+                while idx + 1 < length and not (
+                    source[idx] == "*" and source[idx + 1] == "/"
+                ):
+                    if source[idx] == "\n":
+                        out.append("\n")
+                    idx += 1
+                idx += 2
+                continue
+        out.append(ch)
+        idx += 1
+    return "".join(out)
+
+
+def _is_ts_type_only_clause(clause: str) -> bool:
+    """Return True if an import/export clause imports only TypeScript types."""
+    stripped = clause.strip()
+    if (
+        stripped.startswith("type ")
+        or stripped.startswith("type{")
+        or stripped.startswith("type*")
+    ):
+        return True
+    brace_match = re.fullmatch(r"\{(.*)\}", stripped, re.S)
+    if brace_match:
+        items = [x.strip() for x in brace_match.group(1).split(",") if x.strip()]
+        if items and all(re.match(r"^type\s+", item) for item in items):
+            return True
+    return False
+
+
+def _resolve_ts_relative(
+    src: Path, spec: str, known: set[Path]
+) -> Path | None:
+    """Resolve a relative TypeScript ESM specifier (`.js` -> `.ts`) within `known`."""
+    target_spec = spec[:-3] + ".ts" if spec.endswith(".js") else spec
+    candidate = (src.parent / target_spec).resolve()
+    if candidate in known:
+        return candidate
+    if candidate.with_suffix(".ts") in known:
+        return candidate.with_suffix(".ts")
+    index_ts = candidate / "index.ts"
+    if index_ts in known:
+        return index_ts
+    return None
+
+
+def run_ts_runtime_cycle_check() -> bool:
+    """Detect runtime circular imports in `crates/md-tmpl-typescript/src/`.
+
+    Type-only imports (`import type ...` / `import { type X }`) are erased at
+    compile time and allowed; runtime cycles break Closure/tsickle and ESM
+    topological sorting and must never be introduced.
+    """
+    print("=== TypeScript: runtime import cycles ===")
+    ts_src = Path("crates/md-tmpl-typescript/src")
+    if not ts_src.is_dir():
+        print("  ✓ clean")
+        return False
+
+    files = sorted(
+        p.resolve()
+        for p in ts_src.rglob("*.ts")
+        if p.is_file()
+        and "tests" not in p.parts
+        and not any(part in EXCLUDED_DIRS for part in p.parts)
+    )
+    known = set(files)
+    adj: dict[Path, set[Path]] = {p: set() for p in files}
+
+    for path in files:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        no_comments = _strip_ts_comments(text)
+        for pattern in (TS_IMPORT_FROM_RE, TS_EXPORT_FROM_RE):
+            for match in pattern.finditer(no_comments):
+                if _is_ts_type_only_clause(match.group(1)):
+                    continue
+                target = _resolve_ts_relative(path, match.group(2), known)
+                if target is not None and target != path:
+                    adj[path].add(target)
+        for match in TS_BARE_IMPORT_RE.finditer(no_comments):
+            target = _resolve_ts_relative(path, match.group(1), known)
+            if target is not None and target != path:
+                adj[path].add(target)
+
+    # Tarjan's strongly connected components algorithm.
+    counter = 0
+    indices: dict[Path, int] = {}
+    lowlink: dict[Path, int] = {}
+    stack: list[Path] = []
+    on_stack: set[Path] = set()
+    sccs: list[list[Path]] = []
+
+    def strongconnect(node: Path) -> None:
+        nonlocal counter
+        indices[node] = counter
+        lowlink[node] = counter
+        counter += 1
+        stack.append(node)
+        on_stack.add(node)
+        for neighbor in sorted(adj[node]):
+            if neighbor not in indices:
+                strongconnect(neighbor)
+                lowlink[node] = min(lowlink[node], lowlink[neighbor])
+            elif neighbor in on_stack:
+                lowlink[node] = min(lowlink[node], indices[neighbor])
+        if lowlink[node] == indices[node]:
+            component: list[Path] = []
+            while True:
+                member = stack.pop()
+                on_stack.remove(member)
+                component.append(member)
+                if member == node:
+                    break
+            if len(component) > 1:
+                sccs.append(sorted(component))
+
+    for node in files:
+        if node not in indices:
+            strongconnect(node)
+
+    if sccs:
+        ts_src_resolved = ts_src.resolve()
+        for idx, comp in enumerate(sccs, start=1):
+            comp_set = set(comp)
+            print(f"  Cycle #{idx} ({len(comp)} modules):")
+            for member in comp:
+                rel = member.relative_to(ts_src_resolved).as_posix()
+                outs = sorted(
+                    n.relative_to(ts_src_resolved).as_posix()
+                    for n in adj[member]
+                    if n in comp_set
+                )
+                print(f"    {rel} -> {outs}")
+        print(
+            "^^^ Runtime circular import detected in TypeScript source — "
+            "extract shared helpers into a leaf module or inject callbacks."
+        )
+        return True
+
     print("  ✓ clean")
     return False
 
@@ -654,8 +885,10 @@ def check_workspace(
         failed = run_pattern_checks()
         failed = run_bare_nolint_check() or failed
         failed = run_empty_catch_check() or failed
+        failed = run_ts_runtime_cycle_check() or failed
         if check_packaging:
             failed = run_packaging_invariant_check() or failed
+            failed = run_synced_files_check() or failed
         failed = run_long_file_check() or failed
         return failed
     finally:
@@ -663,6 +896,13 @@ def check_workspace(
 
 
 def main() -> int:
+    # Ensure Unicode status markers don't raise UnicodeEncodeError on legacy
+    # Windows consoles (e.g. cp1252).
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
     repo_root = Path(__file__).resolve().parent.parent
     failed = check_workspace(repo_root, check_packaging=True)
 

@@ -362,12 +362,11 @@ function matchTurnHeaderAt(
   const c0 = s.charCodeAt(i);
   let pos: number;
   if (c0 === 10 /* '\n' */ || c0 === 13 /* '\r' */) {
-    pos = i + 1;
-    while (pos < s.length) {
-      const ch = s.charCodeAt(pos);
-      if (ch !== 10 && ch !== 13) break;
-      pos++;
+    const next = s.charCodeAt(i + 1);
+    if (next === 10 || next === 13) {
+      return undefined;
     }
+    pos = i + 1;
   } else if (
     i === 0 &&
     (c0 === 72 /* 'H' */ ||

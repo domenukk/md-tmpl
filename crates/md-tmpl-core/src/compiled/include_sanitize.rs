@@ -178,7 +178,7 @@ pub(crate) fn contextualized_segments(
         }
         let mut segments = child.to_vec();
         apply_include_context(&mut segments, ctx, declared);
-        heading_check::check_heading_block_filters_from(
+        heading_check::check_heading_block_filters(
             &segments,
             ctx.in_atx_heading,
             ctx.at_line_start,
@@ -215,7 +215,7 @@ pub(crate) fn handle_segments(
         strip_declared_sanitization(&mut segments);
         if let Some(ctx) = site.and_then(|inc| inc.sanitize_ctx.as_deref()) {
             apply_include_context(&mut segments, ctx, declared);
-            heading_check::check_heading_block_filters_from(
+            heading_check::check_heading_block_filters(
                 &segments,
                 ctx.in_atx_heading,
                 ctx.at_line_start,
@@ -374,7 +374,7 @@ fn untrusted_include_path_error(path: &str, expr: &str) -> TemplateError {
 /// # Errors
 /// Returns [`TemplateError::Syntax`] for the first offending include.
 pub fn check_untrusted_include_paths(segments: &[Segment]) -> Result<(), TemplateError> {
-    heading_check::check_heading_block_filters_from(segments, false, true)?;
+    heading_check::check_heading_block_filters(segments, false, true)?;
     check_untrusted_include_paths_inner(segments)
 }
 
@@ -431,7 +431,8 @@ pub(super) fn record_untrusted_path(inc: &mut CompiledInclude, expr: String) {
     }
 }
 
-/// Record the enclosing-tag / heading scan state at a runtime-resolved include call site.
+/// Record (merging monotonically across repeated fixed-point passes) the enclosing-tag /
+/// heading scan state at a runtime-resolved include call site.
 pub(super) fn record_enclosing(
     inc: &mut CompiledInclude,
     open_tags: &[String],
@@ -439,14 +440,47 @@ pub(super) fn record_enclosing(
     at_line_start: bool,
     pending_open_tag: Option<&str>,
 ) {
-    if open_tags.is_empty() && !in_atx_heading && pending_open_tag.is_none() {
+    if open_tags.is_empty()
+        && !in_atx_heading
+        && pending_open_tag.is_none()
+        && !(at_line_start && inc.sanitize_ctx.is_some())
+    {
         return;
     }
     let ctx = Arc::make_mut(inc.sanitize_ctx.get_or_insert_with(Default::default));
-    ctx.enclosing_tags = open_tags.to_vec();
-    ctx.in_atx_heading = in_atx_heading;
-    ctx.at_line_start = at_line_start;
-    ctx.pending_open_tag = pending_open_tag.map(ToString::to_string);
+    for tag in open_tags {
+        if !ctx
+            .enclosing_tags
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(tag))
+        {
+            ctx.enclosing_tags.push(tag.clone());
+        }
+    }
+    ctx.in_atx_heading |= in_atx_heading;
+    ctx.at_line_start |= at_line_start;
+    if let Some(incoming) = pending_open_tag {
+        let mut merged: Vec<String> = ctx
+            .pending_open_tag
+            .as_deref()
+            .into_iter()
+            .flat_map(|s| s.split(','))
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string)
+            .collect();
+        for part in incoming.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            if !merged
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(part))
+            {
+                merged.push(part.to_string());
+            }
+        }
+        if !merged.is_empty() {
+            ctx.pending_open_tag = Some(merged.join(","));
+        }
+    }
 }
 
 /// Returns `true` if `s` is a plain dotted identifier path (`a`, `my-var`, `a.b-c.d`, `params. x`).

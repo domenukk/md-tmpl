@@ -252,14 +252,14 @@ func (c *Context) SetTmpl(key string, tmpl *Template) error {
 	if c == nil || tmpl == nil {
 		return ErrClosed
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.ptr == nil {
-		return ErrClosed
-	}
 	tmpl.mu.RLock()
 	defer tmpl.mu.RUnlock()
 	if tmpl.ptr == nil {
+		return ErrClosed
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.ptr == nil {
 		return ErrClosed
 	}
 	cKey := C.CString(key)

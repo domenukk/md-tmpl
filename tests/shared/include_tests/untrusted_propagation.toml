@@ -816,3 +816,51 @@ params:
   - t = str
 ---
 [{{ t }}]'''
+
+[[tests]]
+name = "runtime_file_include_at_line_start_collapses_child_atx_heading_newlines"
+description = "A runtime-resolved file include at line start outside XML tags preserves `at_line_start` so child `# {{ heading }}` collapses newlines"
+parent_template = '''
+---
+params:
+  - child_name = trusted str
+  - title = str
+---
+> {% include [c](./{{ child_name }}.tmpl.md) with heading = title %}'''
+expected_output = "# Safe ## Injected Heading"
+
+[tests.params]
+child_name = "child_h1"
+title = "Safe\n## Injected Heading"
+
+[tests.files]
+"child_h1.tmpl.md" = '''
+---
+params:
+  - heading = trusted str
+---
+# {{ heading }}'''
+
+[[tests]]
+name = "runtime_file_include_in_loop_unions_enclosing_tags_across_passes"
+description = "Repeated fixed-point loop passes monotonically union `enclosing_tags` on runtime-resolved includes"
+parent_template = '''
+---
+params:
+  - child_name = trusted str
+  - items = list(str)
+---
+<outer>{% for item in items %}{% include [c](./{{ child_name }}.tmpl.md) with t = item %}<mid>{% /for %}</mid></outer>'''
+expected_output = "<outer>[First&lt;/outer&gt;]<mid>[Second&lt;/mid&gt;&lt;/outer&gt;]<mid></mid></outer>"
+
+[tests.params]
+child_name = "child_str"
+items = ["First</outer>", "Second</mid></outer>"]
+
+[tests.files]
+"child_str.tmpl.md" = '''
+---
+params:
+  - t = str
+---
+[{{ t }}]'''

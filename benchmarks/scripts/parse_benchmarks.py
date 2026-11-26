@@ -76,7 +76,7 @@ def parse_criterion_dir(criterion_dir: Path) -> dict[str, Any]:
                 continue
 
             try:
-                with open(estimates_path) as f:
+                with open(estimates_path, encoding="utf-8") as f:
                     data = json.load(f)
                 # point_estimate.point_estimate is in nanoseconds
                 ns = data["mean"]["point_estimate"]
@@ -536,23 +536,25 @@ def main() -> None:
 
     if args.python_output and args.python_output.exists():
         log.info("Parsing Python from %s", args.python_output)
-        python = parse_python_output(args.python_output.read_text())
+        python = parse_python_output(args.python_output.read_text(encoding="utf-8"))
 
     if args.go_output and args.go_output.exists():
         log.info("Parsing Go from %s", args.go_output)
-        go = parse_go_output(args.go_output.read_text())
+        go = parse_go_output(args.go_output.read_text(encoding="utf-8"))
 
     if args.ts_output and args.ts_output.exists():
         log.info("Parsing TypeScript from %s", args.ts_output)
-        ts = parse_ts_output(args.ts_output.read_text())
+        ts = parse_ts_output(args.ts_output.read_text(encoding="utf-8"))
 
     if args.ts_comparison_output and args.ts_comparison_output.exists():
         log.info("Parsing TypeScript comparison from %s", args.ts_comparison_output)
-        ts_comparison = parse_ts_comparison_output(args.ts_comparison_output.read_text())
+        ts_comparison = parse_ts_comparison_output(
+            args.ts_comparison_output.read_text(encoding="utf-8")
+        )
 
     if args.wasm_output and args.wasm_output.exists():
         log.info("Parsing WASM from %s", args.wasm_output)
-        wasm = parse_wasm_output(args.wasm_output.read_text())
+        wasm = parse_wasm_output(args.wasm_output.read_text(encoding="utf-8"))
 
     output = build_unified_output(rust=rust, python=python, go=go, ts=ts, ts_comparison=ts_comparison, wasm=wasm)
     json.dump(output, sys.stdout, indent=2)

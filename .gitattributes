@@ -1,0 +1,28 @@
+# Enforce consistent LF line endings across all platforms so templates,
+# TOML fixtures, golden codegen stubs, and shell scripts check out identically
+# on Windows (even with core.autocrlf=true), macOS, and Linux.
+* text=auto eol=lf
+
+*.sh text eol=lf
+*.tmpl.md text eol=lf
+*.toml text eol=lf
+*.rs text eol=lf
+*.ts text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.jsonc text eol=lf
+*.go text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.h text eol=lf
+justfile text eol=lf
+
+# Binary assets
+*.png binary
+*.wasm binary
+*.whl binary
+*.tgz binary
+*.zip binary

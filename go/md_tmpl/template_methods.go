@@ -540,15 +540,24 @@ func (t *Template) ValidateAgainstTemplate(expected *Template) error {
 	if t == nil || expected == nil {
 		return ErrClosed
 	}
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	if t.ptr == nil {
-		return ErrClosed
-	}
-	expected.mu.RLock()
-	defer expected.mu.RUnlock()
-	if expected.ptr == nil {
-		return ErrClosed
+	if t == expected {
+		t.mu.RLock()
+		defer t.mu.RUnlock()
+		if t.ptr == nil {
+			return ErrClosed
+		}
+	} else {
+		first, second := t, expected
+		if uintptr(unsafe.Pointer(first)) > uintptr(unsafe.Pointer(second)) {
+			first, second = second, first
+		}
+		first.mu.RLock()
+		defer first.mu.RUnlock()
+		second.mu.RLock()
+		defer second.mu.RUnlock()
+		if t.ptr == nil || expected.ptr == nil {
+			return ErrClosed
+		}
 	}
 	errPtr := C.pt_template_validate_against_template(t.ptr, expected.ptr)
 	runtime.KeepAlive(t)

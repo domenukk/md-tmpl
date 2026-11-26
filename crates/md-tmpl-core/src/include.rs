@@ -304,9 +304,10 @@ fn resolve_from_filesystem(
     }
 
     // No cache — read and compile from disk.
-    let source = std::fs::read_to_string(&include_path).map_err(|err| {
+    let raw_source = std::fs::read_to_string(&include_path).map_err(|err| {
         TemplateError::IncludeNotFound(format!("{}: {err}", include_path.display()))
     })?;
+    let source = crate::consts::normalize_line_endings(&raw_source);
 
     let include_base = include_path.parent().unwrap_or(base);
     // Propagate compile-time env values to included files so their
@@ -917,5 +918,26 @@ params:
         let mut scope = Scope::new(&ctx);
         let result = resolve_include(&directive, &mut scope, Some(dir.path()), None).unwrap();
         assert_eq!(result, "Hey World!");
+    }
+
+    #[test]
+    fn include_normalizes_crlf_line_endings() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("crlf.tmpl.md"),
+            b"---\r\nparams: [name = str]\r\n---\r\nHello {{ name }}!\r\nLine 2\r\n",
+        )
+        .unwrap();
+
+        let directive = IncludeDirective {
+            path: "crlf.tmpl.md",
+            with_vars: vec![("name", "\"World\"")],
+            for_each: None,
+        };
+        let ctx = Context::new();
+        let mut scope = Scope::new(&ctx);
+        let result = resolve_include(&directive, &mut scope, Some(dir.path()), None).unwrap();
+        assert!(!result.contains('\r'), "output leaked \\r: {result:?}");
+        assert_eq!(result, "Hello World!\nLine 2\n");
     }
 }

@@ -149,7 +149,7 @@ def generate_types_source(path: str | os.PathLike[str]) -> str:
         from md_tmpl import generate_types_source
 
         source = generate_types_source("prompts/review.tmpl.md")
-        with open("review_types.py", "w") as f:
+        with open("review_types.py", "w", encoding="utf-8") as f:
             f.write(source)
     """
     return _generate_python_source(os.fspath(path))

@@ -21,7 +21,7 @@ import {
   type DeclaredSanitize,
   EMPTY_DECLARED_SANITIZE,
 } from "./include_sanitize.js";
-import { type Value, type TmplRef, display, TYPE_TMPL } from "./value.js";
+import { type Value, type TmplRef, NONE, display, TYPE_TMPL } from "./value.js";
 import {
   TemplateError,
   TemplateSyntaxError,
@@ -542,7 +542,7 @@ export function renderNodes(
             for (const decl of decls) {
               if (!iterCtx.has(decl.name)) {
                 if (decl.varType.kind === TYPE_OPTION) {
-                  iterCtx.set(decl.name, { type: TYPE_NONE });
+                  iterCtx.set(decl.name, NONE);
                 } else {
                   throw new TemplateError(
                     `missing required parameter '${decl.name}' for include '${node.path ?? node.name}' (expected ${varTypeToString(decl.varType)})`,
@@ -582,7 +582,7 @@ export function renderNodes(
         for (const decl of decls) {
           if (!childCtx.has(decl.name)) {
             if (decl.varType.kind === TYPE_OPTION) {
-              childCtx.set(decl.name, { type: TYPE_NONE });
+              childCtx.set(decl.name, NONE);
             } else {
               throw new TemplateError(
                 `missing required parameter '${decl.name}' for include '${node.path ?? node.name}' (expected ${varTypeToString(decl.varType)})`,

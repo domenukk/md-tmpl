@@ -29,7 +29,11 @@
 package md_tmpl
 
 /*
-#cgo LDFLAGS: -L${SRCDIR}/../../target/release -lmd_tmpl_ffi -ldl -lpthread -lm
+#cgo linux LDFLAGS: -L${SRCDIR}/../../target/release -lmd_tmpl_ffi -ldl -lpthread -lm
+#cgo darwin LDFLAGS: -L${SRCDIR}/../../target/release -lmd_tmpl_ffi -ldl -lpthread -lm
+#cgo freebsd openbsd netbsd LDFLAGS: -L${SRCDIR}/../../target/release -lmd_tmpl_ffi -lpthread -lm
+#cgo windows,amd64 LDFLAGS: -L${SRCDIR}/../../target/x86_64-pc-windows-gnu/release
+#cgo windows LDFLAGS: -L${SRCDIR}/../../target/release -lmd_tmpl_ffi -lws2_32 -luserenv -lbcrypt -lntdll -ladvapi32 -ldbghelp -lkernel32 -lm
 #cgo CFLAGS: -I${SRCDIR}/../../crates/md-tmpl-ffi/include
 
 #include <stdlib.h>

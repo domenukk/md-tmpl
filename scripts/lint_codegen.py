@@ -10,6 +10,8 @@ Usage:
 """
 
 import argparse
+import json
+import os
 import sys
 import subprocess
 import tempfile
@@ -27,15 +29,33 @@ TEMPLATES = [
 GOLDEN_DIR = REPO_ROOT / "tests" / "golden_stubs"
 
 
+def _venv_python() -> Path:
+    venv = REPO_ROOT / "crates" / "md-tmpl-python" / ".venv"
+    if os.name == "nt":
+        return venv / "Scripts" / "python.exe"
+    return venv / "bin" / "python3"
+
+
+def _normalize_lf(text: str) -> str:
+    return text.replace("\r\n", "\n")
+
+
 def generate_ts(tmpl_path: Path) -> str:
-    rel_path = tmpl_path.relative_to(REPO_ROOT)
+    rel_path = tmpl_path.relative_to(REPO_ROOT).as_posix()
     cmd = [
         "node",
         "-e",
-        f'import("./crates/md-tmpl-typescript/dist/codegen.js").then(m => process.stdout.write(m.generateTypesFromFile("{rel_path}")))',
+        f"import('./crates/md-tmpl-typescript/dist/codegen.js').then(m => process.stdout.write(m.generateTypesFromFile({json.dumps(rel_path)})))",
     ]
-    res = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, check=True)
-    return res.stdout
+    res = subprocess.run(
+        cmd,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    )
+    return _normalize_lf(res.stdout)
 
 
 def generate_go(tmpl_path: Path) -> str:
@@ -58,25 +78,33 @@ def generate_go(tmpl_path: Path) -> str:
             cwd=REPO_ROOT / "go" / "cmd" / "pt-gen-go",
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=True,
         )
-        return tmp_out.read_text(encoding="utf-8")
+        return _normalize_lf(tmp_out.read_text(encoding="utf-8"))
     finally:
         if tmp_out.exists():
             tmp_out.unlink()
 
 
 def generate_python(tmpl_path: Path) -> str:
-    rel_path = str(tmpl_path.relative_to(REPO_ROOT))
-    py_bin = REPO_ROOT / "crates/md-tmpl-python/.venv/bin/python3"
+    rel_path = tmpl_path.relative_to(REPO_ROOT).as_posix()
+    py_bin = _venv_python()
     code = (
         "import sys; "
         "from md_tmpl._md_tmpl import generate_python_source_for_template; "
         f"sys.stdout.write(generate_python_source_for_template({rel_path!r}))"
     )
     cmd = [str(py_bin), "-c", code]
-    res = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, check=True)
-    return res.stdout
+    res = subprocess.run(
+        cmd,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    )
+    return _normalize_lf(res.stdout)
 
 
 LANGUAGES = [
@@ -125,14 +153,15 @@ def main() -> int:
                 continue
 
             if mode_write:
-                golden_file.write_text(generated, encoding="utf-8")
+                with golden_file.open("w", encoding="utf-8", newline="\n") as fh:
+                    fh.write(generated)
                 print("WRITTEN")
             else:
                 if not golden_file.exists():
                     print("MISSING on disk!")
                     failed = True
                     continue
-                expected = golden_file.read_text(encoding="utf-8")
+                expected = _normalize_lf(golden_file.read_text(encoding="utf-8"))
                 if generated == expected:
                     print("OK (zero-diff)")
                 else:

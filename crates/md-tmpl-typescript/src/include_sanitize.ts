@@ -431,7 +431,9 @@ export function updateIncludeContext(
     openTags.length > 0 ||
     headingState.inAtxHeading ||
     pendingTag !== undefined;
-  if (!hasTaint && !hasEnclosing) {
+  const needsAtLineStart =
+    headingState.atLineStart && (hasTaint || existing !== undefined);
+  if (!hasTaint && !hasEnclosing && !needsAtLineStart) {
     return existing;
   }
   const base: IncludeSanitizeContext = existing ?? {
@@ -453,13 +455,37 @@ export function updateIncludeContext(
     }
     untrustedPathRef ??= taint.pathRef;
   }
+  const mergedEnclosing = [...base.enclosingTags];
+  for (const tag of openTags) {
+    const lower = tag.toLowerCase();
+    if (!mergedEnclosing.some((t) => t.toLowerCase() === lower)) {
+      mergedEnclosing.push(tag);
+    }
+  }
+  let mergedPending = base.pendingOpenTag;
+  if (pendingTag !== undefined) {
+    const parts = (base.pendingOpenTag ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    for (const raw of pendingTag.split(",")) {
+      const p = raw.trim();
+      if (
+        p.length > 0 &&
+        !parts.some((e) => e.toLowerCase() === p.toLowerCase())
+      ) {
+        parts.push(p);
+      }
+    }
+    if (parts.length > 0) {
+      mergedPending = parts.join(",");
+    }
+  }
   const next: IncludeSanitizeContext = {
-    enclosingTags: hasEnclosing ? [...openTags] : base.enclosingTags,
-    inAtxHeading: hasEnclosing ? headingState.inAtxHeading : base.inAtxHeading,
-    atLineStart: hasEnclosing ? headingState.atLineStart : base.atLineStart,
-    ...((hasEnclosing ? pendingTag : base.pendingOpenTag) !== undefined
-      ? { pendingOpenTag: hasEnclosing ? pendingTag : base.pendingOpenTag }
-      : {}),
+    enclosingTags: mergedEnclosing,
+    inAtxHeading: base.inAtxHeading || headingState.inAtxHeading,
+    atLineStart: base.atLineStart || headingState.atLineStart,
+    ...(mergedPending !== undefined ? { pendingOpenTag: mergedPending } : {}),
     untrusted,
     ...(untrustedPathRef !== undefined ? { untrustedPathRef } : {}),
   };

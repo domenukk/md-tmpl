@@ -52,6 +52,26 @@ export const PATH_PREFIX_CUR = "./";
 export const PATH_PREFIX_PARENT = "../";
 export const PATH_PREFIX_CUR_WIN = ".\\";
 export const PATH_PREFIX_PARENT_WIN = "..\\";
+export const PATH_PREFIX_UNC = "\\\\";
+export const STR_NEWLINE = "\n";
+export const STR_CRLF = "\r\n";
+
+/**
+ * Normalize CRLF (`\r\n`) line endings to LF (`\n`), returning `source`
+ * without allocating when no `\r\n` sequence is present.
+ */
+export function normalizeLineEndings(source: string): string {
+  return source.includes(STR_CRLF)
+    ? source.replaceAll(STR_CRLF, STR_NEWLINE)
+    : source;
+}
+
+function isWindowsDriveAbs(path: string): boolean {
+  if (path.length < 3) return false;
+  const code = path.charCodeAt(0);
+  const isLetter = (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+  return isLetter && path[1] === ":" && (path[2] === "\\" || path[2] === "/");
+}
 
 export function isValidResolvedPath(path: string): boolean {
   return (
@@ -59,7 +79,9 @@ export function isValidResolvedPath(path: string): boolean {
     path.startsWith(PATH_PREFIX_PARENT) ||
     path.startsWith(PATH_PREFIX_CUR_WIN) ||
     path.startsWith(PATH_PREFIX_PARENT_WIN) ||
-    path.startsWith(SLASH)
+    path.startsWith(SLASH) ||
+    path.startsWith(PATH_PREFIX_UNC) ||
+    isWindowsDriveAbs(path)
   );
 }
 

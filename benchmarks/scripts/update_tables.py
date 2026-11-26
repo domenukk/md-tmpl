@@ -484,7 +484,7 @@ def replace_table(
 
 def update_readme(readme_path: Path, data: dict[str, Any]) -> bool:
     """Update benchmark tables in a Rust README.md. Returns True if changed."""
-    content = readme_path.read_text()
+    content = readme_path.read_text(encoding="utf-8")
     changes_made = False
 
     # Rust table
@@ -517,7 +517,8 @@ def update_readme(readme_path: Path, data: dict[str, Any]) -> bool:
                 log.info("Updated Rust E2E table in %s", readme_path)
 
     if changes_made:
-        readme_path.write_text(content)
+        with readme_path.open("w", encoding="utf-8", newline="\n") as f:
+            f.write(content)
     return changes_made
 
 
@@ -526,7 +527,7 @@ def update_python_readme(readme_path: Path, data: dict[str, Any]) -> bool:
     if "python" not in data:
         return False
 
-    content = readme_path.read_text()
+    content = readme_path.read_text(encoding="utf-8")
     changes_made = False
 
     # Render table
@@ -578,7 +579,8 @@ def update_python_readme(readme_path: Path, data: dict[str, Any]) -> bool:
             log.info("Updated Python end-to-end table")
 
     if changes_made:
-        readme_path.write_text(content)
+        with readme_path.open("w", encoding="utf-8", newline="\n") as f:
+            f.write(content)
     return changes_made
 
 
@@ -593,7 +595,7 @@ def update_go_readme(readme_path: Path, data: dict[str, Any]) -> bool:
     if not pt_data or not go_data:
         return False
 
-    content = readme_path.read_text()
+    content = readme_path.read_text(encoding="utf-8")
     changes_made = False
 
     # Render table
@@ -621,7 +623,8 @@ def update_go_readme(readme_path: Path, data: dict[str, Any]) -> bool:
         log.info("Updated Go filters table")
 
     if changes_made:
-        readme_path.write_text(content)
+        with readme_path.open("w", encoding="utf-8", newline="\n") as f:
+            f.write(content)
     return changes_made
 
 # ---------------------------------------------------------------------------
@@ -804,7 +807,7 @@ def build_wasm_table(wasm_data: dict[str, Any]) -> str:
 
 def update_ts_readme(readme_path: Path, data: dict[str, Any]) -> bool:
     """Update benchmark tables in the TypeScript README.md."""
-    content = readme_path.read_text()
+    content = readme_path.read_text(encoding="utf-8")
     changes_made = False
 
     # 1. Internal benchmarks table (from bench.ts)
@@ -851,7 +854,8 @@ def update_ts_readme(readme_path: Path, data: dict[str, Any]) -> bool:
                 log.info("Updated TS comparison round-trip table")
 
     if changes_made:
-        readme_path.write_text(content)
+        with readme_path.open("w", encoding="utf-8", newline="\n") as f:
+            f.write(content)
     return changes_made
 
 
@@ -860,7 +864,7 @@ def update_wasm_readme(readme_path: Path, data: dict[str, Any]) -> bool:
     if "wasm" not in data:
         return False
 
-    content = readme_path.read_text()
+    content = readme_path.read_text(encoding="utf-8")
     changes_made = False
 
     wasm_table = build_wasm_table(data["wasm"])
@@ -875,7 +879,8 @@ def update_wasm_readme(readme_path: Path, data: dict[str, Any]) -> bool:
         log.info("Updated WASM vs TS table")
 
     if changes_made:
-        readme_path.write_text(content)
+        with readme_path.open("w", encoding="utf-8", newline="\n") as f:
+            f.write(content)
     return changes_made
 
 
@@ -937,7 +942,7 @@ def main() -> None:
 
     # Read JSON data
     if args.json:
-        data = json.loads(args.json.read_text())
+        data = json.loads(args.json.read_text(encoding="utf-8"))
     else:
         data = json.load(sys.stdin)
 

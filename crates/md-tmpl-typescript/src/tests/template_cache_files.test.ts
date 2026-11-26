@@ -23,7 +23,7 @@ describe("Template.fromSourceWithBaseDir", () => {
 params: [x = str]
 ---
 {{ x }}`,
-      "/tmp",
+      os.tmpdir(),
     );
     assert.strictEqual(tmpl.render({ x: "works" }), "works");
   });

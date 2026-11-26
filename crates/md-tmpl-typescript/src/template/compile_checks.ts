@@ -12,7 +12,7 @@ import { type Node } from "../parser.js";
 import { ERR_UNDECLARED_PREFIX, EXPR_START, TYPE_ENUM } from "../consts.js";
 import { compileDirectExpr } from "../direct_renderer/expr.js";
 import { compileDirectCaseLabel } from "../direct_renderer/render.js";
-import { validateConditionSyntax } from "../evaluator.js";
+import { validateConditionSyntax } from "../condition_validate.js";
 import { validateFilters } from "../parser_utils.js";
 import { closestName } from "../suggest.js";
 import {

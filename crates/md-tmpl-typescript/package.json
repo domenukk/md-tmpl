@@ -1,6 +1,6 @@
 {
   "name": "md-tmpl",
-  "version": "0.10.8",
+  "version": "0.10.9",
   "description": "Strongly-typed template engine for LLM prompts, designed for markdown",
   "type": "module",
   "main": "dist/index.js",
@@ -25,11 +25,11 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "node --test dist/tests/*.test.js",
+    "test": "node --test dist/tests",
     "bench": "node dist/benchmarks/bench.js",
     "lint": "tsc --noEmit",
     "lint:eslint": "eslint .",
-    "clean": "rm -rf dist"
+    "clean": "node -e \"import('node:fs').then((fs)=>fs.rmSync('dist',{recursive:true,force:true}))\""
   },
   "keywords": [
     "template",

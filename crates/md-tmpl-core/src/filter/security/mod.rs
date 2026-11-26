@@ -496,11 +496,10 @@ pub(super) enum ControlTokenMatch {
 fn match_turn_header_at(bytes: &[u8], i: usize) -> Option<ControlTokenMatch> {
     let mut pos = match bytes[i] {
         b'\n' | b'\r' => {
-            let mut p = i + 1;
-            while p < bytes.len() && matches!(bytes[p], b'\n' | b'\r') {
-                p += 1;
+            if bytes.get(i + 1).is_some_and(|b| matches!(b, b'\n' | b'\r')) {
+                return None;
             }
-            p
+            i + 1
         }
         b'H' | b'A' | b' ' | b'\t' if i == 0 => 0,
         _ => return None,

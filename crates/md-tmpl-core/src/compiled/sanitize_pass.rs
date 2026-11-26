@@ -100,8 +100,7 @@ pub(crate) const INLINE_HEADING_SENTINEL: &str = "#heading";
 #[derive(Clone)]
 struct EnclosingScanState {
     open_tags: Vec<String>,
-    pending_open_tag: Option<String>,
-    pending_quote: Option<u8>,
+    pending_open_tags: Vec<(String, Option<u8>)>,
     in_atx_heading: bool,
     at_line_start: bool,
 }
@@ -110,8 +109,7 @@ impl Default for EnclosingScanState {
     fn default() -> Self {
         Self {
             open_tags: Vec::new(),
-            pending_open_tag: None,
-            pending_quote: None,
+            pending_open_tags: Vec::new(),
             in_atx_heading: false,
             at_line_start: true,
         }
@@ -130,12 +128,66 @@ impl EnclosingScanState {
         propagate_enclosing_xml_tags(segments, closing_tags, &mut branch_state);
     }
 
+    fn collect_repeated_branch_states(
+        &self,
+        segments: &mut [Segment],
+        closing_tags: &HashSet<String>,
+    ) -> Vec<Self> {
+        let mut iter_state = self.clone();
+        let mut out = Vec::with_capacity(3);
+        loop {
+            let post = iter_state.run_branch(segments, closing_tags);
+            let mut grew = (post.in_atx_heading && !iter_state.in_atx_heading)
+                || (post.at_line_start && !iter_state.at_line_start);
+            iter_state.in_atx_heading |= post.in_atx_heading;
+            iter_state.at_line_start |= post.at_line_start;
+            for tag in &post.open_tags {
+                if !iter_state
+                    .open_tags
+                    .iter()
+                    .any(|t| t.eq_ignore_ascii_case(tag))
+                {
+                    iter_state.open_tags.push(tag.clone());
+                    grew = true;
+                }
+            }
+            for (p, q) in &post.pending_open_tags {
+                if !iter_state
+                    .pending_open_tags
+                    .iter()
+                    .any(|(ep, eq)| ep.eq_ignore_ascii_case(p) && eq == q)
+                {
+                    iter_state.pending_open_tags.push((p.clone(), *q));
+                    grew = true;
+                }
+            }
+            out.push(post);
+            if !grew {
+                break;
+            }
+        }
+        out
+    }
+
+    fn joined_pending_open_tags(&self) -> Option<String> {
+        if self.pending_open_tags.is_empty() {
+            return None;
+        }
+        let mut names: Vec<&str> = Vec::with_capacity(self.pending_open_tags.len());
+        for (name, _) in &self.pending_open_tags {
+            if !names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+                names.push(name.as_str());
+            }
+        }
+        Some(names.join(","))
+    }
+
     fn merge_branches(&mut self, states: &[Self]) {
         if states.is_empty() {
             return;
         }
         let mut union_tags: Vec<String> = Vec::new();
-        let mut pending: Option<(String, Option<u8>)> = None;
+        let mut union_pending: Vec<(String, Option<u8>)> = Vec::new();
         let mut any_heading = false;
         let mut any_line_start = false;
         for st in states {
@@ -144,22 +196,19 @@ impl EnclosingScanState {
                     union_tags.push(tag.clone());
                 }
             }
-            if pending.is_none()
-                && let Some(ref p) = st.pending_open_tag
-            {
-                pending = Some((p.clone(), st.pending_quote));
+            for (p, q) in &st.pending_open_tags {
+                if !union_pending
+                    .iter()
+                    .any(|(ep, eq)| ep.eq_ignore_ascii_case(p) && eq == q)
+                {
+                    union_pending.push((p.clone(), *q));
+                }
             }
             any_heading |= st.in_atx_heading;
             any_line_start |= st.at_line_start;
         }
         self.open_tags = union_tags;
-        if let Some((p, q)) = pending {
-            self.pending_open_tag = Some(p);
-            self.pending_quote = q;
-        } else {
-            self.pending_open_tag = None;
-            self.pending_quote = None;
-        }
+        self.pending_open_tags = union_pending;
         self.in_atx_heading = any_heading;
         self.at_line_start = any_line_start;
     }
@@ -186,13 +235,19 @@ pub(super) fn apply_enclosing_xml_tags_from(
     }
     let mut closing_tags = HashSet::new();
     collect_closing_xml_tags(segments, &mut closing_tags);
-    if let Some(pending) = pending_open_tag {
-        closing_tags.insert(pending.to_ascii_lowercase());
+    let mut pending_open_tags = Vec::new();
+    if let Some(pending_spec) = pending_open_tag {
+        for part in pending_spec.split(',') {
+            let trimmed = part.trim();
+            if !trimmed.is_empty() {
+                closing_tags.insert(trimmed.to_ascii_lowercase());
+                pending_open_tags.push((trimmed.to_string(), None));
+            }
+        }
     }
     let mut state = EnclosingScanState {
         open_tags: open_tags.to_vec(),
-        pending_open_tag: pending_open_tag.map(ToString::to_string),
-        pending_quote: None,
+        pending_open_tags,
         in_atx_heading,
         at_line_start,
     };
@@ -456,36 +511,58 @@ fn scan_open_tag_tail(
     OpenTagTailOutcome::Pending { quote }
 }
 
+fn drain_pending_open_tags(
+    bytes: &[u8],
+    closing_tags: &HashSet<String>,
+    state: &mut EnclosingScanState,
+) -> Option<usize> {
+    let prev_pending = core::mem::take(&mut state.pending_open_tags);
+    let mut still_pending = Vec::new();
+    let mut pushed_batch: Vec<String> = Vec::new();
+    let mut min_resume: Option<usize> = None;
+    for (pending_name, prev_quote) in prev_pending {
+        match scan_open_tag_tail(bytes, 0, prev_quote) {
+            OpenTagTailOutcome::Closed {
+                close_idx,
+                self_closing,
+            } => {
+                if !self_closing
+                    && closing_tags.contains(&pending_name.to_ascii_lowercase())
+                    && !pushed_batch
+                        .iter()
+                        .any(|t| t.eq_ignore_ascii_case(&pending_name))
+                {
+                    pushed_batch.push(pending_name.clone());
+                    state.open_tags.push(pending_name);
+                }
+                let next = close_idx + 1;
+                min_resume = Some(min_resume.map_or(next, |m| m.min(next)));
+            }
+            OpenTagTailOutcome::Pending { quote } => {
+                still_pending.push((pending_name, quote));
+            }
+            OpenTagTailOutcome::AbortedAtLt { lt_idx } => {
+                min_resume = Some(min_resume.map_or(lt_idx, |m| m.min(lt_idx)));
+            }
+        }
+    }
+    state.pending_open_tags = still_pending;
+    min_resume
+}
+
 fn update_open_xml_tags_from_text(
     text: &str,
     closing_tags: &HashSet<String>,
     state: &mut EnclosingScanState,
 ) {
     let bytes = text.as_bytes();
-    let mut i = 0usize;
-
-    if let Some(pending_name) = state.pending_open_tag.take() {
-        let prev_quote = state.pending_quote.take();
-        match scan_open_tag_tail(bytes, 0, prev_quote) {
-            OpenTagTailOutcome::Closed {
-                close_idx,
-                self_closing,
-            } => {
-                if !self_closing && closing_tags.contains(&pending_name.to_ascii_lowercase()) {
-                    state.open_tags.push(pending_name);
-                }
-                i = close_idx + 1;
-            }
-            OpenTagTailOutcome::Pending { quote } => {
-                state.pending_open_tag = Some(pending_name);
-                state.pending_quote = quote;
-                return;
-            }
-            OpenTagTailOutcome::AbortedAtLt { lt_idx } => {
-                i = lt_idx;
-            }
-        }
-    }
+    let mut i = if state.pending_open_tags.is_empty() {
+        0
+    } else if let Some(resume_idx) = drain_pending_open_tags(bytes, closing_tags, state) {
+        resume_idx
+    } else {
+        return;
+    };
 
     while i + 1 < bytes.len() {
         if bytes[i] != b'<' {
@@ -528,8 +605,7 @@ fn update_open_xml_tags_from_text(
             let name = &text[start..end];
             if end == bytes.len() {
                 if closing_tags.contains(&name.to_ascii_lowercase()) {
-                    state.pending_open_tag = Some(name.to_string());
-                    state.pending_quote = None;
+                    state.pending_open_tags.push((name.to_string(), None));
                 }
                 return;
             }
@@ -547,8 +623,7 @@ fn update_open_xml_tags_from_text(
                     }
                     OpenTagTailOutcome::Pending { quote } => {
                         if closing_tags.contains(&name.to_ascii_lowercase()) {
-                            state.pending_open_tag = Some(name.to_string());
-                            state.pending_quote = quote;
+                            state.pending_open_tags.push((name.to_string(), quote));
                         }
                         return;
                     }
@@ -725,8 +800,13 @@ fn propagate_enclosing_xml_tags(
             Segment::ForLoop {
                 body, else_body, ..
             } => {
-                state.scan_isolated_branch(body, closing_tags);
-                state.scan_isolated_branch(else_body, closing_tags);
+                let mut post_states = state.collect_repeated_branch_states(body, closing_tags);
+                if else_body.is_empty() {
+                    post_states.push(state.clone());
+                } else {
+                    post_states.push(state.run_branch(else_body, closing_tags));
+                }
+                state.merge_branches(&post_states);
             }
             Segment::If {
                 branches,
@@ -755,20 +835,26 @@ fn propagate_enclosing_xml_tags(
             }
             Segment::Include(inc) => {
                 if let Some(ic) = &mut inc.inline_compiled {
-                    state.scan_isolated_branch(
-                        alloc::sync::Arc::make_mut(&mut ic.segments),
-                        closing_tags,
-                    );
+                    let segs = alloc::sync::Arc::make_mut(&mut ic.segments);
+                    if inc.for_each.is_some() {
+                        let mut post_states =
+                            state.collect_repeated_branch_states(segs, closing_tags);
+                        post_states.push(state.clone());
+                        state.merge_branches(&post_states);
+                    } else {
+                        *state = state.run_branch(segs, closing_tags);
+                    }
                 } else {
+                    let pending_spec = state.joined_pending_open_tags();
                     super::include_sanitize::record_enclosing(
                         inc,
                         &state.open_tags,
                         state.in_atx_heading,
                         state.at_line_start,
-                        state.pending_open_tag.as_deref(),
+                        pending_spec.as_deref(),
                     );
+                    state.at_line_start = false;
                 }
-                state.at_line_start = false;
             }
             Segment::Raw(text) => {
                 update_heading_line_state(
